@@ -257,6 +257,15 @@ Runtime не перечисляет qualification targets и не читает �
 только через внешний provider-neutral seam и никогда не входят в canonical
 state; недоступность или mismatch любого reference приводит к отказу.
 
+Provider Connection является отдельной версионируемой границей delegated read
+authority для connector-worker. PostgreSQL хранит только opaque credential/grant
+references, approved resource-scope references, trusted service principal,
+authorization/configuration generations и lifecycle status. Каждый provider
+read допускается только по текущей active версии с точным совпадением
+Workspace/Environment, service principal, scope и generations; отказ происходит
+до provider request. Provider Connection не создаёт `AccessPolicy`, не даёт
+`read_content`/`process_content` и не назначает `PricingBasis` authority.
+
 Роль `administrator` даёт доступ к Control Plane, operational lifecycle, safe
 metadata, diagnostics и управлению policy, но не делает человека content
 superuser. Filename, title, parsed text, excerpt, citation и иные content-bearing
@@ -507,6 +516,14 @@ policies use `access-policy.v2`; historical `access-policy.v1` hashes remain
 unchanged, and missing bindings have no inferred default.
 
 ## 8. Ingestion pipeline
+
+Перед первым metadata/content request connector разрешает текущую Provider
+Connection через trusted persistence context. Credential material разрешается
+отдельным внешним secret adapter только после admission и не попадает в
+canonical records, audit, diagnostics или ошибки. Revocation, tenant mismatch,
+stale generation и resource-scope mismatch завершают операцию до обращения к
+provider; production authentication mode выбирается отдельным composition
+решением.
 
 ### Последовательность
 

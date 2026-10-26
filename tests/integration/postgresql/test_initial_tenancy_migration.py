@@ -1317,6 +1317,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "original_upload_records",
         "qa_agent_artifacts",
         "qa_agent_results",
+        "google_connection_versions",
+        "google_connection_approvals",
     }
     tables = set(
         (
@@ -1339,7 +1341,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                     "relation.relname IN ('access_policy_versions','access_policy_grants',"
                     "'policy_proposals','policy_approvals','policy_activations',"
                     "'current_access_policies','original_upload_records',"
-                    "'qa_agent_artifacts','qa_agent_results'))"
+                    "'qa_agent_artifacts','qa_agent_results',"
+                    "'google_connection_versions','google_connection_approvals'))"
                 )
             )
         ).scalars()
@@ -1351,7 +1354,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                      "tablename NOT IN ('access_policy_versions','access_policy_grants',"
                      "'policy_proposals','policy_approvals','policy_activations',"
                      "'current_access_policies','original_upload_records',"
-                     "'qa_agent_artifacts','qa_agent_results')")
+                     "'qa_agent_artifacts','qa_agent_results',"
+                     "'google_connection_versions','google_connection_approvals')")
             )
         ).scalars()
     )
@@ -2643,7 +2647,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "JOIN pg_namespace AS source_namespace "
                         "ON source_namespace.oid = relation.relnamespace "
                         "WHERE source_namespace.nspname = 'spine' AND relation.relname IN "
-                        "('source_objects', 'source_revisions', 'source_revision_provenance', "
+                        "('google_connection_versions', 'google_connection_approvals', "
+                        "'source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', 'ingestion_runs', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_run_sources', 'ingestion_run_source_bindings', "
@@ -2682,7 +2687,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "column_default FROM information_schema.columns "
                         "WHERE table_schema = 'spine' "
                         "AND table_name NOT LIKE 'source_canonical%' "
-                        "AND table_name NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
+                        "AND table_name NOT IN ('google_connection_versions', 'google_connection_approvals', "
+                        "'source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
@@ -2714,7 +2720,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "SELECT indexname FROM pg_indexes "
                         "WHERE schemaname = 'spine' "
                         "AND indexname NOT LIKE 'pk_source_canonical%' "
-                        "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
+                        "AND tablename NOT IN ('google_connection_versions', 'google_connection_approvals', "
+                        "'source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
@@ -2745,7 +2752,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                     text(
                         "SELECT tablename FROM pg_tables WHERE schemaname = 'spine' "
                         "AND tablename NOT LIKE 'source_canonical%' "
-                        "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
+                        "AND tablename NOT IN ('google_connection_versions', 'google_connection_approvals', "
+                        "'source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
@@ -2776,7 +2784,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                     text(
                         "SELECT tableowner FROM pg_tables WHERE schemaname = 'spine' "
                         "AND tablename NOT LIKE 'source_canonical%' "
-                        "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
+                        "AND tablename NOT IN ('google_connection_versions', 'google_connection_approvals', "
+                        "'source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
@@ -3447,6 +3456,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'environment_role_bindings', 'authorization_generations', "
                         "'qualification_authority_bindings', "
                         "'qualification_target_bindings', "
+                            "'google_connection_versions', "
+                            "'google_connection_approvals', "
                         "'admission_decisions', "
                         "'source_objects', 'source_revisions', "
                         "'source_revision_provenance', 'source_revision_receipt_associations', "
@@ -3526,6 +3537,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "authorization_generations": (True, True),
         "qualification_authority_bindings": (True, True),
         "qualification_target_bindings": (True, True),
+        "google_connection_versions": (True, True),
+        "google_connection_approvals": (True, True),
         "source_objects": (True, True),
         "source_revisions": (True, True),
         "source_revision_provenance": (True, True),
@@ -3592,7 +3605,10 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         ]
         assert roles == [RUNTIME_ROLE]
         assert using_expression is not None
-        assert check_expression is not None
+        if table_name == "google_connection_approvals":
+            assert check_expression is None
+        else:
+            assert check_expression is not None
         if table_name in {
             "backup_fence_leases",
             "fence_operation_tickets",
@@ -3604,7 +3620,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             assert "spine.deployment_scope_id" in check_expression
         else:
             assert "spine.workspace_id" in using_expression
-            assert "spine.workspace_id" in check_expression
+            if check_expression is not None:
+                assert "spine.workspace_id" in check_expression
         maintenance = policies[
             (table_name, f"pol_{table_name}_migration_maintenance")
         ]
@@ -4884,13 +4901,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261120_57_qualification_target_bindings.py",
         "20261121_58_ingestion_qualification_failure_codes.py",
         "20261122_59_projection_terminal_transitions.py",
+        "20261123_60_google_connection_admission.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261123_60_injected_failure.py").write_text(
+    (target / "versions" / "20261124_61_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261123_60'\n"
-        "down_revision = '20261122_59'\n"
+        "revision = '20261124_61'\n"
+        "down_revision = '20261123_60'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

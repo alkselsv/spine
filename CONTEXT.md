@@ -83,6 +83,13 @@ revision-bearing source metadata, regardless of its later admission disposition.
 Operational metadata changes do not create one.
 _Avoid_: Mutable document, projection version, ingestion attempt
 
+**Provider Connection**:
+A versioned, tenant-scoped authorization reference that binds one trusted
+service principal to approved external resource scopes without containing
+credential material. It does not grant Spine content disclosure or business
+authority.
+_Avoid_: Credential, Access Policy, provider account
+
 **Tombstone Revision**:
 A deletion-kind Source Revision with deletion provenance and no retrievable
 content. When canonically current, it fences every earlier content revision.
