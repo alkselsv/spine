@@ -25,6 +25,7 @@ from spine.application.persistence.canonical import (
     CANONICAL_ACCEPTANCE_OUTBOX_EVENT_TYPE,
     CANONICAL_ACCEPTANCE_OUTBOX_SCHEMA_VERSION,
     CanonicalAcceptanceCommand,
+    CanonicalAcceptanceResult,
     CanonicalAcceptanceOutboxPayload,
 )
 from spine.application.persistence.context import (
@@ -189,6 +190,7 @@ class ConnectorIngestionResult:
     provenance: SourceRevisionProvenance
     binding: IngestionRunSourceBinding
     admission: AdmissionDecision
+    canonical_acceptance: CanonicalAcceptanceResult | None
     processing_receipt: ProcessingReceipt
     replay: bool
 
@@ -250,7 +252,7 @@ class ConnectorIngestionOrchestrator:
             context=canonical_context,
             accepted_at=self._now(),
         )
-        projection_required = True
+        canonical_result: CanonicalAcceptanceResult | None
         async with self.uow_factory(canonical_context) as uow:
             current = await uow.canonical.resolve_current(source.source_object_id)
             if (
@@ -260,12 +262,13 @@ class ConnectorIngestionOrchestrator:
             ):
                 raise OptimisticConflictError("The expected source head is stale.")
             if current is not None and current.current_revision_id == revision.revision_id:
-                projection_required = False
+                canonical_result = None
                 await uow.rollback()
             else:
-                await uow.canonical.accept(canonical_command)
+                canonical_result = await uow.canonical.accept(canonical_command)
                 await uow.commit()
 
+        request_projection = _should_request_projection(canonical_result, revision)
         receipt = await self._record_processing(
             command=command,
             observation=observation,
@@ -274,7 +277,7 @@ class ConnectorIngestionOrchestrator:
             source=source,
             revision=revision,
             binding=binding,
-            projection_required=projection_required,
+            request_projection=request_projection,
         )
         return ConnectorIngestionResult(
             command=command,
@@ -286,6 +289,7 @@ class ConnectorIngestionOrchestrator:
             provenance=provenance,
             binding=binding,
             admission=admission,
+            canonical_acceptance=canonical_result,
             processing_receipt=receipt,
             replay=replay,
         )
@@ -357,7 +361,7 @@ class ConnectorIngestionOrchestrator:
         upload_command = OriginalUploadCommandInput(
             operation_name="original.upload",
             operation_schema_version=1,
-            idempotency_key=_key(command, "original").value,
+            idempotency_key=_event_key(command, observation, "original").value,
             workspace_id=command.workspace_id,
             environment_id=command.environment_id,
             expected_sha256=digest,
@@ -406,6 +410,8 @@ class ConnectorIngestionOrchestrator:
                 "revision",
                 source.source_object_id,
                 upload.write_receipt.observed_content.observed_sha256,
+                observation.media_type,
+                observation.extraction_profile,
             ),
             source_object_id=source.source_object_id,
             workspace_id=command.workspace_id,
@@ -413,7 +419,9 @@ class ConnectorIngestionOrchestrator:
             kind="content",
             revision_schema_version="source-revision:v1",
             revision_metadata_schema="revision-metadata:r1-document-v1",
-            revision_metadata=RevisionMetadata(),
+            revision_metadata=RevisionMetadata(
+                representation_profile=observation.extraction_profile
+            ),
             original_reference=upload.write_receipt.object_reference,
             original_sha256=upload.write_receipt.observed_content.observed_sha256,
             byte_length=upload.write_receipt.observed_content.observed_byte_length,
@@ -433,7 +441,7 @@ class ConnectorIngestionOrchestrator:
             event_identity=observation.event_identity,
             event_digest=observation.event_digest,
             connection_id=observation.connection_id,
-            upload_command_reference=_key(command, "original").value[:64],
+            upload_command_reference=_event_reference(command, observation, "original"),
             origin_locator_kind=observation.origin_locator_kind,
             origin_locator_value=observation.origin_locator_value,
             origin_locator_schema=observation.origin_locator_schema,
@@ -445,7 +453,9 @@ class ConnectorIngestionOrchestrator:
             observed_at=observation.observed_at,
         )
         association = SourceRevisionReceiptAssociation.from_verified_upload(
-            association_id=_id(command, "receipt-association"),
+            association_id=_stable_id(
+                "receipt-association", source.source_object_id, observation.event_identity
+            ),
             source_object_id=source.source_object_id,
             revision_id=revision.revision_id,
             provenance_id=provenance.provenance_id,
@@ -475,7 +485,7 @@ class ConnectorIngestionOrchestrator:
             source=source,
             revision=revision,
             provenance=provenance,
-            idempotency_key=_key(command, "observation"),
+            idempotency_key=_event_key(command, observation, "observation"),
             receipt_association=association,
         )
         return source, revision, provenance, binding, observation_command
@@ -572,7 +582,7 @@ class ConnectorIngestionOrchestrator:
         source: SourceObject,
         revision: SourceRevision,
         binding: IngestionRunSourceBinding,
-        projection_required: bool,
+        request_projection: bool,
     ) -> ProcessingReceipt:
         context = self.context_factory(
             PersistenceOperation("processing_receipt"), _id(command, "processing")
@@ -631,7 +641,7 @@ class ConnectorIngestionOrchestrator:
             stored = result.value
             if not isinstance(stored, ProcessingReceipt):
                 raise TypeError("processing receipt repository returned an invalid value")
-            if projection_required:
+            if request_projection:
                 await uow.outbox.append(
                     build_projection_request_intent(
                         registry=self.outbox_events,
@@ -647,7 +657,7 @@ class ConnectorIngestionOrchestrator:
                 await self._append_transition(
                     uow, item, IngestionItemState.PROCESSED, self._now()
                 )
-                if projection_required:
+                if request_projection:
                     await self._append_transition(
                         uow, item, IngestionItemState.PROJECTION_REQUESTED, self._now()
                     )
@@ -836,6 +846,47 @@ def _observation_digest(
 def _key(command: ConnectorIngestionCommand, suffix: str) -> IdempotencyKey:
     value = f"connector:{command.idempotency_key}:{suffix}"
     return IdempotencyKey(value if len(value) <= 255 else f"{value[:220]}:{_sha256(value)[:32]}")
+
+
+def _event_key(
+    command: ConnectorIngestionCommand,
+    observation: NormalizedConnectorObservation,
+    suffix: str,
+) -> IdempotencyKey:
+    value = "|".join(
+        (
+            "connector-event:v1",
+            str(command.workspace_id),
+            str(command.environment_id),
+            str(observation.connection_id),
+            observation.producer_reference,
+            observation.event_identity,
+            suffix,
+        )
+    )
+    return IdempotencyKey(
+        value if len(value) <= 255 else f"{value[:220]}:{_sha256(value)[:32]}"
+    )
+
+
+def _event_reference(
+    command: ConnectorIngestionCommand,
+    observation: NormalizedConnectorObservation,
+    suffix: str,
+) -> str:
+    return f"connector-event:{_sha256(_event_key(command, observation, suffix).value)[:48]}"
+
+
+def _should_request_projection(result: object, revision: SourceRevision) -> bool:
+    """Project only a new canonical revision, not an operational observation."""
+
+    if result is None:
+        return False
+    if not hasattr(result, "advanced"):
+        return True
+    if not result.advanced or getattr(result, "acceptance", None) is None:
+        return False
+    return result.acceptance.predecessor_revision_id != revision.revision_id
 
 
 def _identifier(command: ConnectorIngestionCommand, suffix: str) -> str:

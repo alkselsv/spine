@@ -102,10 +102,16 @@ class SourceOrderingPolicyRegistry:
 
     @classmethod
     def r1(cls) -> "SourceOrderingPolicyRegistry":
-        return cls({"integer.v1": _compare_canonical_decimal})
+        return cls(
+            {
+                "integer.v1": _compare_canonical_decimal,
+                "google-drive-version:v1": _compare_google_drive_version,
+            }
+        )
 
 
 _CANONICAL_DECIMAL = re.compile(r"0|[1-9][0-9]*")
+_GOOGLE_DRIVE_VERSION = re.compile(r"gdrive-v:(0|[1-9][0-9]*)")
 
 
 def _compare_canonical_decimal(incoming: str, current: str) -> SourceOrderComparison:
@@ -120,6 +126,14 @@ def _compare_canonical_decimal(incoming: str, current: str) -> SourceOrderCompar
     if incoming_value > current_value:
         return SourceOrderComparison.HIGHER
     return SourceOrderComparison.EQUAL
+
+
+def _compare_google_drive_version(incoming: str, current: str) -> SourceOrderComparison:
+    incoming_match = _GOOGLE_DRIVE_VERSION.fullmatch(incoming)
+    current_match = _GOOGLE_DRIVE_VERSION.fullmatch(current)
+    if incoming_match is None or current_match is None:
+        raise SourceOrderingPolicyError("Google Drive source ordering token is invalid")
+    return _compare_canonical_decimal(incoming_match.group(1), current_match.group(1))
 
 
 def canonical_transition_for_revision(

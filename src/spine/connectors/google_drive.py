@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Protocol
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, StrictBytes, StrictStr, model_validator
+from pydantic import ConfigDict, Field, StrictBytes, StrictInt, StrictStr, model_validator
 
 from spine.application.connections.google import (
     GoogleProvider,
@@ -56,6 +56,7 @@ class DriveFileMetadata(DefinitionModel):
     current_url: StrictStr | None = Field(default=None, max_length=2048)
     drive_id: StrictStr | None = Field(default=None, max_length=1024)
     parent_ids: tuple[StrictStr, ...] = Field(default=(), max_length=128)
+    modified_time: datetime | None = None
 
 
 class DriveFileContent(DefinitionModel):
@@ -73,6 +74,7 @@ class DriveFileReadProfile(DefinitionModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     export_mime_type: StrictStr | None = Field(default=None, max_length=255)
+    max_attempts: StrictInt = Field(default=2, ge=1, le=3)
 
 
 class GoogleDriveService(Protocol):
@@ -131,6 +133,7 @@ class GoogleDriveObservation(DefinitionModel):
     current_url: StrictStr | None = Field(default=None, max_length=2048)
     drive_id: StrictStr | None = Field(default=None, max_length=1024)
     parent_ids: tuple[StrictStr, ...] = Field(default=(), max_length=128)
+    modified_time: datetime | None = None
     received_at: datetime
     observed_at: datetime
 
@@ -151,6 +154,10 @@ class GoogleDriveObservation(DefinitionModel):
             raise ValueError("received_at cannot precede observed_at")
         if self.provider_version_before != self.provider_version_after:
             raise ValueError("Drive provider version guard is not stable")
+        if self.modified_time is not None and (
+            self.modified_time.tzinfo is None or self.modified_time.utcoffset() is None
+        ):
+            raise ValueError("Drive modified_time must be timezone-aware")
         return self
 
     def to_normalized_observation(self) -> NormalizedConnectorObservation:
@@ -159,7 +166,7 @@ class GoogleDriveObservation(DefinitionModel):
         identity = google_source_identity(
             GoogleDriveFileKey(connection_id=self.connection_id, file_id=self.file_id)
         )
-        event_identity = _event_identity(self.file_id, self.provider_version_after)
+        event_identity = _event_identity(self)
         return NormalizedConnectorObservation(
             workspace_id=self.workspace_id,
             environment_id=self.environment_id,
@@ -201,6 +208,19 @@ class GoogleDriveProviderAdapter(GoogleProvider[GoogleDriveObservation]):
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 
     async def read(
+        self,
+        connection: GoogleConnection,
+        command: GoogleReadCommand,
+    ) -> GoogleDriveObservation:
+        for attempt in range(self.profile.max_attempts):
+            try:
+                return await self._read_once(connection, command)
+            except GoogleDriveConcurrentModificationError:
+                if attempt + 1 == self.profile.max_attempts:
+                    raise
+        raise AssertionError("Drive read attempts must return or raise")
+
+    async def _read_once(
         self,
         connection: GoogleConnection,
         command: GoogleReadCommand,
@@ -262,6 +282,7 @@ class GoogleDriveProviderAdapter(GoogleProvider[GoogleDriveObservation]):
             current_url=metadata_before.current_url,
             drive_id=metadata_before.drive_id,
             parent_ids=metadata_before.parent_ids,
+            modified_time=metadata_before.modified_time,
             received_at=now,
             observed_at=now,
         )
@@ -297,28 +318,51 @@ GoogleDriveProvider = GoogleDriveProviderAdapter
 GoogleDriveReader = GoogleDriveObservationReader
 
 
-def _event_digest(observation: GoogleDriveObservation) -> str:
-    payload = {
+def _event_payload(observation: GoogleDriveObservation) -> dict[str, object]:
+    return {
         "file_id": observation.file_id,
+        "file_name": observation.file_name,
         "provider_media_type": observation.provider_media_type,
         "media_type": observation.media_type,
         "representation_profile": observation.representation_profile,
         "provider_version": observation.provider_version_after,
         "content_sha256": hashlib.sha256(observation.original_bytes).hexdigest(),
+        "current_url": observation.current_url,
+        "drive_id": observation.drive_id,
+        "parent_ids": sorted(observation.parent_ids),
+        "modified_time": (
+            observation.modified_time.isoformat()
+            if observation.modified_time is not None
+            else None
+        ),
     }
+
+
+def _event_digest(observation: GoogleDriveObservation) -> str:
+    payload = _event_payload(observation)
     return hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
 
 
-def _event_identity(file_id: str, version: str) -> str:
-    digest = hashlib.sha256(f"{file_id}:{version}".encode("utf-8")).hexdigest()
+def _event_identity(observation: GoogleDriveObservation) -> str:
+    canonical = json.dumps(
+        _event_payload(observation),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256(canonical).hexdigest()
     return f"drive:{digest[:56]}"
 
 
 def _bounded_provider_version(value: str) -> str:
     """Encode numeric Drive versions into Spine's letter-prefixed identifiers."""
 
+    if not value.isascii() or not value.isdecimal() or (
+        len(value) > 1 and value.startswith("0")
+    ):
+        raise ValueError("Google Drive provider version must be canonical decimal")
     encoded = f"gdrive-v:{value}"
     if len(encoded) > 64:
         raise ValueError("Google Drive provider version exceeds the contract bound")

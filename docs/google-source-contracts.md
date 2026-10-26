@@ -83,9 +83,10 @@ The application handoff then reuses the existing original-upload, source
 observation, admission, canonical-acceptance, ingestion-ledger and
 transactional projection-outbox ports. Connector `SourceObject` identity is
 derived from workspace/environment, connection and the versioned external
-identity, while revision identity is derived from that source and the observed
-original digest. A repeated command is idempotent; a conflicting replay is
-rejected by the existing idempotency and observation repositories.
+identity, while revision identity is derived from that source, the observed
+original digest and the selected representation profile. A repeated command is
+idempotent; a conflicting replay is rejected by the existing idempotency and
+observation repositories.
 
 No connector code calls Cognee directly. Projection remains a downstream
 consumer of the committed `ingestion.projection.requested` intent.
@@ -106,6 +107,24 @@ handoff carries the provider version as an ordering token and the selected
 MIME/profile into the existing immutable original, `SourceRevision`, acceptance
 and projection-outbox path. The adapter has no cursor, deletion behavior,
 Cognee dependency or credential handling.
+
+Issue #604 extends this handoff with Drive revision semantics. The provider
+version is validated as canonical decimal and compared numerically by the
+`google-drive-version:v1` ordering policy, so an older observation cannot move
+the canonical head backwards. A metadata guard mismatch causes the adapter to
+discard the torn read and retry from a fresh metadata/version pair; the bounded
+profile fails with `GoogleDriveConcurrentModificationError` when retries are
+exhausted.
+
+Drive file name, URL, parent IDs and modified time participate in the immutable
+event provenance digest and event identity, but not in content revision
+identity. Therefore rename, move, URL-only and modified-time-only observations
+append provenance to the same `SourceObject`/`SourceRevision`. The approved
+representation profile is revision-bearing, so changing download/export
+representation creates a distinct immutable revision even when the returned
+bytes happen to match. A connector handoff emits a projection intent only when
+canonical acceptance advances to a different revision; repeated or
+operational-only observations do not duplicate downstream work.
 
 ## Sheets register-row reader
 

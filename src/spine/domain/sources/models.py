@@ -65,11 +65,12 @@ class RevisionKind(str, Enum):
 
 
 class RevisionMetadata(DefinitionModel):
-    """The only revision-bearing metadata in the R1 document profile."""
+    """Revision-bearing metadata shared by uploads and connector observations."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     embedded_title: str | None = None
     document_language: str | None = None
+    representation_profile: BoundedIdentifier | None = None
 
     @model_validator(mode="after")
     def validate_values(self) -> "RevisionMetadata":
@@ -349,6 +350,8 @@ def canonical_revision_metadata_digest(metadata: RevisionMetadata) -> str:
         "document_language": metadata.document_language,
         "embedded_title": metadata.embedded_title,
     }
+    if metadata.representation_profile is not None:
+        payload["representation_profile"] = metadata.representation_profile
     canonical = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
 
