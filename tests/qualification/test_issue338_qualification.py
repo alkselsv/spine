@@ -29,7 +29,7 @@ TRACEABILITY_MATRIX = (
         "controlled-browser-journey",
         (
             "web/e2e/app.spec.ts::test_documents_discovery_filters_paginates_and_navigates_without_content_identity",
-            "web/e2e/app.spec.ts::test_documents_upload_reviews_batch_polls_processing_and_links_run",
+            "web/e2e/app.spec.ts::test_documents_upload_reviews_batch_and_polls_processing",
             "web/e2e/app.spec.ts::test_ingestion_run_displays_partial_outcomes_retryability_and_safe_diagnostics",
             "web/e2e/app.spec.ts::test_document_retry_polls_durable_operation_and_reloads_its_run",
             "web/e2e/app.spec.ts::test_document_detail_deep_link_reloads_and_preserves_scope_and_subview_navigation",
