@@ -6,6 +6,7 @@ from .models import (
     ArtifactState,
     ExtractedPageText,
     ExtractedOoxmlText,
+    GoogleSheetCellLocator,
     Locator,
     OoxmlBlockPathStep,
     OoxmlTextLocator,
@@ -17,6 +18,7 @@ from .models import (
     PhysicalLineLocator,
     XlsxCellLocator,
     parsed_document_digest,
+    resolve_google_sheet_cell_locator,
     resolve_locator,
     validate_artifact_lineage,
 )
@@ -27,6 +29,7 @@ __all__ = [
     "ArtifactState",
     "ExtractedPageText",
     "ExtractedOoxmlText",
+    "GoogleSheetCellLocator",
     "Locator",
     "OoxmlBlockPathStep",
     "OoxmlTextLocator",
@@ -38,6 +41,7 @@ __all__ = [
     "PhysicalLineLocator",
     "XlsxCellLocator",
     "parsed_document_digest",
+    "resolve_google_sheet_cell_locator",
     "resolve_locator",
     "validate_artifact_lineage",
 ]
