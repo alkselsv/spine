@@ -42,10 +42,10 @@ class FakeDriveService:
     def __init__(
         self,
         metadata: tuple[DriveFileMetadata, ...],
-        content: DriveFileContent,
+        content: DriveFileContent | tuple[DriveFileContent, ...],
     ) -> None:
         self.metadata = list(metadata)
-        self.content = content
+        self.content = list(content) if isinstance(content, tuple) else [content]
         self.calls: list[tuple[str, str, str | None]] = []
 
     async def get_metadata(self, connection, resource_scope_reference):
@@ -57,7 +57,7 @@ class FakeDriveService:
         del connection
         self.calls.append(("download", str(resource_scope_reference.value), version))
         assert file_id == "file-42"
-        return self.content
+        return self.content.pop(0)
 
     async def export(
         self,
@@ -71,16 +71,26 @@ class FakeDriveService:
         self.calls.append(("export", str(resource_scope_reference.value), version))
         assert file_id == "file-42"
         assert export_mime_type == "application/pdf"
-        return self.content
+        return self.content.pop(0)
 
 
-def _metadata(*, version: str = "7", mime_type: str = "application/pdf"):
+def _metadata(
+    *,
+    version: str = "7",
+    mime_type: str = "application/pdf",
+    name: str = "approved-synthetic.pdf",
+    current_url: str | None = "https://drive.google.test/file-42",
+    parent_ids: tuple[str, ...] = (),
+    modified_time: datetime | None = None,
+):
     return DriveFileMetadata(
         file_id="file-42",
-        name="approved-synthetic.pdf",
+        name=name,
         mime_type=mime_type,
         version=version,
-        current_url="https://drive.google.test/file-42",
+        current_url=current_url,
+        parent_ids=parent_ids,
+        modified_time=modified_time,
     )
 
 
@@ -93,10 +103,17 @@ def _command() -> GoogleReadCommand:
     )
 
 
-def _provider(service: FakeDriveService, *, export_mime_type: str | None = None):
+def _provider(
+    service: FakeDriveService,
+    *,
+    export_mime_type: str | None = None,
+    max_attempts: int = 2,
+):
     return GoogleDriveProviderAdapter(
         service=service,
-        profile=DriveFileReadProfile(export_mime_type=export_mime_type),
+        profile=DriveFileReadProfile(
+            export_mime_type=export_mime_type, max_attempts=max_attempts
+        ),
         clock=lambda: NOW,
     )
 
@@ -161,12 +178,20 @@ async def test_drive_reader_uses_approved_export_profile_and_retains_export_mime
 @pytest.mark.asyncio
 async def test_drive_reader_rejects_provider_version_change_before_handoff():
     service = FakeDriveService(
-        (_metadata(version="7"), _metadata(version="8")),
-        DriveFileContent(content=b"torn-read", media_type="application/pdf"),
+        (
+            _metadata(version="7"),
+            _metadata(version="8"),
+            _metadata(version="8"),
+            _metadata(version="9"),
+        ),
+        (
+            DriveFileContent(content=b"torn-read", media_type="application/pdf"),
+            DriveFileContent(content=b"torn-read", media_type="application/pdf"),
+        ),
     )
 
     with pytest.raises(GoogleDriveConcurrentModificationError):
-        await _provider(service).read(
+        await _provider(service, max_attempts=1).read(
             SimpleNamespace(
                 connection_id=CONNECTION,
                 workspace_id=UUID("10000000-0000-4000-8000-000000000001"),
@@ -174,6 +199,111 @@ async def test_drive_reader_rejects_provider_version_change_before_handoff():
             ),
             _command(),
         )
+
+
+@pytest.mark.asyncio
+async def test_drive_reader_retries_torn_read_from_a_fresh_version_guard():
+    service = FakeDriveService(
+        (
+            _metadata(version="7"),
+            _metadata(version="8"),
+            _metadata(version="8", name="renamed.pdf"),
+            _metadata(version="8", name="renamed.pdf"),
+        ),
+        (
+            DriveFileContent(content=b"stale-bytes", media_type="application/pdf"),
+            DriveFileContent(content=b"fresh-bytes", media_type="application/pdf"),
+        ),
+    )
+
+    observation = await _provider(service).read(
+        SimpleNamespace(
+            connection_id=CONNECTION,
+            workspace_id=UUID("10000000-0000-4000-8000-000000000001"),
+            environment_id=UUID("20000000-0000-4000-8000-000000000001"),
+        ),
+        _command(),
+    )
+
+    assert observation.original_bytes == b"fresh-bytes"
+    assert observation.provider_version_before == "8"
+    assert service.calls == [
+        ("metadata", str(SCOPE.value), None),
+        ("download", str(SCOPE.value), "7"),
+        ("metadata", str(SCOPE.value), None),
+        ("metadata", str(SCOPE.value), None),
+        ("download", str(SCOPE.value), "8"),
+        ("metadata", str(SCOPE.value), None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_drive_operational_metadata_changes_keep_revision_identity_but_append_provenance():
+    connection = SimpleNamespace(
+        connection_id=CONNECTION,
+        workspace_id=UUID("10000000-0000-4000-8000-000000000001"),
+        environment_id=UUID("20000000-0000-4000-8000-000000000001"),
+    )
+    first = await _provider(
+        FakeDriveService(
+            (_metadata(version="7"), _metadata(version="7")),
+            DriveFileContent(content=b"stable-bytes", media_type="application/pdf"),
+        )
+    ).read(
+        connection,
+        _command(),
+    )
+    second = await _provider(
+        FakeDriveService(
+            (
+                _metadata(version="8", modified_time=NOW.replace(hour=13)),
+                _metadata(version="8", modified_time=NOW.replace(hour=13)),
+            ),
+            DriveFileContent(content=b"stable-bytes", media_type="application/pdf"),
+        )
+    ).read(
+        connection,
+        _command(),
+    )
+
+    first_normalized = first.to_normalized_observation()
+    second_normalized = second.to_normalized_observation()
+    assert first_normalized.external_identity == second_normalized.external_identity
+    assert first_normalized.original_bytes == second_normalized.original_bytes
+    assert first_normalized.event_identity != second_normalized.event_identity
+    assert first_normalized.event_digest != second_normalized.event_digest
+    assert first_normalized.order_token == "gdrive-v:7"
+    assert second_normalized.order_token == "gdrive-v:8"
+
+
+@pytest.mark.asyncio
+async def test_drive_export_profile_is_revision_bearing_even_when_bytes_match():
+    service = FakeDriveService(
+        (
+            _metadata(
+                version="12",
+                mime_type="application/vnd.google-apps.document",
+            ),
+            _metadata(
+                version="12",
+                mime_type="application/vnd.google-apps.document",
+            ),
+        ),
+        DriveFileContent(content=b"same-export", media_type="application/pdf"),
+    )
+
+    observation = await _provider(service, export_mime_type="application/pdf").read(
+        SimpleNamespace(
+            connection_id=CONNECTION,
+            workspace_id=UUID("10000000-0000-4000-8000-000000000001"),
+            environment_id=UUID("20000000-0000-4000-8000-000000000001"),
+        ),
+        _command(),
+    )
+
+    normalized = observation.to_normalized_observation()
+    assert normalized.extraction_profile == "google-drive-export:v1"
+    assert normalized.original_bytes == b"same-export"
 
 
 @pytest.mark.asyncio

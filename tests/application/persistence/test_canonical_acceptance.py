@@ -535,6 +535,17 @@ def test_source_ordering_registry_uses_scheme_specific_numeric_order() -> None:
     assert registry.compare("integer.v1", "10", "10") is SourceOrderComparison.EQUAL
 
 
+def test_source_ordering_registry_compares_google_drive_versions_numerically() -> None:
+    registry = SourceOrderingPolicyRegistry.r1()
+
+    assert registry.compare(
+        "google-drive-version:v1", "gdrive-v:10", "gdrive-v:9"
+    ) is SourceOrderComparison.HIGHER
+    assert registry.compare(
+        "google-drive-version:v1", "gdrive-v:9", "gdrive-v:10"
+    ) is SourceOrderComparison.LOWER
+
+
 @pytest.mark.parametrize(
     ("scheme", "incoming", "current"),
     (("unknown.v1", "1", "1"), ("integer.v1", "01", "1")),

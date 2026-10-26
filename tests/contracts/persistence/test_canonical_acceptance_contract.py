@@ -619,6 +619,90 @@ async def test_canonical_equal_trusted_order_replays_with_current_authority(
 
 
 @pytest.mark.asyncio
+async def test_canonical_rejects_older_google_drive_order_after_newer_head(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    case = await prepare_case(
+        persistence_adapter,
+        19080,
+        order_scheme="google-drive-version:v1",
+        order_token="gdrive-v:10",
+    )
+    async with persistence_adapter.uow_factory(case.context) as uow:
+        await uow.canonical.accept(case.command)
+        await uow.commit()
+
+    older_provenance = case.provenance.model_copy(
+        update={
+            "provenance_id": synthetic_uuid(19091),
+            "event_identity": "event-older",
+            "event_digest": "b" * 64,
+            "order_scheme": "google-drive-version:v1",
+            "order_token": "gdrive-v:9",
+        }
+    )
+    source_context = persistence_adapter.source_context(
+        case.source.workspace_id, case.source.environment_id
+    )
+    receipt_id = await _original_receipt(persistence_adapter, source_context, 19090)
+    association = _receipt_association(
+        case.source,
+        case.revision,
+        older_provenance,
+        receipt_id=receipt_id,
+        number=19090,
+    )
+    async with persistence_adapter.uow_factory(source_context) as uow:
+        await uow.sources.record_observation(
+            SourceObservationCommand.create(
+                source=case.source,
+                revision=case.revision,
+                provenance=older_provenance,
+                idempotency_key=IdempotencyKey("canonical-google-drive-older"),
+                receipt_association=association,
+            )
+        )
+        await uow.commit()
+
+    acceptance_id = synthetic_uuid(19100)
+    audit_id = synthetic_uuid(19101)
+    outbox_id = synthetic_uuid(19102)
+    older_command = CanonicalAcceptanceCommand.create(
+        source=case.source,
+        revision=case.revision,
+        provenance=older_provenance,
+        expected_current_revision_id=None,
+        idempotency_key=IdempotencyKey("canonical-google-drive-older-acceptance"),
+        canonical_acceptance_id=acceptance_id,
+        admission_decision_id=case.admission_id,
+        access_policy_version_id=case.policy_id,
+        audit_event_id=audit_id,
+        outbox_event_id=outbox_id,
+        accepted_at=NOW,
+        audit_event=_audit(
+            context=case.context,
+            source_revision_id=case.revision.revision_id,
+            event_id=audit_id,
+            reason="source_accepted",
+        ),
+        outbox_intent=_canonical_outbox(
+            persistence_adapter,
+            context=case.context,
+            source_object_id=case.source.source_object_id,
+            source_revision_id=case.revision.revision_id,
+            acceptance_id=acceptance_id,
+            generation=2,
+            audit_event_id=audit_id,
+            event_id=outbox_id,
+        ),
+    )
+
+    async with persistence_adapter.uow_factory(case.context) as uow:
+        with pytest.raises(OptimisticConflictError):
+            await uow.canonical.accept(older_command)
+
+
+@pytest.mark.asyncio
 async def test_canonical_rejects_missing_finalized_receipt_association(
     persistence_adapter: PersistenceAdapter,
 ) -> None:

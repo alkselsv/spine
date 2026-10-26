@@ -97,10 +97,13 @@ def assert_revision_digest(revision: SourceRevision) -> None:
 def _metadata_payload(metadata: RevisionMetadata | None) -> dict[str, str | None]:
     if metadata is None:
         return {"document_language": None, "embedded_title": None}
-    return {
+    payload: dict[str, str | None] = {
         "document_language": metadata.document_language,
         "embedded_title": metadata.embedded_title,
     }
+    if metadata.representation_profile is not None:
+        payload["representation_profile"] = metadata.representation_profile
+    return payload
 
 
 def _canonical_json(payload: dict[str, Any]) -> bytes:

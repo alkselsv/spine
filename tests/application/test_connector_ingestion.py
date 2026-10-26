@@ -26,6 +26,11 @@ from spine.application.persistence.ingestion import IngestionMutationResult
 from spine.application.persistence.idempotency import OpaqueResultReference
 from spine.application.diagnostics import AuditEventRegistry
 from spine.connectors import ConnectorCoverage, NormalizedConnectorObservation
+from spine.connectors.google_drive import (
+    DriveFileContent,
+    DriveFileMetadata,
+    GoogleDriveProviderAdapter,
+)
 from spine.connectors.google_sheets import (
     GoogleSheetsCellData,
     GoogleSheetsProviderAdapter,
@@ -138,6 +143,15 @@ class _Reader:
         if self.error is not None:
             raise self.error
         return self.observation
+
+
+class _SequenceReader:
+    def __init__(self, *observations: NormalizedConnectorObservation) -> None:
+        self.observations = list(observations)
+
+    async def read(self, command, context):
+        del command, context
+        return self.observations.pop(0)
 
 
 class _Uploader:
@@ -333,6 +347,7 @@ class _Uow:
         self.outbox = SimpleNamespace(append=self._append)
         self.accepted = 0
         self.current_revision_id = None
+        self.last_accepted_revision = None
         self.events = []
         self.trace_id = _id("uow-trace")
 
@@ -350,8 +365,14 @@ class _Uow:
 
     async def _accept(self, command):
         self.accepted += 1
+        predecessor = self.last_accepted_revision
+        self.last_accepted_revision = command.revision.revision_id
         self.current_revision_id = command.revision.revision_id
-        return command
+        return SimpleNamespace(
+            advanced=True,
+            replay=False,
+            acceptance=SimpleNamespace(predecessor_revision_id=predecessor),
+        )
 
     async def _resolve_current(self, source_object_id):
         del source_object_id
@@ -499,6 +520,104 @@ def _handoff_snapshot(
             ),
         ),
     )
+class _DriveHandoffService:
+    def __init__(self) -> None:
+        self.metadata = [
+            DriveFileMetadata(
+                file_id="file-42",
+                name="estimate.pdf",
+                mime_type="application/pdf",
+                version="7",
+            ),
+            DriveFileMetadata(
+                file_id="file-42",
+                name="estimate.pdf",
+                mime_type="application/pdf",
+                version="7",
+            ),
+            DriveFileMetadata(
+                file_id="file-42",
+                name="renamed.pdf",
+                mime_type="application/pdf",
+                version="8",
+                parent_ids=("folder-2",),
+            ),
+            DriveFileMetadata(
+                file_id="file-42",
+                name="renamed.pdf",
+                mime_type="application/pdf",
+                version="8",
+                parent_ids=("folder-2",),
+            ),
+            DriveFileMetadata(
+                file_id="file-42",
+                name="renamed.pdf",
+                mime_type="application/pdf",
+                version="9",
+                parent_ids=("folder-2",),
+            ),
+            DriveFileMetadata(
+                file_id="file-42",
+                name="renamed.pdf",
+                mime_type="application/pdf",
+                version="9",
+                parent_ids=("folder-2",),
+            ),
+        ]
+        self.content = [
+            DriveFileContent(content=b"v7-bytes", media_type="application/pdf"),
+            DriveFileContent(content=b"v7-bytes", media_type="application/pdf"),
+            DriveFileContent(content=b"v9-bytes", media_type="application/pdf"),
+        ]
+
+    async def get_metadata(self, connection, resource_scope_reference):
+        del connection, resource_scope_reference
+        return self.metadata.pop(0)
+
+    async def download(self, connection, resource_scope_reference, file_id, version):
+        del connection, resource_scope_reference
+        assert file_id == "file-42"
+        assert version in {"7", "8", "9"}
+        return self.content.pop(0)
+
+    async def export(
+        self,
+        connection,
+        resource_scope_reference,
+        file_id,
+        version,
+        export_mime_type,
+    ):
+        del connection, resource_scope_reference, file_id, version, export_mime_type
+        raise AssertionError("export is not used by this handoff")
+
+
+class _DriveHandoffReader:
+    def __init__(self) -> None:
+        self.provider = GoogleDriveProviderAdapter(
+            service=_DriveHandoffService(),
+            clock=lambda: NOW,
+        )
+        self.connection = SimpleNamespace(
+            connection_id=CONNECTION,
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+        )
+
+    async def read(self, command, context):
+        del context
+        observation = await self.provider.read(
+            self.connection,
+            GoogleReadCommand(
+                connection_id=command.connection_id,
+                resource_scope_reference=OpaqueGoogleReference(
+                    value=command.resource_scope_reference
+                ),
+                authorization_generation=command.authorization_generation,
+                configuration_generation=command.configuration_generation,
+            ),
+        )
+        return observation.to_normalized_observation()
 
 
 @pytest.mark.asyncio
@@ -651,6 +770,48 @@ async def test_configured_cell_edit_creates_revision_and_projection_intent(
     assert all(
         event.event_type == "ingestion.projection.requested" for event in uow.events
     )
+async def test_successive_drive_observations_keep_metadata_only_changes_out_of_projection():
+    reader = _DriveHandoffReader()
+    orchestrator, _, _, _, uow = _orchestrator(reader=reader)
+
+    first = await orchestrator.ingest(_command("drive-v7"))
+    metadata_only = await orchestrator.ingest(_command("drive-v8"))
+    changed = await orchestrator.ingest(_command("drive-v9"))
+
+    assert first.source.source_object_id == metadata_only.source.source_object_id
+    assert metadata_only.source.source_object_id == changed.source.source_object_id
+    assert first.revision.revision_id == metadata_only.revision.revision_id
+    assert changed.revision.revision_id != first.revision.revision_id
+    assert first.provenance.provenance_id != metadata_only.provenance.provenance_id
+    assert first.provenance.order_token == "gdrive-v:7"
+    assert metadata_only.provenance.order_token == "gdrive-v:8"
+    assert changed.provenance.order_token == "gdrive-v:9"
+    assert len(uow.events) == 2
+    assert uow.accepted == 2
+
+
+@pytest.mark.asyncio
+async def test_connector_representation_profile_is_revision_bearing():
+    download = _observation(content=b"same bytes").model_copy(
+        update={"event_identity": "drive-download-event"}
+    )
+    export = download.model_copy(
+        update={
+            "event_identity": "drive-export-event",
+            "extraction_profile": "google-drive-export:v1",
+            "event_digest": hashlib.sha256(b"drive-export-event").hexdigest(),
+        }
+    )
+    orchestrator, _, _, _, uow = _orchestrator(
+        reader=_SequenceReader(download, export)
+    )
+
+    first = await orchestrator.ingest(_command("drive-download"))
+    second = await orchestrator.ingest(_command("drive-export"))
+
+    assert first.source.source_object_id == second.source.source_object_id
+    assert first.revision.revision_id != second.revision.revision_id
+    assert len(uow.events) == 2
 
 
 @pytest.mark.asyncio
