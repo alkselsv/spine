@@ -364,11 +364,18 @@ def test_issue285_downstream_web_boundary_is_explicitly_compatibility_only() -> 
         encoding="utf-8"
     )
     e2e = (PROJECT_ROOT / "web/e2e/app.spec.ts").read_text(encoding="utf-8")
+    event_observer_tests = (
+        PROJECT_ROOT / "web/src/features/chat/qa-event-observer.test.ts"
+    ).read_text(encoding="utf-8")
+    cancellation_tests = (
+        PROJECT_ROOT / "web/src/features/chat/cancellation-api.test.ts"
+    ).read_text(encoding="utf-8")
 
     assert "future Issue #26 API and SSE endpoints" in transport
     assert "never treats streamed deltas as the saved message source" in chat_readme
-    assert "test_chat_fixture_reconnects_and_rehydrates_canonical_message" in e2e
-    assert "test_chat_fixture_cancels_and_retries_same_command_without_duplicate_message" in e2e
+    assert "test_chat_admits_question_and_displays_canonical_terminal_outcome" in e2e
+    assert "resumes persisted SSE replay with Last-Event-ID after a disconnect" in event_observer_tests
+    assert "uses a run-stable identity when cancellation is retried" in cancellation_tests
     protocol_tests = (PROJECT_ROOT / "web/src/features/chat/protocol.test.ts").read_text(
         encoding="utf-8"
     )

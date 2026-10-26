@@ -11,7 +11,7 @@
   background: var(--color-surface);
   color: var(--color-link);
   font: inherit;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
 }
 

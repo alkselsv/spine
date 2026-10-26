@@ -2,7 +2,7 @@
   min-width: 0;
   grid-column: 1 / -1;
   border: 1px solid var(--color-border);
-  border-radius: 0.8rem;
+  border-radius: var(--radius-lg);
   padding: var(--space-5);
   background: var(--color-surface);
   box-shadow: var(--shadow-card);
@@ -48,7 +48,7 @@
   background: var(--color-surface-strong);
   color: var(--color-ink);
   font-size: 0.78rem;
-  font-weight: 750;
+  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -84,7 +84,7 @@
 .details dt {
   color: var(--color-muted);
   font-size: 0.76rem;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .details dd {
@@ -101,7 +101,7 @@
 
 .nextAction {
   margin: var(--space-4) 0 0;
-  border-left: 0.25rem solid var(--color-accent);
+  border-left: 2px solid var(--color-border-strong);
   padding: 0.65rem 0.85rem;
   background: var(--color-surface-strong);
   color: var(--color-muted);

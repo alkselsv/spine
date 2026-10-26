@@ -55,7 +55,7 @@
       "result": "partial",
       "reason": "Replay ordering, cursor scope and terminal rehydration pass deterministic transport, application and ASGI contract tests. These use in-memory collaborators; PostgreSQL-backed event persistence and a deployed live stream are not exercised here.",
       "evidence": [
-        { "kind": "browser_with_synthetic_api", "file": "web/e2e/app.spec.ts", "reference": "test_chat_fixture_reconnects_and_rehydrates_canonical_message" },
+        { "kind": "component_test_with_fake", "file": "web/src/features/chat/qa-event-observer.test.ts", "reference": "resumes persisted SSE replay with Last-Event-ID after a disconnect" },
         { "kind": "deterministic_application_fake", "file": "tests/application/qa_events/test_event_log.py", "reference": "test_stream_rehydrates_terminal_event_after_disconnect" },
         { "kind": "in_process_api_contract", "file": "tests/api/test_qa_stream.py", "reference": "test_sse_streams_accepted_ask_events_and_resumes_after_last_event_id" }
       ]
@@ -63,9 +63,9 @@
     {
       "path": "cancellation",
       "result": "partial",
-      "reason": "The browser cancel-and-retry journey uses the diagnostic fixture, whose cancel action aborts its synthetic stream. Canonical cancellation is covered by API/Temporal contract tests, but cancellation through the production Chat browser composition and a live Temporal service are not exercised.",
+      "reason": "Canonical cancellation is covered by deterministic web adapter, API and Temporal contract tests. Cancellation through the production Chat browser composition and a live Temporal service are not exercised.",
       "evidence": [
-        { "kind": "browser_with_synthetic_api", "file": "web/e2e/app.spec.ts", "reference": "test_chat_fixture_cancels_and_retries_same_command_without_duplicate_message" },
+        { "kind": "component_test_with_fake", "file": "web/src/features/chat/cancellation-api.test.ts", "reference": "uses a run-stable identity when cancellation is retried after control recreation" },
         { "kind": "in_process_api_contract", "file": "tests/api/test_authorized_ask.py", "reference": "test_v1_cancellation_returns_content_free_accepted_result" },
         { "kind": "deterministic_application_fake", "file": "tests/integration/temporal/test_ask_admission_lifecycle.py", "reference": "test_temporal_ask_workflow_cancellation_signal_returns_terminal_result" }
       ]
@@ -73,12 +73,11 @@
     {
       "path": "clarification_retry",
       "result": "pass",
-      "reason": "The chat composition links a clarification reply to its canonical message; the controlled browser stream verifies safe retry without duplicate messages.",
+      "reason": "The chat composition links a clarification reply to its canonical message; deterministic command and transport tests verify safe retry without duplicate messages.",
       "evidence": [
         { "kind": "component_test_with_fake", "file": "web/src/features/chat/ChatPanel.test.tsx", "reference": "test_clarification_reply_links_to_the_canonical_message" },
         { "kind": "component_test_with_fake", "file": "web/src/features/chat/ask-command.test.ts", "reference": "retries an ambiguous failure with the original key and exact payload" },
         { "kind": "component_test_with_fake", "file": "web/src/features/chat/ask-command.test.ts", "reference": "links a clarification to its source message and gives it a new identity" },
-        { "kind": "browser_with_synthetic_api", "file": "web/e2e/app.spec.ts", "reference": "test_chat_fixture_cancels_and_retries_same_command_without_duplicate_message" },
         { "kind": "deterministic_application_fake", "file": "web/src/features/chat/transport.test.ts", "reference": "test_transport_replays_partial_failure_without_reissuing_idempotent_command" }
       ]
     },

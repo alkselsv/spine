@@ -1,7 +1,7 @@
 import { Select } from '@base-ui/react';
 import { useQuery } from '@tanstack/react-query';
 import type { components, operations } from '../../../api/generated/schema';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 
 import { createScopedApiClient, type SpineApiError } from '../../api/client';
@@ -120,6 +120,7 @@ export function DocumentsPage() {
   const auth = useAuth();
   const { scope, queryKey } = useScope();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [uploadOpen, setUploadOpen] = useState(false);
   const queryState = parseDocumentQuery(`?${searchParams.toString()}`);
   const client = useMemo(
     () =>
@@ -173,24 +174,86 @@ export function DocumentsPage() {
   return (
     <section className={styles.page} aria-labelledby="documents-heading">
       <div className={styles.pageHeader}>
-        <div>
+        <div className={styles.titleBlock}>
           <p className={styles.eyebrow}>{ru.page.eyebrow}</p>
           <h2 id="documents-heading">{ru.documents.title}</h2>
           <p className={styles.lede}>{ru.documents.description}</p>
+          <div aria-label="Представления документов" className={styles.viewTabs} role="group">
+            <button
+              aria-pressed={!hasFilters}
+              className={styles.viewTab}
+              onClick={clearFilters}
+              type="button"
+            >
+              Все <small>{documentsQuery.data?.items.length ?? 0}</small>
+            </button>
+            <button
+              aria-pressed={queryState.processing_state === 'processing'}
+              className={styles.viewTab}
+              onClick={() => changeFilter('processing_state', 'processing')}
+              type="button"
+            >
+              В работе
+            </button>
+            <button
+              aria-pressed={queryState.processing_state === 'processing_failed'}
+              className={styles.viewTab}
+              onClick={() => changeFilter('processing_state', 'processing_failed')}
+              type="button"
+            >
+              Требуют внимания
+            </button>
+            <button
+              aria-pressed={queryState.processing_state === 'processed'}
+              className={styles.viewTab}
+              onClick={() => changeFilter('processing_state', 'processed')}
+              type="button"
+            >
+              Готовы
+            </button>
+          </div>
         </div>
-        {hasFilters ? (
-          <button className={styles.secondaryButton} onClick={clearFilters} type="button">
-            {ru.documents.clearFilters}
+        <div className={styles.headerActions}>
+          {hasFilters ? (
+            <button className={styles.secondaryButton} onClick={clearFilters} type="button">
+              {ru.documents.clearFilters}
+            </button>
+          ) : null}
+          <button className={styles.primaryButton} onClick={() => setUploadOpen(true)} type="button">
+            {ru.documents.upload.title}
           </button>
-        ) : null}
+        </div>
       </div>
 
-      <DocumentUpload
-        key={`${scope.workspaceId}:${scope.environmentId}`}
-        client={client}
-        disabled={!auth.getBearerCredential}
-        scopeSearch={scopeSearch}
-      />
+      {uploadOpen ? (
+        <div className={styles.modalBackdrop} onMouseDown={() => setUploadOpen(false)}>
+          <div
+            aria-label={ru.documents.upload.title}
+            aria-modal="true"
+            className={styles.uploadDialog}
+            onMouseDown={(event) => event.stopPropagation()}
+            role="dialog"
+          >
+            <div className={styles.dialogHeader}>
+              <strong>{ru.documents.upload.title}</strong>
+              <button
+                aria-label="Закрыть загрузку"
+                className={styles.dialogClose}
+                onClick={() => setUploadOpen(false)}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+            <DocumentUpload
+              key={`${scope.workspaceId}:${scope.environmentId}`}
+              client={client}
+              disabled={!auth.getBearerCredential}
+              scopeSearch={scopeSearch}
+            />
+          </div>
+        </div>
+      ) : null}
 
       <div className={styles.filters} aria-label={ru.documents.filtersLabel}>
         {FILTER_KEYS.map((key) => (
@@ -318,6 +381,9 @@ function DocumentResults({
   scopeSearch: string;
   state: InterfaceState;
 }) {
+  const [selectedId, setSelectedId] = useState<string | null>(data.items[0]?.source_object_id ?? null);
+  const selected = data.items.find((document) => document.source_object_id === selectedId) ?? data.items[0] ?? null;
+
   if (data.items.length === 0) {
     return (
       <div>
@@ -335,8 +401,9 @@ function DocumentResults({
           <DocumentActions onRetry={onRetry} scopeSearch={scopeSearch} />
         </>
       ) : null}
-      <div className={styles.tableFrame}>
-        <table className={styles.table}>
+      <div className={styles.resultsLayout} data-detail-open={Boolean(selected)}>
+        <div className={styles.tableFrame}>
+          <table className={styles.table}>
           <caption className={styles.visuallyHidden}>{ru.documents.tableCaption}</caption>
           <thead>
             <tr>
@@ -354,13 +421,23 @@ function DocumentResults({
               <DocumentRow
                 document={document}
                 key={document.source_object_id}
-                scope={scope}
+                onSelect={() => setSelectedId(document.source_object_id)}
+                selected={document.source_object_id === selected?.source_object_id}
                 search={search}
-                traceId={data.trace_id}
               />
             ))}
           </tbody>
-        </table>
+          </table>
+        </div>
+        {selected ? (
+          <DocumentPreview
+            document={selected}
+            onClose={() => setSelectedId(null)}
+            scope={scope}
+            search={search}
+            traceId={data.trace_id}
+          />
+        ) : null}
       </div>
       <div className={styles.pagination}>
         <span>{ru.documents.pageLimit.replace('{count}', String(data.items.length))}</span>
@@ -376,14 +453,14 @@ function DocumentResults({
 
 function DocumentRow({
   document,
-  scope,
+  onSelect,
+  selected,
   search,
-  traceId,
 }: {
   document: DocumentSnapshot;
-  scope: Scope;
+  onSelect: () => void;
+  selected: boolean;
   search: string;
-  traceId: string;
 }) {
   const metadata = document.operational_metadata;
   const publication = document.publication;
@@ -393,7 +470,7 @@ function DocumentRow({
   const detailSearch = search ? `?${search}` : '';
 
   return (
-    <tr>
+    <tr aria-selected={selected} onClick={onSelect}>
       <td>
         <span className={styles.primaryCell}>{sourceKindLabel(document.source_kind)}</span>
         <span className={styles.secondaryCell}>
@@ -404,13 +481,7 @@ function DocumentRow({
       <td>{publicationStatusLabel(publication?.status)}</td>
       <td>{healthLabel(publication?.health ?? metadata?.health, publication?.freshness ?? metadata?.freshness)}</td>
       <td>
-        <DocumentAccessMetadata
-          compact
-          metadata={metadata}
-          publication={publication}
-          scope={scope}
-          traceId={traceId}
-        />
+        {metadata?.status === 'available' ? ru.documents.available : ru.documents.unknown}
       </td>
       <td>{formatDate(document.current_revision?.observed_at ?? document.created_at)}</td>
       <td>
@@ -422,6 +493,56 @@ function DocumentRow({
         </Link>
       </td>
     </tr>
+  );
+}
+
+function DocumentPreview({
+  document,
+  onClose,
+  scope,
+  search,
+  traceId,
+}: {
+  document: DocumentSnapshot;
+  onClose: () => void;
+  scope: Scope;
+  search: string;
+  traceId: string;
+}) {
+  const metadata = document.operational_metadata;
+  const publication = document.publication;
+  const lifecycle = metadata?.lifecycle ?? document.current_revision?.lifecycle;
+  const state = documentStateLabel(lifecycle, metadata?.processing_state, publication?.status);
+  return (
+    <aside aria-label="Сведения о выбранном документе" className={styles.preview}>
+      <header className={styles.previewHeader}>
+        <div>
+          <span className={styles.previewKind}>{sourceKindLabel(document.source_kind)}</span>
+          <strong>{document.source_object_id.slice(-12)}</strong>
+        </div>
+        <button aria-label="Закрыть сведения" onClick={onClose} type="button">×</button>
+      </header>
+      <dl className={styles.previewFacts}>
+        <div><dt>Состояние</dt><dd><span className={styles.statusPill}>{state}</span></dd></div>
+        <div><dt>Источник</dt><dd><code>{document.source_object_id}</code></dd></div>
+        <div><dt>Наблюдался</dt><dd>{formatDate(document.current_revision?.observed_at ?? document.created_at)}</dd></div>
+        <div><dt>Публикация</dt><dd>{publicationStatusLabel(publication?.status)}</dd></div>
+        <div><dt>Проекция</dt><dd>{healthLabel(publication?.health ?? metadata?.health, publication?.freshness ?? metadata?.freshness)}</dd></div>
+      </dl>
+      <DocumentAccessMetadata
+        compact
+        metadata={metadata}
+        publication={publication}
+        scope={scope}
+        traceId={traceId}
+      />
+      <Link
+        className={styles.previewLink}
+        to={{ pathname: `/knowledge/documents/${document.source_object_id}`, search: search ? `?${search}` : '' }}
+      >
+        Открыть полную карточку
+      </Link>
+    </aside>
   );
 }
 

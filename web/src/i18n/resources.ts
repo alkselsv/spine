@@ -3,6 +3,9 @@ export const ru = {
   shellTitle: 'Control Plane Spine',
   navigation: {
     label: 'Разделы workspace',
+    overview: 'Обзор',
+    groupWork: 'Работа',
+    groupObserve: 'Наблюдение',
     knowledge: 'Знания',
     chat: 'Чат',
     qaRuns: 'Запуски Q&A',
@@ -636,6 +639,14 @@ export const ru = {
     checking: 'Проверяем соединение…',
     failed: 'Соединение недоступно',
     check: 'Проверить соединение',
+  },
+  theme: {
+    enableDark: 'Включить тёмную тему',
+    enableLight: 'Включить светлую тему',
+  },
+  roles: {
+    administrator: 'Администратор',
+    member: 'Участник',
   },
   auth: {
     unauthenticated: {

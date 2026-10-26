@@ -1,11 +1,17 @@
 export type BrowserQualificationFixture = 'controlled' | 'chat-api' | 'auth-denied';
 
 /**
- * Qualification fixtures are selected only by the browser test harness. They
- * stand in for Issue #26 adapters and are never used as authorization data.
+ * The fixture build selects its default dataset from the product route. The
+ * query parameter remains an explicit override for qualification-only states.
+ * Fixtures are never used as authorization data.
  */
-export function readBrowserQualificationFixture(): BrowserQualificationFixture | null {
-  if (typeof window === 'undefined') return null;
+export function readBrowserQualificationFixture(
+  fixturesEnabled = true,
+  selectFromRoute = fixturesEnabled,
+): BrowserQualificationFixture | null {
+  if (!fixturesEnabled || typeof window === 'undefined') return null;
   const value = new URLSearchParams(window.location.search).get('fixture');
-  return value === 'controlled' || value === 'chat-api' || value === 'auth-denied' ? value : null;
+  if (value === 'controlled' || value === 'chat-api' || value === 'auth-denied') return value;
+  if (!selectFromRoute) return null;
+  return window.location.pathname.startsWith('/chat') ? 'chat-api' : 'controlled';
 }

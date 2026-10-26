@@ -150,6 +150,11 @@ flowchart LR
 | `temporal-worker` | Workflow definitions, routing, timers, gates и Activities | По task queue/domain |
 | `web` | Workspaces, Workflows, Agents, Runs, Insights, approvals | Статическая доставка + API |
 
+Синтетический browser-fixture transport не входит в production-сборку `web`.
+Он компилируется как отдельный fixture bundle и запускается только явно
+включённым Compose-профилем `fixtures`, на отдельном порту. Query-параметр не
+может переключить обычный `web` с live API на синтетические данные.
+
 На старте это один репозиторий и общий Python package. API и workers запускаются отдельными процессами, но не являются отдельными сервисами владения данными.
 
 Архитектура делится на четыре plane:

@@ -50,7 +50,7 @@ describe('controlled browser qualification command', () => {
       const result = await runControlledQualification(address.port);
 
       expect(result.exitCode).toBe(1);
-      expect(result.output).toContain('$ vite build');
+      expect(result.output).toContain('$ vite build --mode qualification');
       expect(result.output).toContain(`http://127.0.0.1:${address.port} is already used`);
       expect(result.output).not.toContain('Running 30 tests');
       expect(requestHeaders.length).toBeGreaterThanOrEqual(1);
