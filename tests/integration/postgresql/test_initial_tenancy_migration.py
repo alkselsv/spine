@@ -2384,6 +2384,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "projection_activations": (True, True),
         "active_projections": (True, True),
         "projection_drifts": (True, True),
+        "drive_snapshot_runs": (True, True),
     }
     assert rls == expected_rls
     tenant_rls_tables = {
@@ -3593,8 +3594,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "projection_activations": (True, True),
             "active_projections": (True, True),
             "projection_drifts": (True, True),
-        "drive_snapshot_runs": (True, True),
-        "drive_snapshot_runs": (True, True),
+            "drive_snapshot_runs": (True, True),
             "original_upload_records": (True, True),
             "qa_agent_artifacts": (True, True),
             "qa_agent_results": (True, True),
