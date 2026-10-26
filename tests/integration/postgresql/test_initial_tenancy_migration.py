@@ -1519,6 +1519,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "projection_activations",
         "active_projections",
         "projection_drifts",
+        "drive_snapshot_runs",
     }
     expected_final_constraints = {
         "alembic_version_pkc",
@@ -1536,21 +1537,26 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_outbox_intents_producer_deduplication_id_length",
         "ck_workspaces_display_name_not_empty",
         "ck_workspaces_slug_not_empty",
+        "ck_drive_snapshot_runs_state",
+        "ck_drive_snapshot_runs_start_token",
         "fk_environments_workspace_id_workspaces",
         "fk_idempotency_receipts_scope_environments",
         "fk_idempotency_receipts_workspace_id_workspaces",
         "fk_initial_workspace_bootstrap_workspace_id_workspaces",
         "fk_outbox_intents_scope_environments",
         "fk_outbox_intents_workspace_id_workspaces",
+        "fk_drive_snapshot_runs_environment",
         "pk_environments",
         "pk_idempotency_receipts",
         "pk_initial_workspace_bootstrap",
         "pk_outbox_intents",
         "pk_workspaces",
+        "pk_drive_snapshot_runs",
         "uq_environments_workspace_id_id",
         "uq_initial_workspace_bootstrap_action_id",
         "uq_initial_workspace_bootstrap_workspace_id",
         "uq_workspaces_slug",
+        "uq_drive_snapshot_runs_idempotency",
         "pk_source_canonical_tables",
         "pk_source_canonical_unicode",
         "pk_source_canonical_compositions",
@@ -2123,6 +2129,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_outbox_intents_environment_producer",
         "uq_outbox_intents_workspace_producer",
         "uq_workspaces_slug",
+        "pk_drive_snapshot_runs",
+        "uq_drive_snapshot_runs_idempotency",
         "pk_source_canonical_tables",
         "pk_source_canonical_unicode",
         "pk_source_canonical_compositions",
@@ -2376,6 +2384,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "projection_activations": (True, True),
         "active_projections": (True, True),
         "projection_drifts": (True, True),
+        "drive_snapshot_runs": (True, True),
     }
     assert rls == expected_rls
     tenant_rls_tables = {
@@ -2507,6 +2516,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "projection_activations": (True, True, False, False),
         "active_projections": (True, True, True, False),
         "projection_drifts": (True, True, False, False),
+        "drive_snapshot_runs": (True, True, True, False),
         "source_canonical_tables": (True, False, False, False),
         "source_canonical_unicode": (True, False, False, False),
         "source_canonical_compositions": (True, False, False, False),
@@ -2667,7 +2677,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_partitions', 'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                                "'projection_drifts', 'answer_question_runs', "
+                                "'projection_drifts', 'drive_snapshot_runs', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
                                 "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records'))"
                     )
@@ -2706,7 +2716,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                            "'projection_drifts', 'answer_question_runs', "
+                            "'projection_drifts', 'drive_snapshot_runs', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
                                 "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records')"
                     )
@@ -2739,7 +2749,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                                "'projection_drifts', 'answer_question_runs', "
+                                "'projection_drifts', 'drive_snapshot_runs', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
                             "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records')"
                     )
@@ -2771,7 +2781,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                                "'projection_drifts', 'answer_question_runs', "
+                                "'projection_drifts', 'drive_snapshot_runs', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
                                 "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records')"
                     )
@@ -2802,7 +2812,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                                "'projection_drifts', 'answer_question_runs', "
+                                "'projection_drifts', 'drive_snapshot_runs', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
                                 "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records')"
                     )
@@ -3479,7 +3489,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'projection_partitions', 'projection_receipts', 'source_projection_references', "
                         "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                         "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                        "'projection_drifts', 'original_upload_records', "
+                        "'projection_drifts', 'drive_snapshot_runs', 'original_upload_records', "
                         "'qa_agent_artifacts', 'qa_agent_results')"
                     )
                 )
@@ -3584,6 +3594,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "projection_activations": (True, True),
             "active_projections": (True, True),
             "projection_drifts": (True, True),
+            "drive_snapshot_runs": (True, True),
             "original_upload_records": (True, True),
             "qa_agent_artifacts": (True, True),
             "qa_agent_results": (True, True),
@@ -4903,13 +4914,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261122_59_projection_terminal_transitions.py",
         "20261123_60_google_connection_admission.py",
         "20261124_61_drive_revision_metadata.py",
+        "20261125_62_drive_initial_snapshot.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261125_62_injected_failure.py").write_text(
+    (target / "versions" / "20261126_63_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261125_62'\n"
-        "down_revision = '20261124_61'\n"
+        "revision = '20261126_63'\n"
+        "down_revision = '20261125_62'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

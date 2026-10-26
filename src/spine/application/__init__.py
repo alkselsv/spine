@@ -100,6 +100,9 @@ __all__ = [
     "ConnectorIngestionStatus",
     "GoogleAuthorizedObservationReader",
     "build_connector_canonical_acceptance_command",
+    "DriveInitialSnapshotCommand",
+    "DriveInitialSnapshotCoordinator",
+    "DriveInitialSnapshotResult",
 ]
 
 
@@ -160,6 +163,12 @@ def __getattr__(name: str) -> object:
             "build_connector_canonical_acceptance_command",
         }:
             module_name = "spine.application.connector_ingestion"
+        if name in {
+            "DriveInitialSnapshotCommand",
+            "DriveInitialSnapshotCoordinator",
+            "DriveInitialSnapshotResult",
+        }:
+            module_name = "spine.application.google_drive_snapshot"
         if name in {
             "AuthorizedQAStreamService",
             "QAEventLogStore",

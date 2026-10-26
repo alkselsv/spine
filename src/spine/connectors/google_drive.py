@@ -18,6 +18,7 @@ from pydantic import ConfigDict, Field, StrictBytes, StrictInt, StrictStr, model
 
 from spine.application.connections.google import (
     GoogleProvider,
+    GoogleConnectionRepository,
     GoogleReadAdmission,
     GoogleReadCommand,
 )
@@ -77,6 +78,55 @@ class DriveFileReadProfile(DefinitionModel):
     max_attempts: StrictInt = Field(default=2, ge=1, le=3)
 
 
+class DriveSnapshotItem(DefinitionModel):
+    """One stable file identity returned by an initial Drive enumeration."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    file_id: StrictStr = Field(min_length=1, max_length=256)
+
+
+class DriveSnapshotPage(DefinitionModel):
+    """One provider page whose item set is immutable for a sync attempt."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    page_token: StrictStr | None = Field(default=None, max_length=4096)
+    next_page_token: StrictStr | None = Field(default=None, max_length=4096)
+    incomplete_search: bool
+    items: tuple[DriveSnapshotItem, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_items(self) -> "DriveSnapshotPage":
+        if len({item.file_id for item in self.items}) != len(self.items):
+            raise ValueError("Drive snapshot page file IDs must be unique")
+        return self
+
+
+class GoogleDriveSnapshotService(Protocol):
+    """Official Drive operations needed by the bounded initial snapshot."""
+
+    async def get_start_page_token(
+        self,
+        connection: GoogleConnection,
+        resource_scope_reference: OpaqueGoogleReference,
+    ) -> str: ...
+
+    async def list_page(
+        self,
+        connection: GoogleConnection,
+        resource_scope_reference: OpaqueGoogleReference,
+        page_token: str | None,
+    ) -> DriveSnapshotPage: ...
+
+    async def get_metadata_for_file(
+        self,
+        connection: GoogleConnection,
+        resource_scope_reference: OpaqueGoogleReference,
+        file_id: str,
+    ) -> DriveFileMetadata: ...
+
+
 class GoogleDriveService(Protocol):
     """Small fakeable boundary for official Drive API operations."""
 
@@ -109,6 +159,7 @@ class _ConnectorReadCommand(Protocol):
     resource_scope_reference: UUID
     authorization_generation: int
     configuration_generation: int
+    resource_object_reference: str | None
 
 
 class GoogleDriveObservation(DefinitionModel):
@@ -227,6 +278,8 @@ class GoogleDriveProviderAdapter(GoogleProvider[GoogleDriveObservation]):
     ) -> GoogleDriveObservation:
         metadata_before = await self.service.get_metadata(
             connection, command.resource_scope_reference
+        ) if command.resource_object_reference is None else await self._metadata_for_file(
+            connection, command
         )
         if self.profile.export_mime_type is None:
             content = await self.service.download(
@@ -248,8 +301,10 @@ class GoogleDriveProviderAdapter(GoogleProvider[GoogleDriveObservation]):
             if content.media_type != self.profile.export_mime_type:
                 raise ValueError("Drive export media type does not match the approved profile")
 
-        metadata_after = await self.service.get_metadata(
-            connection, command.resource_scope_reference
+        metadata_after = (
+            await self.service.get_metadata(connection, command.resource_scope_reference)
+            if command.resource_object_reference is None
+            else await self._metadata_for_file(connection, command)
         )
         if (
             metadata_after.file_id != metadata_before.file_id
@@ -287,6 +342,15 @@ class GoogleDriveProviderAdapter(GoogleProvider[GoogleDriveObservation]):
             observed_at=now,
         )
 
+    async def _metadata_for_file(
+        self, connection: GoogleConnection, command: GoogleReadCommand
+    ) -> DriveFileMetadata:
+        file_id = command.resource_object_reference
+        method = getattr(self.service, "get_metadata_for_file", None)
+        if file_id is None or not callable(method):
+            raise ValueError("Drive snapshot reads require a file-aware metadata adapter")
+        return await method(connection, command.resource_scope_reference, file_id)
+
 
 @dataclass(frozen=True, slots=True)
 class GoogleDriveObservationReader:
@@ -307,10 +371,66 @@ class GoogleDriveObservationReader:
                 ),
                 authorization_generation=command.authorization_generation,
                 configuration_generation=command.configuration_generation,
+                resource_object_reference=getattr(command, "resource_object_reference", None),
             ),
             context,
         )
         return observation.to_normalized_observation()
+
+
+@dataclass(frozen=True, slots=True)
+class GoogleDriveInitialSnapshotReader:
+    """List an approved scope and read each file through the existing admission."""
+
+    connection_repository: GoogleConnectionRepository
+    service: GoogleDriveSnapshotService
+    admission: GoogleReadAdmission[GoogleDriveObservation]
+
+    async def get_start_page_token(self, command, context) -> str:
+        async with self._admit(command, context) as connection:
+            token = await self.service.get_start_page_token(
+                connection, OpaqueGoogleReference(value=command.resource_scope_reference)
+            )
+        if not token or len(token) > 4096:
+            raise ValueError("Drive start page token is invalid")
+        return token
+
+    async def list_page(self, command, page_token, context) -> DriveSnapshotPage:
+        async with self._admit(command, context) as connection:
+            page = await self.service.list_page(
+                connection,
+                OpaqueGoogleReference(value=command.resource_scope_reference),
+                page_token,
+            )
+        return page
+
+    async def read(self, command: _ConnectorReadCommand, context) -> NormalizedConnectorObservation:
+        observation = await self.admission.read(
+            GoogleReadCommand(
+                connection_id=command.connection_id,
+                resource_scope_reference=OpaqueGoogleReference(
+                    value=command.resource_scope_reference
+                ),
+                authorization_generation=command.authorization_generation,
+                configuration_generation=command.configuration_generation,
+                resource_object_reference=getattr(command, "resource_object_reference", None),
+            ),
+            context,
+        )
+        return observation.to_normalized_observation()
+
+    def _admit(self, command, context):
+        return self.connection_repository.admit_read(
+            GoogleReadCommand(
+                connection_id=command.connection_id,
+                resource_scope_reference=OpaqueGoogleReference(
+                    value=command.resource_scope_reference
+                ),
+                authorization_generation=command.authorization_generation,
+                configuration_generation=command.configuration_generation,
+            ),
+            context,
+        )
 
 
 # Short names keep the adapter discoverable without exposing provider SDK terms.
@@ -373,6 +493,8 @@ __all__ = [
     "DriveFileContent",
     "DriveFileMetadata",
     "DriveFileReadProfile",
+    "DriveSnapshotItem",
+    "DriveSnapshotPage",
     "GOOGLE_DRIVE_DOWNLOAD_PROFILE",
     "GOOGLE_DRIVE_EXPORT_PROFILE",
     "GOOGLE_DRIVE_FILE_LOCATOR",
@@ -383,5 +505,7 @@ __all__ = [
     "GoogleDriveProvider",
     "GoogleDriveProviderAdapter",
     "GoogleDriveReader",
+    "GoogleDriveInitialSnapshotReader",
     "GoogleDriveService",
+    "GoogleDriveSnapshotService",
 ]

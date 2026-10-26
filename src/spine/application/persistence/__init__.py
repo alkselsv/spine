@@ -85,6 +85,18 @@ from spine.application.persistence.errors import (
     ContextBundleNotFoundError,
 )
 from spine.application.persistence.context_bundles import ContextBundleRepository
+from spine.application.persistence.drive_sync import (
+    DriveSnapshotItemRecord,
+    DriveSnapshotItemState,
+    DriveSnapshotPageRecord,
+    DriveSnapshotPageState,
+    DriveSnapshotRun,
+    DriveSnapshotRunCommand,
+    DriveSnapshotRunState,
+    DriveSyncConflictError,
+    DriveSyncRepository,
+    InMemoryDriveSyncRepository,
+)
 from spine.application.persistence.disclosure import DisclosureValidationRepository
 from spine.application.persistence.answer_disclosure import AnswerDisclosureRepository
 from spine.application.persistence.parsed_artifacts import (
@@ -239,6 +251,16 @@ __all__ = [
     "ContextBundleMalformedError",
     "ContextBundleNotFoundError",
     "ContextBundleRepository",
+    "DriveSnapshotItemRecord",
+    "DriveSnapshotItemState",
+    "DriveSnapshotPageRecord",
+    "DriveSnapshotPageState",
+    "DriveSnapshotRun",
+    "DriveSnapshotRunCommand",
+    "DriveSnapshotRunState",
+    "DriveSyncConflictError",
+    "DriveSyncRepository",
+    "InMemoryDriveSyncRepository",
     "DisclosureValidationRepository",
     "AnswerDisclosureRepository",
     "ParsedArtifactCommand",

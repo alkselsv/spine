@@ -165,3 +165,21 @@ revision-scoped provenance. A location-only observation appends provenance to
 the current revision without repeating canonical acceptance or requesting a
 new projection. A changed row representation creates a new revision and follows
 the normal acceptance and projection-intent path.
+
+## Drive initial snapshot
+
+Issue #606 adds the first bounded durable Drive enumeration. The coordinator
+captures the start page token before listing the approved scope and stores it as
+the run's proposed boundary. Every listed page is persisted with its requested
+and next page tokens, `incompleteSearch` status, workspace/environment,
+connection, service principal and authorization/configuration generations.
+
+Each file is handed to the existing connector ingestion orchestrator with a
+stable per-file idempotency key. A page cannot complete, and the proposed
+boundary cannot become the committed cursor, until every item has a durable
+terminal canonical outcome. An interrupted page reopens from the same page
+token and skips already successful item outcomes. Item/provider failures leave
+the previous committed cursor unchanged and mark the run resumable;
+`incompleteSearch` produces `reconciliation_required` instead of advancing the
+cursor. The coordinator owns this state and the Drive adapter has no hidden
+unbounded retry loop.

@@ -104,12 +104,18 @@ class GoogleReadCommand:
     resource_scope_reference: OpaqueGoogleReference
     authorization_generation: int
     configuration_generation: int
+    resource_object_reference: str | None = None
 
     def __post_init__(self) -> None:
         if self.connection_id.int == 0:
             raise ValueError("connection_id must be a non-nil UUID")
         if self.authorization_generation < 1 or self.configuration_generation < 1:
             raise ValueError("connection generations must be positive")
+        if self.resource_object_reference is not None and (
+            not self.resource_object_reference
+            or len(self.resource_object_reference) > 256
+        ):
+            raise ValueError("resource_object_reference is invalid")
 
 
 class GoogleConnectionRepository(Protocol):
