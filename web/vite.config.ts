@@ -3,7 +3,10 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig(({ mode }) => ({
   define: {
-    __SPINE_FIXTURES_ENABLED__: JSON.stringify(mode === 'fixtures'),
+    __SPINE_QUALIFICATION_FIXTURES_ENABLED__: JSON.stringify(
+      mode === 'qualification' || mode === 'fixtures',
+    ),
+    __SPINE_EMBEDDED_FIXTURES_ENABLED__: JSON.stringify(mode === 'fixtures'),
   },
   plugins: [react()],
   test: {

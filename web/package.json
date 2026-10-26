@@ -5,12 +5,15 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:qualification": "vite build --mode qualification",
     "build:fixtures": "vite build --mode fixtures",
     "typecheck": "tsc --noEmit",
     "test:unit": "vitest run",
     "test:e2e": "corepack pnpm test:e2e:ownership && corepack pnpm test:e2e:run",
     "test:e2e:ownership": "vitest run --config vitest.qualification.config.ts",
-    "test:e2e:run": "corepack pnpm build:fixtures && playwright test --config playwright.config.ts",
+    "test:e2e:run": "corepack pnpm test:e2e:qualification && corepack pnpm test:e2e:fixtures",
+    "test:e2e:qualification": "corepack pnpm build:qualification && playwright test --config playwright.config.ts --grep-invert @embedded-fixture",
+    "test:e2e:fixtures": "corepack pnpm build:fixtures && playwright test --config playwright.config.ts --grep @embedded-fixture",
     "test:e2e:production": "playwright test --config playwright.production.config.ts"
   },
   "dependencies": {

@@ -79,8 +79,10 @@ pnpm --dir web exec playwright install --with-deps chromium
 
 ## Browser qualification
 
-`pnpm web:test:e2e` сначала заново собирает fixture-вариант SPA, затем запускает
-принадлежащий этому прогону Vite preview и Chromium. По умолчанию preview использует
+`pnpm web:test:e2e` сначала проверяет qualification-сборку с управляемыми
+Playwright API-маршрутами, затем отдельно собирает embedded-fixture вариант и
+проверяет его автономные данные. Оба прогона используют принадлежащие команде
+Vite preview и Chromium. По умолчанию preview использует
 `http://127.0.0.1:4175`; порт можно переопределить переменной
 `SPINE_CONTROLLED_PREVIEW_PORT`. Значение должно быть целым числом от 1 до
 65535. Занятый порт завершает квалификацию явной ошибкой до запуска тестов:

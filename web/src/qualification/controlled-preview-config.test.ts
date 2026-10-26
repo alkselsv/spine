@@ -55,7 +55,13 @@ describe('controlled browser preview configuration', () => {
     ) as { scripts: Record<string, string> };
 
     expect(packageManifest.scripts['test:e2e:run']).toBe(
-      'corepack pnpm build:fixtures && playwright test --config playwright.config.ts',
+      'corepack pnpm test:e2e:qualification && corepack pnpm test:e2e:fixtures',
+    );
+    expect(packageManifest.scripts['test:e2e:qualification']).toBe(
+      'corepack pnpm build:qualification && playwright test --config playwright.config.ts --grep-invert @embedded-fixture',
+    );
+    expect(packageManifest.scripts['test:e2e:fixtures']).toBe(
+      'corepack pnpm build:fixtures && playwright test --config playwright.config.ts --grep @embedded-fixture',
     );
     expect(packageManifest.scripts['test:e2e']).toBe(
       'corepack pnpm test:e2e:ownership && corepack pnpm test:e2e:run',

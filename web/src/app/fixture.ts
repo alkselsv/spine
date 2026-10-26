@@ -7,9 +7,11 @@ export type BrowserQualificationFixture = 'controlled' | 'chat-api' | 'auth-deni
  */
 export function readBrowserQualificationFixture(
   fixturesEnabled = true,
+  selectFromRoute = fixturesEnabled,
 ): BrowserQualificationFixture | null {
   if (!fixturesEnabled || typeof window === 'undefined') return null;
   const value = new URLSearchParams(window.location.search).get('fixture');
   if (value === 'controlled' || value === 'chat-api' || value === 'auth-denied') return value;
+  if (!selectFromRoute) return null;
   return window.location.pathname.startsWith('/chat') ? 'chat-api' : 'controlled';
 }

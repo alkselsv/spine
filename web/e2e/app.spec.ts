@@ -41,7 +41,7 @@ async function installContainerRuntime(page: Page): Promise<void> {
   }, { environmentId: localEnvironment, workspaceId: primaryWorkspace });
 }
 
-test('test_controlled_fixture_shows_embedded_data_without_test_route_interception', async ({ page }) => {
+test('test_controlled_fixture_shows_embedded_data_without_test_route_interception', { tag: '@embedded-fixture' }, async ({ page }) => {
   await installContainerRuntime(page);
   await page.goto('/knowledge/documents');
 
@@ -50,25 +50,25 @@ test('test_controlled_fixture_shows_embedded_data_without_test_route_interceptio
   await expect(page.getByText('sd/operations').first()).toBeVisible();
 });
 
-test('test_chat_fixture_shows_embedded_sessions_and_messages', async ({ page }) => {
+test('test_chat_fixture_shows_embedded_sessions_and_messages', { tag: '@embedded-fixture' }, async ({ page }) => {
   await installContainerRuntime(page);
   await page.goto('/chat');
 
-  await expect(page.getByRole('heading', { name: /^Сессии 3/ })).toBeVisible();
+  const sessions = page.getByRole('region', { name: 'Сессии вопросов и ответов' }).getByRole('link');
+  await expect(sessions).toHaveCount(3);
+  await sessions.first().click();
   await expect(page.getByRole('article')).toHaveCount(5);
-  await expect(page.getByRole('article', { name: 'Вопрос 1' })
-    .getByText('Какой срок хранения исходных файлов и что происходит с историей при удалении?')).toBeVisible();
-  await expect(page.getByRole('article', { name: 'Вопрос 5' }).getByText('Когда релиз проекции?')).toBeVisible();
+  await expect(page.getByText('Какой срок хранения исходных файлов и что происходит с историей при удалении?')).toBeVisible();
+  await expect(page.getByText('Когда релиз проекции?')).toBeVisible();
   await expect(page.getByText('Источники расходятся.')).toBeVisible();
   const answer = page.getByText('Исходные файлы хранятся 36 месяцев.');
   await expect(answer).toBeVisible();
-  expect((await page.getByRole('article', { name: 'Вопрос 1' }).locator('p').first().boundingBox())?.width)
-    .toBeGreaterThan(300);
+  expect((await page.getByRole('article').first().boundingBox())?.width).toBeGreaterThan(300);
 
   await page.getByRole('button', { name: /Открыть источник 1/ }).first().click();
   await expect(page.getByText('Срок хранения исходных файлов — 36 месяцев; логическое удаление не затрагивает историю ревизий.')).toBeVisible();
 
-  await page.getByRole('listitem').nth(1).click();
+  await sessions.nth(1).click();
   await expect(page.getByRole('article')).toHaveCount(5);
   await expect(page.getByText('Недостаточно данных для ответа')).toBeVisible();
   await expect(page.getByText('Доступ запрещён')).toBeVisible();
@@ -76,25 +76,25 @@ test('test_chat_fixture_shows_embedded_sessions_and_messages', async ({ page }) 
   await expect(page.getByText('Отменён')).toBeVisible();
 });
 
-test('test_qa_runs_fixture_shows_embedded_run_history', async ({ page }) => {
+test('test_qa_runs_fixture_shows_embedded_run_history', { tag: '@embedded-fixture' }, async ({ page }) => {
   await installContainerRuntime(page);
   await page.goto('/qa/runs');
 
   await expect(page.getByRole('table', { name: 'Запуски Q&A текущей рабочей области' })).toBeVisible();
   await expect(page.locator('tbody tr')).toHaveCount(11);
-  await page.locator('tbody tr').first().click();
-  await expect(page.getByRole('heading', { level: 1, name: 'Детали запуска Q&A' })).toBeVisible();
+  await page.locator('tbody tr').first().getByRole('link').click();
+  await expect(page.getByRole('heading', { level: 2, name: 'Детали запуска Q&A' })).toBeVisible();
 });
 
-test('test_fixture_query_uses_the_ported_interface_instead_of_the_legacy_router', async ({ page }) => {
+test('test_fixture_query_uses_the_refreshed_control_plane_interface', async ({ page }) => {
   await installControlledDocuments(page);
 
   await page.goto('/knowledge/documents?fixture=controlled');
 
   await expect(page.getByRole('navigation', { name: 'Разделы workspace' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Знания' })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('link', { name: 'Знания', exact: true })).toHaveAttribute('aria-current', 'page');
   await expect(page.getByRole('table', { name: 'Документы текущей рабочей области' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Control Plane Spine' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Control Plane Spine' })).toBeVisible();
 });
 
 test('test_live_ported_interface_does_not_fall_back_to_demo_documents', async ({ page }) => {
@@ -129,7 +129,7 @@ test('test_live_ported_interface_does_not_fall_back_to_demo_documents', async ({
   await expect(page.locator('tbody tr')).toHaveCount(0);
 });
 
-test('test_ported_knowledge_ui_reads_backend_with_runtime_auth_and_scope', async ({ page }) => {
+test('test_refreshed_knowledge_ui_reads_backend_with_runtime_auth_and_scope', async ({ page }) => {
   const documentRequests = await installControlledDocuments(page);
   await page.addInitScript(({ environmentId, workspaceId }) => {
     window.__SPINE_RUNTIME__ = {
@@ -151,14 +151,14 @@ test('test_ported_knowledge_ui_reads_backend_with_runtime_auth_and_scope', async
   await page.goto('/knowledge/documents');
 
   await expect(page.getByRole('table', { name: 'Документы текущей рабочей области' })).toBeVisible();
-  await expect(page.getByRole('row', { name: `Документ ${primaryDocument}` })).toBeVisible();
+  await expect(page.getByRole('row', { name: new RegExp(primaryDocument) })).toBeVisible();
   expect(documentRequests).toHaveLength(1);
   expect(documentRequests[0]?.headers.authorization).toBe('Bearer ported-ui-token');
   expect(documentRequests[0]?.headers['x-workspace-id']).toBe(primaryWorkspace);
   expect(documentRequests[0]?.headers['x-environment-id']).toBe(localEnvironment);
 });
 
-test('test_ported_chat_ui_reads_backend_sessions_and_messages', async ({ page }) => {
+test('test_refreshed_chat_ui_reads_backend_sessions_and_messages', async ({ page }) => {
   await installChatWorkspaceRoutes(page);
   await page.addInitScript(({ environmentId, workspaceId }) => {
     window.__SPINE_RUNTIME__ = {
@@ -179,7 +179,9 @@ test('test_ported_chat_ui_reads_backend_sessions_and_messages', async ({ page })
 
   await page.goto('/chat');
 
-  await expect(page.getByRole('heading', { name: /^Сессии 2/ })).toBeVisible();
+  const sessions = page.getByRole('region', { name: 'Сессии вопросов и ответов' }).getByRole('link');
+  await expect(sessions).toHaveCount(2);
+  await sessions.first().click();
   await expect(page.getByText('Достаточно ли оснований для ответа?')).toBeVisible();
   await expect(page.getByText('Недостаточно данных для ответа')).toBeVisible();
 });

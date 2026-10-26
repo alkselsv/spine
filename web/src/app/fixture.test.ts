@@ -16,13 +16,19 @@ describe('browser fixture build boundary', () => {
   it('test_fixture_build_accepts_supported_fixture_query_parameter', () => {
     window.history.replaceState(null, '', '/chat?fixture=chat-api');
 
-    expect(readBrowserQualificationFixture(true)).toBe('chat-api');
+    expect(readBrowserQualificationFixture(true, false)).toBe('chat-api');
+  });
+
+  it('test_qualification_build_does_not_enable_route_default_fixtures', () => {
+    window.history.replaceState(null, '', '/chat');
+
+    expect(readBrowserQualificationFixture(true, false)).toBeNull();
   });
 
   it('test_fixture_build_selects_chat_fixture_from_route_without_query_parameter', () => {
     window.history.replaceState(null, '', '/chat');
 
-    expect(readBrowserQualificationFixture(true)).toBe('chat-api');
+    expect(readBrowserQualificationFixture(true, true)).toBe('chat-api');
   });
 
   it.each(['/knowledge/documents', '/qa/runs'])(
@@ -30,7 +36,7 @@ describe('browser fixture build boundary', () => {
     (path) => {
       window.history.replaceState(null, '', path);
 
-      expect(readBrowserQualificationFixture(true)).toBe('controlled');
+      expect(readBrowserQualificationFixture(true, true)).toBe('controlled');
     },
   );
 });

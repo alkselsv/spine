@@ -120,9 +120,17 @@ export function createBrowserQualificationFetch(
     if (request.method === 'GET' && url.pathname === '/api/v1/qa/sessions') {
       return json(collection(scope, fixtureSessions(scope)));
     }
+    const messageMatch = url.pathname.match(
+      /^\/api\/v1\/qa\/sessions\/([^/]+)\/messages\/([^/]+)$/,
+    );
+    if (request.method === 'GET' && messageMatch) {
+      const messages = await fixtureMessages(scope, messageMatch[1]!);
+      const message = messages.find(item => item.message_id === messageMatch[2]);
+      return message ? json(envelope(scope, message)) : notFound();
+    }
     const messagesMatch = url.pathname.match(/^\/api\/v1\/qa\/sessions\/([^/]+)\/messages$/);
     if (request.method === 'GET' && messagesMatch) {
-      return json(collection(scope, fixtureMessages(scope, messagesMatch[1]!)));
+      return json(collection(scope, await fixtureMessages(scope, messagesMatch[1]!)));
     }
     const sessionMatch = url.pathname.match(/^\/api\/v1\/qa\/sessions\/([^/]+)$/);
     if (request.method === 'GET' && sessionMatch) {
@@ -240,9 +248,9 @@ function fixtureSessions(scope: FixtureScope) {
   }));
 }
 
-function fixtureMessages(scope: FixtureScope, sessionId: string) {
-  return (PROTOTYPE_MESSAGES[sessionId] ?? []).map(message => {
-    const accepted = acceptedPresentation(message);
+async function fixtureMessages(scope: FixtureScope, sessionId: string) {
+  return Promise.all((PROTOTYPE_MESSAGES[sessionId] ?? []).map(async message => {
+    const accepted = await acceptedPresentation(message);
     const answer = message.disclosure_eligibility === 'ineligible'
       ? null
       : message.terminal_outcome === 'answered'
@@ -271,7 +279,7 @@ function fixtureMessages(scope: FixtureScope, sessionId: string) {
       created_at: message.created_at,
       updated_at: new Date(Date.parse(message.created_at) + message.run.duration_ms).toISOString(),
     };
-  });
+  }));
 }
 
 function fixtureRuns(scope: FixtureScope) {
@@ -392,7 +400,7 @@ function fixtureCitationInspection(scope: FixtureScope, citationId: string) {
   };
 }
 
-function acceptedPresentation(message: PrototypeMessage) {
+async function acceptedPresentation(message: PrototypeMessage) {
   if (
     message.terminal_outcome !== 'answered'
     || message.disclosure_eligibility === 'ineligible'
@@ -416,23 +424,28 @@ function acceptedPresentation(message: PrototypeMessage) {
     };
   });
   const relationships = Object.entries(message.claims).flatMap(([claimId, claim], claimIndex) =>
-    claim.rel.map((relationship, relationshipIndex) => ({
-      schema_version: 'accepted-answer-relationship-presentation:v1',
-      relationship_id: stableUuid(message.message_id, 200 + claimIndex * 10 + relationshipIndex),
-      claim_id: claimIds.get(claimId)!,
-      kind: relationship.kind,
-      citation_ids: (relationship.cites ?? [])
+    claim.rel.map((relationship, relationshipIndex) => {
+      const citationIds = (relationship.cites ?? [])
         .map(index => message.citations[index]?.citation_id)
-        .filter((citationId): citationId is string => Boolean(citationId)),
-      related_claim_id: relationship.related ? claimIds.get(relationship.related) ?? null : null,
-    })),
+        .filter((citationId): citationId is string => Boolean(citationId));
+      return {
+        schema_version: 'accepted-answer-relationship-presentation:v1',
+        relationship_id: stableUuid(message.message_id, 200 + claimIndex * 10 + relationshipIndex),
+        claim_id: claimIds.get(claimId)!,
+        kind: citationIds.length > 1 && relationship.kind === 'corroborating'
+          ? 'joint'
+          : relationship.kind,
+        citation_ids: citationIds,
+        related_claim_id: relationship.related ? claimIds.get(relationship.related) ?? null : null,
+      };
+    }),
   );
   return {
     answer,
     presentation: {
       schema_version: 'accepted-answer-presentation:v1',
       answer_id: message.answer_id,
-      answer_text_sha256: `sha256:fixture-${message.answer_id.replaceAll('-', '')}`,
+      answer_text_sha256: await sha256(answer),
       attempt_id: message.run.attempt_id,
       message_id: message.message_id,
       run_id: message.run_id,
@@ -441,6 +454,11 @@ function acceptedPresentation(message: PrototypeMessage) {
       relationships,
     },
   };
+}
+
+async function sha256(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function findClaimText(message: PrototypeMessage, claimId: string): string {
