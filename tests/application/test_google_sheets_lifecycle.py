@@ -9,13 +9,15 @@ import pytest
 from spine.application.google_sheets_lifecycle import (
     GoogleSheetsLifecycleCoordinator,
     GoogleSheetsLifecycleSource,
+    GoogleSheetsAbsenceCandidate,
     GoogleSheetsRemovalPolicy,
     GoogleSheetsRemovalState,
     InMemoryGoogleSheetsLifecycleRepository,
-    _scope_set_digest,
 )
 from spine.application.google_sheets_reconciliation import (
+    GoogleSheetsReconciliationCoordinator,
     GoogleSheetsReconciliationResult,
+    google_sheets_scope_set_digest,
 )
 from spine.application.source_lifecycle import SourceLifecycleKind
 from spine.application.persistence.google_sheets_sync import (
@@ -24,12 +26,16 @@ from spine.application.persistence.google_sheets_sync import (
     GoogleSheetsSyncPage,
     GoogleSheetsSyncPageState,
     GoogleSheetsSyncRunState,
+    InMemoryGoogleSheetsSyncRepository,
 )
 from spine.domain.sources import IdentityMode, SourceObject
 from spine.domain.sources.google import GoogleRegisterRowKey, google_source_identity
 from tests.application.test_google_sheets_reconciliation import (
+    FakeCanonicalIngestion,
+    FakeSheetsReader,
     command,
     observation,
+    page as sheets_page,
 )
 
 NOW = datetime(2026, 10, 27, tzinfo=timezone.utc)
@@ -105,6 +111,23 @@ class Lifecycle:
         )
 
 
+class LifecycleUnitOfWork:
+    def __init__(self, repository):
+        self.repository = repository
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        del exc_type, exc, traceback
+
+    async def commit(self):
+        await self.repository.commit(self)
+
+    async def rollback(self):
+        await self.repository.rollback(self)
+
+
 class SyncLedger:
     def __init__(self, request, result):
         self.run = SimpleNamespace(
@@ -117,7 +140,7 @@ class SyncLedger:
             access_policy_version_id=request.access_policy_version_id,
             authorization_generation=request.authorization_generation,
             configuration_generation=request.configuration_generation,
-            scope_set_digest=_scope_set_digest(request),
+            scope_set_digest=google_sheets_scope_set_digest(request),
         )
         self.pages = result.pages
 
@@ -190,6 +213,10 @@ def coordinator(sources, request, result):
         tombstones=tombstones,
         source_lifecycle=lifecycle,
         context_factory=lambda trace: SimpleNamespace(trace_id=trace),
+        lifecycle_uow_factory=lambda context: LifecycleUnitOfWork(repository),
+        lifecycle_context_factory=lambda operation, trace: SimpleNamespace(
+            operation=operation, trace_id=trace
+        ),
         clock=lambda: NOW,
     )
     return instance, repository, tombstones, lifecycle
@@ -216,6 +243,153 @@ async def test_complete_authorized_absence_records_candidate_and_tombstones_once
 
 
 @pytest.mark.asyncio
+async def test_pending_tombstone_replay_completes_after_source_head_is_tombstoned():
+    request = command(trigger="scheduled_full")
+    result = complete_result(request)
+    source_inventory = Sources((lifecycle_source("EST-1"),))
+
+    class FailingCompletionRepository(InMemoryGoogleSheetsLifecycleRepository):
+        fail_completion = True
+
+        async def record_decision(self, uow, decision):
+            if (
+                self.fail_completion
+                and decision.state is GoogleSheetsRemovalState.TOMBSTONED
+            ):
+                self.fail_completion = False
+                raise RuntimeError("simulated decision persistence outage")
+            return await super().record_decision(uow, decision)
+
+    class TombstoningLifecycle(Lifecycle):
+        async def apply(self, lifecycle_command):
+            result = await super().apply(lifecycle_command)
+            source_inventory.values = (
+                source_inventory.values[0].model_copy(update={"is_tombstoned": True}),
+            )
+            return result
+
+    repository = FailingCompletionRepository()
+    lifecycle = TombstoningLifecycle()
+    service = GoogleSheetsLifecycleCoordinator(
+        repository=repository,
+        sync_repository=SyncLedger(request, result),
+        sources=source_inventory,
+        tombstones=Tombstones(),
+        source_lifecycle=lifecycle,
+        context_factory=lambda trace: SimpleNamespace(trace_id=trace),
+        lifecycle_uow_factory=lambda context: LifecycleUnitOfWork(repository),
+        lifecycle_context_factory=lambda operation, trace: SimpleNamespace(
+            operation=operation, trace_id=trace
+        ),
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated decision persistence outage"):
+        await service.reconcile(request, result, policy(request, authorize=True))
+
+    assert next(iter(repository.decisions.values())).state is GoogleSheetsRemovalState.PENDING
+    replay = await service.reconcile(request, result, policy(request, authorize=True))
+
+    assert replay.decisions[0].state is GoogleSheetsRemovalState.TOMBSTONED
+    assert replay.decisions[0].tombstone_revision_id == TOMBSTONE_ID
+    assert len(lifecycle.commands) == 2
+
+
+@pytest.mark.asyncio
+async def test_successful_reconciliation_invokes_lifecycle_with_durable_snapshot():
+    request = command(trigger="scheduled_full")
+    scope = request.scopes[0]
+    sync_repository = InMemoryGoogleSheetsSyncRepository()
+    ingestion = FakeCanonicalIngestion()
+    lifecycle_repository = InMemoryGoogleSheetsLifecycleRepository()
+    tombstones = Tombstones()
+    source_lifecycle = Lifecycle()
+    lifecycle = GoogleSheetsLifecycleCoordinator(
+        repository=lifecycle_repository,
+        sync_repository=sync_repository,
+        sources=Sources((lifecycle_source("EST-1"),)),
+        tombstones=tombstones,
+        source_lifecycle=source_lifecycle,
+        context_factory=lambda trace: SimpleNamespace(trace_id=trace),
+        lifecycle_uow_factory=lambda context: LifecycleUnitOfWork(lifecycle_repository),
+        lifecycle_context_factory=lambda operation, trace: SimpleNamespace(
+            operation=operation, trace_id=trace
+        ),
+        clock=lambda: NOW,
+    )
+    reconciler = GoogleSheetsReconciliationCoordinator(
+        repository=sync_repository,
+        reader=FakeSheetsReader({(scope.identity, None): sheets_page(scope, None, None)}),
+        ingestion=ingestion,
+        context_factory=lambda operation, trace: SimpleNamespace(
+            operation=operation, trace_id=trace
+        ),
+        clock=lambda: NOW,
+        lifecycle=lifecycle,
+        lifecycle_policy=policy(request, authorize=True),
+    )
+
+    result = await reconciler.run(request)
+
+    assert result.state is GoogleSheetsSyncRunState.SUCCEEDED
+    assert result.lifecycle_result is not None
+    assert len(result.lifecycle_result.candidates) == 1
+    assert result.lifecycle_result.decisions[0].state is GoogleSheetsRemovalState.TOMBSTONED
+    assert len(source_lifecycle.commands) == len(tombstones.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_identity_quarantine_during_reconciliation_never_invokes_lifecycle():
+    request = command(trigger="scheduled_full")
+    scope = request.scopes[0]
+    sync_repository = InMemoryGoogleSheetsSyncRepository()
+    lifecycle_repository = InMemoryGoogleSheetsLifecycleRepository()
+    tombstones = Tombstones()
+    source_lifecycle = Lifecycle()
+    lifecycle = GoogleSheetsLifecycleCoordinator(
+        repository=lifecycle_repository,
+        sync_repository=sync_repository,
+        sources=Sources((lifecycle_source("EST-1"),)),
+        tombstones=tombstones,
+        source_lifecycle=source_lifecycle,
+        context_factory=lambda trace: SimpleNamespace(trace_id=trace),
+        lifecycle_uow_factory=lambda context: LifecycleUnitOfWork(lifecycle_repository),
+        lifecycle_context_factory=lambda operation, trace: SimpleNamespace(
+            operation=operation, trace_id=trace
+        ),
+        clock=lambda: NOW,
+    )
+    reconciler = GoogleSheetsReconciliationCoordinator(
+        repository=sync_repository,
+        reader=FakeSheetsReader(
+            {
+                (scope.identity, None): sheets_page(
+                    scope,
+                    None,
+                    None,
+                    observation("UNSAFE"),
+                    identity_rejection_codes=("duplicate_business_id",),
+                )
+            }
+        ),
+        ingestion=FakeCanonicalIngestion(),
+        context_factory=lambda operation, trace: SimpleNamespace(
+            operation=operation, trace_id=trace
+        ),
+        clock=lambda: NOW,
+        lifecycle=lifecycle,
+        lifecycle_policy=policy(request, authorize=True),
+    )
+
+    result = await reconciler.run(request)
+
+    assert result.state is GoogleSheetsSyncRunState.RECONCILIATION_REQUIRED
+    assert result.lifecycle_result is None
+    assert lifecycle_repository.candidates == lifecycle_repository.decisions == {}
+    assert tombstones.calls == source_lifecycle.commands == []
+
+
+@pytest.mark.asyncio
 async def test_policy_denial_retains_candidate_without_source_lifecycle_effect():
     request = command(trigger="scheduled_full")
     result = complete_result(request)
@@ -234,6 +408,54 @@ async def test_policy_denial_retains_candidate_without_source_lifecycle_effect()
     assert result.decisions[0].policy_authorized is False
     assert len(repository.candidates) == len(repository.decisions) == 1
     assert tombstones.calls == lifecycle.commands == []
+
+
+@pytest.mark.asyncio
+async def test_cross_workspace_source_inventory_cannot_create_removal_decision():
+    request = command(trigger="scheduled_full")
+    result = complete_result(request)
+    row = lifecycle_source("EST-1").model_copy(
+        update={
+            "source": lifecycle_source("EST-1").source.model_copy(
+                update={"workspace_id": UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")}
+            )
+        }
+    )
+    service, repository, tombstones, lifecycle = coordinator((row,), request, result)
+
+    outcome = await service.reconcile(request, result, policy(request, authorize=True))
+
+    assert outcome.retained_reason == "source_scope_mismatch"
+    assert repository.candidates == repository.decisions == {}
+    assert tombstones.calls == lifecycle.commands == []
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_candidate_repository_commits_and_rolls_back_with_uow():
+    request = command(trigger="scheduled_full")
+    source = lifecycle_source("EST-1")
+    candidate = GoogleSheetsAbsenceCandidate(
+        candidate_id=UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd"),
+        workspace_id=request.workspace_id,
+        environment_id=request.environment_id,
+        connection_id=request.connection_id,
+        sync_run_id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+        scope_identity=request.scopes[0].identity,
+        external_object_id=google_source_identity(source.key).external_object_id,
+        source_object_id=source.source.source_object_id,
+        expected_current_revision_id=source.current_revision_id,
+        observed_at=NOW,
+    )
+    repository = InMemoryGoogleSheetsLifecycleRepository()
+    rolled_back = LifecycleUnitOfWork(repository)
+    await repository.record_candidate(rolled_back, candidate)
+    await rolled_back.rollback()
+    assert repository.candidates == {}
+
+    committed = LifecycleUnitOfWork(repository)
+    await repository.record_candidate(committed, candidate)
+    await committed.commit()
+    assert repository.candidates == {candidate.candidate_id: candidate}
 
 
 @pytest.mark.asyncio

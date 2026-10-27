@@ -67,6 +67,7 @@ if TYPE_CHECKING:
     )
     from .google_sheets_lifecycle import (
         GoogleSheetsAbsenceCandidate,
+        GoogleSheetsDocumentTombstoneComposer,
         GoogleSheetsLifecycleCoordinator,
         GoogleSheetsLifecycleResult,
         GoogleSheetsRemovalDecision,
@@ -152,6 +153,7 @@ __all__ = [
     "DriveFullReconciliationCoordinator",
     "DriveFullReconciliationResult",
     "GoogleSheetsAbsenceCandidate",
+    "GoogleSheetsDocumentTombstoneComposer",
     "GoogleSheetsLifecycleCoordinator",
     "GoogleSheetsLifecycleResult",
     "GoogleSheetsRemovalDecision",
@@ -260,6 +262,7 @@ def __getattr__(name: str) -> object:
             module_name = "spine.application.google_drive_reconciliation"
         if name in {
             "GoogleSheetsAbsenceCandidate",
+            "GoogleSheetsDocumentTombstoneComposer",
             "GoogleSheetsLifecycleCoordinator",
             "GoogleSheetsLifecycleResult",
             "GoogleSheetsRemovalDecision",

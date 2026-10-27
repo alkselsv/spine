@@ -5,8 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import hashlib
-import json
 from enum import Enum
 from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -17,18 +15,26 @@ from spine.application.google_sheets_reconciliation import (
     GoogleSheetsReconciliationCommand,
     GoogleSheetsReconciliationResult,
     GoogleSheetsReconciliationScope,
+    google_sheets_scope_set_digest,
 )
 from spine.application.persistence.context import TrustedPersistenceContext
+from spine.application.persistence.context import PersistenceOperation
+from spine.application.persistence.command_digest import digest_command
 from spine.application.persistence.google_sheets_sync import (
     GoogleSheetsSyncRepository,
     GoogleSheetsSyncPage,
     GoogleSheetsSyncRunState,
 )
+from spine.application.persistence.unit_of_work import UnitOfWork, UnitOfWorkFactory
 from spine.application.source_lifecycle import (
     SourceLifecycleCommand,
     SourceLifecycleCoordinator,
     SourceLifecycleKind,
     SourceLifecycleResult,
+)
+from spine.application.document_lifecycle import (
+    ServerDocumentLifecycleComposer,
+    TombstoneDocumentCommand,
 )
 from spine.domain.common import DefinitionModel, VersionIdentifier
 from spine.domain.sources import SourceObject
@@ -139,15 +145,20 @@ class GoogleSheetsRemovalDecision(DefinitionModel):
 
 class GoogleSheetsLifecycleRepository(Protocol):
     async def resolve_decision(
-        self, decision_id: UUID, *, workspace_id: UUID, environment_id: UUID
+        self,
+        uow: UnitOfWork,
+        decision_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
     ) -> GoogleSheetsRemovalDecision | None: ...
 
     async def record_candidate(
-        self, candidate: GoogleSheetsAbsenceCandidate
+        self, uow: UnitOfWork, candidate: GoogleSheetsAbsenceCandidate
     ) -> GoogleSheetsAbsenceCandidate: ...
 
     async def record_decision(
-        self, decision: GoogleSheetsRemovalDecision
+        self, uow: UnitOfWork, decision: GoogleSheetsRemovalDecision
     ) -> GoogleSheetsRemovalDecision: ...
 
 
@@ -157,11 +168,20 @@ class InMemoryGoogleSheetsLifecycleRepository:
     def __init__(self) -> None:
         self.candidates: dict[UUID, GoogleSheetsAbsenceCandidate] = {}
         self.decisions: dict[UUID, GoogleSheetsRemovalDecision] = {}
+        self._pending_candidates: dict[int, dict[UUID, GoogleSheetsAbsenceCandidate]] = {}
+        self._pending_decisions: dict[int, dict[UUID, GoogleSheetsRemovalDecision]] = {}
 
     async def resolve_decision(
-        self, decision_id: UUID, *, workspace_id: UUID, environment_id: UUID
+        self,
+        uow: UnitOfWork,
+        decision_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
     ) -> GoogleSheetsRemovalDecision | None:
-        decision = self.decisions.get(decision_id)
+        decision = self._pending_decisions.get(id(uow), {}).get(decision_id)
+        if decision is None:
+            decision = self.decisions.get(decision_id)
         if decision is None or (decision.workspace_id, decision.environment_id) != (
             workspace_id, environment_id
         ):
@@ -169,20 +189,22 @@ class InMemoryGoogleSheetsLifecycleRepository:
         return decision
 
     async def record_candidate(
-        self, candidate: GoogleSheetsAbsenceCandidate
+        self, uow: UnitOfWork, candidate: GoogleSheetsAbsenceCandidate
     ) -> GoogleSheetsAbsenceCandidate:
-        existing = self.candidates.get(candidate.candidate_id)
+        staged = self._pending_candidates.setdefault(id(uow), {})
+        existing = staged.get(candidate.candidate_id) or self.candidates.get(candidate.candidate_id)
         if existing is not None and existing != candidate:
             raise ValueError("Google Sheets absence candidate conflicts with replay")
-        self.candidates[candidate.candidate_id] = existing or candidate
-        return self.candidates[candidate.candidate_id]
+        staged[candidate.candidate_id] = existing or candidate
+        return staged[candidate.candidate_id]
 
     async def record_decision(
-        self, decision: GoogleSheetsRemovalDecision
+        self, uow: UnitOfWork, decision: GoogleSheetsRemovalDecision
     ) -> GoogleSheetsRemovalDecision:
-        existing = self.decisions.get(decision.decision_id)
+        staged = self._pending_decisions.setdefault(id(uow), {})
+        existing = staged.get(decision.decision_id) or self.decisions.get(decision.decision_id)
         if existing is None:
-            self.decisions[decision.decision_id] = decision
+            staged[decision.decision_id] = decision
             return decision
         immutable = (
             "candidate_id", "workspace_id", "environment_id", "sync_run_id",
@@ -195,9 +217,17 @@ class InMemoryGoogleSheetsLifecycleRepository:
         if existing.state is GoogleSheetsRemovalState.TOMBSTONED:
             return existing
         if decision.state is GoogleSheetsRemovalState.TOMBSTONED:
-            self.decisions[decision.decision_id] = decision
+            staged[decision.decision_id] = decision
             return decision
         return existing
+
+    async def commit(self, uow: UnitOfWork) -> None:
+        self.candidates.update(self._pending_candidates.pop(id(uow), {}))
+        self.decisions.update(self._pending_decisions.pop(id(uow), {}))
+
+    async def rollback(self, uow: UnitOfWork) -> None:
+        self._pending_candidates.pop(id(uow), None)
+        self._pending_decisions.pop(id(uow), None)
 
 
 class GoogleSheetsLifecycleSource(DefinitionModel):
@@ -240,7 +270,57 @@ class GoogleSheetsTombstoneComposer(Protocol):
         command: GoogleSheetsReconciliationCommand,
         policy: GoogleSheetsRemovalPolicy,
         idempotency_key: str,
+        context: TrustedPersistenceContext,
     ) -> SourceLifecycleCommand: ...
+
+
+@dataclass(frozen=True, slots=True)
+class GoogleSheetsDocumentTombstoneComposer:
+    """Reuse the canonical document lifecycle command builder for a row tombstone."""
+
+    composer: ServerDocumentLifecycleComposer
+    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
+
+    async def compose(
+        self,
+        *,
+        source: GoogleSheetsLifecycleSource,
+        command: GoogleSheetsReconciliationCommand,
+        policy: GoogleSheetsRemovalPolicy,
+        idempotency_key: str,
+        context: TrustedPersistenceContext,
+    ) -> SourceLifecycleCommand:
+        tombstone = TombstoneDocumentCommand(
+            workspace_id=command.workspace_id,
+            environment_id=command.environment_id,
+            source_object_id=source.source.source_object_id,
+            expected_current_revision_id=source.current_revision_id,
+            idempotency_key=idempotency_key,
+            deletion_reason="source_deleted",
+        )
+        operation_id = uuid5(
+            NAMESPACE_URL,
+            f"spine:google-sheets-row-removal:v1:{idempotency_key}",
+        )
+        digest = digest_command(
+            operation=PersistenceOperation("google_sheets_row_tombstone"),
+            operation_schema_version=1,
+            payload={
+                **tombstone.model_dump(mode="json"),
+                "policy_version_id": str(policy.policy_version_id),
+                "policy_version": policy.version,
+            },
+        )
+        accepted_at = self.clock()
+        if accepted_at.tzinfo is None or accepted_at.utcoffset() is None:
+            raise ValueError("Google Sheets tombstone clock must be timezone-aware")
+        return await self.composer.compose_tombstone(
+            context=context,
+            command=tombstone,
+            operation_id=operation_id,
+            command_digest=digest,
+            accepted_at=accepted_at,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,6 +340,10 @@ class GoogleSheetsLifecycleCoordinator:
     tombstones: GoogleSheetsTombstoneComposer
     source_lifecycle: SourceLifecycleCoordinator
     context_factory: Callable[[UUID], TrustedPersistenceContext]
+    lifecycle_uow_factory: UnitOfWorkFactory
+    lifecycle_context_factory: Callable[
+        [PersistenceOperation, UUID], TrustedPersistenceContext
+    ]
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 
     async def reconcile(
@@ -285,7 +369,7 @@ class GoogleSheetsLifecycleCoordinator:
             return GoogleSheetsLifecycleResult(
                 result.sync_run_id, (), (), (), "reconciliation_scope_mismatch"
             )
-        if run.scope_set_digest != _scope_set_digest(command):
+        if run.scope_set_digest != google_sheets_scope_set_digest(command):
             return GoogleSheetsLifecycleResult(
                 result.sync_run_id, (), (), (), "reconciliation_scope_mismatch"
             )
@@ -316,9 +400,13 @@ class GoogleSheetsLifecycleCoordinator:
                     result.sync_run_id, (), (), (), "reconciliation_scope_missing"
                 )
 
-        sources = await self.sources.list_current_sources(
-            command, self.context_factory(result.sync_run_id)
-        )
+        source_context = self.context_factory(result.sync_run_id)
+        try:
+            sources = await self.sources.list_current_sources(command, source_context)
+        except Exception:
+            return GoogleSheetsLifecycleResult(
+                result.sync_run_id, (), (), (), "source_inventory_unavailable"
+            )
         if any(
             source.source.workspace_id != command.workspace_id
             or source.source.environment_id != command.environment_id
@@ -333,12 +421,12 @@ class GoogleSheetsLifecycleCoordinator:
         effects: list[SourceLifecycleResult] = []
         for source in sources:
             scope = _scope_for_key(command.scopes, source.key)
-            if scope is None or source.is_tombstoned:
+            if scope is None:
                 continue
             identity = google_source_identity(source.key).external_object_id
             if identity in observed_by_scope.get(scope.identity, set()):
                 continue
-            candidate = await self._candidate(command, result, scope, source, pages)
+            candidate = self._candidate(command, result, scope, source, pages)
             candidates.append(candidate)
             authorized = scope.identity in policy.authorized_scope_identities
             state = (
@@ -347,13 +435,14 @@ class GoogleSheetsLifecycleCoordinator:
                 else GoogleSheetsRemovalState.RETAINED
             )
             decision_id = _decision_id(candidate, policy)
-            existing = await self.repository.resolve_decision(
-                decision_id,
-                workspace_id=command.workspace_id,
-                environment_id=command.environment_id,
+            existing = await self._resolve_decision(
+                decision_id, command.workspace_id, command.environment_id
             )
             if existing is not None and existing.state is GoogleSheetsRemovalState.TOMBSTONED:
                 decisions.append(existing)
+                continue
+            if source.is_tombstoned and existing is None:
+                # Do not infer absence from a tombstone caused by another workflow.
                 continue
             pending = GoogleSheetsRemovalDecision(
                 decision_id=decision_id,
@@ -371,16 +460,17 @@ class GoogleSheetsLifecycleCoordinator:
                 state=state,
                 decided_at=self._now(),
             )
-            await self.repository.record_candidate(candidate)
             if not authorized:
-                decisions.append(await self.repository.record_decision(pending))
+                decisions.append(await self._persist_pending(candidate, pending))
                 continue
+            await self._persist_pending(candidate, pending)
             idem = f"sheets-row-removal:{decision_id.hex}"
             lifecycle_command = await self.tombstones.compose(
                 source=source,
                 command=command,
                 policy=policy,
                 idempotency_key=idem,
+                context=source_context,
             )
             if (
                 lifecycle_command.kind is not SourceLifecycleKind.DELETION
@@ -390,7 +480,6 @@ class GoogleSheetsLifecycleCoordinator:
                 or lifecycle_command.canonical_acceptance.idempotency_key.value != idem
             ):
                 raise ValueError("Sheets tombstone command changed identity or replay key")
-            await self.repository.record_decision(pending)
             effect = await self.source_lifecycle.apply(lifecycle_command)
             completed = pending.model_copy(
                 update={
@@ -398,13 +487,13 @@ class GoogleSheetsLifecycleCoordinator:
                     "tombstone_revision_id": effect.acceptance.revision.revision_id,
                 }
             )
-            decisions.append(await self.repository.record_decision(completed))
+            decisions.append(await self._persist_decision(completed))
             effects.append(effect)
         return GoogleSheetsLifecycleResult(
             result.sync_run_id, tuple(candidates), tuple(decisions), tuple(effects)
         )
 
-    async def _candidate(
+    def _candidate(
         self,
         command: GoogleSheetsReconciliationCommand,
         result: GoogleSheetsReconciliationResult,
@@ -429,7 +518,48 @@ class GoogleSheetsLifecycleCoordinator:
             expected_current_revision_id=source.current_revision_id,
             observed_at=completed_at,
         )
-        return await self.repository.record_candidate(candidate)
+        return candidate
+
+    async def _resolve_decision(
+        self, decision_id: UUID, workspace_id: UUID, environment_id: UUID
+    ) -> GoogleSheetsRemovalDecision | None:
+        context = self.lifecycle_context_factory(
+            PersistenceOperation("google_sheets_removal_decision_read"), decision_id
+        )
+        async with self.lifecycle_uow_factory(context) as uow:
+            result = await self.repository.resolve_decision(
+                uow,
+                decision_id,
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            )
+            await uow.rollback()
+            return result
+
+    async def _persist_pending(
+        self,
+        candidate: GoogleSheetsAbsenceCandidate,
+        decision: GoogleSheetsRemovalDecision,
+    ) -> GoogleSheetsRemovalDecision:
+        context = self.lifecycle_context_factory(
+            PersistenceOperation("google_sheets_removal_decision"), decision.decision_id
+        )
+        async with self.lifecycle_uow_factory(context) as uow:
+            await self.repository.record_candidate(uow, candidate)
+            result = await self.repository.record_decision(uow, decision)
+            await uow.commit()
+            return result
+
+    async def _persist_decision(
+        self, decision: GoogleSheetsRemovalDecision
+    ) -> GoogleSheetsRemovalDecision:
+        context = self.lifecycle_context_factory(
+            PersistenceOperation("google_sheets_removal_decision"), decision.decision_id
+        )
+        async with self.lifecycle_uow_factory(context) as uow:
+            result = await self.repository.record_decision(uow, decision)
+            await uow.commit()
+            return result
 
     def _now(self) -> datetime:
         value = self.clock()
@@ -469,15 +599,6 @@ def _decision_id(
     )
 
 
-def _scope_set_digest(command: GoogleSheetsReconciliationCommand) -> str:
-    scopes = sorted(
-        (scope.model_dump(mode="json") for scope in command.scopes),
-        key=lambda scope: (scope["spreadsheet_id"], scope["sheet_id"], scope["a1_range"]),
-    )
-    payload = json.dumps(scopes, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
 def _complete_page_chain(pages: tuple[GoogleSheetsSyncPage, ...]) -> bool:
     if not pages or any(
         page.state.value != "completed" or page.completed_at is None for page in pages
@@ -502,6 +623,7 @@ def _complete_page_chain(pages: tuple[GoogleSheetsSyncPage, ...]) -> bool:
 __all__ = [
     "GoogleSheetsAbsenceCandidate",
     "GoogleSheetsLifecycleCoordinator",
+    "GoogleSheetsDocumentTombstoneComposer",
     "GoogleSheetsLifecycleResult",
     "GoogleSheetsLifecycleSource",
     "GoogleSheetsLifecycleSourceReader",

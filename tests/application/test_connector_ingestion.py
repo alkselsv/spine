@@ -943,6 +943,8 @@ async def test_google_sheets_reappearance_records_tombstone_predecessor_before_a
     assert result.revision.reappearance_after_tombstone_revision_id == predecessor
     assert result.revision.revision_id == result.binding.source_revision_id
     assert result.provenance.revision_id == result.revision.revision_id
+    assert result.revision.source_object_id == result.source.source_object_id
+    assert result.source.external_object_id == _observation().external_identity.external_object_id
 
 
 @pytest.mark.asyncio
