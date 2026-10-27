@@ -50,6 +50,32 @@ publication was outside the approved no-activation scope, the restore procedure
 still needs those gaps corrected, and independent final evidence review has not
 run.
 
+The recovered-application retry and its graph-runtime diagnosis are recorded in
+`docs/qualification/issue-509-application-recovery-attempt-v2.json` and
+`docs/qualification/issue-509-neo4j-runtime-compatibility-v1.json`. The retry
+proved provider connectivity, then failed closed because a containerized runner
+used Cognee's default multi-database `neo4j` handler against Community edition.
+
+For the pinned Community image, use a host-side qualification runner with
+Docker access and all of these bindings:
+
+```text
+GRAPH_DATABASE_PROVIDER=neo4j
+GRAPH_DATASET_DATABASE_HANDLER=neo4j_community
+NEO4J_COMMUNITY_IMAGE=spine/neo4j-cognee:5-community
+NEO4J_ENCRYPTION_KEY=<dedicated-qualification-binding>
+ENABLE_BACKEND_ACCESS_CONTROL=true
+```
+
+The community handler creates one container and volume per dataset and returns a
+localhost Bolt address, so it must not be used from the existing containerized
+qualification runner. Keep that runner only with Neo4j Enterprise or AuraDB,
+where Cognee's default `neo4j` multi-database handler is supported. Never set
+`ENABLE_BACKEND_ACCESS_CONTROL=false` as a workaround: that removes the required
+dataset isolation and cannot produce qualification evidence. Run the no-provider
+graph compatibility probe before requesting a new provider authorization, and
+remove its synthetic dataset through Cognee's public handler lifecycle.
+
 ## Start
 
 Run from WSL2 or PowerShell with Docker Desktop's Linux engine. Use a fresh

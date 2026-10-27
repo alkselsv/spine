@@ -30,6 +30,9 @@ APPLICATION_RECOVERY_REPORT_PATH = (
 APPLICATION_RECOVERY_REPORT_V2_PATH = (
     PROJECT_ROOT / "docs/qualification/issue-509-application-recovery-attempt-v2.json"
 )
+NEO4J_RUNTIME_COMPATIBILITY_REPORT_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-neo4j-runtime-compatibility-v1.json"
+)
 COMPOSE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/compose.yaml"
 DOCKERIGNORE_PATH = PROJECT_ROOT / ".dockerignore"
 QUALIFICATION_DOCKERFILE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/Dockerfile"
@@ -77,6 +80,12 @@ def _load_application_recovery_report() -> dict[str, Any]:
 
 def _load_application_recovery_report_v2() -> dict[str, Any]:
     return json.loads(APPLICATION_RECOVERY_REPORT_V2_PATH.read_text(encoding="utf-8"))
+
+
+def _load_neo4j_runtime_compatibility_report() -> dict[str, Any]:
+    return json.loads(
+        NEO4J_RUNTIME_COMPATIBILITY_REPORT_PATH.read_text(encoding="utf-8")
+    )
 
 
 def _all_strings(value: Any) -> list[str]:
@@ -330,6 +339,70 @@ def test_issue509_application_recovery_v2_contains_only_safe_metadata() -> None:
         assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
         assert "\\" not in text
         assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
+def test_issue509_neo4j_runtime_compatibility_records_real_handler_probe() -> None:
+    report = _load_neo4j_runtime_compatibility_report()
+
+    assert report == {
+        "schema_version": "r1-cognee-graph-runtime-compatibility:v1",
+        "run_reference": "run:issue509-neo4j-compatibility-001",
+        "target_commit": "d152ddad63dd9c56ef810e34a8b1149fe2879e9e",
+        "completed_at": "2026-10-27T19:43:44Z",
+        "decision": "verified_configuration",
+        "production_qualified": False,
+        "immutable": True,
+        "content_free": True,
+        "failed_placement": {
+            "execution_mode": "container",
+            "handler": "neo4j",
+            "server_edition": "community",
+            "safe_reason_code": "neo4j_multi_database_unsupported",
+        },
+        "compatible_placement": {
+            "execution_mode": "host",
+            "handler": "neo4j_community",
+            "server_edition": "community",
+            "backend_access_control": "enabled",
+            "dataset_isolation": "verified",
+            "bolt_readiness": "verified",
+            "cleanup": "verified",
+        },
+        "provider_call_count": 0,
+        "application_projection_retried": False,
+        "remaining_conditions": [
+            "fresh_recovered_application_target_required",
+            "new_provider_run_authorization_required",
+            "provider_backed_projection_and_publication_not_verified",
+            "authorized_application_source_read_not_verified",
+            "independent_final_evidence_review_required",
+        ],
+    }
+
+
+def test_issue509_neo4j_runtime_compatibility_contains_only_safe_metadata() -> None:
+    report = _load_neo4j_runtime_compatibility_report()
+
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
+def test_issue509_runbook_pins_safe_graph_handler_placement() -> None:
+    runbook = (
+        PROJECT_ROOT / "deploy/qualification/issue-509/README.md"
+    ).read_text(encoding="utf-8")
+
+    for required in (
+        "GRAPH_DATASET_DATABASE_HANDLER=neo4j_community",
+        "host-side qualification runner",
+        "Neo4j Enterprise or AuraDB",
+        "ENABLE_BACKEND_ACCESS_CONTROL=false",
+        "issue-509-neo4j-runtime-compatibility-v1.json",
+    ):
+        assert required in runbook
 
 
 def test_issue509_temporal_services_use_the_pinned_image_dynamic_config() -> None:
