@@ -228,6 +228,7 @@ async def test_postgresql_repository_persists_claim_and_acceptance_with_exact_re
     claim = _claim()
 
     persisted_claim = await repository.record_claim(claim)
+    replayed_claim = await repository.record_claim(claim)
     accepted = await repository.accept_claim(
         claim_id=claim.claim_id, acceptance=_acceptance()
     )
@@ -236,6 +237,7 @@ async def test_postgresql_repository_persists_claim_and_acceptance_with_exact_re
     )
 
     assert persisted_claim == claim
+    assert replayed_claim == claim
     assert accepted == replay
     assert uow.claim_row["row_source_revision_id"] == ROW_REVISION
     assert uow.acceptance_row["target_source_revision_id"] == TARGET_REVISION

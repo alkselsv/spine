@@ -108,7 +108,7 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "role IN ('request', 'meeting', 'client', 'project', 'historical_estimate', 'source_estimate', 'final_estimate', 'drive_material')",
-            name="ck_register_link_claims_role",
+            name=op.f("ck_register_link_claims_role"),
         ),
         schema=SCHEMA,
     )
@@ -183,11 +183,11 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "row_source_object_id <> target_source_object_id",
-            name="ck_register_association_acceptances_distinct_sources",
+            name=op.f("ck_register_association_acceptances_distinct_sources"),
         ),
         sa.CheckConstraint(
             "role IN ('request', 'meeting', 'client', 'project', 'historical_estimate', 'source_estimate', 'final_estimate', 'drive_material')",
-            name="ck_register_association_acceptances_role",
+            name=op.f("ck_register_association_acceptances_role"),
         ),
         schema=SCHEMA,
     )
@@ -197,5 +197,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     for table in ("register_association_acceptances", "register_link_claims"):
-        op.execute(f"DROP FUNCTION {SCHEMA}.reject_{table}_mutation()")
         op.drop_table(table, schema=SCHEMA)
+        op.execute(f"DROP FUNCTION {SCHEMA}.reject_{table}_mutation()")
