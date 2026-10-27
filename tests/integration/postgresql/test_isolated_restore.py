@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shlex
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 from uuid import UUID, uuid4
@@ -24,7 +26,267 @@ from spine.infrastructure.isolated_restore import (
     IsolatedRestoreVerifier,
 )
 from spine.infrastructure.postgres_backup import PostgreSQLBackupConnection, TenantInventoryScope
+from spine.infrastructure.recovered_postgresql_target import (
+    RecoveredPostgreSQLApplicationTarget,
+)
+from spine.application.recovered_application_qualification import (
+    RecoveredApplicationQualificationRequest,
+)
 from tests.infrastructure.test_isolated_restore import OBJECT, OBJECT_B, make_manifest, write_archive
+
+
+@pytest.mark.postgresql
+@pytest.mark.asyncio
+async def test_recovered_application_target_restores_runtime_acl_and_reseals(
+    ssl_postgresql_provision: TestDatabaseProvision,
+    tmp_path: Path,
+) -> None:
+    container = ssl_postgresql_provision.container
+    if container is None:
+        pytest.skip("recovered application target requires an owned PostgreSQL testcontainer")
+
+    parsed = urlsplit(ssl_postgresql_provision.url.get_secret_value())
+    admin_user = unquote(parsed.username or "")
+    admin_password = unquote(parsed.password or "")
+    admin_database = unquote(parsed.path.removeprefix("/"))
+    suffix = uuid4().hex[:10]
+    source_database = f"spine_recovered_source_{suffix}"
+    target_database = f"spine_recovered_target_{suffix}"
+    migration_role = f"spine_migration_{suffix}"
+    runtime_role = f"spine_runtime_{suffix}"
+    runtime_password = f"runtime-{suffix}"
+    workspace_id = UUID("50900000-0000-4000-8000-00000000000a")
+    environment_id = UUID("50900000-0000-4000-8000-00000000000e")
+    archive = tmp_path / "recovered-application.dump"
+    passfile = tmp_path / "pgpass"
+    passfile.write_text(
+        f"*:*:*:{admin_user}:{admin_password}\n",
+        encoding="utf-8",
+    )
+    passfile.chmod(0o600)
+    admin_kwargs: dict[str, object] = {
+        "user": admin_user,
+        "password": admin_password,
+        "host": parsed.hostname,
+        "port": parsed.port or 5432,
+        "sslmode": "require",
+    }
+
+    async with await AsyncConnection.connect(
+        dbname=admin_database, autocommit=True, **admin_kwargs
+    ) as connection:
+        async with connection.cursor() as cursor:
+            await cursor.execute(
+                sql.SQL("CREATE ROLE {} NOLOGIN NOSUPERUSER NOBYPASSRLS").format(
+                    sql.Identifier(migration_role)
+                )
+            )
+            await cursor.execute(
+                sql.SQL("CREATE ROLE {} LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD {}").format(
+                    sql.Identifier(runtime_role), sql.Literal(runtime_password)
+                )
+            )
+            await cursor.execute(
+                sql.SQL("CREATE DATABASE {} OWNER {}").format(
+                    sql.Identifier(source_database), sql.Identifier(migration_role)
+                )
+            )
+            await cursor.execute(
+                sql.SQL("CREATE DATABASE {} OWNER {}").format(
+                    sql.Identifier(target_database), sql.Identifier(migration_role)
+                )
+            )
+            for database in (source_database, target_database):
+                await cursor.execute(
+                    sql.SQL("REVOKE CONNECT ON DATABASE {} FROM PUBLIC").format(
+                        sql.Identifier(database)
+                    )
+                )
+            await cursor.execute(
+                sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+                    sql.Identifier(source_database), sql.Identifier(runtime_role)
+                )
+            )
+
+    try:
+        async with await AsyncConnection.connect(
+            dbname=source_database, autocommit=True, **admin_kwargs
+        ) as source:
+            async with source.cursor() as cursor:
+                await cursor.execute(
+                    sql.SQL("SET ROLE {}").format(sql.Identifier(migration_role))
+                )
+                await cursor.execute("CREATE SCHEMA spine")
+                await cursor.execute(
+                    "CREATE TABLE spine.recovered_canary ("
+                    "workspace_id uuid NOT NULL, environment_id uuid NOT NULL, marker text NOT NULL)"
+                )
+                await cursor.execute(
+                    "ALTER TABLE spine.recovered_canary ENABLE ROW LEVEL SECURITY"
+                )
+                await cursor.execute(
+                    "ALTER TABLE spine.recovered_canary FORCE ROW LEVEL SECURITY"
+                )
+                await cursor.execute(
+                    "CREATE POLICY recovered_scope ON spine.recovered_canary USING ("
+                    "workspace_id = current_setting('spine.workspace_id')::uuid AND "
+                    "environment_id = current_setting('spine.environment_id')::uuid)"
+                )
+                await cursor.execute("RESET ROLE")
+                await cursor.execute(
+                    "INSERT INTO spine.recovered_canary VALUES (%s, %s, 'allowed'), "
+                    "('50900000-0000-4000-8000-00000000000b', %s, 'denied')",
+                    (workspace_id, environment_id, environment_id),
+                )
+                await cursor.execute(
+                    sql.SQL("SET ROLE {}").format(sql.Identifier(migration_role))
+                )
+                await cursor.execute(
+                    "CREATE FUNCTION spine.recovered_canary_count() RETURNS bigint "
+                    "LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, spine "
+                    "AS 'SELECT count(*) FROM spine.recovered_canary'"
+                )
+                await cursor.execute(
+                    sql.SQL("GRANT USAGE ON SCHEMA spine TO {}").format(
+                        sql.Identifier(runtime_role)
+                    )
+                )
+                await cursor.execute(
+                    sql.SQL("GRANT SELECT ON spine.recovered_canary TO {}").format(
+                        sql.Identifier(runtime_role)
+                    )
+                )
+                await cursor.execute("REVOKE ALL ON FUNCTION spine.recovered_canary_count() FROM PUBLIC")
+                await cursor.execute(
+                    sql.SQL("GRANT EXECUTE ON FUNCTION spine.recovered_canary_count() TO {}").format(
+                        sql.Identifier(runtime_role)
+                    )
+                )
+                await cursor.execute("RESET ROLE")
+
+        archive_in_container = f"/tmp/recovered-application-{suffix}.dump"
+        dump = container.exec(
+            ExecConfig(
+                [
+                "pg_dump",
+                "--format=custom",
+                "--no-password",
+                "--host=127.0.0.1",
+                f"--file={archive_in_container}",
+                ],
+                environment={
+                    "PGDATABASE": source_database,
+                    "PGUSER": admin_user,
+                    "PGPASSWORD": admin_password,
+                    "PGSSLMODE": "require",
+                },
+            )
+        )
+        assert dump.exit_code == 0
+        container.copy_from_container(archive_in_container, archive)
+        restore_wrapper = tmp_path / "pg_restore_17"
+        restore_wrapper.write_text(
+            "#!/bin/sh\nexec docker exec "
+            f"-e PGDATABASE={shlex.quote(target_database)} "
+            f"-e PGUSER={shlex.quote(admin_user)} "
+            f"-e PGPASSWORD={shlex.quote(admin_password)} "
+            "-e PGSSLMODE=require "
+            f"{shlex.quote(container.get_container_id())} "
+            "pg_restore \"$1\" \"$2\" \"$3\" \"$4\" "
+            f"{shlex.quote(archive_in_container)}\n",
+            encoding="utf-8",
+        )
+        restore_wrapper.chmod(0o700)
+
+        qualification = RecoveredApplicationQualificationRequest(
+            run_reference="run:postgresql-recovered-target-test",
+            authorization_reference="approval:postgresql-recovered-target-test",
+            target_commit="8" * 40,
+            target_reference="target:postgresql-recovered-target-test",
+            recovery_set_id="recovery:postgresql-recovered-target-test",
+            restore_evidence_reference="restore:" + "b" * 64,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            source_revision_id=UUID("a2b9e71c-6991-5c9d-8345-2d058020aea9"),
+            projection_kind="qa",
+            expires_at=datetime(2026, 10, 28, tzinfo=timezone.utc),
+        )
+        target = RecoveredPostgreSQLApplicationTarget(
+            target_reference=qualification.target_reference,
+            connection=PostgreSQLBackupConnection(
+                database=target_database,
+                username=admin_user,
+                backup_role=admin_user,
+                host=parsed.hostname,
+                port=parsed.port or 5432,
+                password_file=os.fspath(passfile),
+                sslmode="require",
+            ),
+            archive=archive,
+            archive_digest=hashlib.sha256(archive.read_bytes()).hexdigest(),
+            runtime_role=runtime_role,
+            pg_restore_executable=restore_wrapper,
+        )
+
+        await target.prepare(qualification)
+
+        async with await AsyncConnection.connect(
+            dbname=target_database,
+            user=runtime_role,
+            password=runtime_password,
+            host=parsed.hostname,
+            port=parsed.port or 5432,
+            sslmode="require",
+        ) as runtime:
+            async with runtime.cursor() as cursor:
+                await cursor.execute("SELECT set_config('spine.workspace_id', %s, false)", (str(workspace_id),))
+                await cursor.execute("SELECT set_config('spine.environment_id', %s, false)", (str(environment_id),))
+                await cursor.execute("SELECT count(*) FROM spine.recovered_canary")
+                assert (await cursor.fetchone())[0] == 1
+                await cursor.execute("SELECT spine.recovered_canary_count()")
+                assert (await cursor.fetchone())[0] == 1
+
+        async with await AsyncConnection.connect(
+            dbname=target_database, **admin_kwargs
+        ) as admin:
+            async with admin.cursor() as cursor:
+                await cursor.execute(
+                    "SELECT owner.rolname FROM pg_proc AS function "
+                    "JOIN pg_namespace AS namespace ON namespace.oid = function.pronamespace "
+                    "JOIN pg_roles AS owner ON owner.oid = function.proowner "
+                    "WHERE namespace.nspname = 'spine' AND function.proname = 'recovered_canary_count'"
+                )
+                assert (await cursor.fetchone())[0] == migration_role
+
+        await target.seal(qualification)
+
+        with pytest.raises(Exception):
+            await AsyncConnection.connect(
+                dbname=target_database,
+                user=runtime_role,
+                password=runtime_password,
+                host=parsed.hostname,
+                port=parsed.port or 5432,
+                sslmode="require",
+            )
+    finally:
+        async with await AsyncConnection.connect(
+            dbname=admin_database, autocommit=True, **admin_kwargs
+        ) as connection:
+            async with connection.cursor() as cursor:
+                for database in (source_database, target_database):
+                    await cursor.execute(
+                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                        "WHERE datname = %s AND pid <> pg_backend_pid()",
+                        (database,),
+                    )
+                    await cursor.execute(
+                        sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(database))
+                    )
+                for role in (runtime_role, migration_role):
+                    await cursor.execute(
+                        sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role))
+                    )
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
