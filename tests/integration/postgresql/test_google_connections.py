@@ -40,6 +40,8 @@ from spine.infrastructure.persistence.postgresql_google_sheets_sync import (
     PostgreSQLGoogleSheetsSyncRepository,
 )
 from spine.application.persistence.google_sheets_sync import (
+    GoogleSheetsIdentityDisposition,
+    GoogleSheetsIdentityFailureCode,
     GoogleSheetsSyncRunCommand,
     GoogleSheetsSyncRunState,
 )
@@ -448,6 +450,16 @@ async def test_postgresql_google_sheets_sync_ledger_survives_repository_recreati
         requested_at=now,
     )
     await repository.start_run(command)
+    await repository.record_identity_disposition(
+        sync_run_id=run_id,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        connection_id=command.connection_id,
+        scope_identity="google-sheets-scope:v1:test",
+        disposition=GoogleSheetsIdentityDisposition.QUARANTINED,
+        failure_code=GoogleSheetsIdentityFailureCode.MISSING_BUSINESS_ID,
+        now=now,
+    )
     page = await repository.open_page(
         sync_run_id=run_id,
         scope_identity="google-sheets-scope:v1:test",
@@ -473,12 +485,21 @@ async def test_postgresql_google_sheets_sync_ledger_survives_repository_recreati
     )
     persisted = await reopened.resolve_run(run_id)
     persisted_pages = await reopened.list_pages(run_id)
+    dispositions = await reopened.list_identity_dispositions(
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        connection_id=command.connection_id,
+        scope_identities=("google-sheets-scope:v1:test",),
+    )
 
     assert persisted is not None
     assert persisted.state is GoogleSheetsSyncRunState.SUCCEEDED
     assert persisted.proposed_cursor == "cursor-new"
     assert len(persisted_pages) == 1
     assert persisted_pages[0].items[0].revision_id == revision_id
+    assert len(dispositions) == 1
+    assert dispositions[0].disposition is GoogleSheetsIdentityDisposition.QUARANTINED
+    assert dispositions[0].failure_code is GoogleSheetsIdentityFailureCode.MISSING_BUSINESS_ID
 
 
 @pytest.mark.asyncio(loop_scope="session")

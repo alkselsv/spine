@@ -24,6 +24,8 @@ from spine.application.connections.google import GoogleReadAdmission, GoogleRead
 from spine.application.google_drive_changes import DriveChangeCommand
 from spine.application.persistence.drive_changes import DriveChangeItemRecord
 from spine.application.persistence.google_sheets_sync import (
+    GoogleSheetsIdentityDisposition,
+    GoogleSheetsIdentityFailureCode,
     GoogleSheetsSyncItemState,
     GoogleSheetsSyncPage,
     GoogleSheetsSyncRepository,
@@ -54,6 +56,7 @@ class GoogleSheetsProviderPageResult(Protocol):
     provider_version_before: str
     provider_version_after: str
     observations: tuple[GoogleSheetsPageObservation, ...]
+    identity_rejection_codes: tuple[str, ...]
 
 
 class GoogleSheetsReconciliationScope(BaseModel):
@@ -120,6 +123,7 @@ class GoogleSheetsReconciliationPage(BaseModel):
     provider_version_after: str = Field(min_length=1, max_length=128)
     complete: bool
     observations: tuple[NormalizedConnectorObservation, ...] = Field(max_length=4096)
+    identity_rejection_codes: tuple[str, ...] = Field(default=(), max_length=32)
 
     @property
     def provider_version(self) -> str:
@@ -178,6 +182,7 @@ class GoogleSheetsAdmittedPageReader:
             provider_version_before=provider_page.provider_version_before,
             provider_version_after=provider_page.provider_version_after,
             complete=provider_page.complete,
+            identity_rejection_codes=provider_page.identity_rejection_codes,
             observations=tuple(
                 observation.to_normalized_observation()
                 for observation in provider_page.observations
@@ -282,7 +287,8 @@ class GoogleSheetsReconciliationCoordinator:
         read_pages: list[GoogleSheetsReconciliationPage] = []
         page_counts: dict[str, int] = {}
         versions: dict[str, str] = {}
-        seen_identities: set[str] = set()
+        seen_identities: dict[str, str] = {}
+        identity_rejections: dict[str, GoogleSheetsIdentityFailureCode] = {}
         try:
             for scope in command.scopes:
                 token: str | None = None
@@ -309,6 +315,13 @@ class GoogleSheetsReconciliationCoordinator:
                     if page.provider_version_before != page.provider_version_after:
                         raise _IncompleteRead("sheets_version_changed")
                     read_pages.append(page)
+                    if page.identity_rejection_codes:
+                        identity_rejections.setdefault(
+                            scope.identity,
+                            _safe_identity_failure_code(
+                                page.identity_rejection_codes[0]
+                            ),
+                        )
                     if page.next_page_token is not None:
                         if (
                             page.next_page_token in visited
@@ -326,9 +339,15 @@ class GoogleSheetsReconciliationCoordinator:
                             command, scope, observation, page.provider_version
                         )
                         identity = observation.external_identity.external_object_id
-                        if identity in seen_identities:
-                            raise _IncompleteRead("sheets_duplicate_business_identity")
-                        seen_identities.add(identity)
+                        previous_scope = seen_identities.get(identity)
+                        if previous_scope is not None:
+                            duplicate_code = (
+                                GoogleSheetsIdentityFailureCode.SCOPE_DUPLICATE_BUSINESS_ID
+                            )
+                            identity_rejections.setdefault(scope.identity, duplicate_code)
+                            identity_rejections.setdefault(previous_scope, duplicate_code)
+                        else:
+                            seen_identities[identity] = scope.identity
                         candidates.append((page, observation))
                     if len(candidates) > command.max_rows:
                         raise _IncompleteRead("sheets_row_limit")
@@ -348,6 +367,26 @@ class GoogleSheetsReconciliationCoordinator:
                 sync_run_id,
                 state=GoogleSheetsSyncRunState.RESUMABLE,
                 failure_code="sheets_read_failed",
+                now=self._now(),
+            )
+            return await self._result(current, accepted_rows=0)
+
+        if identity_rejections:
+            for scope_identity, failure_code in sorted(identity_rejections.items()):
+                await self.repository.record_identity_disposition(
+                    sync_run_id=sync_run_id,
+                    workspace_id=command.workspace_id,
+                    environment_id=command.environment_id,
+                    connection_id=command.connection_id,
+                    scope_identity=scope_identity,
+                    disposition=GoogleSheetsIdentityDisposition.QUARANTINED,
+                    failure_code=failure_code,
+                    now=self._now(),
+                )
+            current = await self.repository.mark_run(
+                sync_run_id,
+                state=GoogleSheetsSyncRunState.RECONCILIATION_REQUIRED,
+                failure_code="sheets_identity_quarantined",
                 now=self._now(),
             )
             return await self._result(current, accepted_rows=0)
@@ -411,6 +450,17 @@ class GoogleSheetsReconciliationCoordinator:
                 return await self._result(current, accepted_rows=accepted)
         for stored in stored_pages.values():
             await self.repository.complete_page(stored.page_id, now=self._now())
+        for scope in command.scopes:
+            await self.repository.record_identity_disposition(
+                sync_run_id=sync_run_id,
+                workspace_id=command.workspace_id,
+                environment_id=command.environment_id,
+                connection_id=command.connection_id,
+                scope_identity=scope.identity,
+                disposition=GoogleSheetsIdentityDisposition.CLEARED,
+                failure_code=None,
+                now=self._now(),
+            )
         current = await self.repository.mark_run(
             sync_run_id,
             state=GoogleSheetsSyncRunState.SUCCEEDED,
@@ -473,6 +523,13 @@ class GoogleSheetsReconciliationCoordinator:
 class _IncompleteRead(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = code
+
+
+def _safe_identity_failure_code(value: str) -> GoogleSheetsIdentityFailureCode:
+    try:
+        return GoogleSheetsIdentityFailureCode(value)
+    except ValueError:
+        return GoogleSheetsIdentityFailureCode.INVALID_IDENTITY
 
 
 class GoogleSheetsDriveScopeResolver(Protocol):

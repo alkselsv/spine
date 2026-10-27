@@ -31,6 +31,53 @@ class GoogleSheetsSyncItemState(str, Enum):
     SUCCEEDED = "succeeded"
 
 
+class GoogleSheetsIdentityDisposition(str, Enum):
+    QUARANTINED = "quarantined"
+    CLEARED = "cleared"
+
+
+class GoogleSheetsIdentityFailureCode(str, Enum):
+    MISSING_BUSINESS_ID = "missing_business_id"
+    DUPLICATE_BUSINESS_ID = "duplicate_business_id"
+    CONFLICTING_BUSINESS_ID = "conflicting_business_id"
+    DEVELOPER_METADATA_MISMATCH = "developer_metadata_mismatch"
+    INVALID_IDENTITY = "invalid_identity"
+    SCOPE_DUPLICATE_BUSINESS_ID = "scope_duplicate_business_id"
+
+
+class GoogleSheetsIdentityQuarantine(DefinitionModel):
+    """Content-free tenant-scoped identity disposition audit event."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    event_id: UUID
+    sync_run_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    connection_id: UUID
+    scope_identity: str = Field(min_length=1, max_length=1024)
+    disposition: GoogleSheetsIdentityDisposition
+    failure_code: GoogleSheetsIdentityFailureCode | None = None
+    occurred_at: datetime
+
+    @model_validator(mode="after")
+    def validate_event(self) -> "GoogleSheetsIdentityQuarantine":
+        if self.event_id.int == 0 or self.sync_run_id.int == 0:
+            raise ValueError("Google Sheets identity disposition IDs must be non-zero")
+        if any(
+            value.int == 0
+            for value in (self.workspace_id, self.environment_id, self.connection_id)
+        ):
+            raise ValueError("Google Sheets identity disposition scope must be non-zero")
+        if self.occurred_at.tzinfo is None or self.occurred_at.utcoffset() is None:
+            raise ValueError("Google Sheets identity disposition time must be aware")
+        if (self.disposition is GoogleSheetsIdentityDisposition.QUARANTINED) != (
+            self.failure_code is not None
+        ):
+            raise ValueError("quarantined dispositions require a safe failure code")
+        return self
+
+
 class GoogleSheetsSyncRun(DefinitionModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -187,6 +234,26 @@ class GoogleSheetsSyncRepository(Protocol):
         failure_code: str | None,
         now: datetime,
     ) -> GoogleSheetsSyncRun: ...
+    async def record_identity_disposition(
+        self,
+        *,
+        sync_run_id: UUID,
+        workspace_id: UUID,
+        environment_id: UUID,
+        connection_id: UUID,
+        scope_identity: str,
+        disposition: GoogleSheetsIdentityDisposition,
+        failure_code: GoogleSheetsIdentityFailureCode | None,
+        now: datetime,
+    ) -> GoogleSheetsIdentityQuarantine: ...
+    async def list_identity_dispositions(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        connection_id: UUID,
+        scope_identities: tuple[str, ...],
+    ) -> tuple[GoogleSheetsIdentityQuarantine, ...]: ...
 
 
 class GoogleSheetsSyncConflictError(RuntimeError):
@@ -206,6 +273,7 @@ class InMemoryGoogleSheetsSyncRepository:
         self._run_keys: dict[tuple[UUID, UUID, str], UUID] = {}
         self._page_keys: dict[tuple[UUID, str, str], UUID] = {}
         self._item_ids: dict[UUID, tuple[UUID, UUID]] = {}
+        self.identity_dispositions: dict[tuple[UUID, str], GoogleSheetsIdentityQuarantine] = {}
 
     @classmethod
     def from_snapshot(
@@ -405,6 +473,63 @@ class InMemoryGoogleSheetsSyncRepository:
         )
         self.runs[sync_run_id] = updated
         return updated
+
+    async def record_identity_disposition(
+        self,
+        *,
+        sync_run_id: UUID,
+        workspace_id: UUID,
+        environment_id: UUID,
+        connection_id: UUID,
+        scope_identity: str,
+        disposition: GoogleSheetsIdentityDisposition,
+        failure_code: GoogleSheetsIdentityFailureCode | None,
+        now: datetime,
+    ) -> GoogleSheetsIdentityQuarantine:
+        key = (sync_run_id, scope_identity)
+        existing = self.identity_dispositions.get(key)
+        if existing is not None:
+            if (existing.disposition, existing.failure_code) != (disposition, failure_code):
+                raise GoogleSheetsSyncConflictError(
+                    "Google Sheets identity disposition conflicts with durable state"
+                )
+            return existing
+        event = GoogleSheetsIdentityQuarantine(
+            event_id=_stable_id(f"identity-disposition:{sync_run_id}:{scope_identity}"),
+            sync_run_id=sync_run_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            connection_id=connection_id,
+            scope_identity=scope_identity,
+            disposition=disposition,
+            failure_code=failure_code,
+            occurred_at=now,
+        )
+        self.identity_dispositions[key] = event
+        return event
+
+    async def list_identity_dispositions(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        connection_id: UUID,
+        scope_identities: tuple[str, ...],
+    ) -> tuple[GoogleSheetsIdentityQuarantine, ...]:
+        requested = set(scope_identities)
+        return tuple(
+            sorted(
+                (
+                    event
+                    for event in self.identity_dispositions.values()
+                    if event.workspace_id == workspace_id
+                    and event.environment_id == environment_id
+                    and event.connection_id == connection_id
+                    and event.scope_identity in requested
+                ),
+                key=lambda event: (event.occurred_at, event.event_id.int),
+            )
+        )
 
 
 def _stable_id(value: str) -> UUID:

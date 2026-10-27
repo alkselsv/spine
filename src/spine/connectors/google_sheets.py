@@ -53,6 +53,10 @@ _GOOGLE_SHEET_COLUMN_PATTERN = r"^[A-Z]+$"
 class GoogleSheetsUnsafeIdentityError(GoogleProviderContractError):
     """A row cannot be safely associated with a stable register identity."""
 
+    def __init__(self, message: str, *, code: str = "invalid_identity") -> None:
+        super().__init__(message)
+        self.code = code
+
 
 class GoogleSheetsConfiguredScopeError(GoogleProviderContractError):
     """The provider response is outside the configured spreadsheet/sheet."""
@@ -167,6 +171,7 @@ class GoogleSheetsProviderPage(DefinitionModel):
     provider_version_after: StrictStr = Field(min_length=1, max_length=128)
     snapshot: GoogleSheetsSnapshot
     observations: tuple[GoogleSheetsObservation, ...] = ()
+    identity_rejection_codes: tuple[StrictStr, ...] = Field(default=(), max_length=32)
 
 
 class GoogleSheetsRangePage(DefinitionModel):
@@ -399,11 +404,16 @@ class GoogleSheetsProviderAdapter(GoogleProvider[GoogleSheetsObservation]):
         now = self.clock()
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("Google Sheets reader clock must be timezone-aware")
-        selected_rows = (
-            self._select_rows(response.snapshot, connection.connection_id)
-            if response.snapshot.rows
-            else []
-        )
+        identity_rejection_codes: tuple[str, ...] = ()
+        try:
+            selected_rows = self._select_rows(
+                response.snapshot, connection.connection_id
+            )
+        except GoogleSheetsUnsafeIdentityError as error:
+            # A page with any unsafe identity is wholly withheld. Only a bounded
+            # code crosses the adapter boundary; provider values stay local.
+            selected_rows = []
+            identity_rejection_codes = (error.code,)
         observations = tuple(
             self._observation(
                 connection,
@@ -427,6 +437,7 @@ class GoogleSheetsProviderAdapter(GoogleProvider[GoogleSheetsObservation]):
             provider_version_after=response.provider_version_after,
             snapshot=response.snapshot,
             observations=observations,
+            identity_rejection_codes=identity_rejection_codes,
         )
 
     def _observation(
@@ -465,7 +476,8 @@ class GoogleSheetsProviderAdapter(GoogleProvider[GoogleSheetsObservation]):
             if set(configured) - set(cells):
                 missing = sorted(set(configured) - set(cells))[0]
                 raise GoogleSheetsUnsafeIdentityError(
-                    f"configured Sheets column is missing: {missing}"
+                    "configured Sheets column is missing",
+                    code="missing_business_id" if missing == self.profile.business_id_column else "invalid_identity",
                 )
             for column in self.profile.columns:
                 if (
@@ -479,7 +491,8 @@ class GoogleSheetsProviderAdapter(GoogleProvider[GoogleSheetsObservation]):
             business_id = _business_id(business_cell.entered, business_cell.effective)
             if business_id in identities:
                 raise GoogleSheetsUnsafeIdentityError(
-                    "duplicate business ID in the observed Sheets scope"
+                    "duplicate business ID in the observed Sheets scope",
+                    code="duplicate_business_id",
                 )
             identities[business_id] = row.row_number
             metadata_id = self._validate_metadata(row, business_id)
@@ -516,7 +529,8 @@ class GoogleSheetsProviderAdapter(GoogleProvider[GoogleSheetsObservation]):
             )
         if not candidates:
             raise GoogleSheetsUnsafeIdentityError(
-                "business ID is missing from the observed Sheets scope"
+                "business ID is missing from the observed Sheets scope",
+                code="missing_business_id",
             )
         if self.profile.target_business_id is not None:
             candidates = [
@@ -547,7 +561,8 @@ class GoogleSheetsProviderAdapter(GoogleProvider[GoogleSheetsObservation]):
             or matches[0].row_number != row.row_number
         ):
             raise GoogleSheetsUnsafeIdentityError(
-                "configured Developer Metadata does not match the business ID"
+                "configured Developer Metadata does not match the business ID",
+                code="developer_metadata_mismatch",
             )
         return matches[0].metadata_id
 
@@ -629,13 +644,18 @@ GoogleSheetsReader = GoogleSheetsObservationReader
 def _business_id(entered: GoogleSheetCellValue, effective: GoogleSheetCellValue) -> str:
     if entered.kind != "string" or not isinstance(entered.value, str):
         raise GoogleSheetsUnsafeIdentityError(
-            "business ID must be a non-empty entered string"
+            "business ID must be a non-empty entered string",
+            code="missing_business_id",
         )
     value = entered.value
     if not value or not value.strip():
-        raise GoogleSheetsUnsafeIdentityError("business ID is missing")
+        raise GoogleSheetsUnsafeIdentityError(
+            "business ID is missing", code="missing_business_id"
+        )
     if effective.kind != "string" or effective.value != value:
-        raise GoogleSheetsUnsafeIdentityError("conflicting business ID representations")
+        raise GoogleSheetsUnsafeIdentityError(
+            "conflicting business ID representations", code="conflicting_business_id"
+        )
     return value
 
 
