@@ -153,6 +153,15 @@ class GoogleSheetsLifecycleRepository(Protocol):
         environment_id: UUID,
     ) -> GoogleSheetsRemovalDecision | None: ...
 
+    async def list_pending_decisions_for_source(
+        self,
+        uow: UnitOfWork,
+        source_object_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+    ) -> tuple[GoogleSheetsRemovalDecision, ...]: ...
+
     async def record_candidate(
         self, uow: UnitOfWork, candidate: GoogleSheetsAbsenceCandidate
     ) -> GoogleSheetsAbsenceCandidate: ...
@@ -187,6 +196,25 @@ class InMemoryGoogleSheetsLifecycleRepository:
         ):
             return None
         return decision
+
+    async def list_pending_decisions_for_source(
+        self,
+        uow: UnitOfWork,
+        source_object_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+    ) -> tuple[GoogleSheetsRemovalDecision, ...]:
+        pending = self._pending_decisions.get(id(uow), {})
+        values = {**self.decisions, **pending}
+        return tuple(
+            decision
+            for decision in values.values()
+            if decision.source_object_id == source_object_id
+            and decision.workspace_id == workspace_id
+            and decision.environment_id == environment_id
+            and decision.state is GoogleSheetsRemovalState.PENDING
+        )
 
     async def record_candidate(
         self, uow: UnitOfWork, candidate: GoogleSheetsAbsenceCandidate
@@ -239,6 +267,7 @@ class GoogleSheetsLifecycleSource(DefinitionModel):
     source: SourceObject
     current_revision_id: UUID
     is_tombstoned: bool
+    tombstone_revision_id: UUID | None = None
 
     @model_validator(mode="after")
     def validate_source_key(self) -> "GoogleSheetsLifecycleSource":
@@ -251,6 +280,8 @@ class GoogleSheetsLifecycleSource(DefinitionModel):
             or self.source.external_object_id != identity.external_object_id
         ):
             raise ValueError("Sheets lifecycle source does not match its canonical row key")
+        if self.is_tombstoned != (self.tombstone_revision_id is not None):
+            raise ValueError("Sheets tombstone identity is inconsistent")
         return self
 
 
@@ -420,10 +451,20 @@ class GoogleSheetsLifecycleCoordinator:
         decisions: list[GoogleSheetsRemovalDecision] = []
         effects: list[SourceLifecycleResult] = []
         for source in sources:
+            identity = google_source_identity(source.key).external_object_id
+            if source.is_tombstoned:
+                recovered, recovered_effects = await self._recover_pending_for_source(
+                    source=source,
+                    command=command,
+                    policy=policy,
+                    context=source_context,
+                )
+                decisions.extend(recovered)
+                effects.extend(recovered_effects)
+                continue
             scope = _scope_for_key(command.scopes, source.key)
             if scope is None:
                 continue
-            identity = google_source_identity(source.key).external_object_id
             if identity in observed_by_scope.get(scope.identity, set()):
                 continue
             candidate = self._candidate(command, result, scope, source, pages)
@@ -440,9 +481,6 @@ class GoogleSheetsLifecycleCoordinator:
             )
             if existing is not None and existing.state is GoogleSheetsRemovalState.TOMBSTONED:
                 decisions.append(existing)
-                continue
-            if source.is_tombstoned and existing is None:
-                # Do not infer absence from a tombstone caused by another workflow.
                 continue
             pending = GoogleSheetsRemovalDecision(
                 decision_id=decision_id,
@@ -492,6 +530,82 @@ class GoogleSheetsLifecycleCoordinator:
         return GoogleSheetsLifecycleResult(
             result.sync_run_id, tuple(candidates), tuple(decisions), tuple(effects)
         )
+
+    async def _recover_pending_for_source(
+        self,
+        *,
+        source: GoogleSheetsLifecycleSource,
+        command: GoogleSheetsReconciliationCommand,
+        policy: GoogleSheetsRemovalPolicy,
+        context: TrustedPersistenceContext,
+    ) -> tuple[tuple[GoogleSheetsRemovalDecision, ...], tuple[SourceLifecycleResult, ...]]:
+        pending = await self._list_pending_decisions(
+            source.source.source_object_id,
+            command.workspace_id,
+            command.environment_id,
+        )
+        decisions: list[GoogleSheetsRemovalDecision] = []
+        effects: list[SourceLifecycleResult] = []
+        for decision in pending:
+            if (
+                not decision.policy_authorized
+                or decision.connection_id != command.connection_id
+                or decision.external_object_id
+                != google_source_identity(source.key).external_object_id
+                or decision.expected_current_revision_id != source.current_revision_id
+            ):
+                continue
+            prior_policy = policy.model_copy(
+                update={
+                    "policy_version_id": decision.policy_version_id,
+                    "version": decision.policy_version,
+                }
+            )
+            idempotency_key = f"sheets-row-removal:{decision.decision_id.hex}"
+            lifecycle_command = await self.tombstones.compose(
+                source=source,
+                command=command,
+                policy=prior_policy,
+                idempotency_key=idempotency_key,
+                context=context,
+            )
+            if (
+                lifecycle_command.kind is not SourceLifecycleKind.DELETION
+                or lifecycle_command.source.source_object_id
+                != source.source.source_object_id
+                or lifecycle_command.canonical_acceptance.expected_current_revision_id
+                != decision.expected_current_revision_id
+                or lifecycle_command.revision.revision_id != source.tombstone_revision_id
+                or lifecycle_command.canonical_acceptance.idempotency_key.value
+                != idempotency_key
+            ):
+                continue
+            effect = await self.source_lifecycle.apply(lifecycle_command)
+            completed = decision.model_copy(
+                update={
+                    "state": GoogleSheetsRemovalState.TOMBSTONED,
+                    "tombstone_revision_id": effect.acceptance.revision.revision_id,
+                }
+            )
+            decisions.append(await self._persist_decision(completed))
+            effects.append(effect)
+        return tuple(decisions), tuple(effects)
+
+    async def _list_pending_decisions(
+        self, source_object_id: UUID, workspace_id: UUID, environment_id: UUID
+    ) -> tuple[GoogleSheetsRemovalDecision, ...]:
+        context = self.lifecycle_context_factory(
+            PersistenceOperation("google_sheets_removal_decision_read"), source_object_id
+        )
+        async with self.lifecycle_uow_factory(context) as uow:
+            decisions = await self.repository.list_pending_decisions_for_source(
+                uow,
+                source_object_id,
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            )
+            await uow.rollback()
+            return decisions
 
     def _candidate(
         self,

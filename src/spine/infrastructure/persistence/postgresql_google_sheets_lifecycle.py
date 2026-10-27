@@ -58,6 +58,24 @@ class PostgreSQLGoogleSheetsLifecycleRepository(GoogleSheetsLifecycleRepository)
         row = result.mappings().one_or_none()
         return _decision(row) if row is not None else None
 
+    async def list_pending_decisions_for_source(
+        self,
+        uow: UnitOfWork,
+        source_object_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+    ) -> tuple[GoogleSheetsRemovalDecision, ...]:
+        result = await uow._execute(
+            select(google_sheets_removal_decisions).where(
+                google_sheets_removal_decisions.c.source_object_id == source_object_id,
+                google_sheets_removal_decisions.c.workspace_id == workspace_id,
+                google_sheets_removal_decisions.c.environment_id == environment_id,
+                google_sheets_removal_decisions.c.state == "pending",
+            )
+        )
+        return tuple(_decision(row) for row in result.mappings().all())
+
     async def record_candidate(
         self, uow: UnitOfWork, candidate: GoogleSheetsAbsenceCandidate
     ) -> GoogleSheetsAbsenceCandidate:
@@ -165,7 +183,7 @@ class PostgreSQLGoogleSheetsLifecycleSourceReader(GoogleSheetsLifecycleSourceRea
             raise ValueError("Sheets lifecycle source lookup requires its reconciliation tenant")
 
         pending: list[
-            tuple[SourceObject, UUID, SourceRevisionReceiptAssociation, bool]
+            tuple[SourceObject, UUID, SourceRevisionReceiptAssociation, bool, UUID | None]
         ] = []
         async with self._uow_factory(context) as uow:
             after = None
@@ -202,7 +220,15 @@ class PostgreSQLGoogleSheetsLifecycleSourceReader(GoogleSheetsLifecycleSourceRea
                     )
                     if len(associations) != 1:
                         raise ValueError("Sheets lifecycle original evidence is ambiguous")
-                    pending.append((source, revision_id, associations[0], is_tombstoned))
+                    pending.append(
+                        (
+                            source,
+                            revision_id,
+                            associations[0],
+                            is_tombstoned,
+                            head.current_revision_id if is_tombstoned else None,
+                        )
+                    )
                 if len(page) < 500:
                     break
                 last = page[-1]
@@ -211,11 +237,7 @@ class PostgreSQLGoogleSheetsLifecycleSourceReader(GoogleSheetsLifecycleSourceRea
 
         results: list[GoogleSheetsLifecycleSource] = []
         seen: set[str] = set()
-        configured = {
-            (scope.spreadsheet_id, scope.sheet_id)
-            for scope in command.scopes
-        }
-        for source, revision_id, association, is_tombstoned in pending:
+        for source, revision_id, association, is_tombstoned, tombstone_revision_id in pending:
             chunks = self._original_reader.read_finalized(
                 workspace_id=command.workspace_id,
                 environment_id=command.environment_id,
@@ -229,7 +251,6 @@ class PostgreSQLGoogleSheetsLifecycleSourceReader(GoogleSheetsLifecycleSourceRea
             key = original.key
             if (
                 key.connection_id != command.connection_id
-                or (key.spreadsheet_id, key.sheet_id) not in configured
                 or source.external_object_id
                 != google_source_identity(key).external_object_id
             ):
@@ -243,6 +264,7 @@ class PostgreSQLGoogleSheetsLifecycleSourceReader(GoogleSheetsLifecycleSourceRea
                     source=source,
                     current_revision_id=revision_id,
                     is_tombstoned=is_tombstoned,
+                    tombstone_revision_id=tombstone_revision_id,
                 )
             )
         return tuple(results)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import UUID
@@ -17,6 +18,7 @@ from spine.application.google_sheets_lifecycle import (
 from spine.application.google_sheets_reconciliation import (
     GoogleSheetsReconciliationCoordinator,
     GoogleSheetsReconciliationResult,
+    GoogleSheetsReconciliationScope,
     google_sheets_scope_set_digest,
 )
 from spine.application.source_lifecycle import SourceLifecycleKind
@@ -264,7 +266,12 @@ async def test_pending_tombstone_replay_completes_after_source_head_is_tombstone
         async def apply(self, lifecycle_command):
             result = await super().apply(lifecycle_command)
             source_inventory.values = (
-                source_inventory.values[0].model_copy(update={"is_tombstoned": True}),
+                source_inventory.values[0].model_copy(
+                    update={
+                        "is_tombstoned": True,
+                        "tombstone_revision_id": TOMBSTONE_ID,
+                    }
+                ),
             )
             return result
 
@@ -288,7 +295,36 @@ async def test_pending_tombstone_replay_completes_after_source_head_is_tombstone
         await service.reconcile(request, result, policy(request, authorize=True))
 
     assert next(iter(repository.decisions.values())).state is GoogleSheetsRemovalState.PENDING
-    replay = await service.reconcile(request, result, policy(request, authorize=True))
+    reconfigured_request = request.model_copy(
+        update={"scopes": (
+            GoogleSheetsReconciliationScope(
+                spreadsheet_id="other-sheet",
+                sheet_id=9,
+                a1_range="A2:F500",
+            ),
+        )}
+    )
+    later_run = complete_result(reconfigured_request)
+    newer_policy = policy(reconfigured_request, authorize=True).model_copy(
+        update={
+            "policy_version_id": UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"),
+            "version": "sheets-removal:v2",
+        }
+    )
+    service = GoogleSheetsLifecycleCoordinator(
+        repository=repository,
+        sync_repository=SyncLedger(reconfigured_request, later_run),
+        sources=source_inventory,
+        tombstones=service.tombstones,
+        source_lifecycle=lifecycle,
+        context_factory=lambda trace: SimpleNamespace(trace_id=trace),
+        lifecycle_uow_factory=lambda context: LifecycleUnitOfWork(repository),
+        lifecycle_context_factory=lambda operation, trace: SimpleNamespace(
+            operation=operation, trace_id=trace
+        ),
+        clock=lambda: NOW,
+    )
+    replay = await service.reconcile(reconfigured_request, later_run, newer_policy)
 
     assert replay.decisions[0].state is GoogleSheetsRemovalState.TOMBSTONED
     assert replay.decisions[0].tombstone_revision_id == TOMBSTONE_ID
