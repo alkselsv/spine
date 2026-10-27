@@ -105,6 +105,11 @@ __all__ = [
     "DriveInitialSnapshotResult",
     "DriveChangeCommand",
     "DriveChangeCoordinator",
+    "GoogleSheetsReconciliationCoordinator",
+    "GoogleSheetsReconciliationCommand",
+    "GoogleSheetsReconciliationScope",
+    "GoogleSheetsAdmittedPageReader",
+    "GoogleSheetsDriveWakeupAdapter",
     "DriveChangeResult",
     "DriveReconciliationCommand",
 ]
@@ -180,6 +185,14 @@ def __getattr__(name: str) -> object:
             "DriveReconciliationCommand",
         }:
             module_name = "spine.application.google_drive_changes"
+        if name in {
+            "GoogleSheetsReconciliationCoordinator",
+            "GoogleSheetsReconciliationCommand",
+            "GoogleSheetsReconciliationScope",
+            "GoogleSheetsAdmittedPageReader",
+            "GoogleSheetsDriveWakeupAdapter",
+        }:
+            module_name = "spine.application.google_sheets_reconciliation"
         if name in {
             "AuthorizedQAStreamService",
             "QAEventLogStore",

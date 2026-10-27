@@ -15,7 +15,10 @@ from spine.application.connector_ingestion import (
     ConnectorIngestionCommand,
     ConnectorIngestionResult,
 )
-from spine.application.persistence.context import PersistenceOperation, TrustedPersistenceContext
+from spine.application.persistence.context import (
+    PersistenceOperation,
+    TrustedPersistenceContext,
+)
 from spine.application.persistence.drive_changes import (
     DriveChangeInput,
     DriveChangeItemRecord,
@@ -77,7 +80,9 @@ class DriveChangeReader(Protocol):
 
 
 class ConnectorIngestionPort(Protocol):
-    async def ingest(self, command: ConnectorIngestionCommand) -> ConnectorIngestionResult: ...
+    async def ingest(
+        self, command: ConnectorIngestionCommand
+    ) -> ConnectorIngestionResult: ...
 
 
 class DriveReconciliationCommand(BaseModel):
@@ -102,6 +107,12 @@ class DriveReconciliationPort(Protocol):
     async def initiate(self, command: DriveReconciliationCommand) -> None: ...
 
 
+class DriveSheetsWakeupPort(Protocol):
+    async def reconcile_change(
+        self, command: DriveChangeCommand, item: DriveChangeItemRecord
+    ) -> UUID | None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class DriveChangeResult:
     run: DriveChangeRun
@@ -123,6 +134,7 @@ class DriveChangeCoordinator:
     ingestion: ConnectorIngestionPort
     context_factory: Callable[[PersistenceOperation, UUID], TrustedPersistenceContext]
     reconciliation: DriveReconciliationPort | None = None
+    sheets_wakeup: DriveSheetsWakeupPort | None = None
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 
     async def run(self, command: DriveChangeCommand) -> DriveChangeResult:
@@ -158,7 +170,10 @@ class DriveChangeCoordinator:
         while True:
             page_token = run.next_page_token
             existing_page = await self.repository.resolve_page(sync_run_id, page_token)
-            if existing_page is not None and existing_page.state is DriveChangePageState.COMPLETED:
+            if (
+                existing_page is not None
+                and existing_page.state is DriveChangePageState.COMPLETED
+            ):
                 if existing_page.next_page_token is not None:
                     run = await self.repository.advance_run(
                         sync_run_id,
@@ -167,10 +182,15 @@ class DriveChangeCoordinator:
                     )
                     continue
                 if existing_page.new_start_page_token is None:
-                    return await self._reconcile(run, command, "missing_terminal_cursor")
+                    return await self._reconcile(
+                        run, command, "missing_terminal_cursor"
+                    )
                 run = await self.repository.commit_run(sync_run_id, now=self._now())
                 return await self._result(run)
-            if existing_page is not None and existing_page.state is DriveChangePageState.INCOMPLETE:
+            if (
+                existing_page is not None
+                and existing_page.state is DriveChangePageState.INCOMPLETE
+            ):
                 return await self._reconcile(run, command, "incomplete_change_page")
 
             try:
@@ -183,7 +203,9 @@ class DriveChangeCoordinator:
                     ),
                 )
                 if page.page_token != page_token:
-                    raise GoogleDriveChangeGapError("Drive change page token does not match checkpoint")
+                    raise GoogleDriveChangeGapError(
+                        "Drive change page token does not match checkpoint"
+                    )
                 stored_page = await self.repository.open_page(
                     sync_run_id=sync_run_id,
                     page_token=page.page_token,
@@ -214,6 +236,7 @@ class DriveChangeCoordinator:
             for stored_item in stored_page.items:
                 if stored_item.state in {
                     DriveChangeItemState.SUCCEEDED,
+                    DriveChangeItemState.RECONCILED,
                     DriveChangeItemState.IGNORED,
                 }:
                     continue
@@ -224,8 +247,32 @@ class DriveChangeCoordinator:
                         now=self._now(),
                     )
                     continue
+                if self.sheets_wakeup is not None:
+                    try:
+                        reconciliation_id = await self.sheets_wakeup.reconcile_change(
+                            command, stored_item
+                        )
+                    except Exception:
+                        await self.repository.mark_item_failed(
+                            stored_item.item_id,
+                            failure_code="sheets_reconciliation_failed",
+                            now=self._now(),
+                        )
+                        run = await self.repository.mark_resumable(
+                            sync_run_id, now=self._now()
+                        )
+                        return await self._result(run)
+                    if reconciliation_id is not None:
+                        await self.repository.mark_item_reconciled(
+                            stored_item.item_id,
+                            reconciliation_id=reconciliation_id,
+                            now=self._now(),
+                        )
+                        continue
                 try:
-                    result = await self.ingestion.ingest(_item_command(command, stored_item))
+                    result = await self.ingestion.ingest(
+                        _item_command(command, stored_item)
+                    )
                     await self.repository.mark_item_succeeded(
                         stored_item.item_id,
                         revision_id=result.revision.revision_id,
@@ -237,11 +284,15 @@ class DriveChangeCoordinator:
                         failure_code="item_ingestion_failed",
                         now=self._now(),
                     )
-                    run = await self.repository.mark_resumable(sync_run_id, now=self._now())
+                    run = await self.repository.mark_resumable(
+                        sync_run_id, now=self._now()
+                    )
                     return await self._result(run)
 
             if page.incomplete_search:
-                await self.repository.mark_page_incomplete(stored_page.page_id, now=self._now())
+                await self.repository.mark_page_incomplete(
+                    stored_page.page_id, now=self._now()
+                )
                 run = await self.repository.resolve_run(sync_run_id)
                 assert run is not None
                 return await self._reconcile(run, command, "incomplete_change_page")
@@ -251,7 +302,9 @@ class DriveChangeCoordinator:
                 if page.new_start_page_token is None:
                     run = await self.repository.resolve_run(sync_run_id)
                     assert run is not None
-                    return await self._reconcile(run, command, "missing_terminal_cursor")
+                    return await self._reconcile(
+                        run, command, "missing_terminal_cursor"
+                    )
                 run = await self.repository.commit_run(sync_run_id, now=self._now())
                 return await self._result(run)
             run = await self.repository.advance_run(
@@ -312,7 +365,9 @@ def _assert_fence(run: DriveChangeRun, command: DriveChangeCommand) -> None:
         or run.configuration_generation != command.configuration_generation
         or run.last_committed_cursor != command.last_committed_cursor
     ):
-        raise DriveChangeFenceError("Drive change run is fenced by a changed authority or scope")
+        raise DriveChangeFenceError(
+            "Drive change run is fenced by a changed authority or scope"
+        )
 
 
 def _sync_run_id(command: DriveChangeCommand) -> UUID:

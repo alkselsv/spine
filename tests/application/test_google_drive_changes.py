@@ -23,7 +23,6 @@ from spine.connectors.google_drive import (
     GoogleDriveTokenExpiredError,
 )
 
-
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 WORKSPACE = UUID("11111111-1111-4111-8111-111111111111")
 ENVIRONMENT = UUID("22222222-2222-4222-8222-222222222222")
@@ -78,7 +77,9 @@ class FakeIngestion:
         if file_id == self.fail_file_id:
             self.fail_file_id = None
             raise RuntimeError("canonical handoff failed")
-        revision_id = self.revisions.setdefault(file_id, UUID(int=100 + len(self.revisions)))
+        revision_id = self.revisions.setdefault(
+            file_id, UUID(int=100 + len(self.revisions))
+        )
         return SimpleNamespace(revision=SimpleNamespace(revision_id=revision_id))
 
 
@@ -90,17 +91,54 @@ class FakeReconciliation:
         self.commands.append(request)
 
 
-def coordinator(reader, ingestion, repository=None, reconciliation=None):
+class FakeSheetsWakeup:
+    def __init__(self) -> None:
+        self.calls = []
+
+    async def reconcile_change(self, request, item):
+        self.calls.append((request, item.file_id, item.change_key))
+        return UUID(int=808)
+
+
+def coordinator(
+    reader, ingestion, repository=None, reconciliation=None, sheets_wakeup=None
+):
     return DriveChangeCoordinator(
         repository=repository or InMemoryDriveChangeRepository(),
         reader=reader,
         ingestion=ingestion,
         reconciliation=reconciliation or FakeReconciliation(),
+        sheets_wakeup=sheets_wakeup,
         context_factory=lambda operation, trace_id: SimpleNamespace(
             operation=operation, trace_id=trace_id
         ),
         clock=lambda: NOW,
     )
+
+
+@pytest.mark.asyncio
+async def test_spreadsheet_change_waits_for_full_sheets_reconciliation_before_cursor_commit():
+    reader = FakeReader(
+        {
+            "cursor-7": DriveChangePage(
+                page_token="cursor-7",
+                new_start_page_token="cursor-8",
+                changes=(DriveChange(file_id="spreadsheet-1", provider_version="8"),),
+            )
+        }
+    )
+    ingestion = FakeIngestion()
+    wakeup = FakeSheetsWakeup()
+
+    result = await coordinator(reader, ingestion, sheets_wakeup=wakeup).run(command())
+
+    assert result.state is DriveChangeRunState.SUCCEEDED
+    assert result.committed_cursor == "cursor-8"
+    assert ingestion.calls == []
+    assert wakeup.calls[0][1] == "spreadsheet-1"
+    item = result.pages[0].items[0]
+    assert item.state is DriveChangeItemState.RECONCILED
+    assert item.outcome_reconciliation_id == UUID(int=808)
 
 
 @pytest.mark.asyncio
@@ -122,7 +160,9 @@ async def test_incremental_changes_drains_every_page_before_committing_terminal_
     ingestion = FakeIngestion()
     reconciliation = FakeReconciliation()
 
-    result = await coordinator(reader, ingestion, reconciliation=reconciliation).run(command())
+    result = await coordinator(reader, ingestion, reconciliation=reconciliation).run(
+        command()
+    )
 
     assert result.state is DriveChangeRunState.SUCCEEDED
     assert result.committed_cursor == "cursor-9"

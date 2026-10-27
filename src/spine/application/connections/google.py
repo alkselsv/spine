@@ -37,7 +37,6 @@ from spine.domain.connections.google import (
     OpaqueGoogleReference,
 )
 
-
 ProviderResultT = TypeVar("ProviderResultT")
 
 
@@ -72,7 +71,10 @@ class GoogleConnectionCommand:
     occurred_at: datetime
 
     def __post_init__(self) -> None:
-        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", self.idempotency_key) is None:
+        if (
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", self.idempotency_key)
+            is None
+        ):
             raise ValueError("idempotency_key must be a bounded identifier")
         if self.audit_event_id.int == 0:
             raise ValueError("audit_event_id must be a non-nil UUID")
@@ -105,6 +107,9 @@ class GoogleReadCommand:
     authorization_generation: int
     configuration_generation: int
     resource_object_reference: str | None = None
+    a1_range: str | None = None
+    provider_page_token: str | None = None
+    sheet_id: int | None = None
 
     def __post_init__(self) -> None:
         if self.connection_id.int == 0:
@@ -116,6 +121,16 @@ class GoogleReadCommand:
             or len(self.resource_object_reference) > 256
         ):
             raise ValueError("resource_object_reference is invalid")
+        if self.a1_range is not None and (
+            not self.a1_range or len(self.a1_range) > 1024
+        ):
+            raise ValueError("a1_range is invalid")
+        if self.provider_page_token is not None and (
+            not self.provider_page_token or len(self.provider_page_token) > 4096
+        ):
+            raise ValueError("provider_page_token is invalid")
+        if self.sheet_id is not None and self.sheet_id < 0:
+            raise ValueError("sheet_id is invalid")
 
 
 class GoogleConnectionRepository(Protocol):

@@ -203,3 +203,34 @@ token gaps, incomplete pages and a missing terminal cursor retain the previous
 cursor and enter `reconciliation_required`, which emits one bounded,
 idempotent full-reconciliation command. Removed changes are recorded as a
 terminal ignored outcome; deletion/tombstone policy remains outside this slice.
+
+## Sheets full reconciliation
+
+Issue #608 adds a bounded row reconciliation invoked either by a Drive
+spreadsheet change wake-up or by a periodic full-scan command. The Drive change
+coordinator routes configured spreadsheet IDs to the Sheets wake-up adapter;
+the Drive item becomes terminal with a reconciliation-run reference only after
+that run succeeds, so the Drive cursor cannot advance ahead of the sheet work.
+The caller supplies the approved immutable spreadsheet/sheet/A1-range set from
+the current connection configuration. The admitted page reader selects the
+versioned row profile for each spreadsheet/sheet pair and requests every
+configured range and page. It requires each page to be complete, correctly
+scoped and guarded by one stable spreadsheet provider version before it starts
+canonical ingestion.
+
+The durable tenant-scoped run ledger stores only opaque row identities,
+revision references, safe state/failure codes, configured scope identities,
+page tokens, provider version and captured workspace/connection authority. It
+does not store row payloads. After the entire read set passes its guards, each
+normalized row goes through the existing canonical connector handoff with a
+stable row identity-derived idempotency key. A crash after acceptance but
+before the item checkpoint safely replays that same command; unchanged row
+content and coordinate-only movement reuse the existing `SourceRevision`.
+
+An incomplete page/range, pagination cycle, row/page bound breach, duplicate
+business identity or mid-read version change leaves the prior cursor in force
+and accepts no rows from that candidate read. Failed canonical writes leave
+the run resumable; successful completion promotes the proposed Drive cursor.
+Scheduled full reconciliation uses the same coordinator without proposing a
+Drive cursor. The ledger records no absence decisions, tombstones or quarantine
+dispositions; those remain separate policy work.

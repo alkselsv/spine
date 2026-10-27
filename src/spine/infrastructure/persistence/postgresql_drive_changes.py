@@ -14,8 +14,12 @@ from uuid import UUID
 
 from sqlalchemy import insert, select, update
 
-from spine.application.persistence.context import PersistenceOperation, TrustedPersistenceContext
+from spine.application.persistence.context import (
+    PersistenceOperation,
+    TrustedPersistenceContext,
+)
 from spine.application.persistence.drive_changes import (
+    DriveChangeItemRecord,
     DriveChangePageRecord,
     DriveChangeRepository,
     DriveChangeRun,
@@ -32,7 +36,9 @@ class PostgreSQLDriveChangeRepository(DriveChangeRepository):
     def __init__(
         self,
         uow_factory: Callable[[TrustedPersistenceContext], object],
-        context_factory: Callable[[PersistenceOperation, UUID], TrustedPersistenceContext],
+        context_factory: Callable[
+            [PersistenceOperation, UUID], TrustedPersistenceContext
+        ],
     ) -> None:
         self._uow_factory = uow_factory
         self._context_factory = context_factory
@@ -72,7 +78,9 @@ class PostgreSQLDriveChangeRepository(DriveChangeRepository):
             return _run_from_row(record)
 
     async def open_page(self, **kwargs):
-        return await self._mutate("drive_change_page", kwargs["sync_run_id"], "open_page", kwargs)
+        return await self._mutate(
+            "drive_change_page", kwargs["sync_run_id"], "open_page", kwargs
+        )
 
     async def resolve_page(self, sync_run_id: UUID, page_token: str):
         return await self._read_page(sync_run_id, page_token)
@@ -85,56 +93,97 @@ class PostgreSQLDriveChangeRepository(DriveChangeRepository):
                 return ()
             return await _repository_from_row(record).list_pages(sync_run_id)
 
-    async def mark_item_succeeded(self, item_id: UUID, *, revision_id: UUID, now: datetime):
+    async def mark_item_succeeded(
+        self, item_id: UUID, *, revision_id: UUID, now: datetime
+    ):
         return await self._mutate(
-            "drive_change_item", item_id, "mark_item_succeeded",
+            "drive_change_item",
+            item_id,
+            "mark_item_succeeded",
             {"item_id": item_id, "revision_id": revision_id, "now": now},
+        )
+
+    async def mark_item_reconciled(
+        self, item_id: UUID, *, reconciliation_id: UUID, now: datetime
+    ) -> DriveChangeItemRecord:
+        return await self._mutate(
+            "drive_change_item",
+            item_id,
+            "mark_item_reconciled",
+            {"item_id": item_id, "reconciliation_id": reconciliation_id, "now": now},
         )
 
     async def mark_item_ignored(self, item_id: UUID, *, reason: str, now: datetime):
         return await self._mutate(
-            "drive_change_item", item_id, "mark_item_ignored",
+            "drive_change_item",
+            item_id,
+            "mark_item_ignored",
             {"item_id": item_id, "reason": reason, "now": now},
         )
 
-    async def mark_item_failed(self, item_id: UUID, *, failure_code: str, now: datetime):
+    async def mark_item_failed(
+        self, item_id: UUID, *, failure_code: str, now: datetime
+    ):
         return await self._mutate(
-            "drive_change_item", item_id, "mark_item_failed",
+            "drive_change_item",
+            item_id,
+            "mark_item_failed",
             {"item_id": item_id, "failure_code": failure_code, "now": now},
         )
 
     async def complete_page(self, page_id: UUID, *, now: datetime):
         return await self._mutate(
-            "drive_change_page", page_id, "complete_page", {"page_id": page_id, "now": now}
+            "drive_change_page",
+            page_id,
+            "complete_page",
+            {"page_id": page_id, "now": now},
         )
 
     async def mark_page_incomplete(self, page_id: UUID, *, now: datetime):
         return await self._mutate(
-            "drive_change_page", page_id, "mark_page_incomplete",
+            "drive_change_page",
+            page_id,
+            "mark_page_incomplete",
             {"page_id": page_id, "now": now},
         )
 
-    async def advance_run(self, sync_run_id: UUID, *, next_page_token: str, now: datetime):
+    async def advance_run(
+        self, sync_run_id: UUID, *, next_page_token: str, now: datetime
+    ):
         return await self._mutate(
-            "drive_change_run", sync_run_id, "advance_run",
-            {"sync_run_id": sync_run_id, "next_page_token": next_page_token, "now": now},
+            "drive_change_run",
+            sync_run_id,
+            "advance_run",
+            {
+                "sync_run_id": sync_run_id,
+                "next_page_token": next_page_token,
+                "now": now,
+            },
         )
 
     async def mark_resumable(self, sync_run_id: UUID, *, now: datetime):
         return await self._mutate(
-            "drive_change_run", sync_run_id, "mark_resumable",
+            "drive_change_run",
+            sync_run_id,
+            "mark_resumable",
             {"sync_run_id": sync_run_id, "now": now},
         )
 
     async def commit_run(self, sync_run_id: UUID, *, now: datetime):
         return await self._mutate(
-            "drive_change_run", sync_run_id, "commit_run",
+            "drive_change_run",
+            sync_run_id,
+            "commit_run",
             {"sync_run_id": sync_run_id, "now": now},
         )
 
-    async def mark_reconciliation_required(self, sync_run_id: UUID, *, reason: str, now: datetime):
+    async def mark_reconciliation_required(
+        self, sync_run_id: UUID, *, reason: str, now: datetime
+    ):
         return await self._mutate(
-            "drive_change_run", sync_run_id, "mark_reconciliation_required",
+            "drive_change_run",
+            sync_run_id,
+            "mark_reconciliation_required",
             {"sync_run_id": sync_run_id, "reason": reason, "now": now},
         )
 
@@ -144,7 +193,9 @@ class PostgreSQLDriveChangeRepository(DriveChangeRepository):
             await uow.rollback()  # type: ignore[attr-defined]
             if record is None:
                 return None
-            return await _repository_from_row(record).resolve_page(sync_run_id, page_token)
+            return await _repository_from_row(record).resolve_page(
+                sync_run_id, page_token
+            )
 
     async def _mutate(self, operation: str, identity: UUID, method: str, kwargs: dict):
         async with self._uow(operation, identity) as uow:
@@ -162,7 +213,9 @@ class PostgreSQLDriveChangeRepository(DriveChangeRepository):
             return result
 
     def _uow(self, operation: str, identity: UUID):
-        return self._uow_factory(self._context_factory(PersistenceOperation(operation), identity))
+        return self._uow_factory(
+            self._context_factory(PersistenceOperation(operation), identity)
+        )
 
 
 async def _find_run_id(uow: object, identity: UUID) -> UUID:
@@ -186,11 +239,15 @@ async def _load(uow: object, sync_run_id: UUID):
     return result.mappings().one_or_none()
 
 
-async def _insert(uow: object, run: DriveChangeRun, repository: InMemoryDriveChangeRepository):
+async def _insert(
+    uow: object, run: DriveChangeRun, repository: InMemoryDriveChangeRepository
+):
     await uow._execute(insert(drive_change_runs).values(**_columns(run, repository)))  # type: ignore[attr-defined]
 
 
-async def _save(uow: object, run: DriveChangeRun, pages: tuple[DriveChangePageRecord, ...]):
+async def _save(
+    uow: object, run: DriveChangeRun, pages: tuple[DriveChangePageRecord, ...]
+):
     payload = {
         "run": run.model_dump(mode="json"),
         "pages": [page.model_dump(mode="json") for page in pages],

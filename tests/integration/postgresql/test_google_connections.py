@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
@@ -35,6 +36,13 @@ from spine.infrastructure.connections.postgresql_google import (
     PostgreSQLGoogleConnectionRepository,
     google_connection_approvals,
 )
+from spine.infrastructure.persistence.postgresql_google_sheets_sync import (
+    PostgreSQLGoogleSheetsSyncRepository,
+)
+from spine.application.persistence.google_sheets_sync import (
+    GoogleSheetsSyncRunCommand,
+    GoogleSheetsSyncRunState,
+)
 from spine.infrastructure.db.migrations import upgrade_database
 from spine.infrastructure.db.operator import bootstrap_database_roles
 from spine.infrastructure.db.settings import (
@@ -52,7 +60,6 @@ from tests.contracts.connections.google_connection_repository_contract import (
     assert_google_connection_registration_replay_contract,
     assert_google_connection_successor_contract,
 )
-
 
 pytestmark = [pytest.mark.postgresql, pytest.mark.asyncio(loop_scope="session")]
 MIGRATION_ROLE = "spine_migration"
@@ -96,7 +103,9 @@ async def google_database(
         dispatcher_password=DISPATCHER_PASSWORD,
     )
     await bootstrap_database_roles(operator)
-    migration_url = _role_url(provision=postgresql_provision, role=MIGRATION_ROLE, password=MIGRATION_PASSWORD)
+    migration_url = _role_url(
+        provision=postgresql_provision, role=MIGRATION_ROLE, password=MIGRATION_PASSWORD
+    )
     await asyncio.to_thread(
         upgrade_database,
         MigrationDatabaseSettings(
@@ -149,9 +158,7 @@ async def google_database(
             # The session PostgreSQL target is shared across modules. Google
             # connection history is intentionally immutable, so reset this
             # disposable schema instead of deleting protected audit records.
-            await connection.execute(
-                text("DROP SCHEMA IF EXISTS spine CASCADE")
-            )
+            await connection.execute(text("DROP SCHEMA IF EXISTS spine CASCADE"))
         await migration_engine.dispose()
 
 
@@ -174,7 +181,9 @@ def _connection(
         workspace_id=WORKSPACE_ID,
         environment_id=ENVIRONMENT_ID,
         service_principal_id=SERVICE_PRINCIPAL_ID,
-        credential_reference=OpaqueGoogleReference(value=_id(case * 100 + 40 + version)),
+        credential_reference=OpaqueGoogleReference(
+            value=_id(case * 100 + 40 + version)
+        ),
         grant_reference=OpaqueGoogleReference(value=_id(case * 100 + 60 + version)),
         approved_resource_scope_references=(
             OpaqueGoogleReference(value=_id(case * 100 + 80)),
@@ -376,6 +385,103 @@ async def test_postgresql_runtime_cannot_mint_connection_approval(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_google_sheets_sync_ledger_survives_repository_recreation(
+    google_database: GoogleDatabase,
+) -> None:
+    from sqlalchemy import text
+
+    now = datetime(2026, 11, 27, tzinfo=timezone.utc)
+    run_id = _id(60801)
+    revision_id = _id(60802)
+    boundary = _boundary()
+
+    class UnitOfWork:
+        def __init__(self, connection):
+            self.connection = connection
+
+        async def _execute(self, statement):
+            return await self.connection.execute(statement)
+
+        async def commit(self):
+            await self.connection.commit()
+
+        async def rollback(self):
+            await self.connection.rollback()
+
+    @asynccontextmanager
+    async def uow_factory(context):
+        async with google_database.runtime_engine.connect() as connection:
+            await connection.begin()
+            await connection.execute(
+                text(
+                    "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                    "set_config('spine.environment_id', :environment_id, true)"
+                ),
+                {
+                    "workspace_id": str(WORKSPACE_ID),
+                    "environment_id": str(ENVIRONMENT_ID),
+                },
+            )
+            yield UnitOfWork(connection)
+
+    repository = PostgreSQLGoogleSheetsSyncRepository(
+        uow_factory=uow_factory,
+        context_factory=lambda operation, identity: _context(
+            boundary, operation=operation.value
+        ),
+    )
+    command = GoogleSheetsSyncRunCommand(
+        sync_run_id=run_id,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        connection_id=_id(60803),
+        resource_scope_reference=_id(60804),
+        service_principal_id=SERVICE_PRINCIPAL_ID,
+        access_policy_version_id=_id(60805),
+        authorization_generation=1,
+        configuration_generation=1,
+        scope_set_digest="a" * 64,
+        command_identity="google-sheets:drive-change:608",
+        idempotency_key="google-sheets:drive-change:608",
+        prior_committed_cursor="cursor-old",
+        proposed_cursor="cursor-new",
+        requested_at=now,
+    )
+    await repository.start_run(command)
+    page = await repository.open_page(
+        sync_run_id=run_id,
+        scope_identity="google-sheets-scope:v1:test",
+        page_token=None,
+        next_page_token="page-2",
+        provider_version="version-1",
+        identities=("estimate:608",),
+        now=now,
+    )
+    await repository.mark_item_succeeded(
+        page.items[0].item_id, revision_id=revision_id, now=now
+    )
+    await repository.complete_page(page.page_id, now=now)
+    await repository.mark_run(
+        run_id, state=GoogleSheetsSyncRunState.SUCCEEDED, failure_code=None, now=now
+    )
+
+    reopened = PostgreSQLGoogleSheetsSyncRepository(
+        uow_factory=uow_factory,
+        context_factory=lambda operation, identity: _context(
+            boundary, operation=operation.value
+        ),
+    )
+    persisted = await reopened.resolve_run(run_id)
+    persisted_pages = await reopened.list_pages(run_id)
+
+    assert persisted is not None
+    assert persisted.state is GoogleSheetsSyncRunState.SUCCEEDED
+    assert persisted.proposed_cursor == "cursor-new"
+    assert len(persisted_pages) == 1
+    assert persisted_pages[0].items[0].revision_id == revision_id
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_postgresql_rls_hides_other_workspace(
     google_database: GoogleDatabase,
 ) -> None:
@@ -394,7 +500,9 @@ async def test_postgresql_rls_hides_other_workspace(
         async with scenario.repository.admit_read(
             GoogleReadCommand(
                 connection_id=scenario.initial.connection_id,
-                resource_scope_reference=scenario.initial.approved_resource_scope_references[0],
+                resource_scope_reference=scenario.initial.approved_resource_scope_references[
+                    0
+                ],
                 authorization_generation=1,
                 configuration_generation=1,
             ),
