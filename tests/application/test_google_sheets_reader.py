@@ -11,18 +11,22 @@ from spine.connectors.google_sheets import (
     GoogleSheetsConcurrentModificationError,
     GoogleSheetsDeveloperMetadata,
     GoogleSheetsProviderAdapter,
+    GoogleSheetsReconciliationProviderAdapter,
     GoogleSheetsReadProfile,
+    GoogleSheetsRangePage,
     GoogleSheetsRowData,
     GoogleSheetsSnapshot,
     GoogleSheetsConfiguredScopeError,
     GoogleSheetsUnsafeIdentityError,
 )
-from spine.domain.artifacts import GoogleSheetCellLocator, resolve_google_sheet_cell_locator
+from spine.domain.artifacts import (
+    GoogleSheetCellLocator,
+    resolve_google_sheet_cell_locator,
+)
 from spine.domain.sources.google import (
     GoogleSheetNumberFormat,
     GoogleSheetCellValue,
 )
-
 
 NOW = datetime(2026, 10, 26, 12, tzinfo=timezone.utc)
 CONNECTION = UUID("30000000-0000-4000-8000-000000000001")
@@ -107,7 +111,7 @@ def _row(
                 effective=GoogleSheetCellValue(kind="number", value="1250.500"),
                 formatted="1 250,50 ₽",
                 number_format=GoogleSheetNumberFormat(
-                    type="CURRENCY", pattern='#,##0.00 [$₽-ru-RU]'
+                    type="CURRENCY", pattern="#,##0.00 [$₽-ru-RU]"
                 ),
             ),
             _cell(
@@ -194,7 +198,7 @@ async def test_sheets_reader_preserves_all_configured_cell_representations_and_c
     assert observation.original.cells[1].entered.kind == "formula"
     assert observation.original.cells[1].effective.value == "1250.5"
     assert observation.original.cells[1].formatted == "1 250,50 ₽"
-    assert observation.original.cells[1].number_format.pattern == '#,##0.00 [$₽-ru-RU]'
+    assert observation.original.cells[1].number_format.pattern == "#,##0.00 [$₽-ru-RU]"
     assert observation.location.observed_row_number == 2
     assert observation.location.observed_a1_range == "A2:C2"
     assert observation.location.developer_metadata_id == 9001
@@ -203,6 +207,145 @@ async def test_sheets_reader_preserves_all_configured_cell_representations_and_c
     assert normalized.original_bytes.startswith(b'{"cells":')
     assert normalized.provider_version_before == "1"
     assert normalized.provider_version_after == "1"
+
+
+@pytest.mark.asyncio
+async def test_sheets_range_reader_returns_all_rows_with_range_page_and_version_guards():
+    snapshot = _snapshot(
+        _row(business_id="EST-2026-0001", row_number=2),
+        _row(business_id="EST-2026-0002", row_number=3, metadata_value="EST-2026-0002"),
+    )
+
+    class PagedSheetsService(FakeSheetsService):
+        async def get_spreadsheet_range_page(
+            self,
+            connection,
+            resource_scope_reference,
+            spreadsheet_id,
+            sheet_id,
+            a1_range,
+            page_token,
+        ):
+            del connection, resource_scope_reference
+            assert (spreadsheet_id, sheet_id, a1_range, page_token) == (
+                "spreadsheet-456",
+                17,
+                "A2:C100",
+                "page-1",
+            )
+            return GoogleSheetsRangePage(
+                spreadsheet_id=spreadsheet_id,
+                sheet_id=sheet_id,
+                a1_range=a1_range,
+                page_token=page_token,
+                next_page_token="page-2",
+                complete=True,
+                provider_version_before="22",
+                provider_version_after="22",
+                snapshot=snapshot,
+            )
+
+    connection = SimpleNamespace(
+        connection_id=CONNECTION,
+        workspace_id=UUID("10000000-0000-4000-8000-000000000001"),
+        environment_id=UUID("20000000-0000-4000-8000-000000000001"),
+    )
+    command = SimpleNamespace(
+        resource_scope_reference=SimpleNamespace(value=SCOPE),
+        authorization_generation=7,
+        configuration_generation=11,
+        a1_range="A2:C100",
+        provider_page_token="page-1",
+    )
+
+    result = await GoogleSheetsProviderAdapter(
+        service=PagedSheetsService(snapshot), profile=_profile(), clock=lambda: NOW
+    ).read_page(connection, command)
+
+    assert result.page_token == "page-1"
+    assert result.next_page_token == "page-2"
+    assert result.provider_version_before == result.provider_version_after == "22"
+    assert [row.original.key.immutable_business_id for row in result.observations] == [
+        "EST-2026-0001",
+        "EST-2026-0002",
+    ]
+    assert all(
+        row.to_normalized_observation().provider_version_after == "22"
+        for row in result.observations
+    )
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_provider_selects_the_profile_for_each_configured_sheet():
+    second_snapshot = GoogleSheetsSnapshot(
+        spreadsheet_id="spreadsheet-456",
+        sheet_id=18,
+        sheet_title="Archived estimates",
+        locale="ru_RU",
+        time_zone="Europe/Moscow",
+        rows=(
+            _row(
+                business_id="EST-2025-0001",
+                row_number=2,
+                metadata_value="EST-2025-0001",
+            ),
+        ),
+    )
+
+    class MultiSheetService:
+        async def get_spreadsheet_range_page(
+            self,
+            connection,
+            resource_scope_reference,
+            spreadsheet_id,
+            sheet_id,
+            a1_range,
+            page_token,
+        ):
+            del connection, resource_scope_reference
+            assert (spreadsheet_id, a1_range, page_token) == (
+                "spreadsheet-456",
+                "A2:C100",
+                None,
+            )
+            return GoogleSheetsRangePage(
+                spreadsheet_id=spreadsheet_id,
+                sheet_id=sheet_id,
+                a1_range=a1_range,
+                page_token=None,
+                next_page_token=None,
+                complete=True,
+                provider_version_before="23",
+                provider_version_after="23",
+                snapshot=second_snapshot,
+            )
+
+    connection = SimpleNamespace(
+        connection_id=CONNECTION,
+        workspace_id=UUID("10000000-0000-4000-8000-000000000001"),
+        environment_id=UUID("20000000-0000-4000-8000-000000000001"),
+    )
+    provider = GoogleSheetsReconciliationProviderAdapter(
+        service=MultiSheetService(),
+        profiles=(_profile(), _profile(sheet_id=18)),
+        clock=lambda: NOW,
+    )
+    result = await provider.read(
+        connection,
+        SimpleNamespace(
+            connection_id=CONNECTION,
+            resource_scope_reference=SimpleNamespace(value=SCOPE),
+            resource_object_reference="spreadsheet-456",
+            sheet_id=18,
+            a1_range="A2:C100",
+            provider_page_token=None,
+            authorization_generation=7,
+            configuration_generation=11,
+        ),
+    )
+
+    assert result.sheet_id == 18
+    assert result.observations[0].original.key.immutable_business_id == "EST-2025-0001"
 
 
 @pytest.mark.asyncio
@@ -216,14 +359,20 @@ async def test_sheets_location_changes_preserve_content_digest_and_append_locato
             sheet_title="Renamed estimates",
             locale="ru_RU",
             time_zone="Europe/Moscow",
-            rows=(moved_row.model_copy(update={"developer_metadata": (
-                GoogleSheetsDeveloperMetadata(
-                    metadata_id=9002,
-                    key="spine.business_id",
-                    value="EST-2026-0001",
-                    row_number=5,
+            rows=(
+                moved_row.model_copy(
+                    update={
+                        "developer_metadata": (
+                            GoogleSheetsDeveloperMetadata(
+                                metadata_id=9002,
+                                key="spine.business_id",
+                                value="EST-2026-0001",
+                                row_number=5,
+                            ),
+                        )
+                    }
                 ),
-            )}),),
+            ),
         )
     )
     second = _provider(second_service)
@@ -246,7 +395,10 @@ async def test_sheets_location_changes_preserve_content_digest_and_append_locato
     assert first_normalized.original_bytes == second_normalized.original_bytes
     assert first_normalized.event_digest == second_normalized.event_digest
     assert first_normalized.event_identity != second_normalized.event_identity
-    assert first_normalized.origin_locator_digest != second_normalized.origin_locator_digest
+    assert (
+        first_normalized.origin_locator_digest
+        != second_normalized.origin_locator_digest
+    )
     assert first_normalized.origin_locator_value == "sheet-row:2:a1:a2:c2"
     assert second_normalized.origin_locator_value == "sheet-row:5:a1:a5:c5"
 
@@ -428,8 +580,8 @@ async def test_sheets_row_locator_resolves_only_the_stored_revision_representati
     (
         ((_row(business_id=""),), "business ID"),
         ((_row(), _row(row_number=3)), "duplicate business ID"),
-            ((_row(effective_business_id="OTHER-ROW"),), "conflicting business ID"),
-            ((_row(metadata_value="OTHER-ROW"),), "Metadata"),
+        ((_row(effective_business_id="OTHER-ROW"),), "conflicting business ID"),
+        ((_row(metadata_value="OTHER-ROW"),), "Metadata"),
     ),
 )
 async def test_sheets_reader_rejects_unsafe_row_identity_before_normalization(
@@ -466,7 +618,9 @@ async def test_sheets_reader_rejects_unconfigured_sheet_identity() -> None:
         )
     )
 
-    with pytest.raises(GoogleSheetsConfiguredScopeError, match="configured spreadsheet"):
+    with pytest.raises(
+        GoogleSheetsConfiguredScopeError, match="configured spreadsheet"
+    ):
         await _provider(service).read(
             SimpleNamespace(
                 connection_id=CONNECTION,

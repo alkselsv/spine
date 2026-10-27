@@ -641,6 +641,24 @@ async def test_authorized_normalized_observation_reaches_canonical_and_projectio
 
 
 @pytest.mark.asyncio
+async def test_pre_read_normalized_observation_uses_canonical_and_projection_handoffs():
+    orchestrator, reader, uploader, ingestion, uow = _orchestrator()
+
+    result = await orchestrator.ingest_observation(_command(), _observation())
+
+    assert reader.calls == 0
+    assert uploader.calls == 1
+    assert result.status is ConnectorIngestionStatus.SUCCEEDED
+    assert result.source.external_object_id == (
+        result.observation.external_identity.external_object_id
+    )
+    assert result.processing_receipt.output_digest == result.revision.revision_digest
+    assert ingestion.observation is not None
+    assert len(uow.events) == 1
+    assert uow.events[0].event_type == "ingestion.projection.requested"
+
+
+@pytest.mark.asyncio
 async def test_google_sheets_reader_reaches_shared_canonical_and_projection_handoff():
     reader = _SheetsHandoffReader()
     orchestrator, _, uploader, ingestion, uow = _orchestrator(reader=reader)

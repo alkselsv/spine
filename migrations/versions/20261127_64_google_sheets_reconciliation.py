@@ -8,7 +8,6 @@ from sqlalchemy.dialects import postgresql
 
 from spine.infrastructure.db.settings import MigrationDatabaseSettings
 
-
 revision = "20261127_64"
 down_revision = "20261126_63"
 branch_labels = None
@@ -32,8 +31,12 @@ def upgrade() -> None:
         sa.Column("workspace_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("environment_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("connection_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("resource_scope_reference", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("service_principal_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column(
+            "resource_scope_reference", postgresql.UUID(as_uuid=True), nullable=False
+        ),
+        sa.Column(
+            "service_principal_id", postgresql.UUID(as_uuid=True), nullable=False
+        ),
         sa.Column("idempotency_key", sa.Text(), nullable=False),
         sa.Column("state", sa.String(length=32), nullable=False),
         sa.Column("prior_committed_cursor", sa.Text()),
@@ -42,7 +45,12 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("sync_run_id", name="pk_google_sheets_sync_runs"),
-        sa.UniqueConstraint("workspace_id", "environment_id", "idempotency_key", name="uq_google_sheets_sync_runs_idempotency"),
+        sa.UniqueConstraint(
+            "workspace_id",
+            "environment_id",
+            "idempotency_key",
+            name="uq_google_sheets_sync_runs_idempotency",
+        ),
         sa.ForeignKeyConstraint(
             ["workspace_id", "environment_id"],
             [f"{SCHEMA}.environments.workspace_id", f"{SCHEMA}.environments.id"],
@@ -54,7 +62,9 @@ def upgrade() -> None:
         ),
         schema=SCHEMA,
     )
-    op.execute(f"ALTER TABLE {SCHEMA}.google_sheets_sync_runs ENABLE ROW LEVEL SECURITY")
+    op.execute(
+        f"ALTER TABLE {SCHEMA}.google_sheets_sync_runs ENABLE ROW LEVEL SECURITY"
+    )
     op.execute(f"ALTER TABLE {SCHEMA}.google_sheets_sync_runs FORCE ROW LEVEL SECURITY")
     op.execute(
         f"CREATE POLICY pol_google_sheets_sync_runs_tenant_isolation ON {SCHEMA}.google_sheets_sync_runs "
@@ -69,7 +79,9 @@ def upgrade() -> None:
         f"FOR ALL TO {migration_role} USING (true) WITH CHECK (true)"
     )
     op.execute(f"REVOKE ALL ON {SCHEMA}.google_sheets_sync_runs FROM {runtime_role}")
-    op.execute(f"GRANT SELECT, INSERT, UPDATE ON {SCHEMA}.google_sheets_sync_runs TO {runtime_role}")
+    op.execute(
+        f"GRANT SELECT, INSERT, UPDATE ON {SCHEMA}.google_sheets_sync_runs TO {runtime_role}"
+    )
     op.execute(
         f"COMMENT ON TABLE {SCHEMA}.google_sheets_sync_runs IS "
         "'classification=tenant_operational_state; provider_content=forbidden; "

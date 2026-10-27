@@ -44,7 +44,6 @@ from spine.domain.sources.google import (
     google_source_identity,
 )
 
-
 GOOGLE_SHEETS_ROW_LOCATOR = "locator:google-sheet-cell:v1"
 GOOGLE_SHEETS_ROW_MEDIA_TYPE = "application/vnd.spine.google-sheet-row+json"
 GOOGLE_SHEETS_PROVIDER_MEDIA_TYPE = "application/vnd.google-apps.spreadsheet"
@@ -155,6 +154,35 @@ class GoogleSheetsSnapshot(DefinitionModel):
     rows: tuple[GoogleSheetsRowData, ...] = Field(max_length=4096)
 
 
+class GoogleSheetsProviderPage(DefinitionModel):
+    """One version-guarded page read from an explicitly configured A1 range."""
+
+    spreadsheet_id: StrictStr = Field(min_length=1, max_length=1024)
+    sheet_id: StrictInt = Field(ge=0)
+    a1_range: StrictStr = Field(min_length=1, max_length=1024)
+    page_token: StrictStr | None = Field(default=None, max_length=4096)
+    next_page_token: StrictStr | None = Field(default=None, max_length=4096)
+    complete: bool
+    provider_version_before: StrictStr = Field(min_length=1, max_length=128)
+    provider_version_after: StrictStr = Field(min_length=1, max_length=128)
+    snapshot: GoogleSheetsSnapshot
+    observations: tuple[GoogleSheetsObservation, ...] = ()
+
+
+class GoogleSheetsRangePage(DefinitionModel):
+    """Raw page response returned by the fakeable Sheets range service."""
+
+    spreadsheet_id: StrictStr = Field(min_length=1, max_length=1024)
+    sheet_id: StrictInt = Field(ge=0)
+    a1_range: StrictStr = Field(min_length=1, max_length=1024)
+    page_token: StrictStr | None = Field(default=None, max_length=4096)
+    next_page_token: StrictStr | None = Field(default=None, max_length=4096)
+    complete: bool
+    provider_version_before: StrictStr = Field(min_length=1, max_length=128)
+    provider_version_after: StrictStr = Field(min_length=1, max_length=128)
+    snapshot: GoogleSheetsSnapshot
+
+
 class GoogleSheetsService(Protocol):
     """Fakeable boundary for the official Sheets spreadsheet read semantics."""
 
@@ -172,6 +200,16 @@ class GoogleSheetsService(Protocol):
         spreadsheet_id: str,
         sheet_id: int,
     ) -> GoogleSheetsSnapshot: ...
+
+    async def get_spreadsheet_range_page(
+        self,
+        connection: GoogleConnection,
+        resource_scope_reference: OpaqueGoogleReference,
+        spreadsheet_id: str,
+        sheet_id: int,
+        a1_range: str,
+        page_token: str | None,
+    ) -> GoogleSheetsRangePage: ...
 
 
 class _ConnectorReadCommand(Protocol):
@@ -285,7 +323,11 @@ class GoogleSheetsProviderAdapter(GoogleProvider[GoogleSheetsObservation]):
             command.resource_scope_reference,
             self.profile.spreadsheet_id,
         )
-        if not version_before or len(version_before) > 128 or version_before != version_after:
+        if (
+            not version_before
+            or len(version_before) > 128
+            or version_before != version_after
+        ):
             raise GoogleSheetsConcurrentModificationError(
                 "Google Sheets spreadsheet changed during guarded read."
             )
@@ -297,10 +339,106 @@ class GoogleSheetsProviderAdapter(GoogleProvider[GoogleSheetsObservation]):
             raise GoogleSheetsConfiguredScopeError(
                 "Sheets response is outside the configured sheet."
             )
-        selected = self._select_row(snapshot, connection.connection_id)
+        selected_rows = self._select_rows(snapshot, connection.connection_id)
+        if len(selected_rows) != 1:
+            raise GoogleSheetsUnsafeIdentityError(
+                "configured Sheets scope must contain exactly one row"
+            )
         now = self.clock()
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("Google Sheets reader clock must be timezone-aware")
+        return self._observation(
+            connection,
+            command,
+            snapshot,
+            selected_rows[0],
+            version_before,
+            version_after,
+            now,
+        )
+
+    async def read_page(
+        self,
+        connection: GoogleConnection,
+        command: GoogleReadCommand,
+    ) -> GoogleSheetsProviderPage:
+        if command.a1_range is None:
+            raise GoogleSheetsConfiguredScopeError(
+                "Sheets reconciliation requires an explicitly configured A1 range."
+            )
+        if self.profile.target_business_id is not None:
+            raise GoogleSheetsConfiguredScopeError(
+                "Sheets reconciliation cannot use a row-targeted profile."
+            )
+        response = await self.service.get_spreadsheet_range_page(
+            connection,
+            command.resource_scope_reference,
+            self.profile.spreadsheet_id,
+            self.profile.sheet_id,
+            command.a1_range,
+            command.provider_page_token,
+        )
+        if (
+            response.spreadsheet_id != self.profile.spreadsheet_id
+            or response.sheet_id != self.profile.sheet_id
+            or response.a1_range != command.a1_range
+            or response.page_token != command.provider_page_token
+            or response.snapshot.spreadsheet_id != self.profile.spreadsheet_id
+            or response.snapshot.sheet_id != self.profile.sheet_id
+        ):
+            raise GoogleSheetsConfiguredScopeError(
+                "Sheets range page is outside its configured spreadsheet/sheet/range."
+            )
+        if (
+            not response.provider_version_before
+            or response.provider_version_before != response.provider_version_after
+        ):
+            raise GoogleSheetsConcurrentModificationError(
+                "Google Sheets spreadsheet changed during guarded range read."
+            )
+        now = self.clock()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("Google Sheets reader clock must be timezone-aware")
+        selected_rows = (
+            self._select_rows(response.snapshot, connection.connection_id)
+            if response.snapshot.rows
+            else []
+        )
+        observations = tuple(
+            self._observation(
+                connection,
+                command,
+                response.snapshot,
+                selected,
+                response.provider_version_before,
+                response.provider_version_after,
+                now,
+            )
+            for selected in selected_rows
+        )
+        return GoogleSheetsProviderPage(
+            spreadsheet_id=response.spreadsheet_id,
+            sheet_id=response.sheet_id,
+            a1_range=response.a1_range,
+            page_token=response.page_token,
+            next_page_token=response.next_page_token,
+            complete=response.complete,
+            provider_version_before=response.provider_version_before,
+            provider_version_after=response.provider_version_after,
+            snapshot=response.snapshot,
+            observations=observations,
+        )
+
+    def _observation(
+        self,
+        connection: GoogleConnection,
+        command: GoogleReadCommand,
+        snapshot: GoogleSheetsSnapshot,
+        selected: tuple[GoogleSheetRowOriginal, GoogleSheetRowLocation],
+        version_before: str,
+        version_after: str,
+        observed_at: datetime,
+    ) -> GoogleSheetsObservation:
         return GoogleSheetsObservation(
             workspace_id=connection.workspace_id,
             environment_id=connection.environment_id,
@@ -312,13 +450,13 @@ class GoogleSheetsProviderAdapter(GoogleProvider[GoogleSheetsObservation]):
             location=selected[1],
             provider_version_before=version_before,
             provider_version_after=version_after,
-            observed_at=now,
-            received_at=now,
+            observed_at=observed_at,
+            received_at=observed_at,
         )
 
-    def _select_row(
+    def _select_rows(
         self, snapshot: GoogleSheetsSnapshot, connection_id: UUID
-    ) -> tuple[GoogleSheetRowOriginal, GoogleSheetRowLocation]:
+    ) -> list[tuple[GoogleSheetRowOriginal, GoogleSheetRowLocation]]:
         identities: dict[str, int] = {}
         candidates: list[tuple[GoogleSheetRowOriginal, GoogleSheetRowLocation]] = []
         configured = {column.column_key: column for column in self.profile.columns}
@@ -391,11 +529,7 @@ class GoogleSheetsProviderAdapter(GoogleProvider[GoogleSheetsObservation]):
                 raise GoogleSheetsUnsafeIdentityError(
                     "configured business ID is missing from the observed Sheets scope"
                 )
-        if len(candidates) != 1:
-            raise GoogleSheetsUnsafeIdentityError(
-                "configured Sheets scope contains more than one row"
-            )
-        return candidates[0]
+        return candidates
 
     def _validate_metadata(
         self, row: GoogleSheetsRowData, business_id: str
@@ -416,6 +550,7 @@ class GoogleSheetsProviderAdapter(GoogleProvider[GoogleSheetsObservation]):
                 "configured Developer Metadata does not match the business ID"
             )
         return matches[0].metadata_id
+
 
 @dataclass(frozen=True, slots=True)
 class GoogleSheetsObservationReader:
@@ -442,13 +577,56 @@ class GoogleSheetsObservationReader:
         return observation.to_normalized_observation()
 
 
+@dataclass(frozen=True, slots=True)
+class GoogleSheetsReconciliationProviderAdapter(
+    GoogleProvider[GoogleSheetsProviderPage]
+):
+    """Expose the paginated range read through the Google admission port."""
+
+    service: GoogleSheetsService
+    profiles: tuple[GoogleSheetsReadProfile, ...]
+    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
+
+    def __post_init__(self) -> None:
+        keys = tuple(
+            (profile.spreadsheet_id, profile.sheet_id) for profile in self.profiles
+        )
+        if len(set(keys)) != len(keys):
+            raise ValueError(
+                "Google Sheets reconciliation profiles must be unique by sheet"
+            )
+
+    async def read(
+        self, connection: GoogleConnection, command: GoogleReadCommand
+    ) -> GoogleSheetsProviderPage:
+        if command.resource_object_reference is None or command.sheet_id is None:
+            raise GoogleSheetsConfiguredScopeError(
+                "Sheets range read requires a spreadsheet and numeric sheet ID."
+            )
+        profile = next(
+            (
+                candidate
+                for candidate in self.profiles
+                if candidate.spreadsheet_id == command.resource_object_reference
+                and candidate.sheet_id == command.sheet_id
+            ),
+            None,
+        )
+        if profile is None:
+            raise GoogleSheetsConfiguredScopeError(
+                "Sheets range read is outside the configured profiles."
+            )
+        provider = GoogleSheetsProviderAdapter(
+            service=self.service, profile=profile, clock=self.clock
+        )
+        return await provider.read_page(connection, command)
+
+
 GoogleSheetsProvider = GoogleSheetsProviderAdapter
 GoogleSheetsReader = GoogleSheetsObservationReader
 
 
-def _business_id(
-    entered: GoogleSheetCellValue, effective: GoogleSheetCellValue
-) -> str:
+def _business_id(entered: GoogleSheetCellValue, effective: GoogleSheetCellValue) -> str:
     if entered.kind != "string" or not isinstance(entered.value, str):
         raise GoogleSheetsUnsafeIdentityError(
             "business ID must be a non-empty entered string"
@@ -457,9 +635,7 @@ def _business_id(
     if not value or not value.strip():
         raise GoogleSheetsUnsafeIdentityError("business ID is missing")
     if effective.kind != "string" or effective.value != value:
-        raise GoogleSheetsUnsafeIdentityError(
-            "conflicting business ID representations"
-        )
+        raise GoogleSheetsUnsafeIdentityError("conflicting business ID representations")
     return value
 
 
@@ -490,6 +666,7 @@ __all__ = [
     "GoogleSheetsDeveloperMetadata",
     "GoogleSheetsObservation",
     "GoogleSheetsObservationReader",
+    "GoogleSheetsReconciliationProviderAdapter",
     "GoogleSheetsProvider",
     "GoogleSheetsProviderAdapter",
     "GoogleSheetsReadProfile",

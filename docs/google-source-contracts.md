@@ -207,11 +207,16 @@ terminal ignored outcome; deletion/tombstone policy remains outside this slice.
 ## Sheets full reconciliation
 
 Issue #608 adds a bounded row reconciliation invoked either by a Drive
-spreadsheet change wake-up or by a periodic full-scan command. The caller
-supplies the approved immutable spreadsheet/sheet/A1-range set from the current
-connection configuration. The coordinator reads every page in every configured
-range and requires each page to be complete, correctly scoped and guarded by
-one stable spreadsheet provider version before it starts canonical ingestion.
+spreadsheet change wake-up or by a periodic full-scan command. The Drive change
+coordinator routes configured spreadsheet IDs to the Sheets wake-up adapter;
+the Drive item becomes terminal with a reconciliation-run reference only after
+that run succeeds, so the Drive cursor cannot advance ahead of the sheet work.
+The caller supplies the approved immutable spreadsheet/sheet/A1-range set from
+the current connection configuration. The admitted page reader selects the
+versioned row profile for each spreadsheet/sheet pair and requests every
+configured range and page. It requires each page to be complete, correctly
+scoped and guarded by one stable spreadsheet provider version before it starts
+canonical ingestion.
 
 The durable tenant-scoped run ledger stores only opaque row identities,
 revision references, safe state/failure codes, configured scope identities,

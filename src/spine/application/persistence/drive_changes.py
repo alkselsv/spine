@@ -29,6 +29,7 @@ class DriveChangePageState(str, Enum):
 class DriveChangeItemState(str, Enum):
     PENDING = "pending"
     SUCCEEDED = "succeeded"
+    RECONCILED = "reconciled"
     IGNORED = "ignored"
     FAILED = "failed"
 
@@ -84,7 +85,10 @@ class DriveChangeRun(DefinitionModel):
                 raise ValueError("Drive change timestamps must be timezone-aware")
         if self.state is DriveChangeRunState.SUCCEEDED and not self.proposed_cursor:
             raise ValueError("successful Drive change runs require a proposed cursor")
-        if self.state is DriveChangeRunState.RECONCILIATION_REQUIRED and not self.reconciliation_reason:
+        if (
+            self.state is DriveChangeRunState.RECONCILIATION_REQUIRED
+            and not self.reconciliation_reason
+        ):
             raise ValueError("reconciliation-required runs require a safe reason")
         return self
 
@@ -101,6 +105,7 @@ class DriveChangeItemRecord(DefinitionModel):
     input_ordinal: int = Field(gt=0)
     state: DriveChangeItemState = DriveChangeItemState.PENDING
     outcome_revision_id: UUID | None = None
+    outcome_reconciliation_id: UUID | None = None
     failure_code: str | None = Field(default=None, max_length=64)
     updated_at: datetime
 
@@ -108,11 +113,33 @@ class DriveChangeItemRecord(DefinitionModel):
     def validate_outcome(self) -> "DriveChangeItemRecord":
         if self.outcome_revision_id is not None and self.outcome_revision_id.int == 0:
             raise ValueError("outcome_revision_id must be non-zero")
+        if (
+            self.outcome_reconciliation_id is not None
+            and self.outcome_reconciliation_id.int == 0
+        ):
+            raise ValueError("outcome_reconciliation_id must be non-zero")
         if self.state is DriveChangeItemState.SUCCEEDED:
-            if self.outcome_revision_id is None or self.failure_code is not None:
+            if (
+                self.outcome_revision_id is None
+                or self.outcome_reconciliation_id is not None
+                or self.failure_code is not None
+            ):
                 raise ValueError("successful items require a revision and no failure")
+        if self.state is DriveChangeItemState.RECONCILED:
+            if (
+                self.outcome_reconciliation_id is None
+                or self.outcome_revision_id is not None
+                or self.failure_code is not None
+            ):
+                raise ValueError(
+                    "reconciled items require a reconciliation and no failure"
+                )
         if self.state in {DriveChangeItemState.IGNORED, DriveChangeItemState.FAILED}:
-            if self.failure_code is None or self.outcome_revision_id is not None:
+            if (
+                self.failure_code is None
+                or self.outcome_revision_id is not None
+                or self.outcome_reconciliation_id is not None
+            ):
                 raise ValueError("non-processed items require a safe failure code")
         return self
 
@@ -136,7 +163,9 @@ class DriveChangePageRecord(DefinitionModel):
         if self.page_id.int == 0 or self.sync_run_id.int == 0:
             raise ValueError("Drive change page IDs must be non-zero")
         for value in (self.created_at, self.completed_at):
-            if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            if value is not None and (
+                value.tzinfo is None or value.utcoffset() is None
+            ):
                 raise ValueError("Drive change page timestamps must be timezone-aware")
         if len({item.item_id for item in self.items}) != len(self.items):
             raise ValueError("Drive change item IDs must be unique")
@@ -181,10 +210,16 @@ class DriveChangeRepository(Protocol):
         self, sync_run_id: UUID, page_token: str
     ) -> DriveChangePageRecord | None: ...
 
-    async def list_pages(self, sync_run_id: UUID) -> tuple[DriveChangePageRecord, ...]: ...
+    async def list_pages(
+        self, sync_run_id: UUID
+    ) -> tuple[DriveChangePageRecord, ...]: ...
 
     async def mark_item_succeeded(
         self, item_id: UUID, *, revision_id: UUID, now: datetime
+    ) -> DriveChangeItemRecord: ...
+
+    async def mark_item_reconciled(
+        self, item_id: UUID, *, reconciliation_id: UUID, now: datetime
     ) -> DriveChangeItemRecord: ...
 
     async def mark_item_ignored(
@@ -195,7 +230,9 @@ class DriveChangeRepository(Protocol):
         self, item_id: UUID, *, failure_code: str, now: datetime
     ) -> DriveChangeItemRecord: ...
 
-    async def complete_page(self, page_id: UUID, *, now: datetime) -> DriveChangePageRecord: ...
+    async def complete_page(
+        self, page_id: UUID, *, now: datetime
+    ) -> DriveChangePageRecord: ...
 
     async def mark_page_incomplete(
         self, page_id: UUID, *, now: datetime
@@ -205,9 +242,13 @@ class DriveChangeRepository(Protocol):
         self, sync_run_id: UUID, *, next_page_token: str, now: datetime
     ) -> DriveChangeRun: ...
 
-    async def mark_resumable(self, sync_run_id: UUID, *, now: datetime) -> DriveChangeRun: ...
+    async def mark_resumable(
+        self, sync_run_id: UUID, *, now: datetime
+    ) -> DriveChangeRun: ...
 
-    async def commit_run(self, sync_run_id: UUID, *, now: datetime) -> DriveChangeRun: ...
+    async def commit_run(
+        self, sync_run_id: UUID, *, now: datetime
+    ) -> DriveChangeRun: ...
 
     async def mark_reconciliation_required(
         self, sync_run_id: UUID, *, reason: str, now: datetime
@@ -241,7 +282,9 @@ class InMemoryDriveChangeRepository:
     ) -> "InMemoryDriveChangeRepository":
         repository = cls()
         repository.runs[run.sync_run_id] = run
-        repository._run_keys[(run.workspace_id, run.environment_id, run.idempotency_key)] = run.sync_run_id
+        repository._run_keys[
+            (run.workspace_id, run.environment_id, run.idempotency_key)
+        ] = run.sync_run_id
         for page in pages:
             repository.pages[page.page_id] = page
             repository._page_keys[(run.sync_run_id, page.page_token)] = page.page_id
@@ -254,7 +297,9 @@ class InMemoryDriveChangeRepository:
     ) -> tuple[DriveChangeRun, tuple[DriveChangePageRecord, ...]]:
         return (
             self.runs[sync_run_id],
-            tuple(page for page in self.pages.values() if page.sync_run_id == sync_run_id),
+            tuple(
+                page for page in self.pages.values() if page.sync_run_id == sync_run_id
+            ),
         )
 
     async def start_run(self, command: DriveChangeRunCommand) -> DriveChangeRun:
@@ -265,14 +310,19 @@ class InMemoryDriveChangeRepository:
             if any(
                 (
                     existing.connection_id != command.connection_id,
-                    existing.resource_scope_reference != command.resource_scope_reference,
+                    existing.resource_scope_reference
+                    != command.resource_scope_reference,
                     existing.service_principal_id != command.service_principal_id,
-                    existing.authorization_generation != command.authorization_generation,
-                    existing.configuration_generation != command.configuration_generation,
+                    existing.authorization_generation
+                    != command.authorization_generation,
+                    existing.configuration_generation
+                    != command.configuration_generation,
                     existing.last_committed_cursor != command.last_committed_cursor,
                 )
             ):
-                raise DriveChangeSyncConflictError("Drive change command conflicts with durable state")
+                raise DriveChangeSyncConflictError(
+                    "Drive change command conflicts with durable state"
+                )
             return existing
         run = DriveChangeRun(
             sync_run_id=command.sync_run_id,
@@ -314,11 +364,18 @@ class InMemoryDriveChangeRepository:
                     for item in existing.items
                 )
                 != tuple(
-                    (change.change_key, change.file_id, change.provider_version, change.removed)
+                    (
+                        change.change_key,
+                        change.file_id,
+                        change.provider_version,
+                        change.removed,
+                    )
                     for change in kwargs["changes"]
                 )
             ):
-                raise DriveChangeSyncConflictError("Drive change page conflicts with durable state")
+                raise DriveChangeSyncConflictError(
+                    "Drive change page conflicts with durable state"
+                )
             return existing
         page_id = uuid5(
             NAMESPACE_URL,
@@ -361,9 +418,13 @@ class InMemoryDriveChangeRepository:
         return self.pages.get(page_id) if page_id is not None else None
 
     async def list_pages(self, sync_run_id: UUID):
-        return tuple(page for page in self.pages.values() if page.sync_run_id == sync_run_id)
+        return tuple(
+            page for page in self.pages.values() if page.sync_run_id == sync_run_id
+        )
 
-    async def mark_item_succeeded(self, item_id: UUID, *, revision_id: UUID, now: datetime):
+    async def mark_item_succeeded(
+        self, item_id: UUID, *, revision_id: UUID, now: datetime
+    ):
         if self._fail_next_item_checkpoint:
             self._fail_next_item_checkpoint = False
             raise RuntimeError("change item checkpoint acknowledgement lost")
@@ -371,7 +432,9 @@ class InMemoryDriveChangeRepository:
         current = next(item for item in page.items if item.item_id == item_id)
         if current.state is DriveChangeItemState.SUCCEEDED:
             if current.outcome_revision_id != revision_id:
-                raise DriveChangeSyncConflictError("change outcome conflicts with durable state")
+                raise DriveChangeSyncConflictError(
+                    "change outcome conflicts with durable state"
+                )
             return current
         updated = current.model_copy(
             update={
@@ -384,11 +447,42 @@ class InMemoryDriveChangeRepository:
         self._replace_item(page, updated)
         return updated
 
-    async def mark_item_ignored(self, item_id: UUID, *, reason: str, now: datetime):
-        return self._mark_item_terminal(item_id, DriveChangeItemState.IGNORED, reason, now)
+    async def mark_item_reconciled(
+        self, item_id: UUID, *, reconciliation_id: UUID, now: datetime
+    ) -> DriveChangeItemRecord:
+        if reconciliation_id.int == 0:
+            raise ValueError("reconciliation_id must be a non-zero UUID")
+        page = self.pages[self._item_to_page[item_id]]
+        current = next(item for item in page.items if item.item_id == item_id)
+        if current.state is DriveChangeItemState.RECONCILED:
+            if current.outcome_reconciliation_id != reconciliation_id:
+                raise DriveChangeSyncConflictError(
+                    "reconciliation outcome conflicts with durable state"
+                )
+            return current
+        updated = current.model_copy(
+            update={
+                "state": DriveChangeItemState.RECONCILED,
+                "outcome_revision_id": None,
+                "outcome_reconciliation_id": reconciliation_id,
+                "failure_code": None,
+                "updated_at": now,
+            }
+        )
+        self._replace_item(page, updated)
+        return updated
 
-    async def mark_item_failed(self, item_id: UUID, *, failure_code: str, now: datetime):
-        return self._mark_item_terminal(item_id, DriveChangeItemState.FAILED, failure_code, now)
+    async def mark_item_ignored(self, item_id: UUID, *, reason: str, now: datetime):
+        return self._mark_item_terminal(
+            item_id, DriveChangeItemState.IGNORED, reason, now
+        )
+
+    async def mark_item_failed(
+        self, item_id: UUID, *, failure_code: str, now: datetime
+    ):
+        return self._mark_item_terminal(
+            item_id, DriveChangeItemState.FAILED, failure_code, now
+        )
 
     def _mark_item_terminal(self, item_id, state, code, now):
         if not code or len(code) > 64:
@@ -403,6 +497,7 @@ class InMemoryDriveChangeRepository:
             update={
                 "state": state,
                 "outcome_revision_id": None,
+                "outcome_reconciliation_id": None,
                 "failure_code": code,
                 "updated_at": now,
             }
@@ -413,10 +508,17 @@ class InMemoryDriveChangeRepository:
     async def complete_page(self, page_id: UUID, *, now: datetime):
         page = self.pages[page_id]
         if page.incomplete_search or any(
-            item.state not in {DriveChangeItemState.SUCCEEDED, DriveChangeItemState.IGNORED}
+            item.state
+            not in {
+                DriveChangeItemState.SUCCEEDED,
+                DriveChangeItemState.RECONCILED,
+                DriveChangeItemState.IGNORED,
+            }
             for item in page.items
         ):
-            raise DriveChangeSyncConflictError("Drive change page is not durably complete")
+            raise DriveChangeSyncConflictError(
+                "Drive change page is not durably complete"
+            )
         updated = page.model_copy(
             update={"state": DriveChangePageState.COMPLETED, "completed_at": now}
         )
@@ -430,7 +532,9 @@ class InMemoryDriveChangeRepository:
         self.pages[page_id] = updated
         return updated
 
-    async def advance_run(self, sync_run_id: UUID, *, next_page_token: str, now: datetime):
+    async def advance_run(
+        self, sync_run_id: UUID, *, next_page_token: str, now: datetime
+    ):
         run = self.runs[sync_run_id]
         updated = run.model_copy(
             update={
@@ -458,7 +562,9 @@ class InMemoryDriveChangeRepository:
             or page.next_page_token is not None
             or not page.new_start_page_token
         ):
-            raise DriveChangeSyncConflictError("Drive change run cannot commit before terminal effects")
+            raise DriveChangeSyncConflictError(
+                "Drive change run cannot commit before terminal effects"
+            )
         updated = run.model_copy(
             update={
                 "proposed_cursor": page.new_start_page_token,
@@ -469,7 +575,9 @@ class InMemoryDriveChangeRepository:
         self.runs[sync_run_id] = updated
         return updated
 
-    async def mark_reconciliation_required(self, sync_run_id: UUID, *, reason: str, now: datetime):
+    async def mark_reconciliation_required(
+        self, sync_run_id: UUID, *, reason: str, now: datetime
+    ):
         if not reason or len(reason) > 64:
             raise ValueError("reconciliation reason must be a bounded safe identifier")
         updated = self.runs[sync_run_id].model_copy(
@@ -482,7 +590,9 @@ class InMemoryDriveChangeRepository:
         self.runs[sync_run_id] = updated
         return updated
 
-    def _replace_item(self, page: DriveChangePageRecord, replacement: DriveChangeItemRecord):
+    def _replace_item(
+        self, page: DriveChangePageRecord, replacement: DriveChangeItemRecord
+    ):
         self.pages[page.page_id] = page.model_copy(
             update={
                 "items": tuple(
