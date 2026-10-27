@@ -948,6 +948,21 @@ async def test_google_sheets_reappearance_records_tombstone_predecessor_before_a
 
 
 @pytest.mark.asyncio
+async def test_google_sheets_reappearance_reuses_source_after_absence_tombstone():
+    orchestrator, _, _, _, uow = _orchestrator(_observation())
+    original = await orchestrator.ingest(_command("sheets-before-absence"))
+    tombstone_revision_id = _id("sheets-absence-tombstone")
+    uow.current_revision_id = tombstone_revision_id
+    uow.current_revision_kind = RevisionKind.TOMBSTONE
+
+    reappeared = await orchestrator.ingest(_command("sheets-after-absence"))
+
+    assert reappeared.source == original.source
+    assert reappeared.revision.source_object_id == original.source.source_object_id
+    assert reappeared.revision.reappearance_after_tombstone_revision_id == tombstone_revision_id
+
+
+@pytest.mark.asyncio
 async def test_google_drive_reappearance_replay_keeps_the_accepted_lineage():
     orchestrator, _, _, _, uow = _orchestrator(_drive_observation())
     predecessor = _id("drive-source-tombstone-replay")
