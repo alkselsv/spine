@@ -1,0 +1,106 @@
+{
+  "schema_version": "r1-backup-recovery-attempt:v2",
+  "report_id": "issue-509:recovery-attempt:v2",
+  "ticket": 509,
+  "generated_at": "2026-10-27T16:10:39Z",
+  "target_commit": "78eaa8dbad0643c37e7a6c06ebb2ece496372a11",
+  "run_reference": "run:issue509-recovery-001",
+  "immutable": true,
+  "content_free": true,
+  "decision": "fail",
+  "production_qualified": false,
+  "authorization": {
+    "reference": "approval:issue509-recovery-001",
+    "status": "approved",
+    "data_class": "repository-synthetic-only",
+    "additional_retry": "approved"
+  },
+  "isolation": {
+    "source_network_digest": "92eca2a64f69fd415c2df0ddb65bddca368a5e156e0edc92f16b7de7350119cc",
+    "restore_network_digest": "8c678f4fb3a09fa4f3bc91e3e01724d80130248ddae1b10a88a4c2465bfbdbd0",
+    "networks_distinct": true,
+    "restore_database_empty": true,
+    "restore_filesystem_absent": true,
+    "restore_started": false
+  },
+  "source_fixture": {
+    "ingestion_status": "succeeded",
+    "canonical_reference_count": 1,
+    "finalized_original_reference_count": 1,
+    "staged_original_count": 1,
+    "private_or_customer_data_used": false
+  },
+  "attempts": [
+    {
+      "recovery_set_id": "recovery:issue509-001",
+      "manifest_status": "incomplete",
+      "manifest_digest": "2af296cbd2cea476ab3e35440b9d7d026326b347c08942be551fe753e544b9fd",
+      "failure_category": "component_failure",
+      "fence_epoch": 1,
+      "cutoff_ticket_sequence": 0,
+      "fence_state": "release_degraded",
+      "ticket_admission": "blocked"
+    },
+    {
+      "recovery_set_id": "recovery:issue509-002",
+      "manifest_status": "incomplete",
+      "manifest_digest": "77abe228c412ca96525aec4929ed9838a9a478c7bcefafe21f2ed3164f4c44dc",
+      "failure_category": "component_failure",
+      "fence_epoch": 1,
+      "cutoff_ticket_sequence": 0,
+      "fence_state": "release_degraded",
+      "ticket_admission": "blocked"
+    },
+    {
+      "recovery_set_id": "recovery:issue509-003",
+      "manifest_status": "incomplete",
+      "manifest_digest": "8becd47953b0473a121a1fa3129f42d6aa5be5638746af77cf3158c5460e7748",
+      "failure_category": "component_failure",
+      "fence_epoch": 1,
+      "cutoff_ticket_sequence": 0,
+      "fence_state": "release_degraded",
+      "ticket_admission": "blocked"
+    }
+  ],
+  "bounded_observations": {
+    "postgres_custom_archive_probe": "pass",
+    "postgres_archive_list_probe": "pass",
+    "canonical_inventory_probe": "pass",
+    "original_storage_archive_probe": "pass",
+    "protected_artifact_store_probe": "pass",
+    "coordinated_backup": "fail",
+    "coherent_manifest": "unavailable",
+    "isolated_restore": "not_verified",
+    "projection_recovery": "not_verified",
+    "authorized_canary": "not_verified"
+  },
+  "criteria": [
+    {"criterion_id": "AC1", "status": "fail", "reason_codes": ["coordinator_pre_quiescence_failure"]},
+    {"criterion_id": "AC2", "status": "not_verified", "reason_codes": ["coherent_artifact_set_unavailable"]},
+    {"criterion_id": "AC3", "status": "not_verified", "reason_codes": ["restore_not_started_without_coherent_manifest"]},
+    {"criterion_id": "AC4", "status": "pass", "reason_codes": ["failed_closed_with_immutable_incomplete_manifests"]},
+    {"criterion_id": "AC5", "status": "not_verified", "reason_codes": ["verified_restore_unavailable"]},
+    {"criterion_id": "AC6", "status": "not_verified", "reason_codes": ["verified_restore_unavailable"]},
+    {"criterion_id": "AC7", "status": "fail", "reason_codes": ["deployment_procedure_gaps_confirmed"]},
+    {"criterion_id": "AC8", "status": "pass", "reason_codes": ["metadata_only_report_recorded"]},
+    {"criterion_id": "AC9", "status": "pass", "reason_codes": ["physical_failure_not_promoted"]}
+  ],
+  "confirmed_gaps": [
+    "postgres_dump_requires_row_security_mode",
+    "persisted_fence_enums_require_explicit_rehydration",
+    "backup_identity_requires_explicit_read_inventory",
+    "original_storage_adapter_requires_profile_initialization_access",
+    "coordinator_failure_category_does_not_identify_pre_quiescence_stage"
+  ],
+  "safety_assertions": [
+    "temporary_broad_table_reads_revoked",
+    "source_original_bytes_not_changed",
+    "restore_target_remained_empty",
+    "restore_target_remained_non_serving",
+    "no_projection_publication_attempted",
+    "no_canary_claimed",
+    "no_cutover_claimed",
+    "no_sensitive_values_recorded"
+  ],
+  "independent_review": "required"
+}

@@ -20,6 +20,14 @@ or operator command.
 - Staged uploads have a documented restart/reconciliation policy. Finalized
   original bytes, private manifests, and canonical receipt/reference metadata
   are in scope.
+- The PostgreSQL backup identity has an explicit reviewed inventory of readable
+  relations. For a NOBYPASSRLS identity, the custom dump must use
+  `--enable-row-security`; a successful unscoped or bypass-RLS dump is not
+  acceptable evidence.
+- The filesystem volume is mounted with the access required by the configured
+  `FilesystemStorageProfile` initialization. The current adapter validates and
+  normalizes its directory profile before an export, so a read-only container
+  mount fails closed even though finalized object bytes are never rewritten.
 
 If the deployment has no reviewed coordinator composition or any binding above
 is missing, stop before creating a backup. There is no backup HTTP route and the
@@ -54,6 +62,14 @@ Use only the approved audit/control-plane path; do not disable required audit.
 6. Release the fence only through the coordinator's normal completion path. A
    partial or indeterminate operation remains incomplete; never edit its
    manifest into a success state.
+
+If a run fails before durable quiescence evidence is recorded, preserve its
+incomplete manifest and degraded fence under the original deployment-scope
+reference. Do not reuse that scope or rewrite the lease. Before authorizing a
+new recovery set, diagnose the approval, persisted-contract rehydration,
+watermark and evidence-repository boundaries separately. A generic
+`component_failure` without stage evidence is a failed qualification result,
+not permission to infer that a component backup ran.
 
 ## Evidence
 

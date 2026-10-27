@@ -11,6 +11,7 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     storage_recovery_manifests,
 )
 from spine.domain.storage.recovery import (
+    BackupFenceLease,
     ComponentState,
     QuiescentEvidence,
     RecoveryComponentEvidence,
@@ -19,7 +20,28 @@ from spine.domain.storage.recovery import (
     StorageRecoveryManifest,
 )
 from spine.domain.storage.backup_profile import BackupProtectionProfile
-from spine.infrastructure.persistence.backup_recovery import _manifest_values
+from spine.infrastructure.persistence.backup_recovery import _lease_from_row, _manifest_values
+
+
+def test_persisted_lease_enum_values_rehydrate_under_strict_domain_contract() -> None:
+    lease = _lease_from_row(
+        {
+            "deployment_scope_id": "deployment:issue509-source-001",
+            "active_fence_epoch": None,
+            "fence_state": "inactive",
+            "cutoff_ticket_sequence": None,
+            "lease_owner": None,
+            "lease_expires_at": None,
+            "lease_renewal": None,
+            "takeover_reference": None,
+            "ticket_admission": "open",
+            "cleanup_release_progress": "none",
+        }
+    )
+
+    assert isinstance(lease, BackupFenceLease)
+    assert lease.fence_state.value == "inactive"
+    assert lease.ticket_admission.value == "open"
 
 
 def test_backup_recovery_migration_declares_all_durable_coordination_records() -> None:

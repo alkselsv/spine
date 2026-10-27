@@ -5,17 +5,35 @@ synthetic qualification work. It has separate SOURCE and RESTORE networks,
 PostgreSQL databases, Neo4j instances, Temporal data and original-storage
 volumes. It does not connect to production and does not contain credentials.
 
-The profile deliberately does not claim a complete Spine production runtime.
-The repository currently has no reviewed deployment composition root for the
-PostgreSQL-backed API/Temporal worker graph and no reviewed operator entrypoint
-that binds `CoordinatedBackupProfile` and `IsolatedRestoreVerifier` to this
-deployment. Those are implementation gaps, not reasons to substitute ad-hoc
-backup commands or fake evidence.
+The application Compose file in this directory is retained for the earlier
+readiness evidence. Physical recovery now uses the production runtime Compose
+root plus the explicit one-shot composition in `recovery_job.py`. Build its
+tooling image with `Dockerfile.recovery`; mount the script and one immutable
+opaque-reference profile into the job container. Concrete database settings,
+passfiles and volume roots remain deployment bindings supplied out of band.
 
-The Compose profile uses the existing `spine-db-bootstrap` and
-`spine-db-migrate` entrypoints. It intentionally does not create backup,
-restore, verifier or AccessPolicy identities: no reviewed coordinator currently
-consumes those identities in this deployment.
+The job invokes the existing `RecoveryOperatorService`,
+`CoordinatedBackupProfile`, `BackupRecoveryCoordinator`, physical PostgreSQL and
+original-storage sources, `IsolatedRestoreVerifier` and reconciliation path. It
+does not add an HTTP route, scheduler, promotion or cutover path. Identity and
+target provisioning remains an operator action and is not performed by the
+job.
+
+## 2026-10-27 physical attempt
+
+The authorized synthetic run is recorded in
+`docs/qualification/issue-509-recovery-attempt-v2.json`. It failed closed before
+durable quiescence and produced three immutable incomplete manifests. RESTORE
+remained empty and was never served. The attempt therefore does not qualify
+backup, restore, projection recovery or canary behavior.
+
+The exercise confirmed that tenant-scoped PostgreSQL dumps require
+`--enable-row-security`, persisted strict enums require explicit conversion,
+the backup identity needs a reviewed relation inventory, and the current
+filesystem profile needs initialization access. Do not rerun the recorded
+profiles or reuse their degraded deployment-scope references. A new run needs a
+new authorization, recovery set, deployment-scope reference and independent
+evidence review.
 
 ## Start
 
