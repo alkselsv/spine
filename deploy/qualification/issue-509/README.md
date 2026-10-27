@@ -76,6 +76,17 @@ dataset isolation and cannot produce qualification evidence. Run the no-provider
 graph compatibility probe before requesting a new provider authorization, and
 remove its synthetic dataset through Cognee's public handler lifecycle.
 
+The third recovered-application attempt used this compatible placement and
+completed the physical provider-backed pipeline, but the canonical handoff
+failed closed with `projection.request.integrity_conflict`. The immutable result
+is recorded in
+`docs/qualification/issue-509-application-recovery-attempt-v3.json`. Do not
+interpret physical completion as publication: the attempt committed no receipt,
+snapshot, activation or active pointer, and it performed no application read.
+The consumer now emits a content-free stage marker for resolution, preparation,
+receipt, mapping or publication-completion conflicts. A future authorized retry
+must capture that marker without exposing exception text or content.
+
 ## Start
 
 Run from WSL2 or PowerShell with Docker Desktop's Linux engine. Use a fresh

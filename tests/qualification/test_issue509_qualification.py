@@ -30,6 +30,9 @@ APPLICATION_RECOVERY_REPORT_PATH = (
 APPLICATION_RECOVERY_REPORT_V2_PATH = (
     PROJECT_ROOT / "docs/qualification/issue-509-application-recovery-attempt-v2.json"
 )
+APPLICATION_RECOVERY_REPORT_V3_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-application-recovery-attempt-v3.json"
+)
 NEO4J_RUNTIME_COMPATIBILITY_REPORT_PATH = (
     PROJECT_ROOT / "docs/qualification/issue-509-neo4j-runtime-compatibility-v1.json"
 )
@@ -80,6 +83,10 @@ def _load_application_recovery_report() -> dict[str, Any]:
 
 def _load_application_recovery_report_v2() -> dict[str, Any]:
     return json.loads(APPLICATION_RECOVERY_REPORT_V2_PATH.read_text(encoding="utf-8"))
+
+
+def _load_application_recovery_report_v3() -> dict[str, Any]:
+    return json.loads(APPLICATION_RECOVERY_REPORT_V3_PATH.read_text(encoding="utf-8"))
 
 
 def _load_neo4j_runtime_compatibility_report() -> dict[str, Any]:
@@ -333,6 +340,60 @@ def test_issue509_application_recovery_v2_records_neo4j_refusal_fail_closed() ->
 
 def test_issue509_application_recovery_v2_contains_only_safe_metadata() -> None:
     report = _load_application_recovery_report_v2()
+
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
+def test_issue509_application_recovery_v3_records_canonical_refusal_fail_closed() -> None:
+    report = _load_application_recovery_report_v3()
+
+    assert report["schema_version"] == "r1-recovered-application-attempt:v3"
+    assert report["run_reference"] == "run:issue509-application-canary-003"
+    assert report["target_commit"] == "9c37fdc20a86e7afd9dd2d973d58ecb93194b610"
+    assert report["decision"] == "not_verified"
+    assert report["production_qualified"] is False
+    assert report["projection_attempt"] == {
+        "outcome": "failed_closed",
+        "safe_reason_code": "projection_request_integrity_conflict",
+        "provider_attempted": True,
+        "llm_connection_check": "verified",
+        "embedding_connection_check": "verified",
+        "physical_projection": "completed",
+        "graph_handler": "neo4j_community",
+        "graph_dataset_isolation": "verified",
+        "projection_receipt_count": 0,
+        "projection_snapshot_count": 0,
+        "projection_activation_count": 0,
+        "active_projection_count": 0,
+        "publication_status": "unpublished",
+    }
+    assert report["application_canary"] == {
+        "outcome": "not_executed",
+        "safe_reason_code": "publication_unavailable",
+        "authorized_source_read": "not_verified",
+        "application_read_count": 0,
+    }
+    assert report["safety"] == {
+        "synthetic_content_only": True,
+        "backend_access_control_enabled": True,
+        "postgresql_tls_required": True,
+        "serving_activated": False,
+        "cutover_performed": False,
+        "runtime_connect_revoked": True,
+        "temporary_operator_auth_rotated": True,
+        "temporary_auth_volume_removed": True,
+        "temporary_graph_removed": True,
+        "target_stopped_after_capture": True,
+    }
+    assert report["independent_review"] == "required"
+
+
+def test_issue509_application_recovery_v3_contains_only_safe_metadata() -> None:
+    report = _load_application_recovery_report_v3()
 
     for text in _all_strings(report):
         lowered = text.lower()
