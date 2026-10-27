@@ -25,6 +25,9 @@ from spine.infrastructure.persistence.postgresql_drive_changes import (
 from spine.infrastructure.persistence.postgresql_google_sheets_sync import (
     PostgreSQLGoogleSheetsSyncRepository,
 )
+from spine.infrastructure.persistence.postgresql_register_associations import (
+    PostgreSQLRegisterAssociationRepository,
+)
 from spine.infrastructure.persistence.postgresql_drive_lifecycle import (
     PostgreSQLDriveLifecycleDecisionRepository,
     PostgreSQLGoogleDriveLifecycleSourceReader,
@@ -60,6 +63,7 @@ __all__ = [
     "PostgreSQLParsedArtifactRepository",
     "PostgreSQLDriveChangeRepository",
     "PostgreSQLGoogleSheetsSyncRepository",
+    "PostgreSQLRegisterAssociationRepository",
     "PostgreSQLDriveLifecycleDecisionRepository",
     "PostgreSQLGoogleDriveLifecycleSourceReader",
     "PostgreSQLGoogleSheetsLifecycleRepository",

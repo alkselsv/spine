@@ -4985,13 +4985,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261129_66_drive_lifecycle_decisions.py",
         "20261130_67_google_revocation_states.py",
         "20261130_68_google_sheets_lifecycle_candidates.py",
+        "20261201_69_register_associations.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261131_69_injected_failure.py").write_text(
+    (target / "versions" / "20261202_70_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261131_69'\n"
-        "down_revision = '20261130_68'\n"
+        "revision = '20261202_70'\n"
+        "down_revision = '20261201_69'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

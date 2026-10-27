@@ -314,6 +314,34 @@ source_revision_provenance = Table(
     Column("observed_at", DateTime(timezone=True), nullable=False),
 )
 
+register_link_claims = Table(
+    "register_link_claims", metadata,
+    Column("claim_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("row_source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("row_source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("provenance_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("role", Text, nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("observed_at", DateTime(timezone=True), nullable=False),
+)
+
+register_association_acceptances = Table(
+    "register_association_acceptances", metadata,
+    Column("acceptance_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("claim_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("row_source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("row_source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("target_source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("target_source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("role", Text, nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("accepted_at", DateTime(timezone=True), nullable=False),
+)
+
 source_revision_receipt_associations = Table(
     "source_revision_receipt_associations", metadata,
     Column("association_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
@@ -1316,6 +1344,8 @@ __all__ = [
     "source_objects",
     "source_revisions",
     "source_revision_provenance",
+    "register_link_claims",
+    "register_association_acceptances",
     "source_revision_receipt_associations",
     "ingestion_runs",
     "ingestion_run_sources",

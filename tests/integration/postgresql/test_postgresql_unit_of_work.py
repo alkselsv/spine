@@ -769,6 +769,124 @@ async def test_qa_run_collection_returns_empty_page_from_postgresql(
     assert response.json()["items"] == []
 
 
+@pytest.mark.asyncio(loop_scope="session")
+async def test_register_link_claims_enforce_tenant_rls_and_immutable_runtime_grants(
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    migration_engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with migration_engine.connect() as connection:
+            for table_name in (
+                "register_link_claims",
+                "register_association_acceptances",
+            ):
+                row = (
+                    await connection.execute(
+                        text(
+                            "SELECT relation.relrowsecurity, relation.relforcerowsecurity, "
+                            "has_table_privilege('spine_runtime', relation.oid, 'UPDATE') AS can_update, "
+                            "has_table_privilege('spine_runtime', relation.oid, 'DELETE') AS can_delete, "
+                            "EXISTS (SELECT 1 FROM pg_catalog.pg_trigger trig "
+                            "WHERE trig.tgrelid = relation.oid AND NOT trig.tgisinternal "
+                            "AND trig.tgname = :trigger_name) AS has_immutable_trigger "
+                            "FROM pg_catalog.pg_class relation "
+                            "WHERE relation.oid = CAST(:qualified_table AS regclass)"
+                        ),
+                        {
+                            "trigger_name": f"trg_{table_name}_immutable",
+                            "qualified_table": f"spine.{table_name}",
+                        },
+                    )
+                ).mappings().one()
+                assert row["relrowsecurity"] is True
+                assert row["relforcerowsecurity"] is True
+                assert row["can_update"] is False
+                assert row["can_delete"] is False
+                assert row["has_immutable_trigger"] is True
+    finally:
+        await migration_engine.dispose()
+
+    runtime_engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    workspace_a = UUID("f5000000-0000-4000-8000-000000000001")
+    environment_a = UUID("f6000000-0000-4000-8000-000000000001")
+    workspace_b = UUID("f7000000-0000-4000-8000-000000000001")
+    environment_b = UUID("f8000000-0000-4000-8000-000000000001")
+    try:
+        async with runtime_engine.connect() as connection:
+            transaction = await connection.begin()
+            await connection.execute(
+                text(
+                    "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                    "set_config('spine.environment_id', :environment_id, true)"
+                ),
+                {
+                    "workspace_id": str(workspace_b),
+                    "environment_id": str(environment_b),
+                },
+            )
+            with pytest.raises(DBAPIError, match="row-level security policy"):
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.register_link_claims "
+                        "(claim_id, workspace_id, environment_id, row_source_object_id, "
+                        "row_source_revision_id, provenance_id, role, record, observed_at) "
+                        "VALUES (:claim_id, :workspace_id, :environment_id, :source_id, "
+                        ":revision_id, :provenance_id, 'request', '{}'::jsonb, now())"
+                    ),
+                    {
+                        "claim_id": UUID("f9000000-0000-4000-8000-000000000001"),
+                        "workspace_id": workspace_a,
+                        "environment_id": environment_a,
+                        "source_id": UUID("fa000000-0000-4000-8000-000000000001"),
+                        "revision_id": UUID("fb000000-0000-4000-8000-000000000001"),
+                        "provenance_id": UUID("fc000000-0000-4000-8000-000000000001"),
+                    },
+                )
+            await transaction.rollback()
+            transaction = await connection.begin()
+            await connection.execute(
+                text(
+                    "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                    "set_config('spine.environment_id', :environment_id, true)"
+                ),
+                {
+                    "workspace_id": str(workspace_b),
+                    "environment_id": str(environment_b),
+                },
+            )
+            with pytest.raises(DBAPIError, match="row-level security policy"):
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.register_association_acceptances "
+                        "(acceptance_id, claim_id, workspace_id, environment_id, "
+                        "row_source_object_id, row_source_revision_id, target_source_object_id, "
+                        "target_source_revision_id, role, record, accepted_at) "
+                        "VALUES (:acceptance_id, :claim_id, :workspace_id, :environment_id, "
+                        ":row_source_id, :row_revision_id, :target_source_id, "
+                        ":target_revision_id, 'request', '{}'::jsonb, now())"
+                    ),
+                    {
+                        "acceptance_id": UUID("fd000000-0000-4000-8000-000000000001"),
+                        "claim_id": UUID("fe000000-0000-4000-8000-000000000001"),
+                        "workspace_id": workspace_a,
+                        "environment_id": environment_a,
+                        "row_source_id": UUID("ff000000-0000-4000-8000-000000000001"),
+                        "row_revision_id": UUID("a1000000-0000-4000-8000-000000000001"),
+                        "target_source_id": UUID("a2000000-0000-4000-8000-000000000001"),
+                        "target_revision_id": UUID("a3000000-0000-4000-8000-000000000001"),
+                    },
+                )
+            await transaction.rollback()
+    finally:
+        await runtime_engine.dispose()
+
+
 @pytest_asyncio.fixture(loop_scope="session")
 async def one_connection_harness(
     postgresql_contract_database: PostgreSQLContractDatabase,
