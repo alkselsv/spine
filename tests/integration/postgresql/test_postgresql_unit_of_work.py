@@ -46,6 +46,11 @@ from spine.application.document_lifecycle import (
     TombstoneDocumentCommand,
 )
 from spine.application.source_lifecycle import SourceLifecycleCoordinator
+from spine.application.google_drive_lifecycle import (
+    DriveLifecycleDecisionState,
+    DriveLifecycleSignal,
+    DriveRemovalDecision,
+)
 from spine.application.persistence.canonical import CanonicalAcceptanceCommand
 from spine.application.persistence.errors import (
     CanonicalEligibilityError,
@@ -147,6 +152,9 @@ from spine.infrastructure.persistence.parsed_artifacts import (
 )
 from spine.infrastructure.persistence.postgresql_operational_metrics import (
     PostgreSQLOperationalMetricsStore,
+)
+from spine.infrastructure.persistence.postgresql_drive_lifecycle import (
+    PostgreSQLDriveLifecycleDecisionRepository,
 )
 from spine.application.telemetry import OperationalMetricsQuery
 from spine.auth import InMemoryAuthorizationDirectory
@@ -6321,3 +6329,68 @@ async def test_postgresql_application_terminalizer_commits_attempt_run_and_messa
     assert persisted_run.outcome is AnswerQuestionOutcome.ABSTAINED
     assert persisted_attempt.outcome is AnswerQuestionOutcome.ABSTAINED
     assert persisted_message.terminal_outcome is AnswerQuestionOutcome.ABSTAINED
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_drive_lifecycle_decision_repository_persists_tenant_scoped_transition(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await prepare_canonical_case(postgresql_adapter, 61000)
+    assert postgresql_adapter.ingestion_context is not None
+    repository = PostgreSQLDriveLifecycleDecisionRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=lambda operation, identity: postgresql_adapter.ingestion_context(
+            case.source.workspace_id,
+            case.source.environment_id,
+            operation.value,
+        ),
+    )
+    decision = DriveRemovalDecision(
+        decision_id=synthetic_uuid(61010),
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        reconciliation_id=synthetic_uuid(61011),
+        snapshot_run_id=synthetic_uuid(61012),
+        change_sync_run_id=synthetic_uuid(61013),
+        committed_cursor="drive-cursor-610",
+        service_principal_id=synthetic_uuid(61014),
+        access_policy_version_id=synthetic_uuid(61015),
+        authorization_generation=1,
+        configuration_generation=1,
+        connection_id=synthetic_uuid(61016),
+        resource_scope_reference=synthetic_uuid(61017),
+        policy_version_id=synthetic_uuid(61018),
+        policy_version="drive-removal-policy:v1",
+        file_id="drive-file-610",
+        signal=DriveLifecycleSignal.CONFIRMED_ABSENT,
+        source_object_id=case.source.source_object_id,
+        expected_current_revision_id=case.revision.revision_id,
+        policy_authorized=True,
+        state=DriveLifecycleDecisionState.PENDING,
+        decided_at=datetime(2026, 10, 27, tzinfo=timezone.utc),
+    )
+
+    assert await repository.record(decision) == decision
+    assert await repository.resolve(
+        decision.decision_id,
+        workspace_id=decision.workspace_id,
+        environment_id=decision.environment_id,
+    ) == decision
+    assert await repository.resolve(
+        decision.decision_id,
+        workspace_id=synthetic_uuid(61020),
+        environment_id=synthetic_uuid(61021),
+    ) is None
+
+    tombstoned = decision.model_copy(
+        update={
+            "state": DriveLifecycleDecisionState.TOMBSTONED,
+            "tombstone_revision_id": synthetic_uuid(61022),
+        }
+    )
+    assert await repository.record(tombstoned) == tombstoned
+    assert await repository.resolve(
+        decision.decision_id,
+        workspace_id=decision.workspace_id,
+        environment_id=decision.environment_id,
+    ) == tombstoned
