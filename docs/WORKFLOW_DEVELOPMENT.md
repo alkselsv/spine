@@ -251,6 +251,185 @@ Definition не должна содержать:
 начальным domain-контрактом. Полная DSL/schema должна развиваться вместе с
 compiler, validation и migration policy, а не только с одним workflow.
 
+### 9.1. Общий контракт исполнения workflow
+
+Workflow Definition не объявляет HTTP routes и не вызывает Temporal напрямую.
+Она объявляет типизированный протокол исполнения: trigger, принимаемые команды,
+создаваемые artifacts, наблюдаемые состояния и terminal outcomes. Один общий
+application interface исполняет этот протокол для всех workflow; HTTP и Temporal
+являются adapters на разных seams.
+
+```text
+product UI или внешний клиент
+  → HTTP adapter
+  → workflow application interface
+  → domain state и ports
+  → Temporal adapter / persistence / outbox
+```
+
+Минимальный application interface содержит четыре операции:
+
+```text
+start(StartWorkflowCommand) → WorkflowCommandReceipt
+dispatch(WorkflowCommand) → WorkflowCommandReceipt
+get_run(GetWorkflowRunQuery) → WorkflowRunSnapshot
+list_events(ListWorkflowEventsQuery) → WorkflowEventPage
+```
+
+Это логический интерфейс, а не требование объединить операции в один Python
+class. Command handlers могут быть отдельными application use cases, пока их
+семантика и результаты остаются общими. Workflow-specific код не добавляет
+собственный execution runtime или persistence protocol.
+
+#### StartWorkflowCommand
+
+Команда запуска содержит:
+
+- `command_id` и `idempotency_key`;
+- `workspace_id`, environment и authenticated acting subject;
+- `workflow_key` и запрошенную либо выбранную `workflow_version`;
+- стабильный `work_item_key`, идентифицирующий единицу бизнес-работы;
+- `trigger_schema` и валидированный typed trigger payload;
+- provenance, correlation и causation identifiers;
+- authority/delegation context, если команда выполняется on behalf of другого
+  субъекта.
+
+Выбор версии завершается до создания run. Созданный `WorkflowRun` закрепляет
+точную immutable `WorkflowVersion` и не начинает использовать более новую
+версию после deployment switch.
+
+`work_item_key` и `idempotency_key` решают разные задачи. Первый не допускает два
+независимых процесса для одной бизнес-работы в одинаковом scope. Второй делает
+безопасным повтор конкретной команды. Одинаковый idempotency identity и payload
+digest возвращают прежний receipt; тот же identity с другим digest возвращает
+conflict.
+
+#### WorkflowCommand
+
+Команда продолжения существующего run содержит:
+
+- `command_id`, `idempotency_key` и `run_id`;
+- `workspace_id`, environment и authenticated acting subject;
+- `expected_run_version` для optimistic concurrency control;
+- стабильный `command_type`;
+- `command_schema` и typed payload;
+- точные `ArtifactRef`, если решение или переход опирается на artifacts;
+- correlation, causation и authority/delegation context.
+
+`command_type` не является именем Temporal Signal/Update. Например,
+`submit_intake_message`, `revise_proposal` или `decide_artifact` выражают
+бизнес-намерение. Temporal adapter самостоятельно выбирает механизм доставки.
+Browser, product UI и Workflow Definition не зависят от task queue, workflow ID,
+Signal, Update или Query names.
+
+Для каждой пары `(workflow_key, workflow_version, command_type)` registry хранит
+конкретную versioned schema. Transport adapter может принять JSON, но обязан
+преобразовать его в соответствующую typed model с `extra="forbid"` до вызова
+application handler. Произвольный `dict` не является workflow-контрактом.
+
+Команда принимается только если одновременно выполняются следующие условия:
+
+- actor сейчас авторизован в указанном workspace и environment;
+- run принадлежит тому же scope без раскрытия существования чужого run;
+- command schema поддерживается закреплённой Workflow Version;
+- команда разрешена текущим состоянием и policy;
+- `expected_run_version` совпадает с текущей версией;
+- все ArtifactRef указывают на доступные, подходящие и неустаревшие версии;
+- повтор команды согласуется с её idempotency receipt.
+
+Успешный replay повторно проверяет текущую авторизацию. Прежний receipt не даёт
+права увидеть защищённый result после отзыва доступа.
+
+#### WorkflowCommandReceipt
+
+Receipt подтверждает admission команды, а не завершение всего workflow. Он
+содержит:
+
+- `command_id`, `run_id` и результат admission: `accepted` или `replayed`;
+- актуальную либо созданную `run_version`;
+- текущий disclosure-safe run status;
+- ссылку на snapshot/events для дальнейшего наблюдения;
+- safe rejection category при conflict или невозможности принять команду.
+
+HTTP adapter обычно возвращает такой receipt с `202 Accepted`. Синхронное
+завершение короткого command handler не превращает долгий workflow в HTTP
+request/response loop.
+
+#### WorkflowRunSnapshot
+
+Snapshot — read model для UI и integrations, а не сериализованное внутреннее
+состояние Temporal. Он содержит как минимум:
+
+- `run_id`, `work_item_id`, workflow key и закреплённую version;
+- workspace/environment scope и monotonic `run_version`;
+- lifecycle state и terminal outcome, если он достигнут;
+- текущие steps, ожидания, deadlines и disclosure-safe failure summaries;
+- доступные текущему actor `allowed_commands` со ссылками на schemas;
+- ArtifactRef и требующие решения ApprovalRequest без встраивания защищённого
+  содержимого;
+- timeline cursor, trace и timestamps.
+
+`allowed_commands` помогает UI построить controls, но не является
+авторизацией. Сервер заново проверяет каждую отправленную команду. Snapshot не
+показывает hidden chain-of-thought, provider payloads, secrets или raw exception.
+
+WorkflowRun не является chat session. Чат может быть одним из product views над
+run и отправлять workflow commands, но запуск workflow создаёт `WorkItem` и
+`WorkflowRun`, а не новую `Q&A Session`. Transcript не служит durable workflow
+state и не заменяет artifacts.
+
+#### Ошибки и конкуренция
+
+Общий контракт различает как минимум:
+
+- validation error — payload не соответствует зарегистрированной schema;
+- denied — actor не имеет текущего права выполнить или увидеть операцию;
+- not found — безопасный ответ без утечки существования объекта;
+- idempotency conflict — ключ повторён с другой семантикой;
+- stale run — `expected_run_version` устарел;
+- invalid transition — команда недопустима в текущем состоянии;
+- stale artifact — решение относится не к активной версии artifact;
+- unavailable/degraded — исполнение временно невозможно;
+- terminal run — run уже завершён и не принимает эту команду.
+
+Повтор после timeout обязан быть безопасным. Клиент при `stale run` получает
+новый snapshot и предлагает пользователю повторить осмысленное действие, а не
+молча перезаписывает параллельное решение.
+
+#### HTTP mapping
+
+Публичный control-plane adapter использует общий namespace и не создаёт новый
+набор routes для каждого step:
+
+```text
+POST /api/v1/runs
+GET  /api/v1/runs/{run_id}
+POST /api/v1/runs/{run_id}/commands
+GET  /api/v1/runs/{run_id}/events
+
+GET  /api/v1/artifacts/{artifact_id}
+GET  /api/v1/artifacts/{artifact_id}/versions
+
+GET  /api/v1/approvals
+POST /api/v1/approvals/{approval_id}/decision
+```
+
+Последний route является удобным control-plane представлением общей
+`decide_artifact`/approval command и вызывает тот же application handler. Узкий
+product facade, например `/api/v1/proposals`, допустим только когда выражает
+устойчивую бизнес-семантику; он также адаптирует запросы к общему workflow
+interface и не создаёт второй источник state.
+
+Actor и scope выводятся из проверенного request context и сверяются с
+идентификаторами command; клиент не может назначить себе authority полями JSON.
+OpenAPI описывает envelopes и все встроенные command payloads. TypeScript types
+генерируются из OpenAPI в `web/api/generated/` и не редактируются вручную.
+
+В первой поставке registry содержит только schemas workflow, выпускаемых вместе
+со Spine. Загрузка произвольных внешних JSON Schemas и динамическая генерация
+routes не входят в этот контракт: такая generalization требует отдельного
+продуктового сценария, threat model и versioning design.
+
 ## 10. Шаг 9. Реализовать Temporal adapter и Activities
 
 Temporal отвечает за event history, durable waits, timers, signals, retries и

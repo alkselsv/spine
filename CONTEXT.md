@@ -302,6 +302,25 @@ A non-content-bearing explanation of a Q&A Outcome that does not reveal
 protected source existence, identity, content or lifecycle details.
 _Avoid_: Internal diagnostic, raw error, source count
 
+### Workflow execution
+
+**Workflow Command**:
+A typed, versioned business intention admitted against one Workflow Run with
+explicit tenant scope, actor authority, optimistic concurrency and idempotency.
+It is independent of the HTTP transport and durable-workflow delivery mechanism.
+_Avoid_: Temporal Signal, chat message, arbitrary event, HTTP request
+
+**Workflow Command Receipt**:
+The stable admission result for one Workflow Command, identifying its Workflow
+Run and run version without implying that the workflow has completed.
+_Avoid_: Workflow result, HTTP response, Temporal acknowledgement
+
+**Workflow Run Snapshot**:
+A disclosure-safe read model of one Workflow Run for a particular authorized
+actor, including observable state, artifact references and currently available
+commands without exposing the orchestrator's internal state.
+_Avoid_: Temporal history, serialized workflow state, chat transcript
+
 ### Access and authorization
 
 **Actor Reference**:
