@@ -489,6 +489,43 @@ drive_lifecycle_decisions = Table(
     Column("decided_at", DateTime(timezone=True), nullable=False),
 )
 
+google_sheets_absence_candidates = Table(
+    "google_sheets_absence_candidates",
+    metadata,
+    Column("candidate_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("connection_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("sync_run_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("scope_identity", Text, nullable=False),
+    Column("external_object_id", Text, nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("expected_current_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("observed_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint(
+        "sync_run_id", "scope_identity", "source_object_id",
+        name="uq_google_sheets_absence_candidate_run_scope_source",
+    ),
+)
+
+google_sheets_removal_decisions = Table(
+    "google_sheets_removal_decisions",
+    metadata,
+    Column("decision_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("candidate_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("sync_run_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("connection_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("policy_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("policy_authorized", Boolean, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("decided_at", DateTime(timezone=True), nullable=False),
+)
+
 ingestion_warnings = Table(
     "ingestion_warnings", metadata,
     Column("ingestion_warning_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("ingestion_run_source_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("attempt", Integer, nullable=False), Column("stage", Text, nullable=False), Column("code", Text, nullable=False), Column("retryable", Boolean, nullable=False), Column("safe_detail_schema", Text, nullable=False), Column("safe_detail", JSONB, nullable=False), Column("safe_detail_digest", String(64), nullable=False), Column("opaque_detail_ref", PostgreSQLUUID(as_uuid=True)), Column("occurred_at", DateTime(timezone=True), nullable=False),

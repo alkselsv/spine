@@ -5,9 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -46,6 +46,13 @@ from spine.application.persistence.google_sheets_sync import (
 from spine.connectors.observations import NormalizedConnectorObservation
 from spine.domain.sources.google import GoogleRegisterRowKey
 from spine.domain.connections.google import OpaqueGoogleReference
+
+if TYPE_CHECKING:
+    from spine.application.google_sheets_lifecycle import (
+        GoogleSheetsLifecycleResult,
+        GoogleSheetsLifecycleCoordinator,
+        GoogleSheetsRemovalPolicy,
+    )
 
 
 class GoogleSheetsPageObservation(Protocol):
@@ -247,6 +254,16 @@ class GoogleSheetsReconciliationResult:
     failure_code: str | None
     committed_cursor: str | None
     diagnostic_snapshot: GoogleSyncDiagnosticSnapshot
+    lifecycle_result: "GoogleSheetsLifecycleResult | None" = None
+
+
+class GoogleSheetsLifecycleRunner(Protocol):
+    async def reconcile(
+        self,
+        command: GoogleSheetsReconciliationCommand,
+        result: GoogleSheetsReconciliationResult,
+        policy: "GoogleSheetsRemovalPolicy",
+    ) -> "GoogleSheetsLifecycleResult": ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +273,12 @@ class GoogleSheetsReconciliationCoordinator:
     ingestion: GoogleSheetsCanonicalIngestionPort
     context_factory: Callable[[PersistenceOperation, UUID], TrustedPersistenceContext]
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
+    lifecycle: GoogleSheetsLifecycleRunner | None = None
+    lifecycle_policy: "GoogleSheetsRemovalPolicy | None" = None
+
+    def __post_init__(self) -> None:
+        if (self.lifecycle is None) != (self.lifecycle_policy is None):
+            raise ValueError("Sheets lifecycle requires both a coordinator and a versioned policy")
 
     async def run(
         self, command: GoogleSheetsReconciliationCommand
@@ -274,7 +297,7 @@ class GoogleSheetsReconciliationCoordinator:
                     access_policy_version_id=command.access_policy_version_id,
                     authorization_generation=command.authorization_generation,
                     configuration_generation=command.configuration_generation,
-                    scope_set_digest=_scope_set_digest(command),
+                    scope_set_digest=google_sheets_scope_set_digest(command),
                     command_identity=command.command_identity,
                     idempotency_key=command.idempotency_key,
                     prior_committed_cursor=command.prior_committed_cursor,
@@ -283,8 +306,15 @@ class GoogleSheetsReconciliationCoordinator:
                 )
             )
         self._assert_fence(run, command)
+        if run.state is GoogleSheetsSyncRunState.SUCCEEDED:
+            return await self._successful_result(
+                run,
+                command,
+                accepted_rows=sum(
+                    len(p.items) for p in await self.repository.list_pages(sync_run_id)
+                ),
+            )
         if run.state in {
-            GoogleSheetsSyncRunState.SUCCEEDED,
             GoogleSheetsSyncRunState.RECONCILIATION_REQUIRED,
             GoogleSheetsSyncRunState.SUSPENDED,
             GoogleSheetsSyncRunState.POLICY_BLOCKED,
@@ -292,7 +322,12 @@ class GoogleSheetsReconciliationCoordinator:
             return await self._result(
                 run,
                 accepted_rows=sum(
-                    len(p.items) for p in await self.repository.list_pages(sync_run_id)
+                    len(page.items)
+                    for page in await self.repository.list_pages(sync_run_id)
+                    if all(
+                        item.state is GoogleSheetsSyncItemState.SUCCEEDED
+                        for item in page.items
+                    )
                 ),
             )
 
@@ -529,7 +564,24 @@ class GoogleSheetsReconciliationCoordinator:
             failure_code=None,
             now=self._now(),
         )
-        return await self._result(current, accepted_rows=accepted)
+        return await self._successful_result(
+            current, command, accepted_rows=accepted
+        )
+
+    async def _successful_result(
+        self,
+        run: GoogleSheetsSyncRun,
+        command: GoogleSheetsReconciliationCommand,
+        *,
+        accepted_rows: int,
+    ) -> GoogleSheetsReconciliationResult:
+        result = await self._result(run, accepted_rows=accepted_rows)
+        if self.lifecycle is None or self.lifecycle_policy is None:
+            return result
+        lifecycle_result = await self.lifecycle.reconcile(
+            command, result, self.lifecycle_policy
+        )
+        return replace(result, lifecycle_result=lifecycle_result)
 
     async def _result(
         self,
@@ -569,7 +621,7 @@ class GoogleSheetsReconciliationCoordinator:
     def _assert_fence(
         run: GoogleSheetsSyncRun, command: GoogleSheetsReconciliationCommand
     ) -> None:
-        if run.scope_set_digest != _scope_set_digest(command):
+        if run.scope_set_digest != google_sheets_scope_set_digest(command):
             raise GoogleSheetsReconciliationFenceError(
                 "Google Sheets reconciliation is fenced by changed configured ranges"
             )
@@ -696,7 +748,7 @@ def _sync_run_id(command: GoogleSheetsReconciliationCommand) -> UUID:
     )
 
 
-def _scope_set_digest(command: GoogleSheetsReconciliationCommand) -> str:
+def google_sheets_scope_set_digest(command: GoogleSheetsReconciliationCommand) -> str:
     scopes = sorted(
         (scope.model_dump(mode="json") for scope in command.scopes),
         key=lambda scope: (

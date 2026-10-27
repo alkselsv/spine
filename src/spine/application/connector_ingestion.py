@@ -77,7 +77,7 @@ from spine.domain.sources import (
     SourceRevisionReceiptAssociation,
     content_revision,
 )
-from spine.domain.sources.google import GoogleDriveFileKey
+from spine.domain.sources.google import GoogleDriveFileKey, GoogleRegisterRowKey
 from spine.domain.connections.google import OpaqueGoogleReference
 from spine.infrastructure.object_storage.contracts import OriginalUploadCommandInput
 from spine.connectors.observations import (
@@ -258,14 +258,15 @@ class ConnectorIngestionOrchestrator:
         canonical_context = self.context_factory(
             PersistenceOperation("canonical_acceptance"), _id(command, "canonical")
         )
-        is_drive_source = isinstance(
-            observation.external_identity.provider_key, GoogleDriveFileKey
+        is_lifecycle_source = isinstance(
+            observation.external_identity.provider_key,
+            (GoogleDriveFileKey, GoogleRegisterRowKey),
         )
         async with self.uow_factory(canonical_context) as uow:
             current = await uow.canonical.resolve_current(source.source_object_id)
             reappearance_predecessor = None
             if (
-                is_drive_source
+                is_lifecycle_source
                 and current is not None
                 and current.current_revision_kind is RevisionKind.TOMBSTONE
             ):
@@ -273,7 +274,7 @@ class ConnectorIngestionOrchestrator:
             elif (
                 current is not None
                 and current.current_revision_kind is RevisionKind.CONTENT
-                and is_drive_source
+                and is_lifecycle_source
             ):
                 current_revision = await uow.sources.resolve_revision(
                     current.current_revision_id
@@ -292,7 +293,7 @@ class ConnectorIngestionOrchestrator:
             await uow.rollback()
         if (
             reappearance_predecessor is not None
-            and is_drive_source
+            and is_lifecycle_source
         ):
             revision = _as_reappearance(revision, reappearance_predecessor)
             provenance = provenance.model_copy(
