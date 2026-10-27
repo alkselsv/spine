@@ -4962,13 +4962,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261127_64_google_sheets_reconciliation.py",
         "20261128_65_google_sheets_identity_quarantine.py",
         "20261129_66_drive_lifecycle_decisions.py",
+        "20261130_67_google_revocation_states.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261130_67_injected_failure.py").write_text(
+    (target / "versions" / "20261131_68_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261130_67'\n"
-        "down_revision = '20261129_66'\n"
+        "revision = '20261131_68'\n"
+        "down_revision = '20261130_67'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

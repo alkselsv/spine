@@ -11,6 +11,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from pydantic import ConfigDict, Field, model_validator
 
 from spine.domain.common import DefinitionModel
+from spine.application.google_sync_diagnostics import GOOGLE_PROVIDER_RETRY_LIMIT
 
 
 class DriveSnapshotRunState(str, Enum):
@@ -18,6 +19,8 @@ class DriveSnapshotRunState(str, Enum):
     SUCCEEDED = "succeeded"
     RESUMABLE = "resumable"
     RECONCILIATION_REQUIRED = "reconciliation_required"
+    SUSPENDED = "suspended"
+    POLICY_BLOCKED = "policy_blocked"
 
 
 class DriveSnapshotPageState(str, Enum):
@@ -48,10 +51,15 @@ class DriveSnapshotRun(DefinitionModel):
     configuration_generation: int = Field(gt=0)
     command_identity: str = Field(min_length=1, max_length=128)
     idempotency_key: str = Field(min_length=1, max_length=255)
-    proposed_start_page_token: str = Field(min_length=1, max_length=4096)
+    proposed_start_page_token: str | None = Field(default=None, max_length=4096)
     committed_cursor: str | None = Field(default=None, max_length=4096)
     next_page_token: str | None = Field(default=None, max_length=4096)
     state: DriveSnapshotRunState = DriveSnapshotRunState.RUNNING
+    suspension_reason: str | None = Field(default=None, max_length=64)
+    failure_code: str | None = Field(default=None, max_length=64)
+    provider_retry_attempts: int = Field(
+        default=0, ge=0, le=GOOGLE_PROVIDER_RETRY_LIMIT
+    )
     requested_at: datetime
     updated_at: datetime
 
@@ -70,6 +78,8 @@ class DriveSnapshotRun(DefinitionModel):
         for value in (self.requested_at, self.updated_at):
             if value.tzinfo is None or value.utcoffset() is None:
                 raise ValueError("Drive snapshot timestamps must be timezone-aware")
+        if self.state is DriveSnapshotRunState.SUCCEEDED and self.proposed_start_page_token is None:
+            raise ValueError("successful Drive snapshots require a start page token")
         return self
 
 
@@ -138,7 +148,7 @@ class DriveSnapshotRunCommand:
     configuration_generation: int
     command_identity: str
     idempotency_key: str
-    proposed_start_page_token: str
+    proposed_start_page_token: str | None
     committed_cursor: str | None
     requested_at: datetime
 
@@ -183,12 +193,34 @@ class DriveSyncRepository(Protocol):
         self, sync_run_id: UUID, *, next_page_token: str, now: datetime
     ) -> DriveSnapshotRun: ...
 
-    async def mark_resumable(self, sync_run_id: UUID, *, now: datetime) -> DriveSnapshotRun: ...
+    async def mark_resumable(
+        self,
+        sync_run_id: UUID,
+        *,
+        now: datetime,
+        failure_code: str = "provider_unavailable_retryable",
+    ) -> DriveSnapshotRun: ...
 
     async def commit_run(self, sync_run_id: UUID, *, now: datetime) -> DriveSnapshotRun: ...
 
     async def mark_reconciliation_required(
         self, sync_run_id: UUID, *, now: datetime
+    ) -> DriveSnapshotRun: ...
+
+    async def mark_suspended(
+        self, sync_run_id: UUID, *, now: datetime, reason: str
+    ) -> DriveSnapshotRun: ...
+
+    async def set_start_page_token(
+        self, sync_run_id: UUID, *, token: str, now: datetime
+    ) -> DriveSnapshotRun: ...
+
+    async def record_provider_failure(
+        self, sync_run_id: UUID, *, failure_code: str, now: datetime
+    ) -> DriveSnapshotRun: ...
+
+    async def mark_policy_blocked(
+        self, sync_run_id: UUID, *, now: datetime, failure_code: str
     ) -> DriveSnapshotRun: ...
 
 
@@ -236,7 +268,11 @@ class InMemoryDriveSyncRepository:
         if existing_id is not None:
             existing = self.runs[existing_id]
             if (
-                existing.proposed_start_page_token != command.proposed_start_page_token
+                (
+                    command.proposed_start_page_token is not None
+                    and existing.proposed_start_page_token
+                    != command.proposed_start_page_token
+                )
                 or existing.connection_id != command.connection_id
                 or existing.resource_scope_reference != command.resource_scope_reference
                 or existing.authorization_generation != command.authorization_generation
@@ -406,9 +442,21 @@ class InMemoryDriveSyncRepository:
         self.runs[sync_run_id] = updated
         return updated
 
-    async def mark_resumable(self, sync_run_id: UUID, *, now: datetime) -> DriveSnapshotRun:
+    async def mark_resumable(
+        self,
+        sync_run_id: UUID,
+        *,
+        now: datetime,
+        failure_code: str = "provider_unavailable_retryable",
+    ) -> DriveSnapshotRun:
         run = self.runs[sync_run_id]
-        updated = run.model_copy(update={"state": DriveSnapshotRunState.RESUMABLE, "updated_at": now})
+        updated = run.model_copy(
+            update={
+                "state": DriveSnapshotRunState.RESUMABLE,
+                "failure_code": failure_code,
+                "updated_at": now,
+            }
+        )
         self.runs[sync_run_id] = updated
         return updated
 
@@ -433,6 +481,67 @@ class InMemoryDriveSyncRepository:
         run = self.runs[sync_run_id]
         updated = run.model_copy(
             update={"state": DriveSnapshotRunState.RECONCILIATION_REQUIRED, "updated_at": now}
+        )
+        self.runs[sync_run_id] = updated
+        return updated
+
+    async def mark_suspended(
+        self, sync_run_id: UUID, *, now: datetime, reason: str
+    ) -> DriveSnapshotRun:
+        updated = self.runs[sync_run_id].model_copy(
+            update={
+                "state": DriveSnapshotRunState.SUSPENDED,
+                "suspension_reason": reason,
+                "updated_at": now,
+            }
+        )
+        self.runs[sync_run_id] = updated
+        return updated
+
+    async def set_start_page_token(
+        self, sync_run_id: UUID, *, token: str, now: datetime
+    ) -> DriveSnapshotRun:
+        if not token or len(token) > 4096:
+            raise ValueError("Drive start page token is invalid")
+        run = self.runs[sync_run_id]
+        if run.proposed_start_page_token not in {None, token}:
+            raise DriveSyncConflictError("Drive start page token changed during replay")
+        updated = run.model_copy(
+            update={"proposed_start_page_token": token, "updated_at": now}
+        )
+        self.runs[sync_run_id] = updated
+        return updated
+
+    async def record_provider_failure(
+        self, sync_run_id: UUID, *, failure_code: str, now: datetime
+    ) -> DriveSnapshotRun:
+        run = self.runs[sync_run_id]
+        attempts = run.provider_retry_attempts + 1
+        exhausted = attempts >= GOOGLE_PROVIDER_RETRY_LIMIT
+        updated = run.model_copy(
+            update={
+                "provider_retry_attempts": attempts,
+                "state": (
+                    DriveSnapshotRunState.RECONCILIATION_REQUIRED
+                    if exhausted
+                    else DriveSnapshotRunState.RESUMABLE
+                ),
+                "failure_code": "provider_retry_exhausted" if exhausted else failure_code,
+                "updated_at": now,
+            }
+        )
+        self.runs[sync_run_id] = updated
+        return updated
+
+    async def mark_policy_blocked(
+        self, sync_run_id: UUID, *, now: datetime, failure_code: str
+    ) -> DriveSnapshotRun:
+        updated = self.runs[sync_run_id].model_copy(
+            update={
+                "state": DriveSnapshotRunState.POLICY_BLOCKED,
+                "failure_code": failure_code,
+                "updated_at": now,
+            }
         )
         self.runs[sync_run_id] = updated
         return updated

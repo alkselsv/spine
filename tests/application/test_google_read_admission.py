@@ -11,6 +11,9 @@ import pytest
 from spine.application.connections.google import (
     GoogleConnectionCommand,
     GoogleConnectionDeniedError,
+    GoogleProviderAuthorizationError,
+    GoogleProviderPolicyError,
+    GoogleProviderQuotaError,
     GoogleProviderReadError,
     GoogleReadAdmission,
     GoogleReadCommand,
@@ -291,6 +294,92 @@ async def test_provider_failure_returns_content_free_error() -> None:
     assert "customer-plan" not in repr(failure.value)
     assert "refresh-token-secret" not in repr(failure.value)
     assert sink.events[0].payload_json() == {"failure_code": "provider.unavailable"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "reason", "error_type", "failure_code"),
+    (
+        (401, "unauthorized", GoogleProviderAuthorizationError, "authorization_revoked"),
+        (403, "invalid_grant", GoogleProviderAuthorizationError, "authorization_revoked"),
+        (403, "insufficientPermissions", GoogleProviderPolicyError, "provider_policy_denied"),
+        (429, "rateLimitExceeded", GoogleProviderQuotaError, "provider_quota_exhausted"),
+    ),
+)
+async def test_provider_failures_are_classified_without_exposing_provider_text(
+    status_code: int, reason: str, error_type: type[Exception], failure_code: str
+) -> None:
+    class ProviderError(RuntimeError):
+        pass
+
+    error = ProviderError("private URL https://drive.google.test/a.xlsx token-secret")
+    error.status_code = status_code
+    error.reason = reason
+    boundary, repository = await _repository_with(_connection())
+    admission, sink = _admission(repository, RecordingGoogleProvider(error=error))
+    context = boundary.worker(
+        scope=EnvironmentScope(workspace_id=WORKSPACE_ID, environment_id=ENVIRONMENT_ID),
+        service_principal_id=SERVICE_PRINCIPAL_ID,
+        purpose=PersistencePurpose("google_connector"),
+        operation=PersistenceOperation("google_connection_read"),
+        trace_id=_id(96),
+    )
+
+    with pytest.raises(error_type) as failure:
+        await admission.read(
+            GoogleReadCommand(
+                connection_id=CONNECTION_ID,
+                resource_scope_reference=RESOURCE_SCOPE,
+                authorization_generation=7,
+                configuration_generation=11,
+            ),
+            context,
+        )
+
+    assert failure.value.failure_code == failure_code
+    assert "drive.google" not in repr(failure.value)
+    assert "token-secret" not in repr(failure.value)
+    assert sink.events[0].payload_json() == {
+        "failure_code": (
+            "authorization.denied"
+            if error_type in {GoogleProviderAuthorizationError, GoogleProviderPolicyError}
+            else "provider.unavailable"
+        )
+    }
+
+
+@pytest.mark.asyncio
+async def test_revoked_grant_suspends_connection_and_denies_the_next_read() -> None:
+    boundary, repository = await _repository_with(_connection())
+    provider_error = RuntimeError("private provider response")
+    provider_error.status_code = 401
+    provider_error.reason = "unauthorized"
+    admission, _ = _admission(
+        repository,
+        RecordingGoogleProvider(error=provider_error),
+    )
+    read_context = boundary.worker(
+        scope=EnvironmentScope(workspace_id=WORKSPACE_ID, environment_id=ENVIRONMENT_ID),
+        service_principal_id=SERVICE_PRINCIPAL_ID,
+        purpose=PersistencePurpose("google_connector"),
+        operation=PersistenceOperation("google_connection_read"),
+        trace_id=_id(96),
+    )
+    command = GoogleReadCommand(
+        connection_id=CONNECTION_ID,
+        resource_scope_reference=RESOURCE_SCOPE,
+        authorization_generation=7,
+        configuration_generation=11,
+    )
+
+    with pytest.raises(GoogleProviderAuthorizationError):
+        await admission.read(command, read_context)
+
+    provider = RecordingGoogleProvider()
+    next_admission, _ = _admission(repository, provider)
+    with pytest.raises(GoogleConnectionDeniedError):
+        await next_admission.read(command, read_context)
+    assert provider.calls == []
 
 
 @pytest.mark.asyncio

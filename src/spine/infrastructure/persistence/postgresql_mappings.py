@@ -408,7 +408,7 @@ drive_snapshot_runs = Table(
     Column("service_principal_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("idempotency_key", Text, nullable=False),
     Column("state", Text, nullable=False),
-    Column("proposed_start_page_token", Text, nullable=False),
+    Column("proposed_start_page_token", Text),
     Column("committed_cursor", Text),
     Column("next_page_token", Text),
     Column("record", JSONB, nullable=False),

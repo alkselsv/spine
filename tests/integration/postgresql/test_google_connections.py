@@ -20,6 +20,12 @@ from spine.application.connections.google import (
     GoogleConnectionConflictError,
     GoogleConnectionDeniedError,
     GoogleReadCommand,
+    GoogleProviderQuotaError,
+)
+from spine.application.google_sheets_reconciliation import (
+    GoogleSheetsReconciliationCommand,
+    GoogleSheetsReconciliationCoordinator,
+    GoogleSheetsReconciliationScope,
 )
 from spine.application.persistence import (
     EnvironmentScope,
@@ -325,6 +331,34 @@ async def test_postgresql_fenced_successor_becomes_current(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_provider_revocation_appends_suspended_successor(
+    google_database: GoogleDatabase,
+) -> None:
+    scenario = await _scenario(google_database, case=7)
+    await scenario.repository.register(
+        GoogleConnectionCommand(
+            connection=scenario.initial,
+            idempotency_key="revocation-google-connection-v1",
+            audit_event_id=_id(5992),
+            occurred_at=OCCURRED_AT,
+        ),
+        scenario.context,
+    )
+
+    result = await scenario.repository.suspend_revoked(
+        scenario.initial,
+        _context(_boundary(), operation="google_connection_read"),
+        occurred_at=OCCURRED_AT,
+    )
+
+    assert result.connection.connection_id == scenario.initial.connection_id
+    assert result.connection.version == scenario.initial.version + 1
+    assert result.connection.authorization_generation == scenario.initial.authorization_generation
+    assert result.connection.status is GoogleConnectionStatus.SUSPENDED
+    assert result.audit.payload_json() == {"command_type": "google_connection_suspension"}
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_postgresql_unapproved_connection_conflicts(
     google_database: GoogleDatabase,
 ) -> None:
@@ -503,6 +537,119 @@ async def test_postgresql_google_sheets_sync_ledger_survives_repository_recreati
     assert len(dispositions) == 1
     assert dispositions[0].disposition is GoogleSheetsIdentityDisposition.QUARANTINED
     assert dispositions[0].failure_code is GoogleSheetsIdentityFailureCode.MISSING_BUSINESS_ID
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_google_sheets_quota_retry_limit_survives_replay(
+    google_database: GoogleDatabase,
+) -> None:
+    now = datetime(2026, 11, 27, tzinfo=timezone.utc)
+    boundary = _boundary()
+
+    class UnitOfWork:
+        def __init__(self, connection):
+            self.connection = connection
+
+        async def _execute(self, statement):
+            return await self.connection.execute(statement)
+
+        async def commit(self):
+            await self.connection.commit()
+
+        async def rollback(self):
+            await self.connection.rollback()
+
+    @asynccontextmanager
+    async def uow_factory(context):
+        async with google_database.runtime_engine.connect() as connection:
+            await connection.begin()
+            await connection.execute(
+                text(
+                    "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                    "set_config('spine.environment_id', :environment_id, true)"
+                ),
+                {
+                    "workspace_id": str(WORKSPACE_ID),
+                    "environment_id": str(ENVIRONMENT_ID),
+                },
+            )
+            yield UnitOfWork(connection)
+
+    def make_repository() -> PostgreSQLGoogleSheetsSyncRepository:
+        return PostgreSQLGoogleSheetsSyncRepository(
+            uow_factory=uow_factory,
+            context_factory=lambda operation, identity: _context(
+                boundary, operation=operation.value
+            ),
+        )
+
+    request = GoogleSheetsReconciliationCommand(
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        connection_id=_id(61201),
+        resource_scope_reference=_id(61202),
+        service_principal_id=SERVICE_PRINCIPAL_ID,
+        authorization_generation=1,
+        configuration_generation=1,
+        access_policy_version_id=_id(61203),
+        command_identity="google-sheets:quota-retry:612",
+        idempotency_key="google-sheets:quota-retry:612",
+        prior_committed_cursor="cursor-old",
+        proposed_cursor="cursor-new",
+        trigger="scheduled_full",
+        scopes=(
+            GoogleSheetsReconciliationScope(
+                spreadsheet_id="estimates", sheet_id=7, a1_range="A2:F500"
+            ),
+        ),
+    )
+
+    class QuotaReader:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def read_page(self, command, scope, page_token, context):
+            del command, scope, page_token, context
+            self.calls += 1
+            raise GoogleProviderQuotaError()
+
+    class NoOpIngestion:
+        async def ingest(self, observation, *, command_identity, idempotency_key):
+            raise AssertionError("quota failures must not ingest source rows")
+
+    reader = QuotaReader()
+    repository = make_repository()
+    coordinator = GoogleSheetsReconciliationCoordinator(
+        repository=repository,
+        reader=reader,
+        ingestion=NoOpIngestion(),
+        context_factory=lambda operation, trace_id: _context(
+            boundary, operation=operation.value
+        ),
+        clock=lambda: now,
+    )
+
+    for _ in range(3):
+        result = await coordinator.run(request)
+
+    assert result.state is GoogleSheetsSyncRunState.RECONCILIATION_REQUIRED
+    assert result.diagnostic_snapshot.provider_retry_attempts == 3
+    assert reader.calls == 3
+
+    reopened = GoogleSheetsReconciliationCoordinator(
+        repository=make_repository(),
+        reader=reader,
+        ingestion=NoOpIngestion(),
+        context_factory=lambda operation, trace_id: _context(
+            boundary, operation=operation.value
+        ),
+        clock=lambda: now,
+    )
+    replay = await reopened.run(request)
+
+    assert replay.state is GoogleSheetsSyncRunState.RECONCILIATION_REQUIRED
+    assert replay.diagnostic_snapshot.provider_retry_attempts == 3
+    assert reader.calls == 3
 
 
 @pytest.mark.asyncio(loop_scope="session")

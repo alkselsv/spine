@@ -11,6 +11,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from pydantic import ConfigDict, Field, model_validator
 
 from spine.domain.common import DefinitionModel
+from spine.application.google_sync_diagnostics import GOOGLE_PROVIDER_RETRY_LIMIT
 from spine.domain.sources.google import GoogleDriveLifecycleSignal
 
 
@@ -19,6 +20,8 @@ class DriveChangeRunState(str, Enum):
     SUCCEEDED = "succeeded"
     RESUMABLE = "resumable"
     RECONCILIATION_REQUIRED = "reconciliation_required"
+    SUSPENDED = "suspended"
+    POLICY_BLOCKED = "policy_blocked"
 
 
 class DriveChangePageState(str, Enum):
@@ -72,6 +75,11 @@ class DriveChangeRun(DefinitionModel):
     next_page_token: str = Field(min_length=1, max_length=4096)
     state: DriveChangeRunState = DriveChangeRunState.RUNNING
     reconciliation_reason: str | None = Field(default=None, max_length=64)
+    suspension_reason: str | None = Field(default=None, max_length=64)
+    failure_code: str | None = Field(default=None, max_length=64)
+    provider_retry_attempts: int = Field(
+        default=0, ge=0, le=GOOGLE_PROVIDER_RETRY_LIMIT
+    )
     requested_at: datetime
     updated_at: datetime
 
@@ -254,7 +262,11 @@ class DriveChangeRepository(Protocol):
     ) -> DriveChangeRun: ...
 
     async def mark_resumable(
-        self, sync_run_id: UUID, *, now: datetime
+        self,
+        sync_run_id: UUID,
+        *,
+        now: datetime,
+        failure_code: str = "provider_unavailable_retryable",
     ) -> DriveChangeRun: ...
 
     async def commit_run(
@@ -263,6 +275,18 @@ class DriveChangeRepository(Protocol):
 
     async def mark_reconciliation_required(
         self, sync_run_id: UUID, *, reason: str, now: datetime
+    ) -> DriveChangeRun: ...
+
+    async def mark_suspended(
+        self, sync_run_id: UUID, *, now: datetime, reason: str
+    ) -> DriveChangeRun: ...
+
+    async def mark_policy_blocked(
+        self, sync_run_id: UUID, *, now: datetime, failure_code: str
+    ) -> DriveChangeRun: ...
+
+    async def record_provider_failure(
+        self, sync_run_id: UUID, *, failure_code: str, now: datetime
     ) -> DriveChangeRun: ...
 
 
@@ -559,9 +583,19 @@ class InMemoryDriveChangeRepository:
         self.runs[sync_run_id] = updated
         return updated
 
-    async def mark_resumable(self, sync_run_id: UUID, *, now: datetime):
+    async def mark_resumable(
+        self,
+        sync_run_id: UUID,
+        *,
+        now: datetime,
+        failure_code: str = "provider_unavailable_retryable",
+    ):
         updated = self.runs[sync_run_id].model_copy(
-            update={"state": DriveChangeRunState.RESUMABLE, "updated_at": now}
+            update={
+                "state": DriveChangeRunState.RESUMABLE,
+                "failure_code": failure_code,
+                "updated_at": now,
+            }
         )
         self.runs[sync_run_id] = updated
         return updated
@@ -597,6 +631,54 @@ class InMemoryDriveChangeRepository:
             update={
                 "state": DriveChangeRunState.RECONCILIATION_REQUIRED,
                 "reconciliation_reason": reason,
+                "updated_at": now,
+            }
+        )
+        self.runs[sync_run_id] = updated
+        return updated
+
+    async def mark_suspended(
+        self, sync_run_id: UUID, *, now: datetime, reason: str
+    ):
+        updated = self.runs[sync_run_id].model_copy(
+            update={
+                "state": DriveChangeRunState.SUSPENDED,
+                "suspension_reason": reason,
+                "updated_at": now,
+            }
+        )
+        self.runs[sync_run_id] = updated
+        return updated
+
+    async def mark_policy_blocked(
+        self, sync_run_id: UUID, *, now: datetime, failure_code: str
+    ):
+        updated = self.runs[sync_run_id].model_copy(
+            update={
+                "state": DriveChangeRunState.POLICY_BLOCKED,
+                "failure_code": failure_code,
+                "updated_at": now,
+            }
+        )
+        self.runs[sync_run_id] = updated
+        return updated
+
+    async def record_provider_failure(
+        self, sync_run_id: UUID, *, failure_code: str, now: datetime
+    ):
+        run = self.runs[sync_run_id]
+        attempts = run.provider_retry_attempts + 1
+        exhausted = attempts >= GOOGLE_PROVIDER_RETRY_LIMIT
+        updated = run.model_copy(
+            update={
+                "provider_retry_attempts": attempts,
+                "state": (
+                    DriveChangeRunState.RECONCILIATION_REQUIRED
+                    if exhausted
+                    else DriveChangeRunState.RESUMABLE
+                ),
+                "reconciliation_reason": "provider_retry_exhausted" if exhausted else None,
+                "failure_code": "provider_retry_exhausted" if exhausted else failure_code,
                 "updated_at": now,
             }
         )

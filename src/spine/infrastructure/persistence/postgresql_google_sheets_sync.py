@@ -155,6 +155,16 @@ class PostgreSQLGoogleSheetsSyncRepository(GoogleSheetsSyncRepository):
             },
         )
 
+    async def record_provider_failure(
+        self, sync_run_id: UUID, *, failure_code: str, now: datetime
+    ) -> GoogleSheetsSyncRun:
+        return await self._mutate(
+            "google_sheets_sync_run",
+            sync_run_id,
+            "record_provider_failure",
+            {"sync_run_id": sync_run_id, "failure_code": failure_code, "now": now},
+        )
+
     async def record_identity_disposition(
         self, command: GoogleSheetsIdentityDispositionCommand
     ) -> GoogleSheetsIdentityQuarantine:
