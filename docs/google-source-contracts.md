@@ -245,6 +245,7 @@ holds its prior cursor and contributes no absence decision. A later clean run
 records a separate `cleared` event, preserving the earlier quarantine event as
 audit history. Disposition events are append-only and protected by workspace
 and environment row-level security.
+
 ## Drive removal and reappearance
 
 Issue #610 keeps provider signals distinct: `removed=true`, trashed,

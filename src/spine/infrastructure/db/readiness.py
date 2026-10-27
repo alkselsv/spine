@@ -388,7 +388,111 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "drive_snapshot_runs": ExpectedTablePrivileges(True, True, True, True, False),
         "drive_change_runs": ExpectedTablePrivileges(True, True, True, True, False),
         "google_sheets_sync_runs": ExpectedTablePrivileges(True, True, True, True, False),
+        "drive_lifecycle_decisions": ExpectedTablePrivileges(True, True, True, True, False),
         "google_sheets_identity_dispositions": ExpectedTablePrivileges(
             True, True, True, False, False
         ),
-        "drive_lifecycle_decisions": ExpectedTablePrivileges(True, True, True, True, False),
+        "original_upload_records": ExpectedTablePrivileges(
+            True, True, True, True, False
+        ),
+        "process_only_operation_lineages": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "source_security_domain_bindings": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "parsed_documents": ExpectedTablePrivileges(True, True, True, False, False),
+        "parsed_document_segments": ExpectedTablePrivileges(True, True, True, False, False),
+        "admission_decisions": ExpectedTablePrivileges(True, True, True, False, False),
+        "access_policy_versions": ExpectedTablePrivileges(True, True, True, False, False),
+        "access_policy_grants": ExpectedTablePrivileges(True, True, True, False, False),
+        "policy_proposals": ExpectedTablePrivileges(True, True, True, False, False),
+        "policy_approvals": ExpectedTablePrivileges(True, True, True, False, False),
+        "policy_activations": ExpectedTablePrivileges(True, True, True, False, False),
+        "current_access_policies": ExpectedTablePrivileges(True, True, True, True, False),
+        "backup_fence_leases": ExpectedTablePrivileges(True, True, True, True, False),
+        "fence_operation_tickets": ExpectedTablePrivileges(True, True, True, True, False),
+        "recovery_quiescence_evidence": ExpectedTablePrivileges(True, True, True, False, False),
+        "storage_recovery_manifests": ExpectedTablePrivileges(True, True, True, False, False),
+        "recovery_evidence_invalidations": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "canonical_generation_counters": ExpectedTablePrivileges(True, True, True, True, False),
+        "canonical_acceptances": ExpectedTablePrivileges(True, True, True, False, False),
+        "current_source_heads": ExpectedTablePrivileges(True, True, True, True, False),
+        "canonical_boundaries": ExpectedTablePrivileges(True, True, True, False, False),
+        "canonical_boundary_members": ExpectedTablePrivileges(True, True, True, False, False),
+        "ontology_versions": ExpectedTablePrivileges(True, True, True, False, False),
+        "projection_config_versions": ExpectedTablePrivileges(True, True, True, False, False),
+        "projection_runs": ExpectedTablePrivileges(True, True, True, True, False),
+        "projection_run_transitions": ExpectedTablePrivileges(True, True, True, False, False),
+        "projection_partitions": ExpectedTablePrivileges(True, True, True, False, False),
+        "projection_receipts": ExpectedTablePrivileges(True, True, True, False, False),
+        "source_projection_references": ExpectedTablePrivileges(True, True, True, False, False),
+        "projection_validations": ExpectedTablePrivileges(True, True, True, False, False),
+        "projection_snapshots": ExpectedTablePrivileges(True, True, True, True, False),
+        "projection_snapshot_members": ExpectedTablePrivileges(True, True, True, False, False),
+        "projection_reconciliation_results": ExpectedTablePrivileges(True, True, True, False, False),
+        "projection_activations": ExpectedTablePrivileges(True, True, True, False, False),
+        "active_projections": ExpectedTablePrivileges(True, True, True, True, False),
+        "projection_drifts": ExpectedTablePrivileges(True, True, True, False, False),
+        "source_canonical_tables": ExpectedTablePrivileges(False, True, False, False, False),
+        "source_canonical_unicode": ExpectedTablePrivileges(False, True, False, False, False),
+        "source_canonical_compositions": ExpectedTablePrivileges(False, True, False, False, False),
+        "source_canonical_bcp47": ExpectedTablePrivileges(False, True, False, False, False),
+        "canonical_human_identities": ExpectedTablePrivileges(False, False, False, False, False),
+        "canonical_human_identity_states": ExpectedTablePrivileges(False, False, False, False, False),
+        "authentication_alias_bindings": ExpectedTablePrivileges(False, False, False, False, False),
+        "workspace_memberships": ExpectedTablePrivileges(True, False, False, False, False),
+        "environment_memberships": ExpectedTablePrivileges(True, False, False, False, False),
+        "environment_role_bindings": ExpectedTablePrivileges(True, False, False, False, False),
+        "authorization_generations": ExpectedTablePrivileges(True, False, False, False, False),
+        "qualification_authority_bindings": ExpectedTablePrivileges(
+            True, False, False, False, False
+        ),
+        "qualification_target_bindings": ExpectedTablePrivileges(
+            True, False, False, False, False
+        ),
+        "google_connection_approvals": ExpectedTablePrivileges(
+            True, True, False, False, False
+        ),
+        "google_connection_versions": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+    }
+    if set(tables) != set(expected):
+        return False
+    for table_name, required in expected.items():
+        row = tables[table_name]
+        if row.is_owner or row.has_unsafe_privileges:
+            return False
+        if required.tenant_scoped and (not row.rls_enabled or not row.rls_forced):
+            return False
+        if not required.tenant_scoped and (row.rls_enabled or row.rls_forced):
+            return False
+        if (
+            row.can_select != required.select
+            or row.can_insert != required.insert
+            or row.can_update != required.update
+            or row.can_delete != required.delete
+        ):
+            return False
+    return True
+
+
+def _revision_order(revision: str) -> tuple[int, int] | None:
+    match = _ORDERED_REVISION.fullmatch(revision)
+    if match is None:
+        return None
+    return int(match.group("date")), int(match.group("sequence"))
+
+
+__all__ = [
+    "DatabaseReadinessError",
+    "MigrationInventory",
+    "RecoveryReadinessCheck",
+    "SchemaRevisionState",
+    "classify_schema_revision",
+    "load_migration_inventory",
+    "verify_database_readiness",
+]

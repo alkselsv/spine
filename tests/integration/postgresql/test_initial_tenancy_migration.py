@@ -3636,6 +3636,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "drive_snapshot_runs": (True, True),
             "drive_change_runs": (True, True),
             "google_sheets_sync_runs": (True, True),
+            "google_sheets_identity_dispositions": (True, True),
             "drive_lifecycle_decisions": (True, True),
             "original_upload_records": (True, True),
             "qa_agent_artifacts": (True, True),
@@ -4959,14 +4960,15 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261125_62_drive_initial_snapshot.py",
         "20261126_63_drive_incremental_changes.py",
         "20261127_64_google_sheets_reconciliation.py",
-        "20261128_65_drive_lifecycle_decisions.py",
+        "20261128_65_google_sheets_identity_quarantine.py",
+        "20261129_66_drive_lifecycle_decisions.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261129_66_injected_failure.py").write_text(
+    (target / "versions" / "20261130_67_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261129_66'\n"
-        "down_revision = '20261128_65'\n"
+        "revision = '20261130_67'\n"
+        "down_revision = '20261129_66'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
