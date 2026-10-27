@@ -77,11 +77,11 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "length(scope_identity) BETWEEN 1 AND 1024",
-            name="ck_google_sheets_absence_candidates_scope",
+            name=op.f("ck_google_sheets_absence_candidates_scope"),
         ),
         sa.CheckConstraint(
             "external_object_id ~ '^gsk1:[a-z2-7]{52}$'",
-            name="ck_google_sheets_absence_candidates_identity",
+            name=op.f("ck_google_sheets_absence_candidates_identity"),
         ),
         schema=SCHEMA,
     )
@@ -112,7 +112,7 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "state IN ('pending', 'tombstoned', 'retained')",
-            name="ck_google_sheets_removal_decisions_state",
+            name=op.f("ck_google_sheets_removal_decisions_state"),
         ),
         schema=SCHEMA,
     )
