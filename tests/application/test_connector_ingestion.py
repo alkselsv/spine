@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 from types import SimpleNamespace
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -14,6 +14,13 @@ from spine.application.connector_ingestion import (
     build_connector_canonical_acceptance_command,
 )
 from spine.application.connections.google import GoogleReadCommand
+from spine.application.google_sheets_reconciliation import (
+    ConnectorGoogleSheetsCanonicalIngestion,
+    GoogleSheetsAdmittedPageReader,
+    GoogleSheetsReconciliationCommand,
+    GoogleSheetsReconciliationCoordinator,
+    GoogleSheetsReconciliationScope,
+)
 from spine.application.persistence.context import (
     EnvironmentScope,
     PersistenceOperation,
@@ -24,6 +31,10 @@ from spine.application.persistence.errors import OptimisticConflictError
 from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.application.persistence.ingestion import IngestionMutationResult
 from spine.application.persistence.idempotency import OpaqueResultReference
+from spine.application.persistence.google_sheets_sync import (
+    GoogleSheetsSyncRunState,
+    InMemoryGoogleSheetsSyncRepository,
+)
 from spine.application.diagnostics import AuditEventRegistry
 from spine.connectors import ConnectorCoverage, NormalizedConnectorObservation
 from spine.connectors.google_drive import (
@@ -34,7 +45,9 @@ from spine.connectors.google_drive import (
 from spine.connectors.google_sheets import (
     GoogleSheetsCellData,
     GoogleSheetsProviderAdapter,
+    GoogleSheetsRangePage,
     GoogleSheetsReadProfile,
+    GoogleSheetsReconciliationProviderAdapter,
     GoogleSheetsRowData,
     GoogleSheetsSnapshot,
 )
@@ -1143,3 +1156,218 @@ async def test_handoff_uses_real_in_memory_source_admission_canonical_and_ledger
     assert state.state is IngestionRunState.SUCCEEDED
     assert moved_state is not None
     assert moved_state.state is IngestionRunState.SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_google_reconciliation_composes_fake_provider_through_persisted_canonical_outbox():
+    class RecordingOutboxEventRegistry(OutboxEventRegistry):
+        def __init__(self):
+            super().__init__()
+            self.built_intents = []
+
+        def build_intent(self, **values):
+            intent = super().build_intent(**values)
+            self.built_intents.append(intent)
+            return intent
+
+    class FakeGoogleSheetsService:
+        def __init__(self):
+            self.page_reads = []
+
+        async def get_spreadsheet_range_page(
+            self,
+            connection,
+            resource_scope_reference,
+            spreadsheet_id,
+            sheet_id,
+            a1_range,
+            page_token,
+        ):
+            del connection, resource_scope_reference
+            self.page_reads.append((spreadsheet_id, sheet_id, a1_range, page_token))
+            return GoogleSheetsRangePage(
+                spreadsheet_id=spreadsheet_id,
+                sheet_id=sheet_id,
+                a1_range=a1_range,
+                page_token=page_token,
+                next_page_token=None,
+                complete=True,
+                provider_version_before="sheet-version-1",
+                provider_version_after="sheet-version-1",
+                snapshot=_handoff_snapshot(row_number=2),
+            )
+
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=_id("google-composed-issuer"),
+        secret=b"google-composed-qualification-secret",
+    )
+    events = RecordingOutboxEventRegistry()
+    audits = AuditEventRegistry.with_default_families()
+    authority = create_initial_workspace_bootstrap_authority()
+    persistence = InMemoryPersistence(
+        context_verifier=boundary,
+        outbox_events=events,
+        audit_events=audits,
+        bootstrap_authority=authority,
+        canonical_policy_repository=_EligiblePolicyRepository(),
+        canonical_clock=lambda: NOW,
+    )
+    await persistence.initial_workspace_bootstrap.create_initial_workspace(
+        authority, Workspace(id=WORKSPACE, slug="google-composed", display_name="Google")
+    )
+    async with persistence.uow_factory(
+        boundary.worker(
+            scope=WorkspaceScope(workspace_id=WORKSPACE),
+            service_principal_id=_id("service"),
+            purpose=PersistencePurpose("connector.ingestion.v1"),
+            operation=PersistenceOperation("environment_repository"),
+            trace_id=_id("google-composed-environment"),
+        )
+    ) as uow:
+        await uow.environments.add(
+            Environment(
+                id=ENVIRONMENT,
+                workspace_id=WORKSPACE,
+                kind=EnvironmentKind.DEVELOPMENT,
+                display_name="dev",
+            )
+        )
+        await uow.commit()
+
+    def trusted_context(operation, trace_id):
+        return boundary.worker(
+            scope=EnvironmentScope(workspace_id=WORKSPACE, environment_id=ENVIRONMENT),
+            service_principal_id=_id("service"),
+            purpose=PersistencePurpose("connector.ingestion.v1"),
+            operation=operation,
+            trace_id=trace_id,
+        )
+
+    orchestrator = ConnectorIngestionOrchestrator(
+        uow_factory=persistence.uow_factory,
+        observation_reader=_SheetsHandoffReader(),
+        uploader=_Uploader(),
+        read_context_factory=trusted_context,
+        context_factory=trusted_context,
+        canonical_command_factory=lambda **values: build_connector_canonical_acceptance_command(
+            outbox_events=events,
+            audit_events=audits,
+            **values,
+        ),
+        outbox_events=events,
+        audit_events=audits,
+        clock=lambda: NOW,
+    )
+
+    service = FakeGoogleSheetsService()
+    connection = SimpleNamespace(
+        connection_id=CONNECTION,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+    )
+    provider = GoogleSheetsReconciliationProviderAdapter(
+        service=service,
+        profiles=(
+            GoogleSheetsReadProfile(
+                spreadsheet_id="spreadsheet-1",
+                sheet_id=17,
+                business_id_column="estimate_id",
+                columns=(
+                    {"column_key": "estimate_id", "coordinate": "A"},
+                    {"column_key": "total", "coordinate": "B"},
+                ),
+            ),
+        ),
+        clock=lambda: NOW,
+    )
+
+    class AdmittedFakeProvider:
+        async def read(self, request, context):
+            del context
+            return await provider.read(connection, request)
+
+    coordinator = GoogleSheetsReconciliationCoordinator(
+        repository=InMemoryGoogleSheetsSyncRepository(),
+        reader=GoogleSheetsAdmittedPageReader(AdmittedFakeProvider()),
+        ingestion=ConnectorGoogleSheetsCanonicalIngestion(
+            orchestrator=orchestrator,
+            base_command=_command("google-composed-base"),
+        ),
+        context_factory=lambda operation, trace_id: SimpleNamespace(
+            operation=operation, trace_id=trace_id
+        ),
+        clock=lambda: NOW,
+    )
+    request = GoogleSheetsReconciliationCommand(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        connection_id=CONNECTION,
+        resource_scope_reference=SCOPE,
+        service_principal_id=_id("service"),
+        authorization_generation=7,
+        configuration_generation=11,
+        access_policy_version_id=POLICY,
+        command_identity="qualification.google.sheets",
+        idempotency_key="google-composed-run-1",
+        prior_committed_cursor="cursor-1",
+        proposed_cursor="cursor-2",
+        trigger="scheduled_full",
+        scopes=(
+            GoogleSheetsReconciliationScope(
+                spreadsheet_id="spreadsheet-1",
+                sheet_id=17,
+                a1_range="A2:B500",
+            ),
+        ),
+    )
+
+    result = await coordinator.run(request)
+    replay = await coordinator.run(request)
+
+    assert result.state is GoogleSheetsSyncRunState.SUCCEEDED
+    assert result.accepted_rows == 1
+    assert result.committed_cursor == "cursor-2"
+    assert replay.state is GoogleSheetsSyncRunState.SUCCEEDED
+    assert replay.sync_run_id == result.sync_run_id
+    assert service.page_reads == [("spreadsheet-1", 17, "A2:B500", None)]
+    revision_id = result.pages[0].items[0].revision_id
+    assert revision_id is not None
+
+    async with persistence.uow_factory(
+        trusted_context(PersistenceOperation("source_observation"), _id("google-readback"))
+    ) as uow:
+        revision = await uow.sources.resolve_revision(revision_id)
+        assert revision is not None
+        source_object = await uow.sources.resolve_source(revision.source_object_id)
+        current = await uow.canonical.resolve_current(revision.source_object_id)
+        await uow.rollback()
+
+    assert source_object is not None
+    assert current is not None
+    assert current.current_revision_id == revision_id
+    assert current.accepted_generation == 1
+    projection_intents = [
+        intent
+        for intent in events.built_intents
+        if intent.event_type == "ingestion.projection.requested"
+    ]
+    assert len(projection_intents) == 1
+    assert projection_intents[0].environment_id == ENVIRONMENT
+    await persistence.delivery_repository.materialize(
+        limit=100,
+        materialized_at=NOW,
+    )
+    claims = await persistence.delivery_repository.claim_due(
+        limit=100,
+        worker_identity="google_connector_qualification",
+        claimed_at=NOW,
+        lease_duration=timedelta(minutes=1),
+    )
+    persisted_projection_intents = tuple(
+        claim.intent
+        for claim in claims
+        if claim.intent.event_type == "ingestion.projection.requested"
+    )
+    assert len(persisted_projection_intents) == 1
+    assert persisted_projection_intents[0].event_id == projection_intents[0].event_id
+    assert persisted_projection_intents[0].payload_snapshot is not None
