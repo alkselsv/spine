@@ -1,0 +1,132 @@
+{
+  "schema_version": "issue-614-google-offline:v1",
+  "ticket": 614,
+  "status": "offline_pass",
+  "live_provider_status": "not_verified",
+  "verification": {
+    "focused_command": ".venv/bin/pytest -q tests/application/test_google_drive_reader.py tests/application/test_google_drive_snapshot.py tests/application/test_google_drive_changes.py tests/application/test_google_drive_reconciliation.py tests/application/test_google_drive_lifecycle.py tests/application/test_google_sheets_reader.py tests/application/test_google_sheets_reconciliation.py tests/application/test_google_sheets_lifecycle.py tests/application/test_google_read_admission.py tests/application/test_google_sync_diagnostics.py tests/application/test_register_associations.py tests/application/test_connector_ingestion.py tests/application/persistence/test_canonical_acceptance.py tests/contracts/persistence/test_canonical_acceptance_contract.py tests/integration/postgresql/test_postgresql_unit_of_work.py tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head tests/qualification/test_issue614_google_offline_qualification.py tests/infrastructure/memory/test_cognee_dependency_contract.py",
+    "focused_result": "341 passed, 0 skipped",
+    "composed_path_command": ".venv/bin/pytest -q tests/application/test_connector_ingestion.py::test_google_reconciliation_composes_fake_provider_through_persisted_canonical_outbox",
+    "composed_path_result": "1 passed; committed projection outbox intent read back once after replay",
+    "repository_command": ".venv/bin/pytest -q",
+    "repository_result": "4451 passed, 6 skipped, 0 failed",
+    "repository_warning": "One existing Pydantic serializer warning in tests/domain/storage/test_recovery_integrity.py::test_unknown_event_kind_is_rejected",
+    "compileall_command": ".venv/bin/python -m compileall -q src tests",
+    "compileall_result": "passed"
+  },
+  "required_scenarios": [
+    "drive_initial_snapshot_and_incremental_cursor",
+    "sheets_full_and_incremental_reconciliation",
+    "changed_content_and_metadata_only_observation",
+    "stable_row_identity_and_invalid_identity_quarantine",
+    "interruption_replay_and_idempotent_projection_effect",
+    "composed_provider_to_persisted_canonical_outbox_path",
+    "revocation_and_generation_fencing",
+    "incomplete_pagination_and_partial_failure",
+    "conservative_removal_tombstone_and_reappearance",
+    "workspace_isolation_and_safe_diagnostics",
+    "revision_scoped_locators_and_association_lineage",
+    "canonical_acceptance_and_postgresql_contracts",
+    "migration_graph_and_upgrade_path"
+  ],
+  "traceability": {
+    "drive_initial_snapshot_and_incremental_cursor": [
+      "tests/application/test_google_drive_snapshot.py::test_initial_snapshot_commits_proposed_start_token_after_all_pages_are_durable",
+      "tests/application/test_google_drive_changes.py::test_incremental_changes_drains_every_page_before_committing_terminal_cursor"
+    ],
+    "sheets_full_and_incremental_reconciliation": [
+      "tests/application/test_google_sheets_reconciliation.py::test_reconcile_reads_every_configured_page_before_canonical_ingestion",
+      "tests/application/test_google_sheets_reconciliation.py::test_drive_wakeup_reconciles_sheets_before_committing_drive_cursor"
+    ],
+    "changed_content_and_metadata_only_observation": [
+      "tests/application/test_google_drive_reader.py::test_drive_operational_metadata_changes_keep_revision_identity_but_append_provenance",
+      "tests/application/test_google_sheets_reader.py::test_sheets_location_changes_preserve_content_digest_and_append_locator_provenance",
+      "tests/application/test_google_sheets_reader.py::test_sheets_revision_digest_changes_when_a_configured_representation_changes"
+    ],
+    "stable_row_identity_and_invalid_identity_quarantine": [
+      "tests/application/test_google_sheets_reader.py::test_sheets_range_reader_quarantines_duplicate_business_ids",
+      "tests/application/test_google_sheets_reconciliation.py::test_invalid_identity_scope_is_durably_quarantined_without_acceptance"
+    ],
+    "interruption_replay_and_idempotent_projection_effect": [
+      "tests/application/test_google_drive_snapshot.py::test_interrupted_page_resumes_without_repeating_durable_items",
+      "tests/application/test_google_drive_snapshot.py::test_replay_after_canonical_effect_before_item_checkpoint_reuses_stable_item_command",
+      "tests/application/test_google_sheets_reconciliation.py::test_duplicate_wakeup_replays_one_durable_row_effect",
+      "tests/application/test_connector_ingestion.py::test_handoff_uses_real_in_memory_source_admission_canonical_and_ledger_repositories"
+    ],
+    "composed_provider_to_persisted_canonical_outbox_path": [
+      "tests/application/test_connector_ingestion.py::test_google_reconciliation_composes_fake_provider_through_persisted_canonical_outbox"
+    ],
+    "revocation_and_generation_fencing": [
+      "tests/application/test_google_drive_snapshot.py::test_revoked_grant_suspends_snapshot_before_starting_source_ingestion",
+      "tests/application/test_google_sheets_reconciliation.py::test_revoked_grant_suspends_full_scope_before_any_row_is_accepted",
+      "tests/application/test_google_drive_changes.py::test_generation_change_fences_resumed_run_before_provider_call"
+    ],
+    "incomplete_pagination_and_partial_failure": [
+      "tests/application/test_google_drive_snapshot.py::test_incomplete_search_requires_reconciliation_and_keeps_last_cursor",
+      "tests/application/test_google_sheets_reconciliation.py::test_incomplete_late_page_holds_cursor_and_accepts_no_rows",
+      "tests/application/test_google_sheets_reconciliation.py::test_retry_skips_durable_row_outcome_after_later_canonical_failure"
+    ],
+    "conservative_removal_tombstone_and_reappearance": [
+      "tests/application/test_google_drive_lifecycle.py::test_trash_and_scope_exit_are_non_authoritative_by_default",
+      "tests/application/test_google_drive_lifecycle.py::test_complete_authorized_scoped_absence_tombstones_once_and_replays",
+      "tests/application/test_google_drive_lifecycle.py::test_drive_reappearance_uses_source_lifecycle_with_tombstone_lineage",
+      "tests/application/test_google_sheets_lifecycle.py::test_incomplete_scan_cannot_create_candidate_or_tombstone",
+      "tests/application/test_google_sheets_lifecycle.py::test_complete_authorized_absence_records_candidate_and_tombstones_once"
+    ],
+    "workspace_isolation_and_safe_diagnostics": [
+      "tests/application/test_google_drive_lifecycle.py::test_postgresql_drive_source_reader_requires_matching_tenant_and_provenance",
+      "tests/application/test_google_sheets_lifecycle.py::test_cross_workspace_source_inventory_cannot_create_removal_decision",
+      "tests/application/test_google_sync_diagnostics.py::test_google_sync_diagnostic_snapshot_contains_only_allowlisted_operational_data",
+      "tests/application/test_google_read_admission.py::test_denied_request_fails_before_provider_call"
+    ],
+    "revision_scoped_locators_and_association_lineage": [
+      "tests/application/test_google_sheets_reader.py::test_sheets_location_changes_preserve_content_digest_and_append_locator_provenance",
+      "tests/application/test_register_associations.py::test_accept_register_claim_replay_returns_same_revision_scoped_handoff",
+      "tests/application/test_register_associations.py::test_extract_register_claims_from_effective_cells_is_revision_scoped_and_replayable"
+    ],
+    "canonical_acceptance_and_postgresql_contracts": [
+      "tests/contracts/persistence/test_canonical_acceptance_contract.py::test_canonical_happy_path_and_exact_replay",
+      "tests/application/persistence/test_canonical_acceptance.py::test_canonical_acceptance_advances_head_and_replays_without_second_effect",
+      "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_adapter_satisfies_canonical_acceptance_contract"
+    ],
+    "migration_graph_and_upgrade_path": [
+      "tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head"
+    ]
+  },
+  "migration_checks": {
+    "schema_changed_by_issue": false,
+    "migration_required": false,
+    "reason": "Issue #614 adds qualification documentation and tests only; it changes no persistence schema.",
+    "upgrade_graph_test": "tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head",
+    "upgrade_graph_result": "passed in focused qualification run"
+  },
+  "cognee": {
+    "declared_version": "1.5.4",
+    "locked_version": "1.5.4",
+    "connector_calls_remember": false,
+    "google_sources_projected_during_qualification": false
+  },
+  "unverified_live_behaviors": [
+    "oauth_and_grant_rotation_against_google",
+    "provider_quota_and_retry_behavior",
+    "shared_drive_and_real_scope_semantics",
+    "google_changes_feed_delivery_and_token_expiry",
+    "google_sheets_range_pagination_and_concurrent_edits",
+    "provider_specific_removed_trashed_and_404_meaning"
+  ],
+  "required_prerequisites": [
+    "Security Owner approval of OAuth versus service-account mode, scopes, credential owner and rotation procedure",
+    "Data Owner approval of synthetic spreadsheet, sheets, Drive resources and immutable business-ID column",
+    "Security and Data Owner decision on revocation, trash, out-of-scope movement and retention policy",
+    "Operations approval of polling, reconciliation, quota, page, range and retry bounds",
+    "Isolated disposable PostgreSQL target and approved migration procedure for PostgreSQL integration qualification",
+    "No production credentials or customer corpus; live-provider qualification must be separately authorized"
+  ],
+  "privacy": {
+    "credentials_recorded": false,
+    "provider_payloads_recorded": false,
+    "raw_errors_recorded": false,
+    "source_content_recorded": false,
+    "synthetic_fakes_only": true
+  }
+}
