@@ -266,7 +266,9 @@ authorizes them. A tombstone is composed only for an absent current source and
 is applied by `SourceLifecycle`, which atomically accepts the canonical head
 transition and its projection-removal outbox intent. The decision ledger keeps
 the reconciliation, policy version, signal, source, expected predecessor and
-tombstone revision so redelivery reuses the same logical effect.
+tombstone revision so redelivery reuses the same logical effect. Its PostgreSQL
+table enforces workspace/environment RLS and grants runtime select, insert and
+update only; the ledger contains no provider payloads.
 
 Reappearance requires fresh admitted content and current access-policy evidence.
 The provider connection and stable Drive file key must resolve to the same
