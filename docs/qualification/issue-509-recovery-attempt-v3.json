@@ -1,0 +1,68 @@
+{
+  "schema_version": "r1-backup-recovery-attempt:v3",
+  "run_reference": "run:issue509-recovery-003",
+  "target_commit": "8950f50",
+  "decision": "not_verified",
+  "production_qualified": false,
+  "immutable": true,
+  "content_free": true,
+  "authorization_reference": "approval:issue509-recovery-003",
+  "authorization_expired_after_capture": false,
+  "backup": {
+    "outcome": "verified",
+    "recovery_set_id": "recovery:issue509-005",
+    "deployment_scope_reference": "deployment:issue509-recovery-003",
+    "manifest_status": "coherent",
+    "manifest_digest": "7e54fceb281507c98435dc23fc1b505eb1d993f68dad9688b390fef53dea220f",
+    "fence_epoch": 1,
+    "cutoff_ticket_sequence": 0,
+    "durable_quiescence_present": true,
+    "fence_released": true,
+    "postgres_artifact_digest": "45a25a94b2930b66e4b327453d19512540e87f7f282fa62b5024cb492e23ea62",
+    "original_storage_artifact_digest": "171541a5c0c4ef8c629d40710a5be3b3a45d42e138bd630cf375e0b571db121e"
+  },
+  "restore": {
+    "outcome": "verified",
+    "target_reference": "target:issue509-restore-003",
+    "database_target_reference": "database:issue509-restore-003",
+    "filesystem_target_reference": "filesystem:issue509-restore-003",
+    "evidence_reference": "restore:b207b511e5e3c6fb3ef42ca94be6daa43462ba3daeedb71d15cced09437ea20f",
+    "evidence_digest": "d2b090b1ca1b27a065b7fd98e194b0ff98f634d60352ef1fb4b0585de5553933",
+    "restored_schema_object_count": 92,
+    "canonical_original_reference_count": 1,
+    "filesystem_regular_file_count": 3,
+    "serving_database_connect": false,
+    "serving_canonical_read": false,
+    "target_stopped_after_capture": true
+  },
+  "failed_restore_predecessors": [
+    {
+      "target_reference": "target:issue509-restore-002",
+      "safe_failure_code": "restore.referenced_roles_unavailable",
+      "filesystem_published": false
+    },
+    {
+      "target_reference": "target:issue509-restore-002",
+      "safe_failure_code": "restore.verifier_policy_role_mismatch",
+      "filesystem_published": false
+    }
+  ],
+  "bounded_observations": {
+    "coordinated_backup": "verified",
+    "isolated_restore": "verified",
+    "reconciliation": "verified",
+    "tenant_scoped_storage_canary": "verified",
+    "context_projection_recovery": "not_verified",
+    "restored_application_canary": "not_verified",
+    "safe_diagnostics_chain": "partial"
+  },
+  "safety": {
+    "source_backup_bypass_revoked": true,
+    "source_broad_table_read_revoked": true,
+    "source_mutated_by_restore": false,
+    "restore_serving_enabled": false,
+    "promotion_or_cutover_performed": false,
+    "provider_requests": 0
+  },
+  "independent_review": "required"
+}

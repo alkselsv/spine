@@ -24,6 +24,7 @@ assert SPEC is not None and SPEC.loader is not None
 JOB = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(JOB)
 ATTEMPT_REPORT = ROOT / "docs/qualification/issue-509-recovery-attempt-v2.json"
+VERIFIED_RESTORE_REPORT = ROOT / "docs/qualification/issue-509-recovery-attempt-v3.json"
 
 
 @pytest.mark.asyncio
@@ -96,6 +97,22 @@ def test_recovery_image_pins_postgres_17_tools_without_changing_application_imag
     assert recipe.startswith("FROM pgvector/pgvector:0.8.7-pg17-bookworm")
     assert 'ENV PATH="/opt/venv/bin:/usr/lib/postgresql/17/bin:${PATH}"' in recipe
     assert 'ENTRYPOINT ["/app/.venv/bin/python"]' in recipe
+
+
+def test_verified_restore_report_does_not_overclaim_product_qualification() -> None:
+    report = json.loads(VERIFIED_RESTORE_REPORT.read_text(encoding="utf-8"))
+
+    assert report["backup"]["outcome"] == "verified"
+    assert report["restore"]["outcome"] == "verified"
+    assert report["bounded_observations"]["reconciliation"] == "verified"
+    assert report["bounded_observations"]["context_projection_recovery"] == "not_verified"
+    assert report["bounded_observations"]["restored_application_canary"] == "not_verified"
+    assert report["production_qualified"] is False
+    assert report["independent_review"] == "required"
+
+    serialized = json.dumps(report, sort_keys=True).lower()
+    for forbidden in ("password", "credential", "source_text", "raw_error", "filename"):
+        assert forbidden not in serialized
 
 
 def test_restore_target_facts_use_deployment_bound_references(

@@ -71,6 +71,14 @@ watermark and evidence-repository boundaries separately. A generic
 `component_failure` without stage evidence is a failed qualification result,
 not permission to infer that a component backup ran.
 
+Before isolated `pg_restore`, enumerate roles referenced by archived RLS
+policies and pre-create the approved application roles as `NOLOGIN`,
+`NOSUPERUSER` and `NOBYPASSRLS`. Do not substitute a superuser or discard the
+policies from the archive. Bind the isolated verifier to the restored
+tenant-policy role and set the approved workspace/environment scope
+transaction-locally. A separate verifier role with table `SELECT` but no
+applicable RLS policy sees an empty authorized set and must fail closed.
+
 ## Evidence
 
 Record immutable evidence IDs and schema/profile versions, UTC observation time,

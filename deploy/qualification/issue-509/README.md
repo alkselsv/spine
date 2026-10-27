@@ -35,6 +35,13 @@ profiles or reuse their degraded deployment-scope references. A new run needs a
 new authorization, recovery set, deployment-scope reference and independent
 evidence review.
 
+A later authorized retry is recorded in
+`docs/qualification/issue-509-recovery-attempt-v3.json`. It verified the
+coherent physical backup, isolated restore, original-storage reconciliation and
+tenant-scoped storage canary. Overall qualification remains incomplete because
+Context Projection recovery, the restored-application canary and independent
+final evidence review have not run.
+
 ## Start
 
 Run from WSL2 or PowerShell with Docker Desktop's Linux engine. Use a fresh
