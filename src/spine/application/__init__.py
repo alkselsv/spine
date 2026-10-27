@@ -103,6 +103,10 @@ __all__ = [
     "DriveInitialSnapshotCommand",
     "DriveInitialSnapshotCoordinator",
     "DriveInitialSnapshotResult",
+    "DriveChangeCommand",
+    "DriveChangeCoordinator",
+    "DriveChangeResult",
+    "DriveReconciliationCommand",
 ]
 
 
@@ -169,6 +173,13 @@ def __getattr__(name: str) -> object:
             "DriveInitialSnapshotResult",
         }:
             module_name = "spine.application.google_drive_snapshot"
+        if name in {
+            "DriveChangeCommand",
+            "DriveChangeCoordinator",
+            "DriveChangeResult",
+            "DriveReconciliationCommand",
+        }:
+            module_name = "spine.application.google_drive_changes"
         if name in {
             "AuthorizedQAStreamService",
             "QAEventLogStore",

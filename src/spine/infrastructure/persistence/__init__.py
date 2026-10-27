@@ -19,6 +19,9 @@ from spine.infrastructure.persistence.parsed_artifacts import (
     ParsedArtifactCitationExcerptResolver,
     PostgreSQLParsedArtifactRepository,
 )
+from spine.infrastructure.persistence.postgresql_drive_changes import (
+    PostgreSQLDriveChangeRepository,
+)
 from spine.infrastructure.persistence.cognee_projection_receipt import (
     CogneeProjectionReceiptBuilder,
 )
@@ -44,6 +47,7 @@ __all__ = [
     "InMemoryParsedArtifactRepository",
     "ParsedArtifactCitationExcerptResolver",
     "PostgreSQLParsedArtifactRepository",
+    "PostgreSQLDriveChangeRepository",
     "CogneeProjectionReceiptBuilder",
     "build_postgresql_cognee_projection_delivery_binding",
     "build_postgresql_cognee_projection_request_binding",
