@@ -23,6 +23,10 @@ from spine.domain.sources import IdentityMode, RevisionMetadata, SourceObject
 from spine.domain.sources.canonicalization import content_revision
 from spine.domain.sources.google import GoogleDriveFileKey, GoogleDriveLifecycleSignal, google_source_identity
 from spine.infrastructure.object_storage.contracts import ObjectReference
+from spine.infrastructure.persistence.postgresql_drive_lifecycle import (
+    PostgreSQLGoogleDriveLifecycleSourceReader,
+)
+from spine.application.persistence.context import EnvironmentScope
 
 
 NOW = datetime(2026, 10, 27, tzinfo=timezone.utc)
@@ -346,6 +350,81 @@ def test_drive_change_classifies_provider_signals_without_authorizing_deletion()
 )
 def test_drive_access_statuses_remain_distinct_typed_outcomes(status_code, signal):
     assert drive_access_signal(status_code) is signal
+
+
+@pytest.mark.asyncio
+async def test_postgresql_drive_source_reader_requires_matching_tenant_and_provenance():
+    source = SimpleNamespace(
+        identity_mode=SimpleNamespace(value="connector"),
+        connection_id=CONNECTION,
+        external_namespace="google",
+        external_generation="google-source-key:v1",
+        source_object_id=SOURCE_ID,
+        created_at=NOW,
+    )
+    current = SimpleNamespace(
+        current_revision_id=REVISION_ID,
+        current_revision_kind=SimpleNamespace(value="content"),
+    )
+    revision = SimpleNamespace(revision_id=REVISION_ID)
+    provenance = SimpleNamespace(
+        connection_id=CONNECTION,
+        origin_locator_kind="google-drive-file",
+        origin_locator_value="file-1",
+        origin_locator_schema="locator:google-drive-file:v1",
+    )
+
+    class Sources:
+        async def list_sources(self, *, limit, after):
+            del after
+            assert limit == 500
+            return (source,)
+
+        async def resolve_revision(self, revision_id):
+            assert revision_id == REVISION_ID
+            return revision
+
+        async def list_provenance(self, revision_id):
+            assert revision_id == REVISION_ID
+            return (provenance,)
+
+    class Uow:
+        sources = Sources()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        class Canonical:
+            async def resolve_current(self, source_object_id):
+                assert source_object_id == SOURCE_ID
+                return current
+
+        canonical = Canonical()
+
+        async def rollback(self):
+            return None
+
+    reader = PostgreSQLGoogleDriveLifecycleSourceReader(lambda context: Uow())
+    tenant_context = SimpleNamespace(
+        scope=EnvironmentScope(
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+        )
+    )
+
+    result = await reader.list_current_sources(evidence(), tenant_context)
+
+    assert result == (
+        DriveLifecycleSource(
+            file_id="file-1",
+            source_object_id=SOURCE_ID,
+            current_revision_id=REVISION_ID,
+            is_tombstoned=False,
+        ),
+    )
 
 
 def test_drive_reappearance_requires_same_google_identity_and_tombstone_predecessor():
