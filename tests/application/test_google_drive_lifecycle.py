@@ -373,6 +373,7 @@ async def test_postgresql_drive_source_reader_requires_matching_tenant_and_prove
         origin_locator_value="file-1",
         origin_locator_schema="locator:google-drive-file:v1",
     )
+    provenances = [provenance]
 
     class Sources:
         async def list_sources(self, *, limit, after):
@@ -386,7 +387,7 @@ async def test_postgresql_drive_source_reader_requires_matching_tenant_and_prove
 
         async def list_provenance(self, revision_id):
             assert revision_id == REVISION_ID
-            return (provenance,)
+            return tuple(provenances)
 
     class Uow:
         sources = Sources()
@@ -425,6 +426,26 @@ async def test_postgresql_drive_source_reader_requires_matching_tenant_and_prove
             is_tombstoned=False,
         ),
     )
+    provenances.clear()
+    assert await reader.list_current_sources(evidence(), tenant_context) == ()
+    provenances.extend(
+        (
+            provenance,
+            SimpleNamespace(
+                **{**vars(provenance), "origin_locator_value": "file-2"}
+            ),
+        )
+    )
+    assert await reader.list_current_sources(evidence(), tenant_context) == ()
+
+    other_tenant_context = SimpleNamespace(
+        scope=EnvironmentScope(
+            workspace_id=WORKSPACE,
+            environment_id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+        )
+    )
+    with pytest.raises(ValueError, match="reconciliation tenant"):
+        await reader.list_current_sources(evidence(), other_tenant_context)
 
 
 def test_drive_reappearance_requires_same_google_identity_and_tombstone_predecessor():
