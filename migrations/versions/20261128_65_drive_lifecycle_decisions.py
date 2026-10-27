@@ -55,7 +55,7 @@ def upgrade() -> None:
         sa.CheckConstraint("length(file_id) BETWEEN 1 AND 256", name="ck_drive_lifecycle_file_id"),
         sa.CheckConstraint(
             "length(committed_cursor) BETWEEN 1 AND 4096",
-            name="ck_drive_lifecycle_committed_cursor",
+            name="ck_drive_lifecycle_decisions_committed_cursor",
         ),
         schema=SCHEMA,
     )
