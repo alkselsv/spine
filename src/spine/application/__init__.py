@@ -48,6 +48,23 @@ if TYPE_CHECKING:
         QualificationProfileRejected,
         QualificationProvisioningService,
     )
+    from .google_drive_lifecycle import (
+        DriveLifecycleDecisionState,
+        DriveLifecycleResult,
+        DriveLifecycleSignal,
+        DriveReconciliationEvidence,
+        DriveReconciliationState,
+        DriveRemovalDecision,
+        DriveRemovalPolicy,
+        DriveReappearanceEvidence,
+        GoogleDriveLifecycleCoordinator,
+        InMemoryDriveLifecycleDecisionRepository,
+    )
+    from .google_drive_reconciliation import (
+        DriveFullReconciliationCommand,
+        DriveFullReconciliationCoordinator,
+        DriveFullReconciliationResult,
+    )
 
 __all__ = [
     "AnswerQuestionAuthorizedContext",
@@ -112,6 +129,19 @@ __all__ = [
     "GoogleSheetsDriveWakeupAdapter",
     "DriveChangeResult",
     "DriveReconciliationCommand",
+    "DriveLifecycleDecisionState",
+    "DriveLifecycleResult",
+    "DriveLifecycleSignal",
+    "DriveReconciliationEvidence",
+    "DriveReconciliationState",
+    "DriveRemovalDecision",
+    "DriveRemovalPolicy",
+    "DriveReappearanceEvidence",
+    "GoogleDriveLifecycleCoordinator",
+    "InMemoryDriveLifecycleDecisionRepository",
+    "DriveFullReconciliationCommand",
+    "DriveFullReconciliationCoordinator",
+    "DriveFullReconciliationResult",
 ]
 
 
@@ -193,6 +223,25 @@ def __getattr__(name: str) -> object:
             "GoogleSheetsDriveWakeupAdapter",
         }:
             module_name = "spine.application.google_sheets_reconciliation"
+        if name in {
+            "DriveLifecycleDecisionState",
+            "DriveLifecycleResult",
+            "DriveLifecycleSignal",
+            "DriveReconciliationEvidence",
+            "DriveReconciliationState",
+            "DriveRemovalDecision",
+            "DriveRemovalPolicy",
+            "DriveReappearanceEvidence",
+            "GoogleDriveLifecycleCoordinator",
+            "InMemoryDriveLifecycleDecisionRepository",
+        }:
+            module_name = "spine.application.google_drive_lifecycle"
+        if name in {
+            "DriveFullReconciliationCommand",
+            "DriveFullReconciliationCoordinator",
+            "DriveFullReconciliationResult",
+        }:
+            module_name = "spine.application.google_drive_reconciliation"
         if name in {
             "AuthorizedQAStreamService",
             "QAEventLogStore",

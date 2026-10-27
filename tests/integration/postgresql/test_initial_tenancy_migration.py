@@ -1523,6 +1523,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "drive_change_runs",
         "google_sheets_sync_runs",
         "google_sheets_identity_dispositions",
+        "drive_lifecycle_decisions",
     }
     expected_final_constraints = {
         "alembic_version_pkc",
@@ -1546,6 +1547,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_drive_change_runs_cursor",
         "ck_google_sheets_sync_runs_state",
         "ck_google_sheets_identity_dispositions_shape",
+        "ck_drive_lifecycle_decisions_state",
+        "ck_drive_lifecycle_file_id",
+        "ck_drive_lifecycle_decisions_committed_cursor",
         "fk_environments_workspace_id_workspaces",
         "fk_idempotency_receipts_scope_environments",
         "fk_idempotency_receipts_workspace_id_workspaces",
@@ -1557,6 +1561,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "fk_google_sheets_sync_runs_environment",
         "fk_google_sheets_identity_disposition_environment",
         "fk_google_sheets_identity_disposition_run",
+        "fk_drive_lifecycle_decisions_environment",
         "pk_environments",
         "pk_idempotency_receipts",
         "pk_initial_workspace_bootstrap",
@@ -1566,6 +1571,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_drive_change_runs",
         "pk_google_sheets_sync_runs",
         "pk_google_sheets_identity_dispositions",
+        "pk_drive_lifecycle_decisions",
         "uq_environments_workspace_id_id",
         "uq_initial_workspace_bootstrap_action_id",
         "uq_initial_workspace_bootstrap_workspace_id",
@@ -2152,8 +2158,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_drive_change_runs",
         "uq_drive_change_runs_idempotency",
         "pk_google_sheets_sync_runs",
-        "uq_google_sheets_sync_runs_idempotency",
         "pk_google_sheets_identity_dispositions",
+        "pk_drive_lifecycle_decisions",
+        "uq_google_sheets_sync_runs_idempotency",
         "uq_google_sheets_identity_disposition_run_scope",
         "pk_source_canonical_tables",
         "pk_source_canonical_unicode",
@@ -2412,6 +2419,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "drive_change_runs": (True, True),
         "google_sheets_sync_runs": (True, True),
         "google_sheets_identity_dispositions": (True, True),
+        "drive_lifecycle_decisions": (True, True),
     }
     assert rls == expected_rls
     tenant_rls_tables = {
@@ -2547,6 +2555,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "drive_change_runs": (True, True, True, False),
         "google_sheets_sync_runs": (True, True, True, False),
         "google_sheets_identity_dispositions": (True, True, False, False),
+        "drive_lifecycle_decisions": (True, True, True, False),
         "source_canonical_tables": (True, False, False, False),
         "source_canonical_unicode": (True, False, False, False),
         "source_canonical_compositions": (True, False, False, False),
@@ -2707,7 +2716,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_partitions', 'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                                "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'answer_question_runs', "
+                                "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
                                 "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records'))"
                     )
@@ -2746,7 +2755,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                            "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'answer_question_runs', "
+                            "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
                                 "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records')"
                     )
@@ -2779,7 +2788,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                            "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'answer_question_runs', "
+                            "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
                             "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records')"
                     )
@@ -2811,7 +2820,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                            "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'answer_question_runs', "
+                            "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
                                 "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records')"
                     )
@@ -2842,7 +2851,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                            "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'answer_question_runs', "
+                            "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
                                 "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records')"
                     )
@@ -3519,7 +3528,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'projection_partitions', 'projection_receipts', 'source_projection_references', "
                         "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                         "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                        "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'original_upload_records', "
+                        "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'original_upload_records', "
                         "'qa_agent_artifacts', 'qa_agent_results')"
                     )
                 )
@@ -3628,6 +3637,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "drive_change_runs": (True, True),
             "google_sheets_sync_runs": (True, True),
             "google_sheets_identity_dispositions": (True, True),
+            "drive_lifecycle_decisions": (True, True),
             "original_upload_records": (True, True),
             "qa_agent_artifacts": (True, True),
             "qa_agent_results": (True, True),
@@ -4951,13 +4961,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261126_63_drive_incremental_changes.py",
         "20261127_64_google_sheets_reconciliation.py",
         "20261128_65_google_sheets_identity_quarantine.py",
+        "20261129_66_drive_lifecycle_decisions.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261129_66_injected_failure.py").write_text(
+    (target / "versions" / "20261130_67_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261129_66'\n"
-        "down_revision = '20261128_65'\n"
+        "revision = '20261130_67'\n"
+        "down_revision = '20261129_66'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

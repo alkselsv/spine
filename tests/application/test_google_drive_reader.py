@@ -22,11 +22,13 @@ from spine.connectors.google_drive import (
     DriveFileContent,
     DriveFileMetadata,
     DriveFileReadProfile,
+    GoogleDriveAccessOutcomeError,
     GoogleDriveConcurrentModificationError,
     GoogleDriveObservationReader,
     GoogleDriveProviderAdapter,
 )
 from spine.domain.connections.google import OpaqueGoogleReference
+from spine.domain.sources.google import GoogleDriveLifecycleSignal
 from spine.infrastructure.diagnostics import RecordingDiagnosticSink
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 
@@ -229,6 +231,40 @@ async def test_drive_reader_rejects_provider_version_change_before_handoff():
             ),
             _command(),
         )
+
+
+@pytest.mark.parametrize(
+    ("status_code", "signal"),
+    [
+        (401, GoogleDriveLifecycleSignal.HTTP_401),
+        (403, GoogleDriveLifecycleSignal.HTTP_403),
+        (404, GoogleDriveLifecycleSignal.HTTP_404),
+    ],
+)
+@pytest.mark.asyncio
+async def test_drive_reader_classifies_access_status_without_deletion(status_code, signal):
+    class ProviderError(RuntimeError):
+        def __init__(self, status):
+            self.status_code = status
+
+    class FailingService(FakeDriveService):
+        async def get_metadata(self, connection, resource_scope_reference):
+            del connection, resource_scope_reference
+            raise ProviderError(status_code)
+
+    service = FailingService((), DriveFileContent(content=b"", media_type="application/pdf"))
+
+    with pytest.raises(GoogleDriveAccessOutcomeError) as error:
+        await _provider(service).read(
+            SimpleNamespace(
+                connection_id=CONNECTION,
+                workspace_id=UUID("10000000-0000-4000-8000-000000000001"),
+                environment_id=UUID("20000000-0000-4000-8000-000000000001"),
+            ),
+            _command(),
+        )
+
+    assert error.value.signal is signal
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from pydantic import ConfigDict, Field, model_validator
 
 from spine.domain.common import DefinitionModel
+from spine.domain.sources.google import GoogleDriveLifecycleSignal
 
 
 class DriveChangeRunState(str, Enum):
@@ -43,6 +44,13 @@ class DriveChangeInput(DefinitionModel):
     file_id: str = Field(min_length=1, max_length=256)
     provider_version: str | None = Field(default=None, max_length=128)
     removed: bool = False
+    signal: GoogleDriveLifecycleSignal = GoogleDriveLifecycleSignal.PRESENT
+
+    @model_validator(mode="after")
+    def validate_signal(self) -> "DriveChangeInput":
+        if self.removed and self.signal is not GoogleDriveLifecycleSignal.REMOVED:
+            raise ValueError("removed change must retain its typed removed signal")
+        return self
 
 
 class DriveChangeRun(DefinitionModel):
@@ -102,6 +110,7 @@ class DriveChangeItemRecord(DefinitionModel):
     file_id: str = Field(min_length=1, max_length=256)
     provider_version: str | None = Field(default=None, max_length=128)
     removed: bool = False
+    signal: GoogleDriveLifecycleSignal = GoogleDriveLifecycleSignal.PRESENT
     input_ordinal: int = Field(gt=0)
     state: DriveChangeItemState = DriveChangeItemState.PENDING
     outcome_revision_id: UUID | None = None
@@ -141,6 +150,8 @@ class DriveChangeItemRecord(DefinitionModel):
                 or self.outcome_reconciliation_id is not None
             ):
                 raise ValueError("non-processed items require a safe failure code")
+        if self.removed and self.signal is not GoogleDriveLifecycleSignal.REMOVED:
+            raise ValueError("removed change must retain its typed removed signal")
         return self
 
 
@@ -360,7 +371,7 @@ class InMemoryDriveChangeRepository:
                 or existing.new_start_page_token != kwargs["new_start_page_token"]
                 or existing.incomplete_search != kwargs["incomplete_search"]
                 or tuple(
-                    (item.change_key, item.file_id, item.provider_version, item.removed)
+                    (item.change_key, item.file_id, item.provider_version, item.removed, item.signal)
                     for item in existing.items
                 )
                 != tuple(
@@ -369,6 +380,7 @@ class InMemoryDriveChangeRepository:
                         change.file_id,
                         change.provider_version,
                         change.removed,
+                        change.signal,
                     )
                     for change in kwargs["changes"]
                 )
@@ -392,6 +404,7 @@ class InMemoryDriveChangeRepository:
                 file_id=change.file_id,
                 provider_version=change.provider_version,
                 removed=change.removed,
+                signal=change.signal,
                 input_ordinal=ordinal,
                 updated_at=kwargs["now"],
             )

@@ -202,7 +202,8 @@ checked before a resumed page is read. Provider token expiry, retry exhaustion,
 token gaps, incomplete pages and a missing terminal cursor retain the previous
 cursor and enter `reconciliation_required`, which emits one bounded,
 idempotent full-reconciliation command. Removed changes are recorded as a
-terminal ignored outcome; deletion/tombstone policy remains outside this slice.
+terminal ignored outcome in the change feed; that signal does not itself
+authorize canonical deletion.
 
 ## Sheets full reconciliation
 
@@ -244,3 +245,35 @@ holds its prior cursor and contributes no absence decision. A later clean run
 records a separate `cleared` event, preserving the earlier quarantine event as
 audit history. Disposition events are append-only and protected by workspace
 and environment row-level security.
+
+## Drive removal and reappearance
+
+Issue #610 keeps provider signals distinct: `removed=true`, trashed,
+moved-out-of-scope, HTTP 401/403/404, confirmed absence, present and ambiguous.
+An access failure, incomplete page, changed authority/scope generation or
+`reconciliation_required` run retains the current canonical head and produces
+no removal projection intent.
+
+Deletion decisions require a completed authorized full-scope reconciliation
+whose workspace, environment, connection, resource scope, service principal,
+authorization/configuration generations and access-policy version are retained.
+The full reconciliation coordinator enumerates every snapshot page, then drains
+the change feed from the snapshot's captured start token before producing that
+evidence; either incomplete durable run prevents lifecycle evaluation.
+An immutable removal policy is explicitly versioned and scoped to that same
+workspace/environment/connection/scope. The safe policy authorizes no signals;
+trash and scope exit therefore retain the head unless an explicit policy
+authorizes them. A tombstone is composed only for an absent current source and
+is applied by `SourceLifecycle`, which atomically accepts the canonical head
+transition and its projection-removal outbox intent. The decision ledger keeps
+the reconciliation, policy version, signal, source, expected predecessor and
+tombstone revision so redelivery reuses the same logical effect. Its PostgreSQL
+table enforces workspace/environment RLS and grants runtime select, insert and
+update only; the ledger contains no provider payloads.
+
+Reappearance requires fresh admitted content and current access-policy evidence.
+The provider connection and stable Drive file key must resolve to the same
+`SourceObject`; the new content revision names the current tombstone as its
+predecessor. The existing `SourceLifecycle` acceptance path rejects missing,
+stale or cross-object continuity, and canonical idempotency prevents a replay
+from creating a second projection effect.

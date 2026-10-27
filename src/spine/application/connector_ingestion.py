@@ -69,6 +69,7 @@ from spine.domain.sources import (
     AdmissionDisposition,
     AdmissionReference,
     IdentityMode,
+    RevisionKind,
     RevisionMetadata,
     SourceObject,
     SourceRevision,
@@ -76,6 +77,7 @@ from spine.domain.sources import (
     SourceRevisionReceiptAssociation,
     content_revision,
 )
+from spine.domain.sources.google import GoogleDriveFileKey
 from spine.domain.connections.google import OpaqueGoogleReference
 from spine.infrastructure.object_storage.contracts import OriginalUploadCommandInput
 from spine.connectors.observations import (
@@ -253,11 +255,82 @@ class ConnectorIngestionOrchestrator:
         source, revision, provenance, binding, observation_command = self._build_observation(
             command, observation, run, item, upload
         )
-        source = await self._bind_source(command, item, binding, observation_command, source)
-        admission = await self._record_admission(command, item, revision, provenance, observation)
         canonical_context = self.context_factory(
             PersistenceOperation("canonical_acceptance"), _id(command, "canonical")
         )
+        is_drive_source = isinstance(
+            observation.external_identity.provider_key, GoogleDriveFileKey
+        )
+        async with self.uow_factory(canonical_context) as uow:
+            current = await uow.canonical.resolve_current(source.source_object_id)
+            reappearance_predecessor = None
+            if (
+                is_drive_source
+                and current is not None
+                and current.current_revision_kind is RevisionKind.TOMBSTONE
+            ):
+                reappearance_predecessor = current.current_revision_id
+            elif (
+                current is not None
+                and current.current_revision_kind is RevisionKind.CONTENT
+                and is_drive_source
+            ):
+                current_revision = await uow.sources.resolve_revision(
+                    current.current_revision_id
+                )
+                if (
+                    current_revision is not None
+                    and current_revision.reappearance_after_tombstone_revision_id is not None
+                    and _as_reappearance(
+                        revision,
+                        current_revision.reappearance_after_tombstone_revision_id,
+                    ).revision_id == current_revision.revision_id
+                ):
+                    reappearance_predecessor = (
+                        current_revision.reappearance_after_tombstone_revision_id
+                    )
+            await uow.rollback()
+        if (
+            reappearance_predecessor is not None
+            and is_drive_source
+        ):
+            revision = _as_reappearance(revision, reappearance_predecessor)
+            provenance = provenance.model_copy(
+                update={
+                    "provenance_id": _stable_id(
+                        "reappearance-provenance",
+                        source.source_object_id,
+                        reappearance_predecessor,
+                        provenance.event_identity,
+                    ),
+                    "revision_id": revision.revision_id,
+                }
+            )
+            binding = binding.model_copy(update={"source_revision_id": revision.revision_id})
+            association = observation_command.receipt_association
+            if association is None:
+                raise ValueError("Connector reappearance requires finalized original evidence.")
+            association = association.model_copy(
+                update={
+                    "association_id": _stable_id(
+                        "reappearance-receipt-association",
+                        source.source_object_id,
+                            reappearance_predecessor,
+                        revision.revision_id,
+                    ),
+                    "revision_id": revision.revision_id,
+                    "provenance_id": provenance.provenance_id,
+                }
+            )
+            observation_command = SourceObservationCommand.create(
+                source=source,
+                revision=revision,
+                provenance=provenance,
+                idempotency_key=observation_command.idempotency_key,
+                receipt_association=association,
+            )
+        source = await self._bind_source(command, item, binding, observation_command, source)
+        admission = await self._record_admission(command, item, revision, provenance, observation)
         canonical_command = self.canonical_command_factory(
             command=command,
             source=source,
@@ -930,6 +1003,35 @@ def _source_object_id(
         external_namespace,
         external_generation,
         external_object_id,
+    )
+
+
+def _as_reappearance(revision: SourceRevision, predecessor_revision_id: UUID) -> SourceRevision:
+    """Bind fresh Drive content to the exact tombstone that currently fences it."""
+
+    if revision.kind is not RevisionKind.CONTENT:
+        raise ValueError("Only content revisions can represent source reappearance.")
+    return content_revision(
+        revision_id=_stable_id(
+            "reappearance-revision",
+            revision.source_object_id,
+            predecessor_revision_id,
+            revision.revision_id,
+        ),
+        source_object_id=revision.source_object_id,
+        workspace_id=revision.workspace_id,
+        environment_id=revision.environment_id,
+        kind=RevisionKind.CONTENT,
+        revision_schema_version=revision.revision_schema_version,
+        revision_metadata_schema=revision.revision_metadata_schema,
+        revision_metadata=revision.revision_metadata,
+        revision_metadata_digest=revision.revision_metadata_digest,
+        original_reference=revision.original_reference,
+        original_sha256=revision.original_sha256,
+        byte_length=revision.byte_length,
+        media_type=revision.media_type,
+        reappearance_after_tombstone_revision_id=predecessor_revision_id,
+        observed_at=revision.observed_at,
     )
 
 

@@ -33,10 +33,12 @@ from spine.application.persistence.drive_changes import (
 )
 from spine.connectors.google_drive import (
     DriveChangePage,
+    GoogleDriveAccessOutcomeError,
     GoogleDriveChangeGapError,
     GoogleDriveRetryExhaustedError,
     GoogleDriveTokenExpiredError,
 )
+from spine.domain.sources.google import GoogleDriveLifecycleSignal
 
 
 class DriveChangeCommand(BaseModel):
@@ -218,6 +220,7 @@ class DriveChangeCoordinator:
                             file_id=change.file_id,
                             provider_version=change.provider_version,
                             removed=change.removed,
+                            signal=change.lifecycle_signal(),
                         )
                         for change in page.changes
                     ),
@@ -225,6 +228,8 @@ class DriveChangeCoordinator:
                 )
             except GoogleDriveTokenExpiredError:
                 return await self._reconcile(run, command, "provider_token_expired")
+            except GoogleDriveAccessOutcomeError as error:
+                return await self._reconcile(run, command, f"provider_{error.signal.value}")
             except GoogleDriveRetryExhaustedError:
                 return await self._reconcile(run, command, "provider_retry_exhausted")
             except GoogleDriveChangeGapError:
@@ -240,10 +245,14 @@ class DriveChangeCoordinator:
                     DriveChangeItemState.IGNORED,
                 }:
                     continue
-                if stored_item.removed:
+                if stored_item.signal in {
+                    GoogleDriveLifecycleSignal.REMOVED,
+                    GoogleDriveLifecycleSignal.TRASHED,
+                    GoogleDriveLifecycleSignal.MOVED_OUT_OF_SCOPE,
+                }:
                     await self.repository.mark_item_ignored(
                         stored_item.item_id,
-                        reason="removed_change",
+                        reason=stored_item.signal.value,
                         now=self._now(),
                     )
                     continue
@@ -277,6 +286,17 @@ class DriveChangeCoordinator:
                         stored_item.item_id,
                         revision_id=result.revision.revision_id,
                         now=self._now(),
+                    )
+                except GoogleDriveAccessOutcomeError as error:
+                    await self.repository.mark_item_failed(
+                        stored_item.item_id,
+                        failure_code=error.signal.value,
+                        now=self._now(),
+                    )
+                    run = await self.repository.resolve_run(sync_run_id)
+                    assert run is not None
+                    return await self._reconcile(
+                        run, command, f"provider_{error.signal.value}"
                     )
                 except Exception:
                     await self.repository.mark_item_failed(

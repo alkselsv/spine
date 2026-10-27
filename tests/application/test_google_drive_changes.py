@@ -19,9 +19,11 @@ from spine.application.persistence.drive_changes import (
 from spine.connectors.google_drive import (
     DriveChange,
     DriveChangePage,
+    GoogleDriveAccessOutcomeError,
     GoogleDriveRetryExhaustedError,
     GoogleDriveTokenExpiredError,
 )
+from spine.domain.sources.google import GoogleDriveLifecycleSignal
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 WORKSPACE = UUID("11111111-1111-4111-8111-111111111111")
@@ -197,6 +199,30 @@ async def test_duplicate_delivery_replays_idempotently_and_removed_change_is_ter
         DriveChangeItemState.SUCCEEDED,
         DriveChangeItemState.IGNORED,
     ]
+    assert result.pages[0].items[-1].signal is GoogleDriveLifecycleSignal.REMOVED
+
+
+@pytest.mark.parametrize(
+    ("signal", "reason"),
+    [
+        (GoogleDriveLifecycleSignal.HTTP_401, "provider_http_401"),
+        (GoogleDriveLifecycleSignal.HTTP_403, "provider_http_403"),
+        (GoogleDriveLifecycleSignal.HTTP_404, "provider_http_404"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_drive_access_outcomes_keep_cursor_and_enter_reconciliation(signal, reason):
+    reader = FakeReader({"cursor-7": GoogleDriveAccessOutcomeError(signal)})
+    reconciliation = FakeReconciliation()
+
+    result = await coordinator(
+        reader, FakeIngestion(), reconciliation=reconciliation
+    ).run(command())
+
+    assert result.state is DriveChangeRunState.RECONCILIATION_REQUIRED
+    assert result.committed_cursor == "cursor-7"
+    assert result.run.reconciliation_reason == reason
+    assert reconciliation.commands[0].reason == reason
 
 
 @pytest.mark.asyncio

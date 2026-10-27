@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from enum import Enum
 import hashlib
 import json
 import re
@@ -66,6 +67,20 @@ class GoogleRegisterRowKey(_GoogleProviderKey):
     spreadsheet_id: ProviderIdentifier
     sheet_id: StrictInt = Field(ge=0)
     immutable_business_id: BusinessIdentifier
+
+
+class GoogleDriveLifecycleSignal(str, Enum):
+    """Typed provider signals; none is deletion authority on its own."""
+
+    REMOVED = "removed"
+    TRASHED = "trashed"
+    MOVED_OUT_OF_SCOPE = "moved_out_of_scope"
+    HTTP_401 = "http_401"
+    HTTP_403 = "http_403"
+    HTTP_404 = "http_404"
+    CONFIRMED_ABSENT = "confirmed_absent"
+    PRESENT = "present"
+    AMBIGUOUS = "ambiguous"
 
 
 GoogleProviderKey = GoogleDriveFileKey | GoogleSheetScopeKey | GoogleRegisterRowKey
@@ -282,6 +297,7 @@ __all__ = [
     "GOOGLE_SHEET_ROW_REVISION_PROFILE",
     "GOOGLE_SOURCE_IDENTITY_SCHEMA",
     "GoogleDriveFileKey",
+    "GoogleDriveLifecycleSignal",
     "GoogleProviderKey",
     "GoogleRegisterRowKey",
     "GoogleSheetCell",
