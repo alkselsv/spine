@@ -33,6 +33,9 @@ APPLICATION_RECOVERY_REPORT_V2_PATH = (
 APPLICATION_RECOVERY_REPORT_V3_PATH = (
     PROJECT_ROOT / "docs/qualification/issue-509-application-recovery-attempt-v3.json"
 )
+APPLICATION_RECOVERY_DIAGNOSTIC_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-application-recovery-diagnostic-v1.json"
+)
 NEO4J_RUNTIME_COMPATIBILITY_REPORT_PATH = (
     PROJECT_ROOT / "docs/qualification/issue-509-neo4j-runtime-compatibility-v1.json"
 )
@@ -87,6 +90,10 @@ def _load_application_recovery_report_v2() -> dict[str, Any]:
 
 def _load_application_recovery_report_v3() -> dict[str, Any]:
     return json.loads(APPLICATION_RECOVERY_REPORT_V3_PATH.read_text(encoding="utf-8"))
+
+
+def _load_application_recovery_diagnostic() -> dict[str, Any]:
+    return json.loads(APPLICATION_RECOVERY_DIAGNOSTIC_PATH.read_text(encoding="utf-8"))
 
 
 def _load_neo4j_runtime_compatibility_report() -> dict[str, Any]:
@@ -402,6 +409,43 @@ def test_issue509_application_recovery_v3_contains_only_safe_metadata() -> None:
         assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
 
 
+def test_issue509_application_recovery_diagnostic_proves_operation_mismatch() -> None:
+    report = _load_application_recovery_diagnostic()
+
+    assert report["schema_version"] == "r1-recovered-application-diagnostic:v1"
+    assert report["source_attempt_reference"] == "run:issue509-application-canary-003"
+    assert report["decision"] == "verified_root_cause"
+    assert report["production_qualified"] is False
+    assert report["provider_call_count"] == 0
+    assert report["failure_control"] == {
+        "trusted_operation": "projection_result",
+        "mapping_outcome": "failed_closed",
+        "safe_reason_code": "projection_request_integrity_conflict",
+        "projection_receipt_count": 0,
+    }
+    assert report["causal_control"] == {
+        "trusted_operation": "projection_receipt",
+        "mapping_outcome": "completed",
+        "safe_reason_code": "none",
+        "projection_receipt_count": 1,
+        "source_reference_count": 3,
+        "receipt_claim_count": 1,
+    }
+    assert report["source_target_mutated"] is False
+    assert report["diagnostic_clone_disposable"] is True
+    assert report["independent_review"] == "required"
+
+
+def test_issue509_application_recovery_diagnostic_contains_only_safe_metadata() -> None:
+    report = _load_application_recovery_diagnostic()
+
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
 def test_issue509_neo4j_runtime_compatibility_records_real_handler_probe() -> None:
     report = _load_neo4j_runtime_compatibility_report()
 
@@ -464,6 +508,16 @@ def test_issue509_runbook_pins_safe_graph_handler_placement() -> None:
         "issue-509-neo4j-runtime-compatibility-v1.json",
     ):
         assert required in runbook
+
+
+def test_issue509_runbook_pins_projection_receipt_trusted_operation() -> None:
+    runbook = (
+        PROJECT_ROOT / "deploy/qualification/issue-509/README.md"
+    ).read_text(encoding="utf-8")
+
+    assert "_projection_receipt_context" in runbook
+    assert "ProjectionReceiptCommand requires `projection_receipt`" in runbook
+    assert "must not issue `projection_result`" in runbook
 
 
 def test_issue509_temporal_services_use_the_pinned_image_dynamic_config() -> None:

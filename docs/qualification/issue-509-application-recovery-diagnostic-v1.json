@@ -1,0 +1,42 @@
+{
+  "schema_version": "r1-recovered-application-diagnostic:v1",
+  "run_reference": "run:issue509-application-diagnostic-001",
+  "source_attempt_reference": "run:issue509-application-canary-003",
+  "target_commit": "676ee6ce8ad094cddce50efa119369397c8b9177",
+  "completed_at": "2026-10-27T20:51:46Z",
+  "decision": "verified_root_cause",
+  "production_qualified": false,
+  "immutable": true,
+  "content_free": true,
+  "diagnostic_method": "isolated_clone_single_variable_control",
+  "provider_call_count": 0,
+  "failure_control": {
+    "trusted_operation": "projection_result",
+    "mapping_outcome": "failed_closed",
+    "safe_reason_code": "projection_request_integrity_conflict",
+    "projection_receipt_count": 0
+  },
+  "causal_control": {
+    "trusted_operation": "projection_receipt",
+    "mapping_outcome": "completed",
+    "safe_reason_code": "none",
+    "projection_receipt_count": 1,
+    "source_reference_count": 3,
+    "receipt_claim_count": 1
+  },
+  "root_cause": {
+    "category": "qualification_composition_operation_mismatch",
+    "production_composition_affected": false,
+    "existing_regression_test": "test_projection_receipt_context_uses_receipt_operation"
+  },
+  "source_target_mutated": false,
+  "diagnostic_clone_disposable": true,
+  "remaining_conditions": [
+    "fresh_recovered_application_target_required",
+    "new_provider_run_authorization_required",
+    "provider_backed_projection_and_publication_not_verified",
+    "authorized_application_source_read_not_verified",
+    "independent_final_evidence_review_required"
+  ],
+  "independent_review": "required"
+}

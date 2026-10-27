@@ -87,6 +87,16 @@ The consumer now emits a content-free stage marker for resolution, preparation,
 receipt, mapping or publication-completion conflicts. A future authorized retry
 must capture that marker without exposing exception text or content.
 
+The offline, no-provider diagnosis is recorded in
+`docs/qualification/issue-509-application-recovery-diagnostic-v1.json`. It
+reproduced the mapping refusal on an isolated clone and proved that the attempt's
+qualification composition issued the wrong trusted persistence operation.
+ProjectionReceiptCommand requires `projection_receipt`. Recovered-application
+composition must use the production `_projection_receipt_context` helper and
+must not issue `projection_result` for the result bridge, receipt builder or
+canonical locator resolver. Run the existing worker regression that asserts the
+helper's exact operation before requesting a provider-backed retry.
+
 ## Start
 
 Run from WSL2 or PowerShell with Docker Desktop's Linux engine. Use a fresh
