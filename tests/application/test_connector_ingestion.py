@@ -932,6 +932,17 @@ async def test_google_drive_reappearance_records_tombstone_predecessor_before_ad
 
 
 @pytest.mark.asyncio
+async def test_google_sheets_reappearance_does_not_use_drive_lifecycle_lineage():
+    orchestrator, _, _, _, uow = _orchestrator(_observation())
+    uow.current_revision_id = _id("sheets-source-tombstone")
+    uow.current_revision_kind = RevisionKind.TOMBSTONE
+
+    result = await orchestrator.ingest(_command("sheets-reappearance"))
+
+    assert result.revision.reappearance_after_tombstone_revision_id is None
+
+
+@pytest.mark.asyncio
 async def test_google_drive_reappearance_replay_keeps_the_accepted_lineage():
     orchestrator, _, _, _, uow = _orchestrator(_drive_observation())
     predecessor = _id("drive-source-tombstone-replay")

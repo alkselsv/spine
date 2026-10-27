@@ -245,6 +245,30 @@ async def test_complete_authorized_scoped_absence_tombstones_once_and_replays():
     assert lifecycle.commands[0].observation_idempotency_key.value == tombstones.calls[0]["idempotency_key"]
 
 
+@pytest.mark.parametrize(
+    "signal",
+    [
+        DriveLifecycleSignal.REMOVED,
+        DriveLifecycleSignal.TRASHED,
+        DriveLifecycleSignal.MOVED_OUT_OF_SCOPE,
+        DriveLifecycleSignal.CONFIRMED_ABSENT,
+    ],
+)
+@pytest.mark.asyncio
+async def test_explicit_policy_can_authorize_each_removal_signal(signal):
+    service, _, _, tombstones, lifecycle = coordinator()
+
+    result = await service.reconcile(
+        evidence(signals=(("file-1", signal),)),
+        policy(signal),
+    )
+
+    assert result.decisions[0].signal is signal
+    assert result.decisions[0].state is DriveLifecycleDecisionState.TOMBSTONED
+    assert len(tombstones.calls) == 1
+    assert len(lifecycle.commands) == 1
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "state",

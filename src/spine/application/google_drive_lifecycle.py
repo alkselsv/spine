@@ -494,7 +494,6 @@ def _decision_id(
 
 
 __all__ = [
-    "DriveLifecycleDecision",
     "DriveLifecycleDecisionRepository",
     "DriveLifecycleDecisionState",
     "DriveLifecycleResult",
