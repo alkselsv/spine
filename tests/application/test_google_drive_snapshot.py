@@ -10,7 +10,10 @@ from spine.application.google_drive_snapshot import (
     DriveInitialSnapshotCommand,
     DriveInitialSnapshotCoordinator,
 )
-from spine.application.connections.google import GoogleProviderAuthorizationError
+from spine.application.connections.google import (
+    GoogleProviderAuthorizationError,
+    GoogleProviderQuotaError,
+)
 from spine.application.persistence.drive_sync import (
     DriveSnapshotItemState,
     DriveSnapshotRunState,
@@ -206,6 +209,24 @@ async def test_revoked_grant_suspends_snapshot_before_starting_source_ingestion(
     assert result.committed_cursor is None
     assert ingestion.calls == []
     assert result.diagnostic_snapshot.failure_code == "authorization_revoked"
+
+
+@pytest.mark.asyncio
+async def test_quota_retry_limit_requires_reconciliation_and_stops_provider_reads():
+    reader = FakeReader({}, start_error=GoogleProviderQuotaError())
+    sync = coordinator(reader, FakeIngestion())
+
+    for _ in range(3):
+        result = await sync.run(command())
+
+    assert result.state is DriveSnapshotRunState.RECONCILIATION_REQUIRED
+    assert result.diagnostic_snapshot.provider_retry_attempts == 3
+    calls_at_limit = reader.start_token_calls
+
+    replay = await sync.run(command())
+
+    assert replay.state is DriveSnapshotRunState.RECONCILIATION_REQUIRED
+    assert reader.start_token_calls == calls_at_limit
 
 
 @pytest.mark.asyncio

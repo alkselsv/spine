@@ -29,7 +29,10 @@ from spine.application.google_drive_changes import (
     DriveChangeCommand,
     DriveChangeCoordinator,
 )
-from spine.application.connections.google import GoogleProviderAuthorizationError
+from spine.application.connections.google import (
+    GoogleProviderAuthorizationError,
+    GoogleProviderQuotaError,
+)
 from spine.application.persistence.drive_changes import (
     DriveChangeItemRecord,
     DriveChangeRunState,
@@ -218,6 +221,28 @@ async def test_revoked_grant_suspends_full_scope_before_any_row_is_accepted():
     assert result.accepted_rows == 0
     assert ingestion.calls == []
     assert result.diagnostic_snapshot.failure_code == "authorization_revoked"
+
+
+@pytest.mark.asyncio
+async def test_quota_retry_limit_requires_reconciliation_and_stops_provider_reads():
+    request = command()
+    scope = request.scopes[0]
+    reader = FakeSheetsReader(
+        {(scope.identity, None): GoogleProviderQuotaError()}
+    )
+    sync = coordinator(reader, FakeCanonicalIngestion())
+
+    for _ in range(3):
+        result = await sync.run(request)
+
+    assert result.state is GoogleSheetsSyncRunState.RECONCILIATION_REQUIRED
+    assert result.diagnostic_snapshot.provider_retry_attempts == 3
+    calls_at_limit = len(reader.calls)
+
+    replay = await sync.run(request)
+
+    assert replay.state is GoogleSheetsSyncRunState.RECONCILIATION_REQUIRED
+    assert len(reader.calls) == calls_at_limit
 
 
 @pytest.mark.asyncio

@@ -113,6 +113,12 @@ class PostgreSQLDriveSyncRepository(DriveSyncRepository):
     async def mark_policy_blocked(self, sync_run_id: UUID, *, now: datetime, failure_code: str):
         return await self._mutate("drive_snapshot_run", sync_run_id, "mark_policy_blocked", {"sync_run_id": sync_run_id, "now": now, "failure_code": failure_code})
 
+    async def set_start_page_token(self, sync_run_id: UUID, *, token: str, now: datetime):
+        return await self._mutate("drive_snapshot_run", sync_run_id, "set_start_page_token", {"sync_run_id": sync_run_id, "token": token, "now": now})
+
+    async def record_provider_failure(self, sync_run_id: UUID, *, failure_code: str, now: datetime):
+        return await self._mutate("drive_snapshot_run", sync_run_id, "record_provider_failure", {"sync_run_id": sync_run_id, "failure_code": failure_code, "now": now})
+
     async def _read_page(self, sync_run_id: UUID, page_token: str | None):
         async with self._uow("drive_snapshot_read", sync_run_id) as uow:
             record = await _load(uow, sync_run_id)

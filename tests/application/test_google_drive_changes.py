@@ -286,13 +286,34 @@ async def test_revoked_provider_grant_suspends_run_before_any_source_effect():
 @pytest.mark.asyncio
 async def test_quota_failure_is_retryable_and_keeps_the_committed_cursor():
     reader = FakeReader({"cursor-7": GoogleProviderQuotaError()})
+    sync = coordinator(reader, FakeIngestion())
 
-    result = await coordinator(reader, FakeIngestion()).run(command())
+    result = await sync.run(command())
 
     assert result.state is DriveChangeRunState.RESUMABLE
     assert result.committed_cursor == "cursor-7"
     assert result.diagnostic_snapshot.retryable is True
     assert result.diagnostic_snapshot.failure_code == "provider_quota_retryable"
+    assert result.diagnostic_snapshot.provider_retry_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_quota_retry_limit_requires_reconciliation_and_stops_provider_reads():
+    reader = FakeReader({"cursor-7": GoogleProviderQuotaError()})
+    sync = coordinator(reader, FakeIngestion())
+
+    for _ in range(3):
+        result = await sync.run(command())
+
+    assert result.state is DriveChangeRunState.RECONCILIATION_REQUIRED
+    assert result.diagnostic_snapshot.provider_retry_attempts == 3
+    assert result.diagnostic_snapshot.retryable is False
+    calls_at_limit = len(reader.calls)
+
+    replay = await sync.run(command())
+
+    assert replay.state is DriveChangeRunState.RECONCILIATION_REQUIRED
+    assert len(reader.calls) == calls_at_limit
 
 
 @pytest.mark.asyncio

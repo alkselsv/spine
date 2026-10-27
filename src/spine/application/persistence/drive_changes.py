@@ -11,6 +11,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from pydantic import ConfigDict, Field, model_validator
 
 from spine.domain.common import DefinitionModel
+from spine.application.google_sync_diagnostics import GOOGLE_PROVIDER_RETRY_LIMIT
 from spine.domain.sources.google import GoogleDriveLifecycleSignal
 
 
@@ -76,6 +77,9 @@ class DriveChangeRun(DefinitionModel):
     reconciliation_reason: str | None = Field(default=None, max_length=64)
     suspension_reason: str | None = Field(default=None, max_length=64)
     failure_code: str | None = Field(default=None, max_length=64)
+    provider_retry_attempts: int = Field(
+        default=0, ge=0, le=GOOGLE_PROVIDER_RETRY_LIMIT
+    )
     requested_at: datetime
     updated_at: datetime
 
@@ -279,6 +283,10 @@ class DriveChangeRepository(Protocol):
 
     async def mark_policy_blocked(
         self, sync_run_id: UUID, *, now: datetime, failure_code: str
+    ) -> DriveChangeRun: ...
+
+    async def record_provider_failure(
+        self, sync_run_id: UUID, *, failure_code: str, now: datetime
     ) -> DriveChangeRun: ...
 
 
@@ -649,6 +657,28 @@ class InMemoryDriveChangeRepository:
             update={
                 "state": DriveChangeRunState.POLICY_BLOCKED,
                 "failure_code": failure_code,
+                "updated_at": now,
+            }
+        )
+        self.runs[sync_run_id] = updated
+        return updated
+
+    async def record_provider_failure(
+        self, sync_run_id: UUID, *, failure_code: str, now: datetime
+    ):
+        run = self.runs[sync_run_id]
+        attempts = run.provider_retry_attempts + 1
+        exhausted = attempts >= GOOGLE_PROVIDER_RETRY_LIMIT
+        updated = run.model_copy(
+            update={
+                "provider_retry_attempts": attempts,
+                "state": (
+                    DriveChangeRunState.RECONCILIATION_REQUIRED
+                    if exhausted
+                    else DriveChangeRunState.RESUMABLE
+                ),
+                "reconciliation_reason": "provider_retry_exhausted" if exhausted else None,
+                "failure_code": "provider_retry_exhausted" if exhausted else failure_code,
                 "updated_at": now,
             }
         )

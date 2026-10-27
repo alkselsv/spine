@@ -11,6 +11,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from pydantic import ConfigDict, Field, model_validator
 
 from spine.domain.common import DefinitionModel
+from spine.application.google_sync_diagnostics import GOOGLE_PROVIDER_RETRY_LIMIT
 
 
 class GoogleSheetsSyncRunState(str, Enum):
@@ -133,6 +134,9 @@ class GoogleSheetsSyncRun(DefinitionModel):
     proposed_cursor: str | None = Field(default=None, max_length=4096)
     state: GoogleSheetsSyncRunState = GoogleSheetsSyncRunState.RUNNING
     failure_code: str | None = Field(default=None, max_length=64)
+    provider_retry_attempts: int = Field(
+        default=0, ge=0, le=GOOGLE_PROVIDER_RETRY_LIMIT
+    )
     requested_at: datetime
     updated_at: datetime
 
@@ -269,6 +273,9 @@ class GoogleSheetsSyncRepository(Protocol):
         state: GoogleSheetsSyncRunState,
         failure_code: str | None,
         now: datetime,
+    ) -> GoogleSheetsSyncRun: ...
+    async def record_provider_failure(
+        self, sync_run_id: UUID, *, failure_code: str, now: datetime
     ) -> GoogleSheetsSyncRun: ...
     async def record_identity_disposition(
         self, command: GoogleSheetsIdentityDispositionCommand
@@ -497,6 +504,27 @@ class InMemoryGoogleSheetsSyncRepository:
         run = self.runs[sync_run_id]
         updated = run.model_copy(
             update={"state": state, "failure_code": failure_code, "updated_at": now}
+        )
+        self.runs[sync_run_id] = updated
+        return updated
+
+    async def record_provider_failure(
+        self, sync_run_id: UUID, *, failure_code: str, now: datetime
+    ) -> GoogleSheetsSyncRun:
+        run = self.runs[sync_run_id]
+        attempts = run.provider_retry_attempts + 1
+        exhausted = attempts >= GOOGLE_PROVIDER_RETRY_LIMIT
+        updated = run.model_copy(
+            update={
+                "provider_retry_attempts": attempts,
+                "state": (
+                    GoogleSheetsSyncRunState.RECONCILIATION_REQUIRED
+                    if exhausted
+                    else GoogleSheetsSyncRunState.RESUMABLE
+                ),
+                "failure_code": "provider_retry_exhausted" if exhausted else failure_code,
+                "updated_at": now,
+            }
         )
         self.runs[sync_run_id] = updated
         return updated

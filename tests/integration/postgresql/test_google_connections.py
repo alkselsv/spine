@@ -325,6 +325,34 @@ async def test_postgresql_fenced_successor_becomes_current(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_provider_revocation_appends_suspended_successor(
+    google_database: GoogleDatabase,
+) -> None:
+    scenario = await _scenario(google_database, case=7)
+    await scenario.repository.register(
+        GoogleConnectionCommand(
+            connection=scenario.initial,
+            idempotency_key="revocation-google-connection-v1",
+            audit_event_id=_id(5992),
+            occurred_at=OCCURRED_AT,
+        ),
+        scenario.context,
+    )
+
+    result = await scenario.repository.suspend_revoked(
+        scenario.initial,
+        _context(_boundary(), operation="google_connection_read"),
+        occurred_at=OCCURRED_AT,
+    )
+
+    assert result.connection.connection_id == scenario.initial.connection_id
+    assert result.connection.version == scenario.initial.version + 1
+    assert result.connection.authorization_generation == scenario.initial.authorization_generation
+    assert result.connection.status is GoogleConnectionStatus.SUSPENDED
+    assert result.audit.payload_json() == {"command_type": "google_connection_suspension"}
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_postgresql_unapproved_connection_conflicts(
     google_database: GoogleDatabase,
 ) -> None:

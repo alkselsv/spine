@@ -16,9 +16,11 @@ from spine.application.connector_ingestion import (
     ConnectorIngestionResult,
 )
 from spine.application.connections.google import (
+    GoogleConnectionSuspensionError,
     GoogleProviderAuthorizationError,
     GoogleProviderPolicyError,
     GoogleProviderQuotaError,
+    GoogleProviderReadError,
 )
 from spine.application.google_sync_diagnostics import GoogleSyncDiagnosticSnapshot
 from spine.application.persistence.context import (
@@ -243,6 +245,13 @@ class DriveChangeCoordinator:
                     sync_run_id, reason="authorization_revoked", now=self._now()
                 )
                 return await self._result(run)
+            except GoogleConnectionSuspensionError:
+                run = await self.repository.mark_suspended(
+                    sync_run_id,
+                    reason="connection_suspension_failed",
+                    now=self._now(),
+                )
+                return await self._result(run)
             except GoogleProviderPolicyError:
                 run = await self.repository.mark_policy_blocked(
                     sync_run_id,
@@ -251,9 +260,16 @@ class DriveChangeCoordinator:
                 )
                 return await self._result(run)
             except GoogleProviderQuotaError:
-                run = await self.repository.mark_resumable(
+                run = await self.repository.record_provider_failure(
                     sync_run_id,
                     failure_code="provider_quota_retryable",
+                    now=self._now(),
+                )
+                return await self._result(run)
+            except GoogleProviderReadError:
+                run = await self.repository.record_provider_failure(
+                    sync_run_id,
+                    failure_code="provider_unavailable_retryable",
                     now=self._now(),
                 )
                 return await self._result(run)

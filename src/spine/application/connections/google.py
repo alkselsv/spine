@@ -54,6 +54,11 @@ class GoogleConnectionConflictError(GoogleConnectionError):
         super().__init__("Google connection command conflicts with canonical state.")
 
 
+class GoogleConnectionSuspensionError(GoogleConnectionError):
+    def __init__(self) -> None:
+        super().__init__("Google connection suspension could not be recorded.")
+
+
 class GoogleProviderReadError(GoogleConnectionError):
     def __init__(self, *, failure_code: str = "provider_unavailable") -> None:
         self.failure_code = failure_code
@@ -249,7 +254,10 @@ class GoogleReadAdmission(Generic[ProviderResultT]):
             except asyncio.CancelledError:
                 raise
             except Exception:
-                pass
+                await self._emit_failure(
+                    context, DiagnosticFailureCode.PERSISTENCE_UNAVAILABLE
+                )
+                raise GoogleConnectionSuspensionError() from None
             raise authorization_error
 
     async def _emit_failure(
@@ -452,6 +460,7 @@ def _classify_google_provider_error(error: Exception) -> GoogleProviderReadError
 __all__ = [
     "GoogleConnectionCommand",
     "GoogleConnectionConflictError",
+    "GoogleConnectionSuspensionError",
     "GoogleConnectionDeniedError",
     "GoogleConnectionMutationResult",
     "GoogleConnectionRepository",

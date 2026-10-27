@@ -21,9 +21,11 @@ from spine.application.connector_ingestion import (
     ConnectorIngestionOrchestrator,
 )
 from spine.application.connections.google import (
+    GoogleConnectionSuspensionError,
     GoogleProviderAuthorizationError,
     GoogleProviderPolicyError,
     GoogleProviderQuotaError,
+    GoogleProviderReadError,
     GoogleReadAdmission,
     GoogleReadCommand,
 )
@@ -283,6 +285,7 @@ class GoogleSheetsReconciliationCoordinator:
         self._assert_fence(run, command)
         if run.state in {
             GoogleSheetsSyncRunState.SUCCEEDED,
+            GoogleSheetsSyncRunState.RECONCILIATION_REQUIRED,
             GoogleSheetsSyncRunState.SUSPENDED,
             GoogleSheetsSyncRunState.POLICY_BLOCKED,
         }:
@@ -375,6 +378,14 @@ class GoogleSheetsReconciliationCoordinator:
                 now=self._now(),
             )
             return await self._result(current, accepted_rows=0)
+        except GoogleConnectionSuspensionError:
+            current = await self.repository.mark_run(
+                sync_run_id,
+                state=GoogleSheetsSyncRunState.SUSPENDED,
+                failure_code="connection_suspension_failed",
+                now=self._now(),
+            )
+            return await self._result(current, accepted_rows=0)
         except GoogleProviderAuthorizationError:
             current = await self.repository.mark_run(
                 sync_run_id,
@@ -392,10 +403,16 @@ class GoogleSheetsReconciliationCoordinator:
             )
             return await self._result(current, accepted_rows=0)
         except GoogleProviderQuotaError:
-            current = await self.repository.mark_run(
+            current = await self.repository.record_provider_failure(
                 sync_run_id,
-                state=GoogleSheetsSyncRunState.RESUMABLE,
                 failure_code="provider_quota_retryable",
+                now=self._now(),
+            )
+            return await self._result(current, accepted_rows=0)
+        except GoogleProviderReadError:
+            current = await self.repository.record_provider_failure(
+                sync_run_id,
+                failure_code="provider_unavailable_retryable",
                 now=self._now(),
             )
             return await self._result(current, accepted_rows=0)

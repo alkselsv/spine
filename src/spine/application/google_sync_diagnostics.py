@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator
 
+GOOGLE_PROVIDER_RETRY_LIMIT = 3
+
 
 class GoogleSyncDiagnosticSnapshot(BaseModel):
     """Allowlisted sync status; provider cursors and source content are excluded."""
@@ -31,6 +33,8 @@ class GoogleSyncDiagnosticSnapshot(BaseModel):
     ]
     failure_code: str | None = Field(default=None, max_length=64)
     retryable: StrictBool = False
+    provider_retry_attempts: StrictInt = Field(ge=0, le=GOOGLE_PROVIDER_RETRY_LIMIT)
+    provider_retry_limit: StrictInt = Field(ge=1, le=GOOGLE_PROVIDER_RETRY_LIMIT)
     page_count: StrictInt = Field(ge=0)
     item_count: StrictInt = Field(ge=0)
     accepted_count: StrictInt = Field(ge=0)
@@ -77,6 +81,8 @@ class GoogleSyncDiagnosticSnapshot(BaseModel):
             state=state,
             failure_code=failure_code,
             retryable=retryable,
+            provider_retry_attempts=getattr(run, "provider_retry_attempts", 0),
+            provider_retry_limit=GOOGLE_PROVIDER_RETRY_LIMIT,
             page_count=len(pages),
             item_count=len(items),
             accepted_count=sum(_item_state(item) in {"succeeded", "reconciled"} for item in items),
@@ -94,4 +100,4 @@ def _item_state(item: Any) -> str | None:
     return getattr(value, "value", value)
 
 
-__all__ = ["GoogleSyncDiagnosticSnapshot"]
+__all__ = ["GOOGLE_PROVIDER_RETRY_LIMIT", "GoogleSyncDiagnosticSnapshot"]

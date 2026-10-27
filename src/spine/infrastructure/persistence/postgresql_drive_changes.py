@@ -211,6 +211,16 @@ class PostgreSQLDriveChangeRepository(DriveChangeRepository):
             {"sync_run_id": sync_run_id, "failure_code": failure_code, "now": now},
         )
 
+    async def record_provider_failure(
+        self, sync_run_id: UUID, *, failure_code: str, now: datetime
+    ):
+        return await self._mutate(
+            "drive_change_run",
+            sync_run_id,
+            "record_provider_failure",
+            {"sync_run_id": sync_run_id, "failure_code": failure_code, "now": now},
+        )
+
     async def _read_page(self, sync_run_id: UUID, page_token: str):
         async with self._uow("drive_change_read", sync_run_id) as uow:
             record = await _load(uow, sync_run_id)
