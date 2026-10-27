@@ -38,9 +38,17 @@ evidence review.
 A later authorized retry is recorded in
 `docs/qualification/issue-509-recovery-attempt-v3.json`. It verified the
 coherent physical backup, isolated restore, original-storage reconciliation and
-tenant-scoped storage canary. Overall qualification remains incomplete because
-Context Projection recovery, the restored-application canary and independent
-final evidence review have not run.
+tenant-scoped storage canary.
+
+The subsequent provider-backed run is recorded in
+`docs/qualification/issue-509-projection-recovery-attempt-v1.json`. It verified
+physical Context Projection recovery, strict candidate retrieval lineage and
+the restored application's fail-closed `unpublished` status. It also exposed
+restore-time ACL and SECURITY DEFINER ownership gaps. Overall qualification
+remains incomplete because an authorized application read through an active
+publication was outside the approved no-activation scope, the restore procedure
+still needs those gaps corrected, and independent final evidence review has not
+run.
 
 ## Start
 

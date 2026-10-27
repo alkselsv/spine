@@ -16,11 +16,13 @@ before `pg_restore`. The second established that the isolated verifier must use
 the restored tenant-policy role while setting the approved workspace and
 environment scope. Neither failed attempt published its staged filesystem.
 
-This run did not rebuild or recover the Context Projection and did not execute
-an application-level authorized canary. It therefore satisfies the physical
-backup, restore and storage reconciliation portion of #509, but it does not
-qualify the complete product recovery path. Independent review of the final
-evidence is also still required.
+The follow-up run recorded in
+`issue-509-projection-recovery-attempt-v1.json` rebuilt the physical Context
+Projection and verified candidate retrieval plus an application-level
+fail-closed `unpublished` status. It did not perform a permitted-source read
+through an active application publication. The complete product recovery path
+therefore remains NOT_VERIFIED, and independent review of the final evidence is
+still required.
 
 The JSON companion contains only opaque references, counts, states and digests.
 It contains no source content, filenames, credentials or raw errors.

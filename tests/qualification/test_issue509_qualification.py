@@ -21,6 +21,9 @@ RUNTIME_COMPOSITION_REPORT_PATH = (
 TEMPORAL_READINESS_REPORT_V2_PATH = (
     PROJECT_ROOT / "docs/qualification/issue-509-temporal-readiness-report-v2.json"
 )
+PROJECTION_RECOVERY_REPORT_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-projection-recovery-attempt-v1.json"
+)
 COMPOSE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/compose.yaml"
 DOCKERIGNORE_PATH = PROJECT_ROOT / ".dockerignore"
 QUALIFICATION_DOCKERFILE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/Dockerfile"
@@ -56,6 +59,10 @@ def _load_report() -> dict[str, Any]:
 
 def _load_readiness_report() -> dict[str, Any]:
     return json.loads(READINESS_REPORT_PATH.read_text(encoding="utf-8"))
+
+
+def _load_projection_recovery_report() -> dict[str, Any]:
+    return json.loads(PROJECTION_RECOVERY_REPORT_PATH.read_text(encoding="utf-8"))
 
 
 def _all_strings(value: Any) -> list[str]:
@@ -175,6 +182,51 @@ def test_issue509_report_does_not_promote_repository_evidence_to_live_recovery()
         "no_production_readiness_or_cutover_claim_made",
         "physical_projection_remains_non_authoritative",
     ]
+
+
+def test_issue509_projection_recovery_report_records_verified_candidate_fail_closed() -> None:
+    report = _load_projection_recovery_report()
+
+    assert report["schema_version"] == "r1-projection-recovery-attempt:v1"
+    assert report["run_reference"] == "run:issue509-projection-recovery-001"
+    assert report["target_commit"] == "868b1ff14068671c06c11db60d88aa7f6a06c0a2"
+    assert report["decision"] == "not_verified"
+    assert report["production_qualified"] is False
+    assert report["immutable"] is True
+    assert report["content_free"] is True
+    assert report["projection_recovery"] == {
+        "outcome": "verified",
+        "source_revision_count": 1,
+        "projection_effect_count": 1,
+        "physical_retrieval_outcome": "verified",
+        "physical_retrieval_chunk_count": 3,
+        "physical_retrieval_evidence_count": 3,
+        "lineage_check": "verified",
+    }
+    assert report["application_canary"] == {
+        "publication_status": "unpublished",
+        "fail_closed_status_check": "verified",
+        "authorized_source_read": "not_verified",
+    }
+    assert report["safety"] == {
+        "serving_activated": False,
+        "promotion_performed": False,
+        "cutover_performed": False,
+        "temporary_restore_privileges_revoked": True,
+        "restore_function_owner_reverted": True,
+        "target_stopped_after_capture": True,
+    }
+    assert report["independent_review"] == "required"
+
+
+def test_issue509_projection_recovery_report_contains_only_safe_metadata() -> None:
+    report = _load_projection_recovery_report()
+
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
 
 
 def test_issue509_temporal_services_use_the_pinned_image_dynamic_config() -> None:
