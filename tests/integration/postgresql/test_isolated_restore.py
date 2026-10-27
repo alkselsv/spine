@@ -257,6 +257,12 @@ async def test_recovered_application_target_restores_runtime_acl_and_reseals(
                     "WHERE namespace.nspname = 'spine' AND function.proname = 'recovered_canary_count'"
                 )
                 assert (await cursor.fetchone())[0] == migration_role
+                await cursor.execute(
+                    "SELECT rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, rolinherit "
+                    "FROM pg_roles WHERE rolname = %s",
+                    (runtime_role,),
+                )
+                assert await cursor.fetchone() == (False, False, False, False, False)
 
         await target.seal(qualification)
 

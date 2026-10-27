@@ -75,6 +75,7 @@ class RecoveredPostgreSQLApplicationTarget:
                 )
             await self._assert_empty()
             await self._restore()
+            await self._enforce_runtime_role_posture()
             await self._grant_runtime_connect()
             await self._assert_runtime_metadata()
         except RecoveredPostgreSQLTargetError:
@@ -178,6 +179,18 @@ class RecoveredPostgreSQLApplicationTarget:
         ) as connection:
             async with connection.cursor() as cursor:
                 await cursor.execute(
+                    "SELECT rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, "
+                    "rolinherit, EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members "
+                    "WHERE member = role.oid) "
+                    "FROM pg_catalog.pg_roles AS role WHERE rolname = %s",
+                    (self._runtime_role,),
+                )
+                role_row = await cursor.fetchone()
+                if role_row != (False, False, False, False, False, False):
+                    raise RecoveredPostgreSQLTargetError(
+                        "recovered runtime role posture is invalid"
+                    )
+                await cursor.execute(
                     "SELECT current_user, owner.rolname, "
                     "has_schema_privilege(%s, namespace.oid, 'USAGE') "
                     "FROM pg_catalog.pg_namespace AS namespace "
@@ -223,6 +236,18 @@ class RecoveredPostgreSQLApplicationTarget:
                     raise RecoveredPostgreSQLTargetError(
                         "recovered function ownership is invalid"
                     )
+
+    async def _enforce_runtime_role_posture(self) -> None:
+        async with await AsyncConnection.connect(
+            **self._connection.connection_kwargs(), autocommit=True
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    sql.SQL(
+                        "ALTER ROLE {} NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                        "NOINHERIT NOBYPASSRLS"
+                    ).format(sql.Identifier(self._runtime_role))
+                )
 
     async def _grant_runtime_connect(self) -> None:
         async with await AsyncConnection.connect(
