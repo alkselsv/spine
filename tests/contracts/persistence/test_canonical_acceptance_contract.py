@@ -52,6 +52,7 @@ from spine.domain.sources import (
     PolicyOriginKind,
     PolicyProposal,
     PrincipalKind,
+    SourceObject,
     SourceRevisionReceiptAssociation,
     content_revision,
 )
@@ -405,6 +406,11 @@ async def prepare_case(
     adapter: PersistenceAdapter,
     number: int,
     *,
+    scope: tuple[UUID, UUID] | None = None,
+    source_object: SourceObject | None = None,
+    create_scope: bool = True,
+    provenance_event: str = "event-1",
+    accepted_generation: int = 1,
     include_association: bool = True,
     association_reference: object | None = None,
     order_scheme: str | None = None,
@@ -413,10 +419,18 @@ async def prepare_case(
 ) -> CanonicalCase:
     assert adapter.source_context is not None
     assert adapter.ingestion_context is not None
-    workspace_id = synthetic_uuid(number)
-    environment_id = synthetic_uuid(number + 1)
-    await prepare(adapter, workspace_id, environment_id)
-    source_object = source(workspace_id, environment_id)
+    workspace_id, environment_id = scope or (
+        synthetic_uuid(number),
+        synthetic_uuid(number + 1),
+    )
+    if create_scope:
+        await prepare(adapter, workspace_id, environment_id)
+    source_object = source_object or source(workspace_id, environment_id)
+    if (
+        source_object.workspace_id != workspace_id
+        or source_object.environment_id != environment_id
+    ):
+        raise ValueError("canonical source must belong to the requested scope")
     source_revision = revision(source_object, synthetic_uuid(number + 2))
     if original_content is not None:
         digest = sha256(original_content).hexdigest()
@@ -438,7 +452,7 @@ async def prepare_case(
         )
         source_revision = content_revision(**revision_fields)
     source_provenance = provenance(
-        source_object, source_revision.revision_id, "event-1"
+        source_object, source_revision.revision_id, provenance_event
     )
     if order_scheme is not None or order_token is not None:
         source_provenance = source_provenance.model_copy(
@@ -533,7 +547,7 @@ async def prepare_case(
             source_object_id=source_object.source_object_id,
             source_revision_id=source_revision.revision_id,
             acceptance_id=synthetic_uuid(number + 18002),
-            generation=1,
+            generation=accepted_generation,
             audit_event_id=audit_id,
             event_id=outbox_id,
         ),

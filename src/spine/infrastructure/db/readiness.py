@@ -391,6 +391,12 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "drive_lifecycle_decisions": ExpectedTablePrivileges(True, True, True, True, False),
         "google_sheets_absence_candidates": ExpectedTablePrivileges(True, True, True, True, False),
         "google_sheets_removal_decisions": ExpectedTablePrivileges(True, True, True, True, False),
+        "register_link_claims": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "register_association_acceptances": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
         "google_sheets_identity_dispositions": ExpectedTablePrivileges(
             True, True, True, False, False
         ),

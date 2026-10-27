@@ -122,8 +122,22 @@ from spine.domain.projections import (
     ProjectionPartition,
     ProjectionRun,
 )
-from spine.domain.sources import AdmissionDecision, AdmissionDisposition
+from spine.domain.sources import (
+    AdmissionDecision,
+    AdmissionDisposition,
+    IdentityMode,
+    RegisterAssociationAcceptance,
+    RegisterLinkRole,
+    RegisterObservedLinkClaim,
+    SourceObject,
+)
 from spine.domain.sources.canonicalization import content_revision
+from spine.domain.sources.google import (
+    GoogleDriveFileKey,
+    GoogleRegisterRowKey,
+    GoogleProviderKey,
+    google_source_identity,
+)
 from spine.domain.sources.access_policy import (
     AccessGrant,
     AccessPermission,
@@ -155,6 +169,9 @@ from spine.infrastructure.persistence.postgresql_operational_metrics import (
 )
 from spine.infrastructure.persistence.postgresql_drive_lifecycle import (
     PostgreSQLDriveLifecycleDecisionRepository,
+)
+from spine.infrastructure.persistence.postgresql_register_associations import (
+    PostgreSQLRegisterAssociationRepository,
 )
 from spine.application.telemetry import OperationalMetricsQuery
 from spine.auth import InMemoryAuthorizationDirectory
@@ -767,6 +784,246 @@ async def test_qa_run_collection_returns_empty_page_from_postgresql(
 
     assert response.status_code == 200, response.text
     assert response.json()["items"] == []
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_register_link_claims_enforce_tenant_rls_and_immutable_runtime_grants(
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    migration_engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with migration_engine.connect() as connection:
+            for table_name in (
+                "register_link_claims",
+                "register_association_acceptances",
+            ):
+                row = (
+                    await connection.execute(
+                        text(
+                            "SELECT relation.relrowsecurity, relation.relforcerowsecurity, "
+                            "has_table_privilege('spine_runtime', relation.oid, 'UPDATE') AS can_update, "
+                            "has_table_privilege('spine_runtime', relation.oid, 'DELETE') AS can_delete, "
+                            "EXISTS (SELECT 1 FROM pg_catalog.pg_trigger trig "
+                            "WHERE trig.tgrelid = relation.oid AND NOT trig.tgisinternal "
+                            "AND trig.tgname = :trigger_name) AS has_immutable_trigger "
+                            "FROM pg_catalog.pg_class relation "
+                            "WHERE relation.oid = CAST(:qualified_table AS regclass)"
+                        ),
+                        {
+                            "trigger_name": f"trg_{table_name}_immutable",
+                            "qualified_table": f"spine.{table_name}",
+                        },
+                    )
+                ).mappings().one()
+                assert row["relrowsecurity"] is True
+                assert row["relforcerowsecurity"] is True
+                assert row["can_update"] is False
+                assert row["can_delete"] is False
+                assert row["has_immutable_trigger"] is True
+    finally:
+        await migration_engine.dispose()
+
+    runtime_engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    workspace_a = UUID("f5000000-0000-4000-8000-000000000001")
+    environment_a = UUID("f6000000-0000-4000-8000-000000000001")
+    workspace_b = UUID("f7000000-0000-4000-8000-000000000001")
+    environment_b = UUID("f8000000-0000-4000-8000-000000000001")
+    try:
+        async with runtime_engine.connect() as connection:
+            transaction = await connection.begin()
+            await connection.execute(
+                text(
+                    "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                    "set_config('spine.environment_id', :environment_id, true)"
+                ),
+                {
+                    "workspace_id": str(workspace_b),
+                    "environment_id": str(environment_b),
+                },
+            )
+            with pytest.raises(DBAPIError, match="row-level security policy"):
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.register_link_claims "
+                        "(claim_id, workspace_id, environment_id, row_source_object_id, "
+                        "row_source_revision_id, provenance_id, role, record, observed_at) "
+                        "VALUES (:claim_id, :workspace_id, :environment_id, :source_id, "
+                        ":revision_id, :provenance_id, 'request', '{}'::jsonb, now())"
+                    ),
+                    {
+                        "claim_id": UUID("f9000000-0000-4000-8000-000000000001"),
+                        "workspace_id": workspace_a,
+                        "environment_id": environment_a,
+                        "source_id": UUID("fa000000-0000-4000-8000-000000000001"),
+                        "revision_id": UUID("fb000000-0000-4000-8000-000000000001"),
+                        "provenance_id": UUID("fc000000-0000-4000-8000-000000000001"),
+                    },
+                )
+            await transaction.rollback()
+            transaction = await connection.begin()
+            await connection.execute(
+                text(
+                    "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                    "set_config('spine.environment_id', :environment_id, true)"
+                ),
+                {
+                    "workspace_id": str(workspace_b),
+                    "environment_id": str(environment_b),
+                },
+            )
+            with pytest.raises(DBAPIError, match="row-level security policy"):
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.register_association_acceptances "
+                        "(acceptance_id, claim_id, workspace_id, environment_id, "
+                        "row_source_object_id, row_source_revision_id, target_source_object_id, "
+                        "target_source_revision_id, role, record, accepted_at) "
+                        "VALUES (:acceptance_id, :claim_id, :workspace_id, :environment_id, "
+                        ":row_source_id, :row_revision_id, :target_source_id, "
+                        ":target_revision_id, 'request', '{}'::jsonb, now())"
+                    ),
+                    {
+                        "acceptance_id": UUID("fd000000-0000-4000-8000-000000000001"),
+                        "claim_id": UUID("fe000000-0000-4000-8000-000000000001"),
+                        "workspace_id": workspace_a,
+                        "environment_id": environment_a,
+                        "row_source_id": UUID("ff000000-0000-4000-8000-000000000001"),
+                        "row_revision_id": UUID("a1000000-0000-4000-8000-000000000001"),
+                        "target_source_id": UUID("a2000000-0000-4000-8000-000000000001"),
+                        "target_revision_id": UUID("a3000000-0000-4000-8000-000000000001"),
+                    },
+                )
+            await transaction.rollback()
+    finally:
+        await runtime_engine.dispose()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_register_association_repository_accepts_exact_persisted_google_revisions(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    assert postgresql_adapter.ingestion_context is not None
+    workspace_id, environment_id = synthetic_uuid(61600), synthetic_uuid(61601)
+    connection_id = synthetic_uuid(61602)
+    row_key = GoogleRegisterRowKey(
+        connection_id=connection_id,
+        spreadsheet_id="register-spreadsheet",
+        sheet_id=17,
+        immutable_business_id="ROW-616",
+    )
+    target_key = GoogleDriveFileKey(
+        connection_id=connection_id,
+        file_id="drive-file-616",
+    )
+
+    def google_source(
+        source_object_id: UUID, key: GoogleProviderKey, kind: str
+    ) -> SourceObject:
+        identity = google_source_identity(key)
+        return SourceObject(
+            source_object_id=source_object_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            source_kind=kind,
+            identity_mode=IdentityMode.CONNECTOR,
+            connection_id=connection_id,
+            external_namespace=identity.external_namespace,
+            external_generation=identity.external_generation,
+            external_object_id=identity.external_object_id,
+            created_at=INGESTION_CONTRACT_NOW,
+        )
+
+    row_case = await prepare_canonical_case(
+        postgresql_adapter,
+        61610,
+        scope=(workspace_id, environment_id),
+        source_object=google_source(synthetic_uuid(61603), row_key, "record"),
+    )
+    target_case = await prepare_canonical_case(
+        postgresql_adapter,
+        61620,
+        scope=(workspace_id, environment_id),
+        source_object=google_source(synthetic_uuid(61604), target_key, "document"),
+        create_scope=False,
+        provenance_event="event-2",
+        accepted_generation=2,
+    )
+    for case in (row_case, target_case):
+        async with postgresql_adapter.uow_factory(case.context) as uow:
+            result = await uow.canonical.accept(case.command)
+            assert result.acceptance is not None
+            await uow.commit()
+
+    def association_context(
+        operation: PersistenceOperation, _identity: UUID
+    ) -> TrustedPersistenceContext:
+        return postgresql_adapter.ingestion_context(
+            workspace_id, environment_id, operation.value
+        )
+
+    repository = PostgreSQLRegisterAssociationRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=association_context,
+    )
+    claim = RegisterObservedLinkClaim(
+        claim_id=synthetic_uuid(61630),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        row_source_object_id=row_case.source.source_object_id,
+        row_source_revision_id=row_case.revision.revision_id,
+        row_provider_identity=row_key,
+        row_revision_digest=row_case.revision.revision_digest,
+        row_original_sha256=row_case.revision.original_sha256,
+        role=RegisterLinkRole.DRIVE_MATERIAL,
+        claimed_external_identifier=target_key.file_id,
+        external_identifier_type="google_drive_file_id",
+        extraction_profile="register-links:v1",
+        evidence_locator="column:final_document_id",
+        evidence_digest="a" * 64,
+        provenance_id=row_case.provenance.provenance_id,
+        observed_at=INGESTION_CONTRACT_NOW,
+    )
+    accepted_context = association_context(
+        PersistenceOperation("register_association_accept"), claim.claim_id
+    )
+    assert accepted_context.service_principal_id is not None
+    acceptance = RegisterAssociationAcceptance(
+        acceptance_id=synthetic_uuid(61631),
+        claim_id=claim.claim_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        row_source_object_id=row_case.source.source_object_id,
+        row_source_revision_id=row_case.revision.revision_id,
+        target_source_object_id=target_case.source.source_object_id,
+        target_source_revision_id=target_case.revision.revision_id,
+        target_provider_identity=target_key,
+        role=RegisterLinkRole.DRIVE_MATERIAL,
+        accepted_by=accepted_context.service_principal_id,
+        accepted_at=INGESTION_CONTRACT_NOW,
+    )
+
+    persisted_claim = await repository.record_claim(claim)
+    claim_replay = await repository.record_claim(claim)
+    handoff = await repository.accept_claim(
+        claim_id=claim.claim_id,
+        acceptance=acceptance,
+    )
+    acceptance_replay = await repository.accept_claim(
+        claim_id=claim.claim_id,
+        acceptance=acceptance,
+    )
+    resolved = await repository.resolve_handoff(claim.claim_id)
+
+    assert persisted_claim == claim_replay == claim
+    assert handoff == acceptance_replay == resolved
+    assert handoff.claim.row_source_revision_id == row_case.revision.revision_id
+    assert handoff.acceptance.target_source_revision_id == target_case.revision.revision_id
 
 
 @pytest_asyncio.fixture(loop_scope="session")

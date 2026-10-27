@@ -23,6 +23,14 @@ from .access_policy import (
     SourceSecurityDomainBinding,
 )
 from .canonical import CanonicalAcceptance, CanonicalOrdering, CurrentSourceHead
+from .register_associations import (
+    RegisterAssociationAcceptance,
+    RegisterAssociationFutureOwner,
+    RegisterExternalIdentifierType,
+    RegisterAssociationHandoff,
+    RegisterLinkRole,
+    RegisterObservedLinkClaim,
+)
 from .boundary import (
     CanonicalBoundary,
     CanonicalBoundaryMember,
@@ -82,6 +90,12 @@ from .google import (
 __all__ = [
     "AccessGrant",
     "CanonicalAcceptance",
+    "RegisterAssociationAcceptance",
+    "RegisterAssociationFutureOwner",
+    "RegisterExternalIdentifierType",
+    "RegisterAssociationHandoff",
+    "RegisterLinkRole",
+    "RegisterObservedLinkClaim",
     "CanonicalBoundary",
     "CanonicalBoundaryMember",
     "CanonicalOrdering",
