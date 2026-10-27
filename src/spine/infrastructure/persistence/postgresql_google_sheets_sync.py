@@ -22,8 +22,16 @@ from spine.application.persistence.google_sheets_sync import (
     GoogleSheetsSyncRunCommand,
     GoogleSheetsSyncRunState,
     InMemoryGoogleSheetsSyncRepository,
+    GoogleSheetsIdentityDisposition,
+    GoogleSheetsIdentityDispositionCommand,
+    GoogleSheetsIdentityFailureCode,
+    GoogleSheetsIdentityQuarantine,
+    identity_disposition_event,
 )
-from spine.infrastructure.persistence.postgresql_mappings import google_sheets_sync_runs
+from spine.infrastructure.persistence.postgresql_mappings import (
+    google_sheets_identity_dispositions,
+    google_sheets_sync_runs,
+)
 
 
 class PostgreSQLGoogleSheetsSyncRepository(GoogleSheetsSyncRepository):
@@ -147,6 +155,87 @@ class PostgreSQLGoogleSheetsSyncRepository(GoogleSheetsSyncRepository):
             },
         )
 
+    async def record_identity_disposition(
+        self, command: GoogleSheetsIdentityDispositionCommand
+    ) -> GoogleSheetsIdentityQuarantine:
+        event = identity_disposition_event(command)
+        async with self._uow(
+            "google_sheets_identity_disposition", command.sync_run_id
+        ) as uow:
+            row = await uow._execute(
+                select(google_sheets_identity_dispositions).where(
+                    google_sheets_identity_dispositions.c.sync_run_id == command.sync_run_id,
+                    google_sheets_identity_dispositions.c.scope_identity == command.scope_identity,
+                )
+            )
+            existing = row.mappings().one_or_none()
+            if existing is not None:
+                persisted = _identity_disposition_from_row(existing)
+                if any(
+                    getattr(persisted, field) != getattr(event, field)
+                    for field in (
+                        "event_id",
+                        "sync_run_id",
+                        "workspace_id",
+                        "environment_id",
+                        "connection_id",
+                        "scope_identity",
+                        "disposition",
+                        "failure_code",
+                    )
+                ):
+                    raise ValueError("Google Sheets identity disposition conflicts with durable state")
+                await uow.rollback()
+                return persisted
+            await uow._execute(
+                insert(google_sheets_identity_dispositions).values(
+                    event_id=event.event_id,
+                    sync_run_id=event.sync_run_id,
+                    workspace_id=event.workspace_id,
+                    environment_id=event.environment_id,
+                    connection_id=event.connection_id,
+                    scope_identity=event.scope_identity,
+                    disposition=event.disposition.value,
+                    failure_code=(event.failure_code.value if event.failure_code else None),
+                    occurred_at=event.occurred_at,
+                )
+            )
+            await uow.commit()
+            return event
+
+    async def list_identity_dispositions(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        connection_id: UUID,
+        scope_identities: tuple[str, ...],
+    ) -> tuple[GoogleSheetsIdentityQuarantine, ...]:
+        if not scope_identities:
+            return ()
+        async with self._uow(
+            "google_sheets_identity_disposition_read", connection_id
+        ) as uow:
+            result = await uow._execute(
+                select(google_sheets_identity_dispositions)
+                .where(
+                    google_sheets_identity_dispositions.c.workspace_id == workspace_id,
+                    google_sheets_identity_dispositions.c.environment_id == environment_id,
+                    google_sheets_identity_dispositions.c.connection_id == connection_id,
+                    google_sheets_identity_dispositions.c.scope_identity.in_(scope_identities),
+                )
+                .order_by(
+                    google_sheets_identity_dispositions.c.occurred_at,
+                    google_sheets_identity_dispositions.c.event_id,
+                )
+            )
+            events = tuple(
+                _identity_disposition_from_row(row)
+                for row in result.mappings().all()
+            )
+            await uow.rollback()
+            return events
+
     async def _mutate(
         self, operation: str, identity: UUID, method: str, kwargs: dict[str, Any]
     ) -> Any:
@@ -244,6 +333,24 @@ def _repository_from_row(row: Any) -> InMemoryGoogleSheetsSyncRepository:
 
 def _run_from_row(row: Any) -> GoogleSheetsSyncRun:
     return GoogleSheetsSyncRun.model_validate_json(json.dumps(row["record"]["run"]))
+
+
+def _identity_disposition_from_row(row: Any) -> GoogleSheetsIdentityQuarantine:
+    return GoogleSheetsIdentityQuarantine(
+        event_id=row["event_id"],
+        sync_run_id=row["sync_run_id"],
+        workspace_id=row["workspace_id"],
+        environment_id=row["environment_id"],
+        connection_id=row["connection_id"],
+        scope_identity=row["scope_identity"],
+        disposition=GoogleSheetsIdentityDisposition(row["disposition"]),
+        failure_code=(
+            GoogleSheetsIdentityFailureCode(row["failure_code"])
+            if row["failure_code"] is not None
+            else None
+        ),
+        occurred_at=row["occurred_at"],
+    )
 
 
 __all__ = ["PostgreSQLGoogleSheetsSyncRepository"]

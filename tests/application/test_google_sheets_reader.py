@@ -276,6 +276,124 @@ async def test_sheets_range_reader_returns_all_rows_with_range_page_and_version_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("row", "failure_code"),
+    (
+        (_row(business_id="", metadata_value=""), "missing_business_id"),
+        (
+            _row(business_id="EST-2026-0001", effective_business_id="OTHER-ROW"),
+            "conflicting_business_id",
+        ),
+        (_row(metadata_value="OTHER-ROW"), "developer_metadata_mismatch"),
+    ),
+)
+async def test_sheets_range_reader_returns_safe_identity_rejection_code(
+    row: GoogleSheetsRowData, failure_code: str
+):
+    snapshot = _snapshot(row)
+
+    class PagedSheetsService(FakeSheetsService):
+        async def get_spreadsheet_range_page(
+            self,
+            connection,
+            resource_scope_reference,
+            spreadsheet_id,
+            sheet_id,
+            a1_range,
+            page_token,
+        ):
+            del connection, resource_scope_reference
+            return GoogleSheetsRangePage(
+                spreadsheet_id=spreadsheet_id,
+                sheet_id=sheet_id,
+                a1_range=a1_range,
+                page_token=page_token,
+                next_page_token=None,
+                complete=True,
+                provider_version_before="22",
+                provider_version_after="22",
+                snapshot=snapshot,
+            )
+
+    result = await GoogleSheetsProviderAdapter(
+        service=PagedSheetsService(snapshot), profile=_profile(), clock=lambda: NOW
+    ).read_page(
+        SimpleNamespace(connection_id=CONNECTION),
+        SimpleNamespace(
+            resource_scope_reference=SimpleNamespace(value=SCOPE),
+            authorization_generation=7,
+            configuration_generation=11,
+            a1_range="A2:C100",
+            provider_page_token=None,
+        ),
+    )
+
+    assert result.identity_rejection_codes == (failure_code,)
+    assert result.observations == ()
+
+
+@pytest.mark.asyncio
+async def test_sheets_range_reader_quarantines_duplicate_business_ids():
+    snapshot = _snapshot(
+        _row(business_id="EST-2026-0001", row_number=2),
+        _row(
+            business_id="EST-2026-0001",
+            row_number=3,
+        ).model_copy(
+            update={
+                "developer_metadata": (
+                    GoogleSheetsDeveloperMetadata(
+                        metadata_id=9002,
+                        key="spine.business_id",
+                        value="EST-2026-0001",
+                        row_number=3,
+                    ),
+                )
+            }
+        ),
+    )
+
+    class PagedSheetsService(FakeSheetsService):
+        async def get_spreadsheet_range_page(
+            self,
+            connection,
+            resource_scope_reference,
+            spreadsheet_id,
+            sheet_id,
+            a1_range,
+            page_token,
+        ):
+            del connection, resource_scope_reference
+            return GoogleSheetsRangePage(
+                spreadsheet_id=spreadsheet_id,
+                sheet_id=sheet_id,
+                a1_range=a1_range,
+                page_token=page_token,
+                next_page_token=None,
+                complete=True,
+                provider_version_before="22",
+                provider_version_after="22",
+                snapshot=snapshot,
+            )
+
+    result = await GoogleSheetsProviderAdapter(
+        service=PagedSheetsService(snapshot), profile=_profile(), clock=lambda: NOW
+    ).read_page(
+        SimpleNamespace(connection_id=CONNECTION),
+        SimpleNamespace(
+            resource_scope_reference=SimpleNamespace(value=SCOPE),
+            authorization_generation=7,
+            configuration_generation=11,
+            a1_range="A2:C100",
+            provider_page_token=None,
+        ),
+    )
+
+    assert result.identity_rejection_codes == ("duplicate_business_id",)
+    assert result.observations == ()
+
+
+@pytest.mark.asyncio
 async def test_reconciliation_provider_selects_the_profile_for_each_configured_sheet():
     second_snapshot = GoogleSheetsSnapshot(
         spreadsheet_id="spreadsheet-456",

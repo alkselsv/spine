@@ -388,6 +388,9 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "drive_snapshot_runs": ExpectedTablePrivileges(True, True, True, True, False),
         "drive_change_runs": ExpectedTablePrivileges(True, True, True, True, False),
         "google_sheets_sync_runs": ExpectedTablePrivileges(True, True, True, True, False),
+        "google_sheets_identity_dispositions": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
         "original_upload_records": ExpectedTablePrivileges(
             True, True, True, True, False
         ),

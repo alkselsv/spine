@@ -453,6 +453,21 @@ google_sheets_sync_runs = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
+google_sheets_identity_dispositions = Table(
+    "google_sheets_identity_dispositions",
+    metadata,
+    Column("event_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("sync_run_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("connection_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("scope_identity", Text, nullable=False),
+    Column("disposition", Text, nullable=False),
+    Column("failure_code", Text),
+    Column("occurred_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("sync_run_id", "scope_identity", name="uq_google_sheets_identity_disposition_run_scope"),
+)
+
 ingestion_warnings = Table(
     "ingestion_warnings", metadata,
     Column("ingestion_warning_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("ingestion_run_source_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("attempt", Integer, nullable=False), Column("stage", Text, nullable=False), Column("code", Text, nullable=False), Column("retryable", Boolean, nullable=False), Column("safe_detail_schema", Text, nullable=False), Column("safe_detail", JSONB, nullable=False), Column("safe_detail_digest", String(64), nullable=False), Column("opaque_detail_ref", PostgreSQLUUID(as_uuid=True)), Column("occurred_at", DateTime(timezone=True), nullable=False),
@@ -1251,6 +1266,7 @@ __all__ = [
     "drive_snapshot_runs",
     "drive_change_runs",
     "google_sheets_sync_runs",
+    "google_sheets_identity_dispositions",
     "ingestion_warnings",
     "ingestion_failures",
     "processing_receipts",

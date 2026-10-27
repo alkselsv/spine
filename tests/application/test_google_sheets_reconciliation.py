@@ -19,6 +19,9 @@ from spine.application.google_sheets_reconciliation import (
 )
 from spine.application.connector_ingestion import ConnectorIngestionCommand
 from spine.application.persistence.google_sheets_sync import (
+    GoogleSheetsIdentityDisposition,
+    GoogleSheetsIdentityDispositionCommand,
+    GoogleSheetsIdentityFailureCode,
     GoogleSheetsSyncRunState,
     InMemoryGoogleSheetsSyncRepository,
 )
@@ -176,7 +179,15 @@ def coordinator(reader, ingestion, repository=None):
     )
 
 
-def page(scope, token, next_token, *rows, version="10", complete=True):
+def page(
+    scope,
+    token,
+    next_token,
+    *rows,
+    version="10",
+    complete=True,
+    identity_rejection_codes=(),
+):
     return GoogleSheetsReconciliationPage(
         scope_identity=scope.identity,
         page_token=token,
@@ -185,6 +196,7 @@ def page(scope, token, next_token, *rows, version="10", complete=True):
         provider_version_after=version,
         complete=complete,
         observations=rows,
+        identity_rejection_codes=identity_rejection_codes,
     )
 
 
@@ -231,6 +243,134 @@ async def test_incomplete_late_page_holds_cursor_and_accepts_no_rows():
     assert result.committed_cursor == "cursor-1"
     assert result.accepted_rows == 0
     assert ingestion.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_code",
+    (
+        "missing_business_id",
+        "duplicate_business_id",
+        "conflicting_business_id",
+        "developer_metadata_mismatch",
+    ),
+)
+async def test_invalid_identity_scope_is_durably_quarantined_without_acceptance(
+    failure_code: str,
+):
+    request = command()
+    scope = request.scopes[0]
+    repo = InMemoryGoogleSheetsSyncRepository()
+    reader = FakeSheetsReader(
+        {
+            (scope.identity, None): page(
+                scope,
+                None,
+                None,
+                observation("MUST-NOT-BE-ACCEPTED"),
+                identity_rejection_codes=(failure_code,),
+            )
+        }
+    )
+    ingestion = FakeCanonicalIngestion()
+
+    result = await coordinator(reader, ingestion, repo).run(request)
+
+    assert result.state is GoogleSheetsSyncRunState.RECONCILIATION_REQUIRED
+    assert result.failure_code == "sheets_identity_quarantined"
+    assert result.committed_cursor == "cursor-1"
+    assert result.accepted_rows == 0
+    assert ingestion.calls == []
+    replay = await coordinator(reader, ingestion, repo).run(request)
+    assert replay.state is GoogleSheetsSyncRunState.RECONCILIATION_REQUIRED
+    assert replay.sync_run_id == result.sync_run_id
+    events = await repo.list_identity_dispositions(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        connection_id=CONNECTION,
+        scope_identities=(scope.identity,),
+    )
+    assert len(events) == 1
+    assert events[0].disposition is GoogleSheetsIdentityDisposition.QUARANTINED
+    assert events[0].failure_code is GoogleSheetsIdentityFailureCode(failure_code)
+    assert "MUST-NOT-BE-ACCEPTED" not in events[0].model_dump_json()
+    assert len(events) == 1
+    other_workspace = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    await repo.record_identity_disposition(
+        GoogleSheetsIdentityDispositionCommand(
+            sync_run_id=UUID(int=9001),
+            workspace_id=other_workspace,
+            environment_id=ENVIRONMENT,
+            connection_id=CONNECTION,
+            scope_identity=scope.identity,
+            disposition=GoogleSheetsIdentityDisposition.QUARANTINED,
+            failure_code=GoogleSheetsIdentityFailureCode.MISSING_BUSINESS_ID,
+            now=NOW,
+        )
+    )
+    foreign_events = await repo.list_identity_dispositions(
+        workspace_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+        environment_id=ENVIRONMENT,
+        connection_id=CONNECTION,
+        scope_identities=(scope.identity,),
+    )
+    assert len(foreign_events) == 1
+    assert foreign_events[0].workspace_id == other_workspace
+    assert len(
+        await repo.list_identity_dispositions(
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+            connection_id=CONNECTION,
+            scope_identities=(scope.identity,),
+        )
+    ) == 1
+
+
+@pytest.mark.asyncio
+async def test_corrected_identity_clears_quarantine_with_a_new_audit_event():
+    request = command()
+    scope = request.scopes[0]
+    repo = InMemoryGoogleSheetsSyncRepository()
+    ingestion = FakeCanonicalIngestion()
+    quarantine_reader = FakeSheetsReader(
+        {
+            (scope.identity, None): page(
+                scope,
+                None,
+                None,
+                observation("EST-1"),
+                identity_rejection_codes=("developer_metadata_mismatch",),
+            )
+        }
+    )
+    await coordinator(quarantine_reader, ingestion, repo).run(request)
+
+    corrected_request = command(key="wake-2")
+    corrected_scope = corrected_request.scopes[0]
+    correction = await coordinator(
+        FakeSheetsReader(
+            {
+                (corrected_scope.identity, None): page(
+                    corrected_scope, None, None, observation("EST-1")
+                )
+            }
+        ),
+        ingestion,
+        repo,
+    ).run(corrected_request)
+
+    assert correction.state is GoogleSheetsSyncRunState.SUCCEEDED
+    events = await repo.list_identity_dispositions(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        connection_id=CONNECTION,
+        scope_identities=(scope.identity,),
+    )
+    assert [event.disposition for event in events] == [
+        GoogleSheetsIdentityDisposition.QUARANTINED,
+        GoogleSheetsIdentityDisposition.CLEARED,
+    ]
+    assert events[0].event_id != events[1].event_id
 
 
 @pytest.mark.asyncio
@@ -330,6 +470,7 @@ async def test_admitted_page_reader_preserves_range_and_provider_page_token():
         provider_version_before="10",
         provider_version_after="10",
         complete=True,
+        identity_rejection_codes=(),
         observations=(SimpleNamespace(to_normalized_observation=lambda: normalized),),
     )
     admission = FakeGoogleAdmission(expected)

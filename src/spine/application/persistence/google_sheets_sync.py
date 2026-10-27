@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Protocol
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import ConfigDict, Field, model_validator
 
@@ -29,6 +29,87 @@ class GoogleSheetsSyncPageState(str, Enum):
 class GoogleSheetsSyncItemState(str, Enum):
     PENDING = "pending"
     SUCCEEDED = "succeeded"
+
+
+class GoogleSheetsIdentityDisposition(str, Enum):
+    QUARANTINED = "quarantined"
+    CLEARED = "cleared"
+
+
+class GoogleSheetsIdentityFailureCode(str, Enum):
+    MISSING_BUSINESS_ID = "missing_business_id"
+    DUPLICATE_BUSINESS_ID = "duplicate_business_id"
+    CONFLICTING_BUSINESS_ID = "conflicting_business_id"
+    DEVELOPER_METADATA_MISMATCH = "developer_metadata_mismatch"
+    INVALID_IDENTITY = "invalid_identity"
+    SCOPE_DUPLICATE_BUSINESS_ID = "scope_duplicate_business_id"
+
+
+class GoogleSheetsIdentityQuarantine(DefinitionModel):
+    """Content-free tenant-scoped identity disposition audit event."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    event_id: UUID
+    sync_run_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    connection_id: UUID
+    scope_identity: str = Field(min_length=1, max_length=1024)
+    disposition: GoogleSheetsIdentityDisposition
+    failure_code: GoogleSheetsIdentityFailureCode | None = None
+    occurred_at: datetime
+
+    @model_validator(mode="after")
+    def validate_event(self) -> "GoogleSheetsIdentityQuarantine":
+        if self.event_id.int == 0 or self.sync_run_id.int == 0:
+            raise ValueError("Google Sheets identity disposition IDs must be non-zero")
+        if any(
+            value.int == 0
+            for value in (self.workspace_id, self.environment_id, self.connection_id)
+        ):
+            raise ValueError("Google Sheets identity disposition scope must be non-zero")
+        if self.occurred_at.tzinfo is None or self.occurred_at.utcoffset() is None:
+            raise ValueError("Google Sheets identity disposition time must be aware")
+        if (self.disposition is GoogleSheetsIdentityDisposition.QUARANTINED) != (
+            self.failure_code is not None
+        ):
+            raise ValueError("quarantined dispositions require a safe failure code")
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class GoogleSheetsIdentityDispositionCommand:
+    sync_run_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    connection_id: UUID
+    scope_identity: str
+    disposition: GoogleSheetsIdentityDisposition
+    failure_code: GoogleSheetsIdentityFailureCode | None
+    now: datetime
+
+
+def identity_disposition_event(
+    command: GoogleSheetsIdentityDispositionCommand,
+) -> GoogleSheetsIdentityQuarantine:
+    """Build one replay-stable event shared by every ledger adapter."""
+
+    return GoogleSheetsIdentityQuarantine(
+        event_id=uuid5(
+            NAMESPACE_URL,
+            "spine:google-sheets-sync:v1:identity-disposition:"
+            f"{command.sync_run_id}:{command.scope_identity}",
+        ),
+        sync_run_id=command.sync_run_id,
+        workspace_id=command.workspace_id,
+        environment_id=command.environment_id,
+        connection_id=command.connection_id,
+        scope_identity=command.scope_identity,
+        disposition=command.disposition,
+        failure_code=command.failure_code,
+        occurred_at=command.now,
+    )
 
 
 class GoogleSheetsSyncRun(DefinitionModel):
@@ -187,6 +268,17 @@ class GoogleSheetsSyncRepository(Protocol):
         failure_code: str | None,
         now: datetime,
     ) -> GoogleSheetsSyncRun: ...
+    async def record_identity_disposition(
+        self, command: GoogleSheetsIdentityDispositionCommand
+    ) -> GoogleSheetsIdentityQuarantine: ...
+    async def list_identity_dispositions(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        connection_id: UUID,
+        scope_identities: tuple[str, ...],
+    ) -> tuple[GoogleSheetsIdentityQuarantine, ...]: ...
 
 
 class GoogleSheetsSyncConflictError(RuntimeError):
@@ -206,6 +298,7 @@ class InMemoryGoogleSheetsSyncRepository:
         self._run_keys: dict[tuple[UUID, UUID, str], UUID] = {}
         self._page_keys: dict[tuple[UUID, str, str], UUID] = {}
         self._item_ids: dict[UUID, tuple[UUID, UUID]] = {}
+        self.identity_dispositions: dict[tuple[UUID, str], GoogleSheetsIdentityQuarantine] = {}
 
     @classmethod
     def from_snapshot(
@@ -405,6 +498,47 @@ class InMemoryGoogleSheetsSyncRepository:
         )
         self.runs[sync_run_id] = updated
         return updated
+
+    async def record_identity_disposition(
+        self, command: GoogleSheetsIdentityDispositionCommand
+    ) -> GoogleSheetsIdentityQuarantine:
+        key = (command.sync_run_id, command.scope_identity)
+        existing = self.identity_dispositions.get(key)
+        if existing is not None:
+            if (existing.disposition, existing.failure_code) != (
+                command.disposition,
+                command.failure_code,
+            ):
+                raise GoogleSheetsSyncConflictError(
+                    "Google Sheets identity disposition conflicts with durable state"
+                )
+            return existing
+        event = identity_disposition_event(command)
+        self.identity_dispositions[key] = event
+        return event
+
+    async def list_identity_dispositions(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        connection_id: UUID,
+        scope_identities: tuple[str, ...],
+    ) -> tuple[GoogleSheetsIdentityQuarantine, ...]:
+        requested = set(scope_identities)
+        return tuple(
+            sorted(
+                (
+                    event
+                    for event in self.identity_dispositions.values()
+                    if event.workspace_id == workspace_id
+                    and event.environment_id == environment_id
+                    and event.connection_id == connection_id
+                    and event.scope_identity in requested
+                ),
+                key=lambda event: (event.occurred_at, event.event_id.int),
+            )
+        )
 
 
 def _stable_id(value: str) -> UUID:

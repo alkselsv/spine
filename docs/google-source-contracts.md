@@ -232,5 +232,15 @@ business identity or mid-read version change leaves the prior cursor in force
 and accepts no rows from that candidate read. Failed canonical writes leave
 the run resumable; successful completion promotes the proposed Drive cursor.
 Scheduled full reconciliation uses the same coordinator without proposing a
-Drive cursor. The ledger records no absence decisions, tombstones or quarantine
-dispositions; those remain separate policy work.
+Drive cursor. The sync-run/page ledger records no absence decisions or tombstones;
+identity quarantine is handled by the separate disposition ledger in #609.
+
+Issue #609 adds durable, tenant-scoped identity disposition events for unsafe
+register scopes. Missing, duplicate or conflicting business IDs and configured
+Developer Metadata mismatches produce only bounded failure codes and the hashed
+configured scope identity; row values and provider error payloads are never
+stored. A rejected scope prevents canonical ingestion for the reconciliation,
+holds its prior cursor and contributes no absence decision. A later clean run
+records a separate `cleared` event, preserving the earlier quarantine event as
+audit history. Disposition events are append-only and protected by workspace
+and environment row-level security.
