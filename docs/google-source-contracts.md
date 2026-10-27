@@ -183,3 +183,23 @@ the previous committed cursor unchanged and mark the run resumable;
 `incompleteSearch` produces `reconciliation_required` instead of advancing the
 cursor. The coordinator owns this state and the Drive adapter has no hidden
 unbounded retry loop.
+
+## Drive incremental changes
+
+Issue #607 adds a separate durable change-feed coordinator. It starts from the
+last committed cursor produced by the initial snapshot, persists every page and
+per-change terminal outcome, and keeps the provider's `newStartPageToken` as a
+proposed cursor until the final page and all canonical ingestion effects are
+durable. A replay uses the same change-derived idempotency key, so a crash after
+canonical acceptance but before the ledger checkpoint cannot create a second
+logical acceptance or advance the cursor prematurely. Canonical ingestion's
+numeric Drive revision ordering remains authoritative for duplicate and
+out-of-order file versions; the change ledger records the replay outcome without
+overwriting that head.
+
+Authority, scope and configuration generations are captured in the run and are
+checked before a resumed page is read. Provider token expiry, retry exhaustion,
+token gaps, incomplete pages and a missing terminal cursor retain the previous
+cursor and enter `reconciliation_required`, which emits one bounded,
+idempotent full-reconciliation command. Removed changes are recorded as a
+terminal ignored outcome; deletion/tombstone policy remains outside this slice.

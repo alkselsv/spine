@@ -97,6 +97,20 @@ from spine.application.persistence.drive_sync import (
     DriveSyncRepository,
     InMemoryDriveSyncRepository,
 )
+from spine.application.persistence.drive_changes import (
+    DriveChangeFenceError,
+    DriveChangeInput,
+    DriveChangeItemRecord,
+    DriveChangeItemState,
+    DriveChangePageRecord,
+    DriveChangePageState,
+    DriveChangeRepository,
+    DriveChangeRun,
+    DriveChangeRunCommand,
+    DriveChangeRunState,
+    DriveChangeSyncConflictError,
+    InMemoryDriveChangeRepository,
+)
 from spine.application.persistence.disclosure import DisclosureValidationRepository
 from spine.application.persistence.answer_disclosure import AnswerDisclosureRepository
 from spine.application.persistence.parsed_artifacts import (
@@ -261,6 +275,18 @@ __all__ = [
     "DriveSyncConflictError",
     "DriveSyncRepository",
     "InMemoryDriveSyncRepository",
+    "DriveChangeFenceError",
+    "DriveChangeInput",
+    "DriveChangeItemRecord",
+    "DriveChangeItemState",
+    "DriveChangePageRecord",
+    "DriveChangePageState",
+    "DriveChangeRepository",
+    "DriveChangeRun",
+    "DriveChangeRunCommand",
+    "DriveChangeRunState",
+    "DriveChangeSyncConflictError",
+    "InMemoryDriveChangeRepository",
     "DisclosureValidationRepository",
     "AnswerDisclosureRepository",
     "ParsedArtifactCommand",

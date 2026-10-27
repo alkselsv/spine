@@ -45,6 +45,18 @@ class GoogleDriveConcurrentModificationError(RuntimeError):
     """The file changed while its immutable observation was being read."""
 
 
+class GoogleDriveTokenExpiredError(RuntimeError):
+    """The provider no longer accepts the requested change-feed token."""
+
+
+class GoogleDriveRetryExhaustedError(RuntimeError):
+    """Bounded provider retries could not obtain a change-feed page."""
+
+
+class GoogleDriveChangeGapError(RuntimeError):
+    """The provider reported a gap that cannot be continued safely."""
+
+
 class DriveFileMetadata(DefinitionModel):
     """The provider metadata needed to guard one exact file read."""
 
@@ -103,6 +115,44 @@ class DriveSnapshotPage(DefinitionModel):
         return self
 
 
+class DriveChange(DefinitionModel):
+    """One provider change with a stable replay identity."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    file_id: StrictStr = Field(min_length=1, max_length=256)
+    change_id: StrictStr | None = Field(default=None, max_length=256)
+    provider_version: StrictStr | None = Field(default=None, max_length=128)
+    removed: bool = False
+
+    @property
+    def change_key(self) -> str:
+        if self.change_id:
+            return f"id:{self.change_id}"
+        return (
+            f"file:{self.file_id}:version:{self.provider_version or 'unknown'}"
+            f":removed:{str(self.removed).lower()}"
+        )
+
+
+class DriveChangePage(DefinitionModel):
+    """One immutable page from Drive ``changes.list``."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    page_token: StrictStr = Field(min_length=1, max_length=4096)
+    next_page_token: StrictStr | None = Field(default=None, max_length=4096)
+    new_start_page_token: StrictStr | None = Field(default=None, max_length=4096)
+    incomplete_search: bool = False
+    changes: tuple[DriveChange, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_changes(self) -> "DriveChangePage":
+        if self.next_page_token is not None and self.new_start_page_token is not None:
+            raise ValueError("terminal Drive start token cannot accompany another page")
+        return self
+
+
 class GoogleDriveSnapshotService(Protocol):
     """Official Drive operations needed by the bounded initial snapshot."""
 
@@ -125,6 +175,17 @@ class GoogleDriveSnapshotService(Protocol):
         resource_scope_reference: OpaqueGoogleReference,
         file_id: str,
     ) -> DriveFileMetadata: ...
+
+
+class GoogleDriveChangeService(Protocol):
+    """Official Drive change-feed operation needed by incremental sync."""
+
+    async def list_changes(
+        self,
+        connection: GoogleConnection,
+        resource_scope_reference: OpaqueGoogleReference,
+        page_token: str,
+    ) -> DriveChangePage: ...
 
 
 class GoogleDriveService(Protocol):
@@ -433,6 +494,36 @@ class GoogleDriveInitialSnapshotReader:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class GoogleDriveIncrementalReader:
+    """List Drive changes only after the same trusted read admission."""
+
+    connection_repository: GoogleConnectionRepository
+    service: GoogleDriveChangeService
+
+    async def list_changes(self, command, page_token, context) -> DriveChangePage:
+        async with self._admit(command, context) as connection:
+            page = await self.service.list_changes(
+                connection,
+                OpaqueGoogleReference(value=command.resource_scope_reference),
+                page_token,
+            )
+        return page
+
+    def _admit(self, command, context):
+        return self.connection_repository.admit_read(
+            GoogleReadCommand(
+                connection_id=command.connection_id,
+                resource_scope_reference=OpaqueGoogleReference(
+                    value=command.resource_scope_reference
+                ),
+                authorization_generation=command.authorization_generation,
+                configuration_generation=command.configuration_generation,
+            ),
+            context,
+        )
+
+
 # Short names keep the adapter discoverable without exposing provider SDK terms.
 GoogleDriveProvider = GoogleDriveProviderAdapter
 GoogleDriveReader = GoogleDriveObservationReader
@@ -495,11 +586,16 @@ __all__ = [
     "DriveFileReadProfile",
     "DriveSnapshotItem",
     "DriveSnapshotPage",
+    "DriveChange",
+    "DriveChangePage",
     "GOOGLE_DRIVE_DOWNLOAD_PROFILE",
     "GOOGLE_DRIVE_EXPORT_PROFILE",
     "GOOGLE_DRIVE_FILE_LOCATOR",
     "GOOGLE_DRIVE_VERSION_SCHEME",
     "GoogleDriveConcurrentModificationError",
+    "GoogleDriveTokenExpiredError",
+    "GoogleDriveRetryExhaustedError",
+    "GoogleDriveChangeGapError",
     "GoogleDriveObservation",
     "GoogleDriveObservationReader",
     "GoogleDriveProvider",
@@ -508,4 +604,6 @@ __all__ = [
     "GoogleDriveInitialSnapshotReader",
     "GoogleDriveService",
     "GoogleDriveSnapshotService",
+    "GoogleDriveChangeService",
+    "GoogleDriveIncrementalReader",
 ]
