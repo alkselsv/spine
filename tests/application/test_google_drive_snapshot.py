@@ -10,6 +10,7 @@ from spine.application.google_drive_snapshot import (
     DriveInitialSnapshotCommand,
     DriveInitialSnapshotCoordinator,
 )
+from spine.application.connections.google import GoogleProviderAuthorizationError
 from spine.application.persistence.drive_sync import (
     DriveSnapshotItemState,
     DriveSnapshotRunState,
@@ -47,8 +48,9 @@ def item(file_id: str) -> DriveSnapshotItem:
 
 
 class FakeReader:
-    def __init__(self, pages: dict[str | None, DriveSnapshotPage]) -> None:
+    def __init__(self, pages: dict[str | None, DriveSnapshotPage], *, start_error=None) -> None:
         self.pages = pages
+        self.start_error = start_error
         self.calls: list[tuple[str, str | None]] = []
         self.start_token_calls = 0
 
@@ -56,12 +58,17 @@ class FakeReader:
         del context
         self.start_token_calls += 1
         self.calls.append(("start", None))
+        if self.start_error is not None:
+            raise self.start_error
         return "start-token-7"
 
     async def list_page(self, request, page_token, context):
         del context
         self.calls.append(("list", page_token))
-        return self.pages[page_token]
+        result = self.pages[page_token]
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
 class FakeIngestion:
@@ -186,6 +193,19 @@ async def test_incomplete_search_requires_reconciliation_and_keeps_last_cursor()
     assert result.committed_cursor == "previous-token"
     assert result.pages[0].incomplete_search is True
     assert result.pages[0].state.value == "incomplete"
+
+
+@pytest.mark.asyncio
+async def test_revoked_grant_suspends_snapshot_before_starting_source_ingestion():
+    reader = FakeReader({}, start_error=GoogleProviderAuthorizationError())
+    ingestion = FakeIngestion()
+
+    result = await coordinator(reader, ingestion).run(command())
+
+    assert result.state is DriveSnapshotRunState.SUSPENDED
+    assert result.committed_cursor is None
+    assert ingestion.calls == []
+    assert result.diagnostic_snapshot.failure_code == "authorization_revoked"
 
 
 @pytest.mark.asyncio

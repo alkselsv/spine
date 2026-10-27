@@ -20,7 +20,14 @@ from spine.application.connector_ingestion import (
     ConnectorIngestionCommand,
     ConnectorIngestionOrchestrator,
 )
-from spine.application.connections.google import GoogleReadAdmission, GoogleReadCommand
+from spine.application.connections.google import (
+    GoogleProviderAuthorizationError,
+    GoogleProviderPolicyError,
+    GoogleProviderQuotaError,
+    GoogleReadAdmission,
+    GoogleReadCommand,
+)
+from spine.application.google_sync_diagnostics import GoogleSyncDiagnosticSnapshot
 from spine.application.google_drive_changes import DriveChangeCommand
 from spine.application.persistence.drive_changes import DriveChangeItemRecord
 from spine.application.persistence.google_sheets_sync import (
@@ -237,6 +244,7 @@ class GoogleSheetsReconciliationResult:
     accepted_rows: int
     failure_code: str | None
     committed_cursor: str | None
+    diagnostic_snapshot: GoogleSyncDiagnosticSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,7 +281,11 @@ class GoogleSheetsReconciliationCoordinator:
                 )
             )
         self._assert_fence(run, command)
-        if run.state is GoogleSheetsSyncRunState.SUCCEEDED:
+        if run.state in {
+            GoogleSheetsSyncRunState.SUCCEEDED,
+            GoogleSheetsSyncRunState.SUSPENDED,
+            GoogleSheetsSyncRunState.POLICY_BLOCKED,
+        }:
             return await self._result(
                 run,
                 accepted_rows=sum(
@@ -363,6 +375,30 @@ class GoogleSheetsReconciliationCoordinator:
                 now=self._now(),
             )
             return await self._result(current, accepted_rows=0)
+        except GoogleProviderAuthorizationError:
+            current = await self.repository.mark_run(
+                sync_run_id,
+                state=GoogleSheetsSyncRunState.SUSPENDED,
+                failure_code="authorization_revoked",
+                now=self._now(),
+            )
+            return await self._result(current, accepted_rows=0)
+        except GoogleProviderPolicyError:
+            current = await self.repository.mark_run(
+                sync_run_id,
+                state=GoogleSheetsSyncRunState.POLICY_BLOCKED,
+                failure_code="provider_policy_denied",
+                now=self._now(),
+            )
+            return await self._result(current, accepted_rows=0)
+        except GoogleProviderQuotaError:
+            current = await self.repository.mark_run(
+                sync_run_id,
+                state=GoogleSheetsSyncRunState.RESUMABLE,
+                failure_code="provider_quota_retryable",
+                now=self._now(),
+            )
+            return await self._result(current, accepted_rows=0)
         except Exception:
             current = await self.repository.mark_run(
                 sync_run_id,
@@ -392,7 +428,11 @@ class GoogleSheetsReconciliationCoordinator:
                 failure_code="sheets_identity_quarantined",
                 now=self._now(),
             )
-            return await self._result(current, accepted_rows=0)
+            return await self._result(
+                current,
+                accepted_rows=0,
+                quarantined_count=len(identity_rejections),
+            )
 
         stored_pages: dict[tuple[str, str | None], GoogleSheetsSyncPage] = {}
         try:
@@ -475,7 +515,11 @@ class GoogleSheetsReconciliationCoordinator:
         return await self._result(current, accepted_rows=accepted)
 
     async def _result(
-        self, run: GoogleSheetsSyncRun, *, accepted_rows: int
+        self,
+        run: GoogleSheetsSyncRun,
+        *,
+        accepted_rows: int,
+        quarantined_count: int | None = None,
     ) -> GoogleSheetsReconciliationResult:
         return GoogleSheetsReconciliationResult(
             sync_run_id=run.sync_run_id,
@@ -488,6 +532,11 @@ class GoogleSheetsReconciliationCoordinator:
                 if run.state is GoogleSheetsSyncRunState.SUCCEEDED
                 and run.proposed_cursor is not None
                 else run.prior_committed_cursor
+            ),
+            diagnostic_snapshot=GoogleSyncDiagnosticSnapshot.from_run(
+                run,
+                await self.repository.list_pages(run.sync_run_id),
+                quarantined_count=quarantined_count,
             ),
         )
 

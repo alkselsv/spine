@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 from typing import Generic, Protocol, TypeVar
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from spine.application.diagnostics import (
     AuditEvent,
@@ -55,8 +55,30 @@ class GoogleConnectionConflictError(GoogleConnectionError):
 
 
 class GoogleProviderReadError(GoogleConnectionError):
-    def __init__(self) -> None:
+    def __init__(self, *, failure_code: str = "provider_unavailable") -> None:
+        self.failure_code = failure_code
         super().__init__("Google provider read failed.")
+
+
+class GoogleProviderAuthorizationError(GoogleProviderReadError):
+    """The provider rejected a grant or credential that needs reauthorization."""
+
+    def __init__(self) -> None:
+        super().__init__(failure_code="authorization_revoked")
+
+
+class GoogleProviderQuotaError(GoogleProviderReadError):
+    """A provider quota or transient limit was reached."""
+
+    def __init__(self) -> None:
+        super().__init__(failure_code="provider_quota_exhausted")
+
+
+class GoogleProviderPolicyError(GoogleProviderReadError):
+    """A provider policy or scope denial that requires operator action."""
+
+    def __init__(self) -> None:
+        super().__init__(failure_code="provider_policy_denied")
 
 
 class GoogleProviderContractError(GoogleConnectionError):
@@ -146,6 +168,14 @@ class GoogleConnectionRepository(Protocol):
         context: TrustedPersistenceContext,
     ) -> AbstractAsyncContextManager[GoogleConnection]: ...
 
+    async def suspend_revoked(
+        self,
+        connection: GoogleConnection,
+        context: TrustedPersistenceContext,
+        *,
+        occurred_at: datetime,
+    ) -> GoogleConnectionMutationResult: ...
+
 
 class GoogleProvider(Protocol[ProviderResultT]):
     async def read(
@@ -178,19 +208,32 @@ class GoogleReadAdmission(Generic[ProviderResultT]):
         command: GoogleReadCommand,
         context: TrustedPersistenceContext,
     ) -> ProviderResultT:
+        admitted_connection: GoogleConnection | None = None
+        authorization_error: GoogleProviderAuthorizationError | None = None
         try:
             async with self._repository.admit_read(command, context) as connection:
+                admitted_connection = connection
                 try:
                     return await self._provider.read(connection, command)
                 except asyncio.CancelledError:
                     raise
                 except GoogleProviderContractError:
                     raise
-                except Exception:
+                except Exception as error:
+                    classified = _classify_google_provider_error(error)
                     await self._emit_failure(
-                        context, DiagnosticFailureCode.PROVIDER_UNAVAILABLE
+                        context,
+                        DiagnosticFailureCode.AUTHORIZATION_DENIED
+                        if isinstance(
+                            classified,
+                            (GoogleProviderAuthorizationError, GoogleProviderPolicyError),
+                        )
+                        else DiagnosticFailureCode.PROVIDER_UNAVAILABLE,
                     )
-                    raise GoogleProviderReadError() from None
+                    if isinstance(classified, GoogleProviderAuthorizationError):
+                        authorization_error = classified
+                    else:
+                        raise classified from None
         except asyncio.CancelledError:
             raise
         except GoogleConnectionDeniedError:
@@ -198,6 +241,16 @@ class GoogleReadAdmission(Generic[ProviderResultT]):
                 context, DiagnosticFailureCode.AUTHORIZATION_DENIED
             )
             raise
+        if authorization_error is not None and admitted_connection is not None:
+            try:
+                await self._repository.suspend_revoked(
+                    admitted_connection, context, occurred_at=self._clock()
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            raise authorization_error
 
     async def _emit_failure(
         self,
@@ -232,7 +285,13 @@ def build_google_connection_audit_event(
         environment_id=connection.environment_id,
         event_type="command.outcome",
         schema_version=1,
-        payload=CommandAuditPayload(command_type="google_connection_registration"),
+        payload=CommandAuditPayload(
+            command_type=(
+                "google_connection_suspension"
+                if connection.status is GoogleConnectionStatus.SUSPENDED
+                else "google_connection_registration"
+            )
+        ),
         origin=context.origin,
         acting_subject_id=context.acting_subject_id,
         service_principal_id=connection.service_principal_id,
@@ -264,7 +323,13 @@ def connection_matches_approval(
         == connection.approved_resource_scope_references
         and approval.authorization_generation == connection.authorization_generation
         and approval.configuration_generation == connection.configuration_generation
-        and approval.status == connection.status
+        and (
+            approval.status == connection.status
+            or (
+                approval.status is GoogleConnectionStatus.ACTIVE
+                and connection.status is GoogleConnectionStatus.SUSPENDED
+            )
+        )
     )
 
 
@@ -275,7 +340,13 @@ def context_allows_google_connection_registration(
     return (
         isinstance(context.scope, EnvironmentScope)
         and context.purpose.value == "google_connector"
-        and context.operation.value == "google_connection_register"
+        and (
+            context.operation.value == "google_connection_register"
+            or (
+                context.operation.value == "google_connection_read"
+                and connection.status is GoogleConnectionStatus.SUSPENDED
+            )
+        )
         and context.scope.workspace_id == connection.workspace_id
         and context.scope.environment_id == connection.environment_id
         and (
@@ -297,13 +368,85 @@ def is_valid_google_connection_successor(
         and candidate.environment_id == current.environment_id
         and candidate.version == current.version + 1
         and candidate.predecessor_version_id == current.connection_version_id
-        and candidate.authorization_generation >= current.authorization_generation
+        and candidate.authorization_generation
+        in {
+            current.authorization_generation,
+            current.authorization_generation + 1,
+        }
         and candidate.configuration_generation >= current.configuration_generation
         and (
             candidate.authorization_generation > current.authorization_generation
             or candidate.configuration_generation > current.configuration_generation
+            or (
+                candidate.status is GoogleConnectionStatus.SUSPENDED
+                and candidate.authorization_generation
+                == current.authorization_generation
+                and candidate.configuration_generation
+                == current.configuration_generation
+            )
         )
     )
+
+
+def revoked_connection_successor(
+    connection: GoogleConnection, *, occurred_at: datetime
+) -> GoogleConnectionCommand:
+    """Build an idempotent suspended successor without changing source identity."""
+
+    successor = connection.model_copy(
+        update={
+            "connection_version_id": uuid5(
+                NAMESPACE_URL,
+                f"spine:google-connection-revoked:v1:{connection.connection_id}:"
+                f"{connection.authorization_generation}",
+            ),
+            "version": connection.version + 1,
+            "predecessor_version_id": connection.connection_version_id,
+            "status": GoogleConnectionStatus.SUSPENDED,
+        }
+    )
+    return GoogleConnectionCommand(
+        connection=successor,
+        idempotency_key=(
+            f"google-revocation:{connection.connection_id}:"
+            f"{connection.authorization_generation}"
+        ),
+        audit_event_id=uuid5(
+            NAMESPACE_URL,
+            f"spine:google-connection-revocation-audit:v1:"
+            f"{connection.connection_id}:{connection.authorization_generation}",
+        ),
+        occurred_at=occurred_at,
+    )
+
+
+def _classify_google_provider_error(error: Exception) -> GoogleProviderReadError:
+    """Map common provider error shapes to content-free lifecycle categories."""
+
+    status = getattr(error, "status_code", None)
+    response = getattr(error, "resp", None)
+    if status is None and response is not None:
+        status = getattr(response, "status", None)
+    reason = getattr(error, "reason", None)
+    if reason is None:
+        reason = getattr(error, "code", None)
+    safe_reason = str(reason).lower() if isinstance(reason, (str, int)) else ""
+    if status == 401 or safe_reason in {
+        "invalid_grant",
+        "token_revoked",
+        "access_revoked",
+        "grant_revoked",
+    }:
+        return GoogleProviderAuthorizationError()
+    if status == 429 or safe_reason in {
+        "ratelimitexceeded",
+        "userratelimitexceeded",
+        "quotaexceeded",
+    }:
+        return GoogleProviderQuotaError()
+    if status == 403:
+        return GoogleProviderPolicyError()
+    return GoogleProviderReadError()
 
 
 __all__ = [
@@ -315,10 +458,14 @@ __all__ = [
     "GoogleProvider",
     "GoogleProviderContractError",
     "GoogleProviderReadError",
+    "GoogleProviderAuthorizationError",
+    "GoogleProviderQuotaError",
+    "GoogleProviderPolicyError",
     "GoogleReadAdmission",
     "GoogleReadCommand",
     "build_google_connection_audit_event",
     "connection_matches_approval",
     "context_allows_google_connection_registration",
     "is_valid_google_connection_successor",
+    "revoked_connection_successor",
 ]

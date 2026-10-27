@@ -18,6 +18,8 @@ class GoogleSheetsSyncRunState(str, Enum):
     SUCCEEDED = "succeeded"
     RESUMABLE = "resumable"
     RECONCILIATION_REQUIRED = "reconciliation_required"
+    SUSPENDED = "suspended"
+    POLICY_BLOCKED = "policy_blocked"
 
 
 class GoogleSheetsSyncPageState(str, Enum):

@@ -18,6 +18,8 @@ class DriveSnapshotRunState(str, Enum):
     SUCCEEDED = "succeeded"
     RESUMABLE = "resumable"
     RECONCILIATION_REQUIRED = "reconciliation_required"
+    SUSPENDED = "suspended"
+    POLICY_BLOCKED = "policy_blocked"
 
 
 class DriveSnapshotPageState(str, Enum):
@@ -52,6 +54,8 @@ class DriveSnapshotRun(DefinitionModel):
     committed_cursor: str | None = Field(default=None, max_length=4096)
     next_page_token: str | None = Field(default=None, max_length=4096)
     state: DriveSnapshotRunState = DriveSnapshotRunState.RUNNING
+    suspension_reason: str | None = Field(default=None, max_length=64)
+    failure_code: str | None = Field(default=None, max_length=64)
     requested_at: datetime
     updated_at: datetime
 
@@ -183,12 +187,26 @@ class DriveSyncRepository(Protocol):
         self, sync_run_id: UUID, *, next_page_token: str, now: datetime
     ) -> DriveSnapshotRun: ...
 
-    async def mark_resumable(self, sync_run_id: UUID, *, now: datetime) -> DriveSnapshotRun: ...
+    async def mark_resumable(
+        self,
+        sync_run_id: UUID,
+        *,
+        now: datetime,
+        failure_code: str = "provider_unavailable_retryable",
+    ) -> DriveSnapshotRun: ...
 
     async def commit_run(self, sync_run_id: UUID, *, now: datetime) -> DriveSnapshotRun: ...
 
     async def mark_reconciliation_required(
         self, sync_run_id: UUID, *, now: datetime
+    ) -> DriveSnapshotRun: ...
+
+    async def mark_suspended(
+        self, sync_run_id: UUID, *, now: datetime, reason: str
+    ) -> DriveSnapshotRun: ...
+
+    async def mark_policy_blocked(
+        self, sync_run_id: UUID, *, now: datetime, failure_code: str
     ) -> DriveSnapshotRun: ...
 
 
@@ -406,9 +424,21 @@ class InMemoryDriveSyncRepository:
         self.runs[sync_run_id] = updated
         return updated
 
-    async def mark_resumable(self, sync_run_id: UUID, *, now: datetime) -> DriveSnapshotRun:
+    async def mark_resumable(
+        self,
+        sync_run_id: UUID,
+        *,
+        now: datetime,
+        failure_code: str = "provider_unavailable_retryable",
+    ) -> DriveSnapshotRun:
         run = self.runs[sync_run_id]
-        updated = run.model_copy(update={"state": DriveSnapshotRunState.RESUMABLE, "updated_at": now})
+        updated = run.model_copy(
+            update={
+                "state": DriveSnapshotRunState.RESUMABLE,
+                "failure_code": failure_code,
+                "updated_at": now,
+            }
+        )
         self.runs[sync_run_id] = updated
         return updated
 
@@ -433,6 +463,32 @@ class InMemoryDriveSyncRepository:
         run = self.runs[sync_run_id]
         updated = run.model_copy(
             update={"state": DriveSnapshotRunState.RECONCILIATION_REQUIRED, "updated_at": now}
+        )
+        self.runs[sync_run_id] = updated
+        return updated
+
+    async def mark_suspended(
+        self, sync_run_id: UUID, *, now: datetime, reason: str
+    ) -> DriveSnapshotRun:
+        updated = self.runs[sync_run_id].model_copy(
+            update={
+                "state": DriveSnapshotRunState.SUSPENDED,
+                "suspension_reason": reason,
+                "updated_at": now,
+            }
+        )
+        self.runs[sync_run_id] = updated
+        return updated
+
+    async def mark_policy_blocked(
+        self, sync_run_id: UUID, *, now: datetime, failure_code: str
+    ) -> DriveSnapshotRun:
+        updated = self.runs[sync_run_id].model_copy(
+            update={
+                "state": DriveSnapshotRunState.POLICY_BLOCKED,
+                "failure_code": failure_code,
+                "updated_at": now,
+            }
         )
         self.runs[sync_run_id] = updated
         return updated

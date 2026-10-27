@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
@@ -29,6 +30,7 @@ from spine.application.connections.google import (
     connection_matches_approval,
     context_allows_google_connection_registration,
     is_valid_google_connection_successor,
+    revoked_connection_successor,
 )
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -223,6 +225,17 @@ class PostgreSQLGoogleConnectionRepository:
             raise
         except Exception:
             raise GoogleConnectionConflictError() from None
+
+    async def suspend_revoked(
+        self,
+        connection: GoogleConnection,
+        context: TrustedPersistenceContext,
+        *,
+        occurred_at: datetime,
+    ) -> GoogleConnectionMutationResult:
+        return await self.register(
+            revoked_connection_successor(connection, occurred_at=occurred_at), context
+        )
 
     @asynccontextmanager
     async def admit_read(

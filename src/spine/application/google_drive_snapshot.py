@@ -15,6 +15,12 @@ from spine.application.connector_ingestion import (
     ConnectorIngestionCommand,
     ConnectorIngestionResult,
 )
+from spine.application.connections.google import (
+    GoogleProviderAuthorizationError,
+    GoogleProviderPolicyError,
+    GoogleProviderQuotaError,
+)
+from spine.application.google_sync_diagnostics import GoogleSyncDiagnosticSnapshot
 from spine.application.persistence.context import PersistenceOperation, TrustedPersistenceContext
 from spine.application.persistence.drive_sync import (
     DriveSnapshotPageRecord,
@@ -81,6 +87,10 @@ class DriveInitialSnapshotResult:
     pages: tuple[DriveSnapshotPageRecord, ...]
 
     @property
+    def diagnostic_snapshot(self) -> GoogleSyncDiagnosticSnapshot:
+        return GoogleSyncDiagnosticSnapshot.from_run(self.run, self.pages)
+
+    @property
     def state(self) -> DriveSnapshotRunState:
         return self.run.state
 
@@ -105,13 +115,29 @@ class DriveInitialSnapshotCoordinator:
         sync_run_id = _sync_run_id(command)
         run = await self.repository.resolve_run(sync_run_id)
         if run is None:
-            start_token = await self.reader.get_start_page_token(
-                command,
-                self.context_factory(
-                    PersistenceOperation("google_drive_snapshot_read"),
-                    uuid5(NAMESPACE_URL, f"{sync_run_id}:start-token"),
-                ),
-            )
+            start_token_is_suspended = False
+            start_token_is_policy_blocked = False
+            start_token_failure_code: str | None = None
+            try:
+                start_token = await self.reader.get_start_page_token(
+                    command,
+                    self.context_factory(
+                        PersistenceOperation("google_drive_snapshot_read"),
+                        uuid5(NAMESPACE_URL, f"{sync_run_id}:start-token"),
+                    ),
+                )
+            except GoogleProviderAuthorizationError:
+                start_token_is_suspended = True
+                start_token = "suspended"
+            except GoogleProviderPolicyError:
+                start_token_is_policy_blocked = True
+                start_token = "policy_blocked"
+            except GoogleProviderQuotaError:
+                start_token_failure_code = "provider_quota_retryable"
+                start_token = "provider_unavailable"
+            except Exception:
+                start_token_failure_code = "provider_unavailable_retryable"
+                start_token = "provider_unavailable"
             run = await self.repository.start_run(
                 DriveSnapshotRunCommand(
                     sync_run_id=sync_run_id,
@@ -129,10 +155,31 @@ class DriveInitialSnapshotCoordinator:
                     requested_at=self._now(),
                 )
             )
+            if start_token_is_suspended:
+                run = await self.repository.mark_suspended(
+                    sync_run_id, reason="authorization_revoked", now=self._now()
+                )
+                return await self._result(run)
+            if start_token_is_policy_blocked:
+                run = await self.repository.mark_policy_blocked(
+                    sync_run_id,
+                    failure_code="provider_policy_denied",
+                    now=self._now(),
+                )
+                return await self._result(run)
+            if start_token_failure_code is not None:
+                run = await self.repository.mark_resumable(
+                    sync_run_id,
+                    failure_code=start_token_failure_code,
+                    now=self._now(),
+                )
+                return await self._result(run)
 
         if run.state in {
             DriveSnapshotRunState.SUCCEEDED,
             DriveSnapshotRunState.RECONCILIATION_REQUIRED,
+            DriveSnapshotRunState.SUSPENDED,
+            DriveSnapshotRunState.POLICY_BLOCKED,
         }:
             return await self._result(run)
 
@@ -174,6 +221,25 @@ class DriveInitialSnapshotCoordinator:
                     file_ids=tuple(item.file_id for item in page.items),
                     now=self._now(),
                 )
+            except GoogleProviderAuthorizationError:
+                run = await self.repository.mark_suspended(
+                    sync_run_id, reason="authorization_revoked", now=self._now()
+                )
+                return await self._result(run)
+            except GoogleProviderPolicyError:
+                run = await self.repository.mark_policy_blocked(
+                    sync_run_id,
+                    failure_code="provider_policy_denied",
+                    now=self._now(),
+                )
+                return await self._result(run)
+            except GoogleProviderQuotaError:
+                run = await self.repository.mark_resumable(
+                    sync_run_id,
+                    failure_code="provider_quota_retryable",
+                    now=self._now(),
+                )
+                return await self._result(run)
             except Exception:
                 run = await self.repository.mark_resumable(sync_run_id, now=self._now())
                 return await self._result(run)

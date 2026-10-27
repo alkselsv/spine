@@ -15,6 +15,12 @@ from spine.application.connector_ingestion import (
     ConnectorIngestionCommand,
     ConnectorIngestionResult,
 )
+from spine.application.connections.google import (
+    GoogleProviderAuthorizationError,
+    GoogleProviderPolicyError,
+    GoogleProviderQuotaError,
+)
+from spine.application.google_sync_diagnostics import GoogleSyncDiagnosticSnapshot
 from spine.application.persistence.context import (
     PersistenceOperation,
     TrustedPersistenceContext,
@@ -121,6 +127,10 @@ class DriveChangeResult:
     pages: tuple[DriveChangePageRecord, ...]
 
     @property
+    def diagnostic_snapshot(self) -> GoogleSyncDiagnosticSnapshot:
+        return GoogleSyncDiagnosticSnapshot.from_run(self.run, self.pages)
+
+    @property
     def state(self) -> DriveChangeRunState:
         return self.run.state
 
@@ -166,6 +176,8 @@ class DriveChangeCoordinator:
         if run.state in {
             DriveChangeRunState.SUCCEEDED,
             DriveChangeRunState.RECONCILIATION_REQUIRED,
+            DriveChangeRunState.SUSPENDED,
+            DriveChangeRunState.POLICY_BLOCKED,
         }:
             return await self._result(run)
 
@@ -226,6 +238,25 @@ class DriveChangeCoordinator:
                     ),
                     now=self._now(),
                 )
+            except GoogleProviderAuthorizationError:
+                run = await self.repository.mark_suspended(
+                    sync_run_id, reason="authorization_revoked", now=self._now()
+                )
+                return await self._result(run)
+            except GoogleProviderPolicyError:
+                run = await self.repository.mark_policy_blocked(
+                    sync_run_id,
+                    failure_code="provider_policy_denied",
+                    now=self._now(),
+                )
+                return await self._result(run)
+            except GoogleProviderQuotaError:
+                run = await self.repository.mark_resumable(
+                    sync_run_id,
+                    failure_code="provider_quota_retryable",
+                    now=self._now(),
+                )
+                return await self._result(run)
             except GoogleDriveTokenExpiredError:
                 return await self._reconcile(run, command, "provider_token_expired")
             except GoogleDriveAccessOutcomeError as error:

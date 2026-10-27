@@ -7,6 +7,7 @@ import pytest
 from spine.application.connections.google import (
     GoogleConnectionCommand,
     GoogleConnectionConflictError,
+    is_valid_google_connection_successor,
 )
 from spine.application.persistence import (
     EnvironmentScope,
@@ -115,6 +116,18 @@ async def test_in_memory_unfenced_successor_conflicts() -> None:
 @pytest.mark.asyncio
 async def test_in_memory_fenced_successor_becomes_current() -> None:
     await assert_google_connection_successor_contract(_scenario)
+
+
+def test_reauthorization_advances_exactly_one_generation_and_keeps_connection_identity() -> None:
+    current = _connection(version=1)
+    reauthorized = _connection(version=2, predecessor=current.connection_version_id)
+
+    assert reauthorized.connection_id == current.connection_id
+    assert is_valid_google_connection_successor(current, reauthorized)
+    assert not is_valid_google_connection_successor(
+        current,
+        reauthorized.model_copy(update={"authorization_generation": 3}),
+    )
 
 
 @pytest.mark.asyncio

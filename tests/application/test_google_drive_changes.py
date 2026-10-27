@@ -11,6 +11,11 @@ from spine.application.google_drive_changes import (
     DriveChangeCoordinator,
     DriveReconciliationCommand,
 )
+from spine.application.connections.google import (
+    GoogleProviderAuthorizationError,
+    GoogleProviderPolicyError,
+    GoogleProviderQuotaError,
+)
 from spine.application.persistence.drive_changes import (
     DriveChangeItemState,
     DriveChangeRunState,
@@ -260,6 +265,48 @@ async def test_token_expiry_keeps_cursor_and_starts_bounded_reconciliation():
     assert result.committed_cursor == "cursor-7"
     assert len(reconciliation.commands) == 1
     assert reconciliation.commands[0].reason == "provider_token_expired"
+
+
+@pytest.mark.asyncio
+async def test_revoked_provider_grant_suspends_run_before_any_source_effect():
+    reader = FakeReader({"cursor-7": GoogleProviderAuthorizationError()})
+    ingestion = FakeIngestion()
+    reconciliation = FakeReconciliation()
+
+    result = await coordinator(
+        reader, ingestion, reconciliation=reconciliation
+    ).run(command())
+
+    assert result.state is DriveChangeRunState.SUSPENDED
+    assert result.committed_cursor == "cursor-7"
+    assert ingestion.calls == []
+    assert reconciliation.commands == []
+
+
+@pytest.mark.asyncio
+async def test_quota_failure_is_retryable_and_keeps_the_committed_cursor():
+    reader = FakeReader({"cursor-7": GoogleProviderQuotaError()})
+
+    result = await coordinator(reader, FakeIngestion()).run(command())
+
+    assert result.state is DriveChangeRunState.RESUMABLE
+    assert result.committed_cursor == "cursor-7"
+    assert result.diagnostic_snapshot.retryable is True
+    assert result.diagnostic_snapshot.failure_code == "provider_quota_retryable"
+
+
+@pytest.mark.asyncio
+async def test_terminal_provider_policy_denial_does_not_start_reconciliation():
+    reader = FakeReader({"cursor-7": GoogleProviderPolicyError()})
+    reconciliation = FakeReconciliation()
+
+    result = await coordinator(
+        reader, FakeIngestion(), reconciliation=reconciliation
+    ).run(command())
+
+    assert result.state is DriveChangeRunState.POLICY_BLOCKED
+    assert result.committed_cursor == "cursor-7"
+    assert reconciliation.commands == []
 
 
 @pytest.mark.asyncio

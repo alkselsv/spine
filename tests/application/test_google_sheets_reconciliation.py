@@ -29,6 +29,7 @@ from spine.application.google_drive_changes import (
     DriveChangeCommand,
     DriveChangeCoordinator,
 )
+from spine.application.connections.google import GoogleProviderAuthorizationError
 from spine.application.persistence.drive_changes import (
     DriveChangeItemRecord,
     DriveChangeRunState,
@@ -139,7 +140,10 @@ class FakeSheetsReader:
     async def read_page(self, request, scope, page_token, context):
         del request, context
         self.calls.append((scope.identity, page_token))
-        return self.pages[(scope.identity, page_token)]
+        result = self.pages[(scope.identity, page_token)]
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
 class FakeGoogleAdmission:
@@ -198,6 +202,22 @@ def page(
         observations=rows,
         identity_rejection_codes=identity_rejection_codes,
     )
+
+
+@pytest.mark.asyncio
+async def test_revoked_grant_suspends_full_scope_before_any_row_is_accepted():
+    request = command()
+    reader = FakeSheetsReader(
+        {(request.scopes[0].identity, None): GoogleProviderAuthorizationError()}
+    )
+    ingestion = FakeCanonicalIngestion()
+
+    result = await coordinator(reader, ingestion).run(request)
+
+    assert result.state is GoogleSheetsSyncRunState.SUSPENDED
+    assert result.accepted_rows == 0
+    assert ingestion.calls == []
+    assert result.diagnostic_snapshot.failure_code == "authorization_revoked"
 
 
 @pytest.mark.asyncio
