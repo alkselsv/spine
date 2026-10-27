@@ -11,6 +11,7 @@ import pytest
 
 from spine.domain.storage.recovery_operator import (
     RecoveryOperatorOperation,
+    RecoveryOperatorProfile,
     RecoveryOperatorResult,
 )
 
@@ -95,3 +96,28 @@ def test_recovery_image_pins_postgres_17_tools_without_changing_application_imag
     assert recipe.startswith("FROM pgvector/pgvector:0.8.7-pg17-bookworm")
     assert 'ENV PATH="/opt/venv/bin:/usr/lib/postgresql/17/bin:${PATH}"' in recipe
     assert 'ENTRYPOINT ["/app/.venv/bin/python"]' in recipe
+
+
+def test_restore_target_facts_use_deployment_bound_references(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = RecoveryOperatorProfile.model_validate_json(
+        (ROOT / "deploy/qualification/issue-509/recovery-profile-retry-2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    monkeypatch.setenv("SPINE_RESTORE_TARGET_REFERENCE", "target:issue509-restore-002")
+    monkeypatch.setenv(
+        "SPINE_RESTORE_DATABASE_TARGET_REFERENCE",
+        "database:issue509-restore-002",
+    )
+    monkeypatch.setenv(
+        "SPINE_RESTORE_FILESYSTEM_TARGET_REFERENCE",
+        "filesystem:issue509-restore-002",
+    )
+
+    facts = JOB._target_facts(profile)
+
+    assert facts.target_reference == "target:issue509-restore-002"
+    assert facts.database_target_reference == "database:issue509-restore-002"
+    assert facts.filesystem_target_reference == "filesystem:issue509-restore-002"

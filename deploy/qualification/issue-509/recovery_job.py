@@ -201,6 +201,18 @@ def _connection(prefix: str) -> PostgreSQLBackupConnection:
     )
 
 
+def _target_facts(profile: RecoveryOperatorProfile) -> RecoveryRestoreTargetFacts:
+    return RecoveryRestoreTargetFacts(
+        inventory_reference=profile.restore_target_inventory_reference,
+        target_reference=_required("SPINE_RESTORE_TARGET_REFERENCE"),
+        database_target_reference=_required("SPINE_RESTORE_DATABASE_TARGET_REFERENCE"),
+        filesystem_target_reference=_required("SPINE_RESTORE_FILESYSTEM_TARGET_REFERENCE"),
+        serving_identity_inventory_reference=profile.serving_identity_inventory_reference,
+        restore_identity_reference=profile.restore_identity_reference,
+        verifier_identity_reference=profile.verifier_identity_reference,
+    )
+
+
 async def _run() -> RecoveryOperatorResult:
     profile = load_profile(_absolute_path("SPINE_RECOVERY_PROFILE", must_exist=True))
     source_connection = _connection("SPINE_SOURCE_BACKUP")
@@ -268,15 +280,7 @@ async def _run() -> RecoveryOperatorResult:
         scope_reference=profile.scope_reference,
         source_volume_reference=profile.source_volume_reference,
     )
-    target_facts = RecoveryRestoreTargetFacts(
-        inventory_reference=profile.restore_target_inventory_reference,
-        target_reference="target:issue509-restore-001",
-        database_target_reference="database:issue509-restore-001",
-        filesystem_target_reference="filesystem:issue509-restore-001",
-        serving_identity_inventory_reference=profile.serving_identity_inventory_reference,
-        restore_identity_reference=profile.restore_identity_reference,
-        verifier_identity_reference=profile.verifier_identity_reference,
-    )
+    target_facts = _target_facts(profile)
     operator = RecoveryOperatorService(
         approval=_Approval(
             _required("SPINE_RECOVERY_APPROVAL_REFERENCE"),

@@ -142,8 +142,8 @@ class _PostgreSQLRecoveryTransaction:
             .values(**_quiescent_evidence_values(deployment_scope_id, evidence))
             .on_conflict_do_nothing(
                 index_elements=[
-                    recovery_quiescent_evidence.c.deployment_scope_id,
-                    recovery_quiescent_evidence.c.fence_epoch,
+                    recovery_quiescence_evidence.c.deployment_scope_id,
+                    recovery_quiescence_evidence.c.fence_epoch,
                 ]
             )
         )
