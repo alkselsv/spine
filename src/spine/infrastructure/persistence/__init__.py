@@ -29,6 +29,9 @@ from spine.infrastructure.persistence.postgresql_drive_lifecycle import (
     PostgreSQLDriveLifecycleDecisionRepository,
     PostgreSQLGoogleDriveLifecycleSourceReader,
 )
+from spine.infrastructure.persistence.postgresql_google_sheets_lifecycle import (
+    PostgreSQLGoogleSheetsLifecycleRepository,
+)
 from spine.infrastructure.persistence.cognee_projection_receipt import (
     CogneeProjectionReceiptBuilder,
 )
@@ -58,6 +61,7 @@ __all__ = [
     "PostgreSQLGoogleSheetsSyncRepository",
     "PostgreSQLDriveLifecycleDecisionRepository",
     "PostgreSQLGoogleDriveLifecycleSourceReader",
+    "PostgreSQLGoogleSheetsLifecycleRepository",
     "CogneeProjectionReceiptBuilder",
     "build_postgresql_cognee_projection_delivery_binding",
     "build_postgresql_cognee_projection_request_binding",

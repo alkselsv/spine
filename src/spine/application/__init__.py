@@ -65,6 +65,15 @@ if TYPE_CHECKING:
         DriveFullReconciliationCoordinator,
         DriveFullReconciliationResult,
     )
+    from .google_sheets_lifecycle import (
+        GoogleSheetsAbsenceCandidate,
+        GoogleSheetsLifecycleCoordinator,
+        GoogleSheetsLifecycleResult,
+        GoogleSheetsRemovalDecision,
+        GoogleSheetsRemovalPolicy,
+        GoogleSheetsRemovalState,
+        InMemoryGoogleSheetsLifecycleRepository,
+    )
 
 __all__ = [
     "AnswerQuestionAuthorizedContext",
@@ -142,6 +151,13 @@ __all__ = [
     "DriveFullReconciliationCommand",
     "DriveFullReconciliationCoordinator",
     "DriveFullReconciliationResult",
+    "GoogleSheetsAbsenceCandidate",
+    "GoogleSheetsLifecycleCoordinator",
+    "GoogleSheetsLifecycleResult",
+    "GoogleSheetsRemovalDecision",
+    "GoogleSheetsRemovalPolicy",
+    "GoogleSheetsRemovalState",
+    "InMemoryGoogleSheetsLifecycleRepository",
 ]
 
 
@@ -242,6 +258,16 @@ def __getattr__(name: str) -> object:
             "DriveFullReconciliationResult",
         }:
             module_name = "spine.application.google_drive_reconciliation"
+        if name in {
+            "GoogleSheetsAbsenceCandidate",
+            "GoogleSheetsLifecycleCoordinator",
+            "GoogleSheetsLifecycleResult",
+            "GoogleSheetsRemovalDecision",
+            "GoogleSheetsRemovalPolicy",
+            "GoogleSheetsRemovalState",
+            "InMemoryGoogleSheetsLifecycleRepository",
+        }:
+            module_name = "spine.application.google_sheets_lifecycle"
         if name in {
             "AuthorizedQAStreamService",
             "QAEventLogStore",
