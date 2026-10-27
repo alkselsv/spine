@@ -41,6 +41,7 @@ from spine.infrastructure.persistence.postgresql_google_sheets_sync import (
 )
 from spine.application.persistence.google_sheets_sync import (
     GoogleSheetsIdentityDisposition,
+    GoogleSheetsIdentityDispositionCommand,
     GoogleSheetsIdentityFailureCode,
     GoogleSheetsSyncRunCommand,
     GoogleSheetsSyncRunState,
@@ -451,14 +452,16 @@ async def test_postgresql_google_sheets_sync_ledger_survives_repository_recreati
     )
     await repository.start_run(command)
     await repository.record_identity_disposition(
-        sync_run_id=run_id,
-        workspace_id=WORKSPACE_ID,
-        environment_id=ENVIRONMENT_ID,
-        connection_id=command.connection_id,
-        scope_identity="google-sheets-scope:v1:test",
-        disposition=GoogleSheetsIdentityDisposition.QUARANTINED,
-        failure_code=GoogleSheetsIdentityFailureCode.MISSING_BUSINESS_ID,
-        now=now,
+        GoogleSheetsIdentityDispositionCommand(
+            sync_run_id=run_id,
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+            connection_id=command.connection_id,
+            scope_identity="google-sheets-scope:v1:test",
+            disposition=GoogleSheetsIdentityDisposition.QUARANTINED,
+            failure_code=GoogleSheetsIdentityFailureCode.MISSING_BUSINESS_ID,
+            now=now,
+        )
     )
     page = await repository.open_page(
         sync_run_id=run_id,

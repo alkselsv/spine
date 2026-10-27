@@ -25,6 +25,7 @@ from spine.application.google_drive_changes import DriveChangeCommand
 from spine.application.persistence.drive_changes import DriveChangeItemRecord
 from spine.application.persistence.google_sheets_sync import (
     GoogleSheetsIdentityDisposition,
+    GoogleSheetsIdentityDispositionCommand,
     GoogleSheetsIdentityFailureCode,
     GoogleSheetsSyncItemState,
     GoogleSheetsSyncPage,
@@ -374,14 +375,16 @@ class GoogleSheetsReconciliationCoordinator:
         if identity_rejections:
             for scope_identity, failure_code in sorted(identity_rejections.items()):
                 await self.repository.record_identity_disposition(
-                    sync_run_id=sync_run_id,
-                    workspace_id=command.workspace_id,
-                    environment_id=command.environment_id,
-                    connection_id=command.connection_id,
-                    scope_identity=scope_identity,
-                    disposition=GoogleSheetsIdentityDisposition.QUARANTINED,
-                    failure_code=failure_code,
-                    now=self._now(),
+                    GoogleSheetsIdentityDispositionCommand(
+                        sync_run_id=sync_run_id,
+                        workspace_id=command.workspace_id,
+                        environment_id=command.environment_id,
+                        connection_id=command.connection_id,
+                        scope_identity=scope_identity,
+                        disposition=GoogleSheetsIdentityDisposition.QUARANTINED,
+                        failure_code=failure_code,
+                        now=self._now(),
+                    )
                 )
             current = await self.repository.mark_run(
                 sync_run_id,
@@ -452,14 +455,16 @@ class GoogleSheetsReconciliationCoordinator:
             await self.repository.complete_page(stored.page_id, now=self._now())
         for scope in command.scopes:
             await self.repository.record_identity_disposition(
-                sync_run_id=sync_run_id,
-                workspace_id=command.workspace_id,
-                environment_id=command.environment_id,
-                connection_id=command.connection_id,
-                scope_identity=scope.identity,
-                disposition=GoogleSheetsIdentityDisposition.CLEARED,
-                failure_code=None,
-                now=self._now(),
+                GoogleSheetsIdentityDispositionCommand(
+                    sync_run_id=sync_run_id,
+                    workspace_id=command.workspace_id,
+                    environment_id=command.environment_id,
+                    connection_id=command.connection_id,
+                    scope_identity=scope.identity,
+                    disposition=GoogleSheetsIdentityDisposition.CLEARED,
+                    failure_code=None,
+                    now=self._now(),
+                )
             )
         current = await self.repository.mark_run(
             sync_run_id,

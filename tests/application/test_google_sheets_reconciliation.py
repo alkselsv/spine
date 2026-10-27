@@ -20,6 +20,7 @@ from spine.application.google_sheets_reconciliation import (
 from spine.application.connector_ingestion import ConnectorIngestionCommand
 from spine.application.persistence.google_sheets_sync import (
     GoogleSheetsIdentityDisposition,
+    GoogleSheetsIdentityDispositionCommand,
     GoogleSheetsIdentityFailureCode,
     GoogleSheetsSyncRunState,
     InMemoryGoogleSheetsSyncRepository,
@@ -280,6 +281,9 @@ async def test_invalid_identity_scope_is_durably_quarantined_without_acceptance(
     assert result.committed_cursor == "cursor-1"
     assert result.accepted_rows == 0
     assert ingestion.calls == []
+    replay = await coordinator(reader, ingestion, repo).run(request)
+    assert replay.state is GoogleSheetsSyncRunState.RECONCILIATION_REQUIRED
+    assert replay.sync_run_id == result.sync_run_id
     events = await repo.list_identity_dispositions(
         workspace_id=WORKSPACE,
         environment_id=ENVIRONMENT,
@@ -290,12 +294,36 @@ async def test_invalid_identity_scope_is_durably_quarantined_without_acceptance(
     assert events[0].disposition is GoogleSheetsIdentityDisposition.QUARANTINED
     assert events[0].failure_code is GoogleSheetsIdentityFailureCode(failure_code)
     assert "MUST-NOT-BE-ACCEPTED" not in events[0].model_dump_json()
-    assert await repo.list_identity_dispositions(
+    assert len(events) == 1
+    other_workspace = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    await repo.record_identity_disposition(
+        GoogleSheetsIdentityDispositionCommand(
+            sync_run_id=UUID(int=9001),
+            workspace_id=other_workspace,
+            environment_id=ENVIRONMENT,
+            connection_id=CONNECTION,
+            scope_identity=scope.identity,
+            disposition=GoogleSheetsIdentityDisposition.QUARANTINED,
+            failure_code=GoogleSheetsIdentityFailureCode.MISSING_BUSINESS_ID,
+            now=NOW,
+        )
+    )
+    foreign_events = await repo.list_identity_dispositions(
         workspace_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
         environment_id=ENVIRONMENT,
         connection_id=CONNECTION,
         scope_identities=(scope.identity,),
-    ) == ()
+    )
+    assert len(foreign_events) == 1
+    assert foreign_events[0].workspace_id == other_workspace
+    assert len(
+        await repo.list_identity_dispositions(
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+            connection_id=CONNECTION,
+            scope_identities=(scope.identity,),
+        )
+    ) == 1
 
 
 @pytest.mark.asyncio

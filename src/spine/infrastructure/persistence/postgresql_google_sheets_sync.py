@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
-from uuid import NAMESPACE_URL, UUID, uuid5
+from uuid import UUID
 
 from sqlalchemy import insert, select, update
 
@@ -23,8 +23,10 @@ from spine.application.persistence.google_sheets_sync import (
     GoogleSheetsSyncRunState,
     InMemoryGoogleSheetsSyncRepository,
     GoogleSheetsIdentityDisposition,
+    GoogleSheetsIdentityDispositionCommand,
     GoogleSheetsIdentityFailureCode,
     GoogleSheetsIdentityQuarantine,
+    identity_disposition_event,
 )
 from spine.infrastructure.persistence.postgresql_mappings import (
     google_sheets_identity_dispositions,
@@ -154,36 +156,16 @@ class PostgreSQLGoogleSheetsSyncRepository(GoogleSheetsSyncRepository):
         )
 
     async def record_identity_disposition(
-        self,
-        *,
-        sync_run_id: UUID,
-        workspace_id: UUID,
-        environment_id: UUID,
-        connection_id: UUID,
-        scope_identity: str,
-        disposition: GoogleSheetsIdentityDisposition,
-        failure_code: GoogleSheetsIdentityFailureCode | None,
-        now: datetime,
+        self, command: GoogleSheetsIdentityDispositionCommand
     ) -> GoogleSheetsIdentityQuarantine:
-        event = GoogleSheetsIdentityQuarantine(
-            event_id=uuid5(
-                NAMESPACE_URL,
-                f"spine:google-sheets-sync:v1:identity-disposition:{sync_run_id}:{scope_identity}",
-            ),
-            sync_run_id=sync_run_id,
-            workspace_id=workspace_id,
-            environment_id=environment_id,
-            connection_id=connection_id,
-            scope_identity=scope_identity,
-            disposition=disposition,
-            failure_code=failure_code,
-            occurred_at=now,
-        )
-        async with self._uow("google_sheets_identity_disposition", sync_run_id) as uow:
+        event = identity_disposition_event(command)
+        async with self._uow(
+            "google_sheets_identity_disposition", command.sync_run_id
+        ) as uow:
             row = await uow._execute(
                 select(google_sheets_identity_dispositions).where(
-                    google_sheets_identity_dispositions.c.sync_run_id == sync_run_id,
-                    google_sheets_identity_dispositions.c.scope_identity == scope_identity,
+                    google_sheets_identity_dispositions.c.sync_run_id == command.sync_run_id,
+                    google_sheets_identity_dispositions.c.scope_identity == command.scope_identity,
                 )
             )
             existing = row.mappings().one_or_none()

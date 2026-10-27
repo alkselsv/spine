@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Protocol
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import ConfigDict, Field, model_validator
 
@@ -76,6 +76,40 @@ class GoogleSheetsIdentityQuarantine(DefinitionModel):
         ):
             raise ValueError("quarantined dispositions require a safe failure code")
         return self
+
+
+@dataclass(frozen=True, slots=True)
+class GoogleSheetsIdentityDispositionCommand:
+    sync_run_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    connection_id: UUID
+    scope_identity: str
+    disposition: GoogleSheetsIdentityDisposition
+    failure_code: GoogleSheetsIdentityFailureCode | None
+    now: datetime
+
+
+def identity_disposition_event(
+    command: GoogleSheetsIdentityDispositionCommand,
+) -> GoogleSheetsIdentityQuarantine:
+    """Build one replay-stable event shared by every ledger adapter."""
+
+    return GoogleSheetsIdentityQuarantine(
+        event_id=uuid5(
+            NAMESPACE_URL,
+            "spine:google-sheets-sync:v1:identity-disposition:"
+            f"{command.sync_run_id}:{command.scope_identity}",
+        ),
+        sync_run_id=command.sync_run_id,
+        workspace_id=command.workspace_id,
+        environment_id=command.environment_id,
+        connection_id=command.connection_id,
+        scope_identity=command.scope_identity,
+        disposition=command.disposition,
+        failure_code=command.failure_code,
+        occurred_at=command.now,
+    )
 
 
 class GoogleSheetsSyncRun(DefinitionModel):
@@ -235,16 +269,7 @@ class GoogleSheetsSyncRepository(Protocol):
         now: datetime,
     ) -> GoogleSheetsSyncRun: ...
     async def record_identity_disposition(
-        self,
-        *,
-        sync_run_id: UUID,
-        workspace_id: UUID,
-        environment_id: UUID,
-        connection_id: UUID,
-        scope_identity: str,
-        disposition: GoogleSheetsIdentityDisposition,
-        failure_code: GoogleSheetsIdentityFailureCode | None,
-        now: datetime,
+        self, command: GoogleSheetsIdentityDispositionCommand
     ) -> GoogleSheetsIdentityQuarantine: ...
     async def list_identity_dispositions(
         self,
@@ -475,36 +500,20 @@ class InMemoryGoogleSheetsSyncRepository:
         return updated
 
     async def record_identity_disposition(
-        self,
-        *,
-        sync_run_id: UUID,
-        workspace_id: UUID,
-        environment_id: UUID,
-        connection_id: UUID,
-        scope_identity: str,
-        disposition: GoogleSheetsIdentityDisposition,
-        failure_code: GoogleSheetsIdentityFailureCode | None,
-        now: datetime,
+        self, command: GoogleSheetsIdentityDispositionCommand
     ) -> GoogleSheetsIdentityQuarantine:
-        key = (sync_run_id, scope_identity)
+        key = (command.sync_run_id, command.scope_identity)
         existing = self.identity_dispositions.get(key)
         if existing is not None:
-            if (existing.disposition, existing.failure_code) != (disposition, failure_code):
+            if (existing.disposition, existing.failure_code) != (
+                command.disposition,
+                command.failure_code,
+            ):
                 raise GoogleSheetsSyncConflictError(
                     "Google Sheets identity disposition conflicts with durable state"
                 )
             return existing
-        event = GoogleSheetsIdentityQuarantine(
-            event_id=_stable_id(f"identity-disposition:{sync_run_id}:{scope_identity}"),
-            sync_run_id=sync_run_id,
-            workspace_id=workspace_id,
-            environment_id=environment_id,
-            connection_id=connection_id,
-            scope_identity=scope_identity,
-            disposition=disposition,
-            failure_code=failure_code,
-            occurred_at=now,
-        )
+        event = identity_disposition_event(command)
         self.identity_dispositions[key] = event
         return event
 
