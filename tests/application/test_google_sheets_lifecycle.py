@@ -15,6 +15,7 @@ from spine.application.google_sheets_lifecycle import (
     GoogleSheetsRemovalState,
     InMemoryGoogleSheetsLifecycleRepository,
 )
+from spine.application.google_sync_diagnostics import GoogleSyncDiagnosticSnapshot
 from spine.application.google_sheets_reconciliation import (
     GoogleSheetsReconciliationCoordinator,
     GoogleSheetsReconciliationResult,
@@ -187,6 +188,22 @@ def complete_result(request, *, items=()):
         accepted_rows=len(items),
         failure_code=None,
         committed_cursor="cursor-2",
+        diagnostic_snapshot=GoogleSyncDiagnosticSnapshot(
+            correlation_id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            workspace_id=request.workspace_id,
+            environment_id=request.environment_id,
+            connection_id=request.connection_id,
+            sync_run_id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            authorization_generation=request.authorization_generation,
+            state="succeeded",
+            provider_retry_attempts=0,
+            provider_retry_limit=3,
+            page_count=1,
+            item_count=len(items),
+            accepted_count=len(items),
+            failed_count=0,
+            quarantined_count=0,
+        ),
     )
 
 
@@ -505,6 +522,24 @@ async def test_incomplete_scan_cannot_create_candidate_or_tombstone(state):
         accepted_rows=0,
         failure_code="sheets_incomplete_page",
         committed_cursor="cursor-1",
+        diagnostic_snapshot=GoogleSyncDiagnosticSnapshot(
+            correlation_id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            workspace_id=request.workspace_id,
+            environment_id=request.environment_id,
+            connection_id=request.connection_id,
+            sync_run_id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            authorization_generation=request.authorization_generation,
+            state=state.value,
+            failure_code="sheets_incomplete_page",
+            retryable=state is GoogleSheetsSyncRunState.RESUMABLE,
+            provider_retry_attempts=0,
+            provider_retry_limit=3,
+            page_count=0,
+            item_count=0,
+            accepted_count=0,
+            failed_count=0,
+            quarantined_count=0,
+        ),
     )
     service, repository, tombstones, lifecycle = coordinator(
         (lifecycle_source("EST-1"),), request, result
