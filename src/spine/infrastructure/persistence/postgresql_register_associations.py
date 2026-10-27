@@ -10,7 +10,10 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
-from spine.application.persistence.context import PersistenceOperation
+from spine.application.persistence.context import (
+    PersistenceOperation,
+    TrustedPersistenceContext,
+)
 from spine.application.register_associations import (
     validate_register_acceptance_authority,
 )
@@ -33,7 +36,13 @@ from spine.domain.sources.google import google_source_identity
 class PostgreSQLRegisterAssociationRepository:
     """Store claims and acceptances only within a verified tenant UoW."""
 
-    def __init__(self, uow_factory: Callable, context_factory: Callable) -> None:
+    def __init__(
+        self,
+        uow_factory: Callable[[TrustedPersistenceContext], object],
+        context_factory: Callable[
+            [PersistenceOperation, UUID], TrustedPersistenceContext
+        ],
+    ) -> None:
         self._uow_factory = uow_factory
         self._context_factory = context_factory
 
