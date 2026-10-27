@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Protocol
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, StrictBytes, StrictInt, StrictStr, model_validator
+from pydantic import ConfigDict, Field, StrictBool, StrictBytes, StrictInt, StrictStr, model_validator
 
 from spine.application.connections.google import (
     GoogleProvider,
@@ -32,7 +32,11 @@ from spine.domain.connections.google import (
     GoogleConnection,
     OpaqueGoogleReference,
 )
-from spine.domain.sources.google import GoogleDriveFileKey, google_source_identity
+from spine.domain.sources.google import (
+    GoogleDriveFileKey,
+    GoogleDriveLifecycleSignal,
+    google_source_identity,
+)
 
 
 GOOGLE_DRIVE_FILE_LOCATOR = "locator:google-drive-file:v1"
@@ -55,6 +59,24 @@ class GoogleDriveRetryExhaustedError(RuntimeError):
 
 class GoogleDriveChangeGapError(RuntimeError):
     """The provider reported a gap that cannot be continued safely."""
+
+
+class GoogleDriveAccessOutcomeError(RuntimeError):
+    """A Drive 401/403/404 response mapped to a typed, content-free outcome."""
+
+    def __init__(self, signal: GoogleDriveLifecycleSignal) -> None:
+        self.signal = signal
+        super().__init__(signal.value)
+
+
+def drive_access_signal(status_code: int) -> GoogleDriveLifecycleSignal:
+    """Map provider access statuses without interpreting them as deletion."""
+
+    return {
+        401: GoogleDriveLifecycleSignal.HTTP_401,
+        403: GoogleDriveLifecycleSignal.HTTP_403,
+        404: GoogleDriveLifecycleSignal.HTTP_404,
+    }.get(status_code, GoogleDriveLifecycleSignal.AMBIGUOUS)
 
 
 class DriveFileMetadata(DefinitionModel):
@@ -124,6 +146,9 @@ class DriveChange(DefinitionModel):
     change_id: StrictStr | None = Field(default=None, max_length=256)
     provider_version: StrictStr | None = Field(default=None, max_length=128)
     removed: bool = False
+    trashed: StrictBool = False
+    in_scope: StrictBool | None = None
+    parent_ids: tuple[StrictStr, ...] = Field(default=(), max_length=128)
 
     @property
     def change_key(self) -> str:
@@ -133,6 +158,23 @@ class DriveChange(DefinitionModel):
             f"file:{self.file_id}:version:{self.provider_version or 'unknown'}"
             f":removed:{str(self.removed).lower()}"
         )
+
+    def lifecycle_signal(
+        self, *, in_scope: bool | None = None
+    ) -> GoogleDriveLifecycleSignal:
+        """Classify the provider observation without granting deletion authority."""
+
+        if self.removed:
+            return GoogleDriveLifecycleSignal.REMOVED
+        if self.trashed:
+            return GoogleDriveLifecycleSignal.TRASHED
+        if in_scope is None:
+            in_scope = self.in_scope
+        if in_scope is False:
+            return GoogleDriveLifecycleSignal.MOVED_OUT_OF_SCOPE
+        if in_scope is True:
+            return GoogleDriveLifecycleSignal.PRESENT
+        return GoogleDriveLifecycleSignal.AMBIGUOUS
 
 
 class DriveChangePage(DefinitionModel):
@@ -330,6 +372,13 @@ class GoogleDriveProviderAdapter(GoogleProvider[GoogleDriveObservation]):
             except GoogleDriveConcurrentModificationError:
                 if attempt + 1 == self.profile.max_attempts:
                     raise
+            except GoogleDriveAccessOutcomeError:
+                raise
+            except Exception as error:
+                translated = _access_outcome(error)
+                if translated is not None:
+                    raise translated from None
+                raise
         raise AssertionError("Drive read attempts must return or raise")
 
     async def _read_once(
@@ -448,21 +497,37 @@ class GoogleDriveInitialSnapshotReader:
     admission: GoogleReadAdmission[GoogleDriveObservation]
 
     async def get_start_page_token(self, command, context) -> str:
-        async with self._admit(command, context) as connection:
-            token = await self.service.get_start_page_token(
-                connection, OpaqueGoogleReference(value=command.resource_scope_reference)
-            )
+        try:
+            async with self._admit(command, context) as connection:
+                token = await self.service.get_start_page_token(
+                    connection, OpaqueGoogleReference(value=command.resource_scope_reference)
+                )
+        except GoogleDriveAccessOutcomeError:
+            raise
+        except Exception as error:
+            translated = _access_outcome(error)
+            if translated is not None:
+                raise translated from None
+            raise
         if not token or len(token) > 4096:
             raise ValueError("Drive start page token is invalid")
         return token
 
     async def list_page(self, command, page_token, context) -> DriveSnapshotPage:
-        async with self._admit(command, context) as connection:
-            page = await self.service.list_page(
-                connection,
-                OpaqueGoogleReference(value=command.resource_scope_reference),
-                page_token,
-            )
+        try:
+            async with self._admit(command, context) as connection:
+                page = await self.service.list_page(
+                    connection,
+                    OpaqueGoogleReference(value=command.resource_scope_reference),
+                    page_token,
+                )
+        except GoogleDriveAccessOutcomeError:
+            raise
+        except Exception as error:
+            translated = _access_outcome(error)
+            if translated is not None:
+                raise translated from None
+            raise
         return page
 
     async def read(self, command: _ConnectorReadCommand, context) -> NormalizedConnectorObservation:
@@ -502,12 +567,20 @@ class GoogleDriveIncrementalReader:
     service: GoogleDriveChangeService
 
     async def list_changes(self, command, page_token, context) -> DriveChangePage:
-        async with self._admit(command, context) as connection:
-            page = await self.service.list_changes(
-                connection,
-                OpaqueGoogleReference(value=command.resource_scope_reference),
-                page_token,
-            )
+        try:
+            async with self._admit(command, context) as connection:
+                page = await self.service.list_changes(
+                    connection,
+                    OpaqueGoogleReference(value=command.resource_scope_reference),
+                    page_token,
+                )
+        except GoogleDriveAccessOutcomeError:
+            raise
+        except Exception as error:
+            translated = _access_outcome(error)
+            if translated is not None:
+                raise translated from None
+            raise
         return page
 
     def _admit(self, command, context):
@@ -580,6 +653,15 @@ def _bounded_provider_version(value: str) -> str:
     return encoded
 
 
+def _access_outcome(error: Exception) -> GoogleDriveAccessOutcomeError | None:
+    status_code = getattr(error, "status_code", None)
+    if not isinstance(status_code, int):
+        status_code = getattr(error, "status", None)
+    if isinstance(status_code, int) and status_code in {401, 403, 404}:
+        return GoogleDriveAccessOutcomeError(drive_access_signal(status_code))
+    return None
+
+
 __all__ = [
     "DriveFileContent",
     "DriveFileMetadata",
@@ -596,6 +678,7 @@ __all__ = [
     "GoogleDriveTokenExpiredError",
     "GoogleDriveRetryExhaustedError",
     "GoogleDriveChangeGapError",
+    "GoogleDriveAccessOutcomeError",
     "GoogleDriveObservation",
     "GoogleDriveObservationReader",
     "GoogleDriveProvider",
@@ -606,4 +689,5 @@ __all__ = [
     "GoogleDriveSnapshotService",
     "GoogleDriveChangeService",
     "GoogleDriveIncrementalReader",
+    "drive_access_signal",
 ]

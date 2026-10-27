@@ -468,6 +468,27 @@ google_sheets_identity_dispositions = Table(
     UniqueConstraint("sync_run_id", "scope_identity", name="uq_google_sheets_identity_disposition_run_scope"),
 )
 
+drive_lifecycle_decisions = Table(
+    "drive_lifecycle_decisions",
+    metadata,
+    Column("decision_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("reconciliation_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("snapshot_run_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("change_sync_run_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("committed_cursor", Text, nullable=False),
+    Column("connection_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("resource_scope_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("policy_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("file_id", Text, nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("policy_authorized", Boolean, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("decided_at", DateTime(timezone=True), nullable=False),
+)
+
 ingestion_warnings = Table(
     "ingestion_warnings", metadata,
     Column("ingestion_warning_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("ingestion_run_source_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("attempt", Integer, nullable=False), Column("stage", Text, nullable=False), Column("code", Text, nullable=False), Column("retryable", Boolean, nullable=False), Column("safe_detail_schema", Text, nullable=False), Column("safe_detail", JSONB, nullable=False), Column("safe_detail_digest", String(64), nullable=False), Column("opaque_detail_ref", PostgreSQLUUID(as_uuid=True)), Column("occurred_at", DateTime(timezone=True), nullable=False),

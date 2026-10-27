@@ -46,11 +46,13 @@ from spine.domain.ingestion import (
     ProcessingReceipt,
 )
 from spine.domain.sources.google import (
+    GoogleDriveFileKey,
     GoogleRegisterRowKey,
     GoogleSheetCellValue,
     GoogleSheetNumberFormat,
     google_source_identity,
 )
+from spine.domain.sources import RevisionKind
 from spine.domain.connections.google import OpaqueGoogleReference
 from spine.domain.common import EnvironmentKind
 from spine.domain.workspaces import Environment, Workspace
@@ -106,8 +108,6 @@ def _observation(*, content: bytes = b"normalized row\n") -> NormalizedConnector
             immutable_business_id="estimate-42",
         )
     )
-    import hashlib
-
     return NormalizedConnectorObservation(
         workspace_id=WORKSPACE,
         environment_id=ENVIRONMENT,
@@ -125,6 +125,38 @@ def _observation(*, content: bytes = b"normalized row\n") -> NormalizedConnector
         producer_reference="google-sheets-reader",
         event_identity="sheet-event-42",
         event_digest=hashlib.sha256(b"sheet-event-42").hexdigest(),
+        observer_service="connector-worker",
+        received_at=NOW,
+        observed_at=NOW,
+    )
+
+
+def _drive_observation(*, content: bytes = b"reappeared drive file") -> NormalizedConnectorObservation:
+    identity = google_source_identity(
+        GoogleDriveFileKey(connection_id=CONNECTION, file_id="drive-file-1")
+    )
+    digest = hashlib.sha256(content).hexdigest()
+    return NormalizedConnectorObservation(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        connection_id=CONNECTION,
+        resource_scope_reference=SCOPE,
+        authorization_generation=7,
+        configuration_generation=11,
+        source_kind="document",
+        external_identity=identity,
+        original_bytes=content,
+        media_type="application/pdf",
+        extraction_profile="google-drive-download:v1",
+        locator_contract_version="locator:google-drive-file:v1",
+        coverage=ConnectorCoverage.COMPLETE,
+        producer_reference="google-drive-reader",
+        event_identity="drive-event-after-tombstone",
+        event_digest=digest,
+        origin_locator_kind="google-drive-file",
+        origin_locator_value="drive-file-1",
+        origin_locator_schema="locator:google-drive-file:v1",
+        origin_locator_digest=hashlib.sha256(b"drive-file-1").hexdigest(),
         observer_service="connector-worker",
         received_at=NOW,
         observed_at=NOW,
@@ -216,6 +248,7 @@ class _Ingestion:
         self.source = None
         self.receipt: ProcessingReceipt | None = None
         self.projection_events = []
+        self.revisions = {}
 
     def _head(self, target_kind, *, item_id=None):
         values = [
@@ -289,6 +322,7 @@ class _Ingestion:
         self.source = command.observation.source
         self.binding = command.binding
         self.observation = command.observation
+        self.revisions[command.observation.revision.revision_id] = command.observation.revision
         head = await self.resolve_item_head(command.item.ingestion_run_source_id)
         self.transitions.append(
             IngestionTransition(
@@ -314,6 +348,9 @@ class _Ingestion:
                 result_type="ingestion_binding", result_id=self.binding.binding_id, schema_version=1
             ),
         )
+
+    async def resolve_revision(self, revision_id):
+        return self.revisions.get(revision_id)
 
     async def resolve_source(self, source_object_id):
         return self.source if self.source and self.source.source_object_id == source_object_id else None
@@ -347,6 +384,7 @@ class _Uow:
         self.outbox = SimpleNamespace(append=self._append)
         self.accepted = 0
         self.current_revision_id = None
+        self.current_revision_kind = None
         self.last_accepted_revision = None
         self.events = []
         self.trace_id = _id("uow-trace")
@@ -368,6 +406,8 @@ class _Uow:
         predecessor = self.last_accepted_revision
         self.last_accepted_revision = command.revision.revision_id
         self.current_revision_id = command.revision.revision_id
+        self.current_revision_kind = command.revision.kind
+        self.sources.revisions[command.revision.revision_id] = command.revision
         return SimpleNamespace(
             advanced=True,
             replay=False,
@@ -378,7 +418,10 @@ class _Uow:
         del source_object_id
         if self.current_revision_id is None:
             return None
-        return SimpleNamespace(current_revision_id=self.current_revision_id)
+        return SimpleNamespace(
+            current_revision_id=self.current_revision_id,
+            current_revision_kind=self.current_revision_kind,
+        )
 
     async def _append(self, intent):
         self.events.append(intent)
@@ -868,6 +911,40 @@ async def test_repeated_observation_reuses_ingestion_effects():
     assert uploader.calls == 2
     assert len(uow.events) == 1
     assert ingestion.receipt == second.processing_receipt
+
+
+@pytest.mark.asyncio
+async def test_google_drive_reappearance_records_tombstone_predecessor_before_admission():
+    orchestrator, _, _, ingestion, uow = _orchestrator(_drive_observation())
+    predecessor = _id("drive-source-tombstone")
+    uow.current_revision_id = predecessor
+    uow.current_revision_kind = RevisionKind.TOMBSTONE
+
+    result = await orchestrator.ingest(_command("drive-reappearance-1"))
+
+    assert result.revision.reappearance_after_tombstone_revision_id == predecessor
+    assert result.revision.revision_id == ingestion.binding.source_revision_id
+    assert ingestion.observation.revision == result.revision
+    assert (
+        ingestion.observation.receipt_association.revision_id
+        == result.revision.revision_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_google_drive_reappearance_replay_keeps_the_accepted_lineage():
+    orchestrator, _, _, _, uow = _orchestrator(_drive_observation())
+    predecessor = _id("drive-source-tombstone-replay")
+    uow.current_revision_id = predecessor
+    uow.current_revision_kind = RevisionKind.TOMBSTONE
+
+    first = await orchestrator.ingest(_command("drive-reappearance-replay"))
+    replay = await orchestrator.ingest(_command("drive-reappearance-replay"))
+
+    assert replay.revision.revision_id == first.revision.revision_id
+    assert replay.revision.reappearance_after_tombstone_revision_id == predecessor
+    assert replay.canonical_acceptance is None
+    assert uow.accepted == 1
 
 
 @pytest.mark.asyncio
