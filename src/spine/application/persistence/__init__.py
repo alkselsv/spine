@@ -111,6 +111,19 @@ from spine.application.persistence.drive_changes import (
     DriveChangeSyncConflictError,
     InMemoryDriveChangeRepository,
 )
+from spine.application.persistence.google_sheets_sync import (
+    GoogleSheetsSyncConflictError,
+    GoogleSheetsSyncFenceError,
+    GoogleSheetsSyncItem,
+    GoogleSheetsSyncItemState,
+    GoogleSheetsSyncPage,
+    GoogleSheetsSyncPageState,
+    GoogleSheetsSyncRepository,
+    GoogleSheetsSyncRun,
+    GoogleSheetsSyncRunCommand,
+    GoogleSheetsSyncRunState,
+    InMemoryGoogleSheetsSyncRepository,
+)
 from spine.application.persistence.disclosure import DisclosureValidationRepository
 from spine.application.persistence.answer_disclosure import AnswerDisclosureRepository
 from spine.application.persistence.parsed_artifacts import (
@@ -287,6 +300,17 @@ __all__ = [
     "DriveChangeRunState",
     "DriveChangeSyncConflictError",
     "InMemoryDriveChangeRepository",
+    "GoogleSheetsSyncConflictError",
+    "GoogleSheetsSyncFenceError",
+    "GoogleSheetsSyncItem",
+    "GoogleSheetsSyncItemState",
+    "GoogleSheetsSyncPage",
+    "GoogleSheetsSyncPageState",
+    "GoogleSheetsSyncRepository",
+    "GoogleSheetsSyncRun",
+    "GoogleSheetsSyncRunCommand",
+    "GoogleSheetsSyncRunState",
+    "InMemoryGoogleSheetsSyncRepository",
     "DisclosureValidationRepository",
     "AnswerDisclosureRepository",
     "ParsedArtifactCommand",

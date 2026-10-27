@@ -233,6 +233,19 @@ class ConnectorIngestionOrchestrator:
             _id(command, "read"),
         )
         observation = await self.observation_reader.read(command, read_context)
+        return await self.ingest_observation(command, observation)
+
+    async def ingest_observation(
+        self,
+        command: ConnectorIngestionCommand,
+        observation: NormalizedConnectorObservation,
+    ) -> ConnectorIngestionResult:
+        """Persist a pre-read observation through the canonical handoff.
+
+        Bounded reconciliation callers use this after every configured provider
+        page has been read and version-guarded, so a late incomplete range cannot
+        leave earlier rows accepted.
+        """
         self._validate_observation(command, observation)
 
         run, item, replay = await self._ensure_run(command, observation)
