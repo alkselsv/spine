@@ -30,7 +30,6 @@ from spine.domain.context_profiles import (
 from spine.domain.projections import ProjectionFreshness, ProjectionHealth
 from spine.domain.sources import RevisionKind
 from spine.infrastructure.qa_worker_composition import (
-    _ACTIVE_REQUEST_SCOPE,
     _ACTIVE_AUTHORIZATION_CONTEXT,
     _ACTIVE_COMPLETENESS_INTENT,
     _ACTIVE_EVIDENCE_CONTENT,
@@ -39,10 +38,10 @@ from spine.infrastructure.qa_worker_composition import (
     _CanonicalEvidenceVerifier,
     _CurrentNoninteractiveAuthority,
     _ParsedProjectionRetrieval,
-    _TrustedContextRegistry,
     _ValidationPlans,
     _projection_reference_matches_evidence,
     OneShotQualifiedContextBroker,
+    TrustedQAAuthorizationContextRegistry,
 )
 from spine.memory.contracts import (
     ContextOutcome,
@@ -131,7 +130,7 @@ def _authorized_context_request() -> AuthorizedContextRequest:
 @pytest.mark.asyncio
 async def test_one_shot_qualified_broker_issues_current_service_context_once() -> None:
     service_principal_id = UUID(int=7)
-    registry = _TrustedContextRegistry(service_principal_id)
+    registry = TrustedQAAuthorizationContextRegistry(service_principal_id)
 
     class Resolver:
         calls: list[tuple[UUID, UUID, UUID, str, str]] = []
@@ -199,9 +198,7 @@ async def test_one_shot_qualified_broker_issues_current_service_context_once() -
     assert broker.context.service_authority_generation == 7
     assert broker.context.authority_snapshot_reference == request.authorization_context_ref
     assert broker.context.trace_id == request.diagnostic_context.trace_id
-    assert _ACTIVE_REQUEST_SCOPE.get() is None
-    assert _ACTIVE_COMPLETENESS_INTENT.get() is None
-    assert _ACTIVE_AUTHORIZATION_CONTEXT.get() is None
+    assert registry.request_active is False
 
     with pytest.raises(RuntimeError, match="already used"):
         await boundary.retrieve(request)
@@ -211,7 +208,7 @@ async def test_one_shot_qualified_broker_issues_current_service_context_once() -
 @pytest.mark.asyncio
 async def test_one_shot_qualified_broker_denies_before_request_without_authority() -> None:
     service_principal_id = UUID(int=7)
-    registry = _TrustedContextRegistry(service_principal_id)
+    registry = TrustedQAAuthorizationContextRegistry(service_principal_id)
 
     class Resolver:
         async def resolve_service_authority(self, **_: object) -> int | None:
@@ -241,7 +238,7 @@ async def test_one_shot_qualified_broker_denies_before_request_without_authority
 @pytest.mark.asyncio
 async def test_one_shot_qualified_broker_clears_request_scope_after_failure() -> None:
     service_principal_id = UUID(int=7)
-    registry = _TrustedContextRegistry(service_principal_id)
+    registry = TrustedQAAuthorizationContextRegistry(service_principal_id)
 
     class Resolver:
         async def resolve_service_authority(self, **_: object) -> int | None:
@@ -262,15 +259,13 @@ async def test_one_shot_qualified_broker_clears_request_scope_after_failure() ->
     with pytest.raises(RuntimeError, match="synthetic broker failure"):
         await boundary.retrieve(_authorized_context_request())
 
-    assert _ACTIVE_REQUEST_SCOPE.get() is None
-    assert _ACTIVE_COMPLETENESS_INTENT.get() is None
-    assert _ACTIVE_AUTHORIZATION_CONTEXT.get() is None
+    assert registry.request_active is False
 
 
 @pytest.mark.asyncio
 async def test_one_shot_qualified_broker_denies_other_workspace() -> None:
     service_principal_id = UUID(int=7)
-    registry = _TrustedContextRegistry(service_principal_id)
+    registry = TrustedQAAuthorizationContextRegistry(service_principal_id)
 
     class Resolver:
         async def resolve_service_authority(
@@ -310,7 +305,7 @@ async def test_one_shot_qualified_broker_denies_other_workspace() -> None:
 @pytest.mark.asyncio
 async def test_current_noninteractive_authority_requires_server_issued_reference() -> None:
     service_principal_id = UUID(int=7)
-    registry = _TrustedContextRegistry(service_principal_id)
+    registry = TrustedQAAuthorizationContextRegistry(service_principal_id)
 
     class Resolver:
         async def resolve_service_authority(self, **_: object) -> int | None:

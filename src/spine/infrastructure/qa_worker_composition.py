@@ -475,7 +475,7 @@ class _UnavailableRuntimeProvider:
         raise RuntimeError("configured Q&A model runtime is unavailable")
 
 
-class _TrustedContextRegistry:
+class TrustedQAAuthorizationContextRegistry:
     def __init__(self, service_principal_id: UUID) -> None:
         self._service_principal_id = service_principal_id
         self._commands: dict[UUID, object] = {}
@@ -511,6 +511,19 @@ class _TrustedContextRegistry:
         return (
             type(context) is TrustedAuthorizationContext
             and self._contexts.get(context.authority_snapshot_reference) == context
+        )
+
+    @property
+    def request_active(self) -> bool:
+        """Report whether the current task retains an activated Q&A request."""
+
+        return any(
+            value is not None
+            for value in (
+                _ACTIVE_REQUEST_SCOPE.get(),
+                _ACTIVE_COMPLETENESS_INTENT.get(),
+                _ACTIVE_AUTHORIZATION_CONTEXT.get(),
+            )
         )
 
     async def resolve(self, request: object) -> TrustedAuthorizationContext | None:
@@ -611,7 +624,7 @@ class OneShotQualifiedContextBroker:
         self,
         *,
         broker: object,
-        trusted_contexts: _TrustedContextRegistry,
+        trusted_contexts: TrustedQAAuthorizationContextRegistry,
         authority_resolver: object,
         service_principal_id: UUID,
         clock: Callable[[], datetime] | None = None,
@@ -940,7 +953,7 @@ class _CurrentNoninteractiveAuthority:
         self,
         resolver: object,
         service_principal_id: UUID,
-        trusted_contexts: _TrustedContextRegistry,
+        trusted_contexts: TrustedQAAuthorizationContextRegistry,
     ) -> None:
         self._resolver = resolver
         self._service_principal_id = service_principal_id
@@ -2302,7 +2315,7 @@ class _BrokerContextBundleRepository(_ScopedContextBundleRepository):
 
 
 class _ContextReferences:
-    def __init__(self, registry: _TrustedContextRegistry) -> None:
+    def __init__(self, registry: TrustedQAAuthorizationContextRegistry) -> None:
         self._registry = registry
 
     def for_command(self, command: object) -> AnswerQuestionContextReferences:
@@ -2416,7 +2429,7 @@ async def build_production_qa_capability_graph(
         boundary=boundary,
         service_principal_id=service_principal_id,
     )
-    trusted_contexts = _TrustedContextRegistry(service_principal_id)
+    trusted_contexts = TrustedQAAuthorizationContextRegistry(service_principal_id)
     qualification_authority = PostgreSQLQualificationAuthorityResolver(
         session_factory  # type: ignore[arg-type]
     )
@@ -2554,5 +2567,6 @@ __all__ = [
     "ContextBrokerPersistenceAuthority",
     "OneShotQualifiedContextBroker",
     "ProductionQACapabilityGraph",
+    "TrustedQAAuthorizationContextRegistry",
     "build_production_qa_capability_graph",
 ]
