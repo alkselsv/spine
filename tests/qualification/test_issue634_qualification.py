@@ -41,6 +41,10 @@ V8_REPORT_PATH = (
     PROJECT_ROOT
     / "docs/qualification/issue-634-recovered-application-canary-v8.json"
 )
+V9_REPORT_PATH = (
+    PROJECT_ROOT
+    / "docs/qualification/issue-634-recovered-application-canary-v9.json"
+)
 
 
 def _load_report(path: Path) -> dict[str, Any]:
@@ -868,6 +872,89 @@ def test_issue634_run008_cleanup_is_closed() -> None:
         "temporary_cognee_role_removed": True,
         "task_owned_graph_resources_created_count": 0,
         "task_owned_graph_resources_removed_count": 0,
+        "task_owned_graph_resource_count": 0,
+        "sensitive_run_logs_removed": True,
+        "target_stopped_after_capture": True,
+        "evidence_volume_retained": True,
+        "serving_activated": False,
+        "cutover_performed": False,
+        "direct_canonical_or_active_pointer_edit_performed": False,
+    }
+
+
+def test_issue634_run009_records_active_reconciled_publication() -> None:
+    report = _load_report(V9_REPORT_PATH)
+
+    assert report["schema_version"] == "recovered-application-canary:v9"
+    assert report["run_reference"] == "run:issue634-recovered-canary-009"
+    assert report["target_commit"] == "f5d7587b83cb5589a4bdf6a762438f2c20f1156d"
+    projection = report["projection_attempt"]
+    assert projection["outcome"] == "completed"
+    assert projection["diagnostic_causation_matches_event_id"] is True
+    assert projection["provider_backed_consumer_invocation_count"] == 1
+    assert projection["second_consumer_invocation_performed"] is False
+    assert projection["projection_candidate_state"] == "sealed"
+    assert projection["publication_status"] == "active"
+    assert projection["reconciliation_outcome"] == "healthy"
+    assert projection["reconciliation_result_count"] == 1
+
+
+def test_issue634_run009_records_one_authorized_broker_bundle_with_lineage() -> None:
+    report = _load_report(V9_REPORT_PATH)
+    canary = report["application_canary"]
+
+    assert canary["outcome"] == "allowed"
+    assert canary["broker_request_count"] == 1
+    assert canary["second_broker_request_performed"] is False
+    assert canary["context_bundle_count"] == 1
+    assert canary["context_bundle_state"] == "complete"
+    assert canary["evidence_reference_count"] == 3
+    assert canary["workspace_and_environment_isolation"] == "verified"
+    assert canary["current_policy_enforcement"] == "verified"
+    assert canary["publication_snapshot_matches_active"] is True
+    assert canary["publication_activation_matches_active"] is True
+    assert canary["source_projection_reference_matches"] == 3
+    assert canary["canonical_source_revision_matches"] == 3
+    assert canary["canonical_boundary_member_matches"] == 3
+    assert canary["source_revision_lineage"] == "verified"
+
+
+def test_issue634_run009_preserves_authority_order_and_revocation() -> None:
+    report = _load_report(V9_REPORT_PATH)
+    canary = report["application_canary"]
+
+    assert report["authorization_record"][
+        "authority_and_broker_after_publication_only"
+    ] is True
+    assert report["safety"]["temporary_authority_created_after_publication"] is True
+    assert canary["temporary_authority_binding_count"] == 1
+    assert canary["temporary_authority_version_count"] == 2
+    assert canary["temporary_authority_revocation"] == "verified"
+    assert canary["authority_resolves_after_revocation"] is False
+
+
+def test_issue634_run009_records_exact_remaining_conditions() -> None:
+    report = _load_report(V9_REPORT_PATH)
+
+    assert report["remaining_conditions"] == [
+        "provider_request_and_token_budget_independent_metering_not_verified",
+        "independent_final_evidence_review_required",
+    ]
+
+
+def test_issue634_run009_cleanup_is_closed() -> None:
+    report = _load_report(V9_REPORT_PATH)
+
+    assert report["safety"] == {
+        "synthetic_content_only": True,
+        "temporary_authority_created_after_publication": True,
+        "temporary_authority_revocation": "verified",
+        "runtime_connect_revoked": True,
+        "temporary_authentication_material_removed": True,
+        "temporary_cognee_database_removed": True,
+        "temporary_cognee_role_removed": True,
+        "task_owned_graph_resources_created_count": 2,
+        "task_owned_graph_resources_removed_count": 2,
         "task_owned_graph_resource_count": 0,
         "sensitive_run_logs_removed": True,
         "target_stopped_after_capture": True,
