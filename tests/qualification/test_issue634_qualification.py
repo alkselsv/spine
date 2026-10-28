@@ -19,6 +19,10 @@ V2_REPORT_PATH = (
 )
 
 
+def _load_report(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def _collect_nested_strings(value: Any) -> list[str]:
     if isinstance(value, str):
         return [value]
@@ -48,7 +52,7 @@ def _collect_nested_keys(value: Any) -> list[str]:
 
 
 def test_issue634_failed_pre_provider_run_makes_no_qualification_claim() -> None:
-    report = json.loads(V1_REPORT_PATH.read_text(encoding="utf-8"))
+    report = _load_report(V1_REPORT_PATH)
 
     assert report["schema_version"] == "recovered-application-canary:v1"
     assert report["ticket"] == 634
@@ -85,7 +89,7 @@ def test_issue634_failed_pre_provider_run_makes_no_qualification_claim() -> None
 
 
 def test_issue634_report_records_all_remaining_conditions() -> None:
-    report = json.loads(V1_REPORT_PATH.read_text(encoding="utf-8"))
+    report = _load_report(V1_REPORT_PATH)
 
     assert report["remaining_conditions"] == [
         "cognee_runtime_binding_resolution_not_verified",
@@ -101,8 +105,14 @@ def test_issue634_report_records_all_remaining_conditions() -> None:
     ]
 
 
+def test_issue634_failed_pre_provider_run_requires_independent_review() -> None:
+    report = _load_report(V1_REPORT_PATH)
+
+    assert report["independent_review"] == "required"
+
+
 def test_issue634_cleanup_is_closed() -> None:
-    report = json.loads(V1_REPORT_PATH.read_text(encoding="utf-8"))
+    report = _load_report(V1_REPORT_PATH)
 
     safety = report["safety"]
     assert safety["temporary_authority_revoked"] is True
@@ -113,14 +123,10 @@ def test_issue634_cleanup_is_closed() -> None:
     assert safety["target_stopped_after_capture"] is True
     assert safety["serving_activated"] is False
     assert safety["cutover_performed"] is False
-    assert report["independent_review"] == "required"
 
 
 def test_issue634_report_is_content_free() -> None:
-    reports = tuple(
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in (V1_REPORT_PATH, V2_REPORT_PATH)
-    )
+    reports = tuple(_load_report(path) for path in (V1_REPORT_PATH, V2_REPORT_PATH))
 
     forbidden = (
         "://",
@@ -148,8 +154,8 @@ def test_issue634_report_is_content_free() -> None:
     assert not any(token in serialized_keys for token in forbidden)
 
 
-def test_issue634_provider_timeout_run_remains_blocked_without_broker_call() -> None:
-    report = json.loads(V2_REPORT_PATH.read_text(encoding="utf-8"))
+def test_issue634_provider_timeout_run_records_blocked_decision() -> None:
+    report = _load_report(V2_REPORT_PATH)
 
     assert report["schema_version"] == "recovered-application-canary:v2"
     assert report["run_reference"] == "run:issue634-recovered-canary-002"
@@ -157,6 +163,12 @@ def test_issue634_provider_timeout_run_remains_blocked_without_broker_call() -> 
     assert report["status"] == "blocked"
     assert report["decision"] == "not_verified"
     assert report["production_qualified"] is False
+    assert report["independent_review"] == "required"
+
+
+def test_issue634_provider_timeout_run_records_offline_preflight() -> None:
+    report = _load_report(V2_REPORT_PATH)
+
     assert report["offline_profile_preflight"] == {
         "profile_document": "verified",
         "profile_repository": "resolved",
@@ -164,6 +176,11 @@ def test_issue634_provider_timeout_run_remains_blocked_without_broker_call() -> 
         "provider_request_count": 0,
         "broker_request_count": 0,
     }
+
+
+def test_issue634_provider_timeout_run_records_failed_projection() -> None:
+    report = _load_report(V2_REPORT_PATH)
+
     projection = report["projection_attempt"]
     assert projection["outcome"] == "failed_closed"
     assert projection["safe_reason_code"] == "projection_request_physical_retryable"
@@ -184,6 +201,11 @@ def test_issue634_provider_timeout_run_remains_blocked_without_broker_call() -> 
         )
     ) == 0
     assert projection["publication_status"] == "unpublished"
+
+
+def test_issue634_provider_timeout_run_skips_broker_without_publication() -> None:
+    report = _load_report(V2_REPORT_PATH)
+
     assert report["application_canary"] == {
         "outcome": "not_executed",
         "safe_reason_code": "publication_unavailable",
@@ -196,7 +218,7 @@ def test_issue634_provider_timeout_run_remains_blocked_without_broker_call() -> 
 
 
 def test_issue634_provider_timeout_run_cleanup_is_closed() -> None:
-    report = json.loads(V2_REPORT_PATH.read_text(encoding="utf-8"))
+    report = _load_report(V2_REPORT_PATH)
 
     assert report["safety"] == {
         "synthetic_content_only": True,
@@ -210,4 +232,3 @@ def test_issue634_provider_timeout_run_cleanup_is_closed() -> None:
         "serving_activated": False,
         "cutover_performed": False,
     }
-    assert report["independent_review"] == "required"
