@@ -171,6 +171,60 @@ workflow_runs = Table(
     PrimaryKeyConstraint("workspace_id", "environment_id", "run_id", name="pk_workflow_runs"),
 )
 
+workflow_command_receipts = Table(
+    "workflow_command_receipts",
+    metadata,
+    Column("command_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("run_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("work_item_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workflow_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("command_type", Text, nullable=False),
+    Column("command_schema_version", Integer, nullable=False),
+    Column("expected_run_version", Integer, nullable=False),
+    Column("resulting_run_version", Integer, nullable=False),
+    Column("run_state", Text, nullable=False),
+    Column("actor", JSONB, nullable=False),
+    Column("command_payload", JSONB, nullable=False),
+    Column("artifact_refs", JSONB, nullable=False),
+    Column("command_digest", String(64), nullable=False),
+    Column("trace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("correlation_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("causation_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "command_id",
+        name="pk_workflow_command_receipts",
+    ),
+)
+
+workflow_run_events = Table(
+    "workflow_run_events",
+    metadata,
+    Column("event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("run_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("sequence", Integer, nullable=False),
+    Column("event_type", Text, nullable=False),
+    Column("event_schema_version", Integer, nullable=False),
+    Column("run_version", Integer, nullable=False),
+    Column("summary", Text, nullable=False),
+    Column("correlation_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("causation_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("occurred_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "event_id",
+        name="pk_workflow_run_events",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "run_id", "sequence",
+        name="uq_workflow_run_events_sequence",
+    ),
+)
+
 answer_question_attempts = Table(
     "answer_question_attempts",
     metadata,

@@ -1474,6 +1474,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "operational_correlation_records",
         "work_items",
         "workflow_runs",
+        "workflow_command_receipts",
+        "workflow_run_events",
         "idempotency_receipts",
         "initial_workspace_bootstrap",
         "outbox_intents",
@@ -1539,6 +1541,14 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_work_items_status",
         "ck_workflow_runs_state",
         "ck_workflow_runs_version_positive",
+        "ck_workflow_command_receipts_type",
+        "ck_workflow_command_receipts_schema",
+        "ck_workflow_command_receipts_expected_version",
+        "ck_workflow_command_receipts_resulting_version",
+        "ck_workflow_run_events_sequence",
+        "ck_workflow_run_events_version",
+        "ck_workflow_run_events_schema",
+        "ck_workflow_run_events_type",
         "ck_idempotency_receipts_command_digest_sha256",
         "ck_idempotency_receipts_idempotency_key_length",
         "ck_idempotency_receipts_operation_schema_version_positive",
@@ -1570,6 +1580,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "fk_work_items_environment",
         "fk_workflow_runs_environment",
         "fk_workflow_runs_work_item",
+        "fk_workflow_command_receipts_run",
+        "fk_workflow_run_events_run",
         "fk_idempotency_receipts_scope_environments",
         "fk_idempotency_receipts_workspace_id_workspaces",
         "fk_initial_workspace_bootstrap_workspace_id_workspaces",
@@ -1593,6 +1605,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_environments",
         "pk_work_items",
         "pk_workflow_runs",
+        "pk_workflow_command_receipts",
+        "pk_workflow_run_events",
+        "uq_workflow_run_events_sequence",
         "pk_idempotency_receipts",
         "pk_initial_workspace_bootstrap",
         "pk_outbox_intents",
@@ -2377,6 +2392,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ix_operational_correlation_trace",
         "ix_operational_correlation_reference",
         "ix_workflow_runs_work_item",
+        "ix_workflow_run_events_feed",
+        "pk_workflow_command_receipts",
+        "pk_workflow_run_events",
+        "uq_workflow_run_events_sequence",
         "pk_work_items",
         "pk_workflow_runs",
         "uq_work_items_scoped_key",
@@ -2396,6 +2415,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "environments": (True, True),
         "work_items": (True, True),
         "workflow_runs": (True, True),
+        "workflow_command_receipts": (True, True),
+        "workflow_run_events": (True, True),
         "context_profiles": (True, True),
         "context_bundles": (True, True),
         "answer_question_runs": (True, True),
@@ -2540,7 +2561,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "workspaces": (True, True, True, True),
         "environments": (True, True, True, True),
         "work_items": (True, True, False, False),
-        "workflow_runs": (True, True, False, False),
+        "workflow_runs": (True, True, True, False),
+        "workflow_command_receipts": (True, True, False, False),
+        "workflow_run_events": (True, True, False, False),
         "context_profiles": (True, True, False, False),
         "context_bundles": (True, True, False, False),
         "answer_question_runs": (True, True, True, False),
@@ -2753,7 +2776,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "JOIN pg_namespace AS source_namespace "
                         "ON source_namespace.oid = relation.relnamespace "
                         "WHERE source_namespace.nspname = 'spine' AND relation.relname IN "
-                        "('work_items', 'workflow_runs', 'google_connection_versions', 'google_connection_approvals', "
+                        "('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'google_connection_versions', 'google_connection_approvals', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', 'ingestion_runs', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -2793,7 +2816,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "column_default FROM information_schema.columns "
                         "WHERE table_schema = 'spine' "
                         "AND table_name NOT LIKE 'source_canonical%' "
-                        "AND table_name NOT IN ('work_items', 'workflow_runs', 'google_connection_versions', 'google_connection_approvals', "
+                        "AND table_name NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'google_connection_versions', 'google_connection_approvals', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -2826,7 +2849,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "SELECT indexname FROM pg_indexes "
                         "WHERE schemaname = 'spine' "
                         "AND indexname NOT LIKE 'pk_source_canonical%' "
-                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'google_connection_versions', 'google_connection_approvals', "
+                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'google_connection_versions', 'google_connection_approvals', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -2858,7 +2881,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                     text(
                         "SELECT tablename FROM pg_tables WHERE schemaname = 'spine' "
                         "AND tablename NOT LIKE 'source_canonical%' "
-                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'google_connection_versions', 'google_connection_approvals', "
+                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'google_connection_versions', 'google_connection_approvals', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -2890,7 +2913,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                     text(
                         "SELECT tableowner FROM pg_tables WHERE schemaname = 'spine' "
                         "AND tablename NOT LIKE 'source_canonical%' "
-                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'google_connection_versions', 'google_connection_approvals', "
+                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'google_connection_versions', 'google_connection_approvals', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -3547,7 +3570,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "ON namespace.oid = relation.relnamespace "
                         "WHERE namespace.nspname = 'spine' "
                         "AND relation.relname IN "
-                        "('workspaces', 'environments', 'work_items', 'workflow_runs', 'idempotency_receipts', "
+                        "('workspaces', 'environments', 'work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'idempotency_receipts', "
                             "'context_profiles', 'context_bundles', "
                             "'answer_question_runs', 'answer_question_attempts', "
                             "'qa_session_versions', 'qa_message_versions', "
@@ -3623,6 +3646,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "environments": (True, True),
         "work_items": (True, True),
         "workflow_runs": (True, True),
+        "workflow_command_receipts": (True, True),
+        "workflow_run_events": (True, True),
             "context_profiles": (True, True),
             "context_bundles": (True, True),
             "answer_question_runs": (True, True),
@@ -5029,13 +5054,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261130_68_google_sheets_lifecycle_candidates.py",
         "20261201_69_register_associations.py",
         "20261202_70_workflow_run_admission.py",
+        "20261203_71_workflow_run_commands.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261203_71_injected_failure.py").write_text(
+    (target / "versions" / "20261204_72_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261203_71'\n"
-        "down_revision = '20261202_70'\n"
+        "revision = '20261204_72'\n"
+        "down_revision = '20261203_71'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

@@ -98,13 +98,70 @@ class WorkflowCommandReceipt(DefinitionModel):
     run_id: UUID
     workflow_version_id: UUID
     state: WorkflowRunState
+    run_version: int = Field(default=1, ge=1)
     admission: Literal["accepted", "replayed"]
+
+
+class WorkflowEvent(DefinitionModel):
+    """Disclosure-safe canonical event used to reconstruct a run feed."""
+
+    event_id: UUID
+    run_id: UUID
+    sequence: int = Field(ge=1)
+    event_type: Literal["workflow.run-started", "workflow.context-added"]
+    event_schema_version: Literal[1] = 1
+    run_version: int = Field(ge=1)
+    summary: str = Field(min_length=1, max_length=255)
+    correlation_id: UUID
+    causation_id: UUID
+    occurred_at: datetime
+
+    @field_validator("event_id", "run_id", "correlation_id", "causation_id")
+    @classmethod
+    def reject_zero_event_identity(cls, value: UUID) -> UUID:
+        if value.int == 0:
+            raise ValueError("workflow event identities must be non-zero")
+        return value
+
+    @field_validator("occurred_at")
+    @classmethod
+    def normalize_event_utc(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() != timedelta(0):
+            raise ValueError("workflow event timestamps must be aware UTC")
+        return value.astimezone(timezone.utc)
+
+
+class WorkflowEventPage(DefinitionModel):
+    """One stable sequence-ordered page from the canonical event log."""
+
+    items: tuple[WorkflowEvent, ...]
+    next_sequence: int | None = Field(default=None, ge=1)
+
+
+class WorkflowRunSnapshot(DefinitionModel):
+    """Disclosure-safe canonical run read model for product clients."""
+
+    schema_version: Literal[1] = 1
+    run_id: UUID
+    work_item_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    workflow_key: str
+    workflow_version_id: UUID
+    workflow_version: str
+    state: WorkflowRunState
+    run_version: int = Field(ge=1)
+    allowed_commands: tuple[Literal["add_context"], ...]
+    created_at: datetime
 
 
 __all__ = [
     "AcceptedSourceRevisionRef",
     "ClientRequestV1",
     "WorkflowCommandReceipt",
+    "WorkflowEvent",
+    "WorkflowEventPage",
     "WorkflowRun",
+    "WorkflowRunSnapshot",
     "WorkflowRunState",
 ]

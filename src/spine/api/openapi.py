@@ -81,8 +81,13 @@ from spine.application.persisted_workflow_runs import (
 from spine.application.workflow_runs import (
     PinnedWorkflowVersion,
     StartWorkflowCommand,
+    WorkflowCommand,
 )
-from spine.domain.workflows import WorkflowCommandReceipt, WorkflowRun
+from spine.domain.workflows import (
+    WorkflowCommandReceipt,
+    WorkflowEventPage,
+    WorkflowRunSnapshot,
+)
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.auth import RoutePolicyRegistry
 
@@ -194,8 +199,21 @@ class _UnavailableWorkflowRunAdmissionService:
 
     async def get_run(
         self, *, context: TrustedPersistenceContext, run_id: UUID
-    ) -> WorkflowRun | None:
+    ) -> WorkflowRunSnapshot | None:
         del context, run_id
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+    async def dispatch(
+        self, *, context: TrustedPersistenceContext, command: WorkflowCommand
+    ) -> WorkflowCommandReceipt | None:
+        del context, command
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+    async def list_events(
+        self, *, context: TrustedPersistenceContext, run_id: UUID,
+        after_sequence: int | None, limit: int,
+    ) -> WorkflowEventPage | None:
+        del context, run_id, after_sequence, limit
         raise RuntimeError("The OpenAPI composition is not executable.")
 
 
@@ -468,6 +486,7 @@ def create_openapi_app() -> FastAPI:
             _UnavailableWorkflowRunAdmissionService(),
         ),
         workflow_version_resolver=_UnavailableWorkflowVersionResolver(),
+        workflow_run_cursor_secret=secrets.token_bytes(32),
     )
 
 
