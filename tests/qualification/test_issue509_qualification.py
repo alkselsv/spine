@@ -36,6 +36,9 @@ APPLICATION_RECOVERY_REPORT_V3_PATH = (
 APPLICATION_RECOVERY_REPORT_V4_PATH = (
     PROJECT_ROOT / "docs/qualification/issue-509-application-recovery-attempt-v4.json"
 )
+APPLICATION_RECOVERY_REPORT_V5_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-application-recovery-attempt-v5.json"
+)
 APPLICATION_RECOVERY_DIAGNOSTIC_PATH = (
     PROJECT_ROOT / "docs/qualification/issue-509-application-recovery-diagnostic-v1.json"
 )
@@ -97,6 +100,10 @@ def _load_application_recovery_report_v3() -> dict[str, Any]:
 
 def _load_application_recovery_report_v4() -> dict[str, Any]:
     return json.loads(APPLICATION_RECOVERY_REPORT_V4_PATH.read_text(encoding="utf-8"))
+
+
+def _load_application_recovery_report_v5() -> dict[str, Any]:
+    return json.loads(APPLICATION_RECOVERY_REPORT_V5_PATH.read_text(encoding="utf-8"))
 
 
 def _load_application_recovery_diagnostic() -> dict[str, Any]:
@@ -445,6 +452,47 @@ def test_issue509_application_recovery_v4_records_publication_and_closed_canary(
 
 def test_issue509_application_recovery_v4_contains_only_safe_metadata() -> None:
     report = _load_application_recovery_report_v4()
+
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
+def test_issue509_application_recovery_v5_records_profile_resolution_fail_closed() -> None:
+    report = _load_application_recovery_report_v5()
+
+    assert report["schema_version"] == "r1-recovered-application-attempt:v5"
+    assert report["run_reference"] == "run:issue509-application-canary-005"
+    assert report["target_commit"] == "13457e0877d05dd21991b2e730fa7304648a9591"
+    assert report["decision"] == "not_verified"
+    assert report["production_qualified"] is False
+    assert report["projection_attempt"]["publication_status"] == "published"
+    assert report["projection_attempt"]["projection_receipt_count"] == 1
+    assert report["application_canary"] == {
+        "outcome": "failed_closed",
+        "safe_reason_code": "profile_unavailable",
+        "broker_request_count": 1,
+        "authorized_source_read": "not_verified",
+        "permitted_source_read_count": 0,
+        "context_bundle_issued": False,
+        "temporary_authority_created": True,
+        "temporary_authority_revoked": True,
+    }
+    assert report["diagnostic_boundary"] == {
+        "source_retrieval_reached": False,
+        "failure_stage": "context_profile_resolution",
+        "missing_request_scope_initialization": "identified",
+    }
+    assert report["safety"]["runtime_connect_revoked"] is True
+    assert report["safety"]["temporary_authority_revoked"] is True
+    assert report["safety"]["temporary_graph_removed"] is True
+    assert report["safety"]["target_stopped_after_capture"] is True
+
+
+def test_issue509_application_recovery_v5_contains_only_safe_metadata() -> None:
+    report = _load_application_recovery_report_v5()
 
     for text in _all_strings(report):
         lowered = text.lower()
