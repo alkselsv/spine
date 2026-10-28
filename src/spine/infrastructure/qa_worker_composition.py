@@ -41,6 +41,7 @@ from spine.application.authorized_retrieval_scope import (
 )
 from spine.application.content_authorization import (
     AuthorizationReasonCode,
+    ContentAuthorizationDecision,
     ContentAuthorizationDecisionService,
     CurrentContentAuthorizationSnapshot,
 )
@@ -896,9 +897,7 @@ class _CanonicalEvidenceVerifier(_ScopedPort):
             if not evidence:
                 raise ValueError
             source_ids = tuple(dict.fromkeys(value.source_object_id for value in evidence))
-            decision = await self._authorization.decide_interactive_processing(
-                authorization_context, source_ids
-            )
+            decision = await self._decide(authorization_context, source_ids)
             if not decision.allowed:
                 return RejectedEvidenceItem(
                     reason_code=EvidenceVerificationReasonCode.AUTHORIZATION_DENIED,
@@ -967,6 +966,23 @@ class _CanonicalEvidenceVerifier(_ScopedPort):
                 decision_reference=decision_id,
                 diagnostic=EvidenceVerificationDiagnostic(),
             )
+
+    async def _decide(
+        self,
+        context: TrustedAuthorizationContext,
+        source_ids: tuple[UUID, ...],
+    ) -> ContentAuthorizationDecision:
+        if context.mode is AuthorizationContextMode.HUMAN_DISCLOSURE:
+            return await self._authorization.decide_human_disclosure(
+                context, source_ids
+            )
+        if context.mode is AuthorizationContextMode.INTERACTIVE_PROCESSING:
+            return await self._authorization.decide_interactive_processing(
+                context, source_ids
+            )
+        return await self._authorization.decide_noninteractive_processing(
+            context, source_ids
+        )
 
 
 class _CurrentBundleRevalidator(_ScopedPort):

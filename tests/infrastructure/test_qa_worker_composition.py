@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -9,9 +10,18 @@ from spine.infrastructure.qa_worker_composition import (
     _ACTIVE_EVIDENCE_CONTENT,
     _ACTIVE_RETRIEVAL_SCOPE,
     _ActiveCompletenessIntent,
+    _CanonicalEvidenceVerifier,
     _ParsedProjectionRetrieval,
     _ValidationPlans,
     _projection_reference_matches_evidence,
+)
+from spine.application.content_authorization import (
+    AuthorizationContextMode,
+    TrustedAuthorizationContext,
+)
+from spine.application.evidence_lineage_verification import (
+    EvidenceVerificationReasonCode,
+    RejectedEvidenceItem,
 )
 from spine.domain.capabilities.answer_evaluation import (
     AnswerDisclosureStatus,
@@ -81,6 +91,108 @@ class _Session:
             else []
         )
         return _Rows(rows)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "expected_method"),
+    (
+        (AuthorizationContextMode.HUMAN_DISCLOSURE, "human"),
+        (AuthorizationContextMode.INTERACTIVE_PROCESSING, "interactive"),
+        (AuthorizationContextMode.NONINTERACTIVE_PROCESSING, "noninteractive"),
+    ),
+)
+async def test_evidence_verifier_preserves_authorization_mode(
+    mode: AuthorizationContextMode,
+    expected_method: str,
+) -> None:
+    source_object_id = UUID(int=3)
+
+    class Authorization:
+        def __init__(self) -> None:
+            self.calls: list[
+                tuple[str, AuthorizationContextMode, tuple[UUID, ...]]
+            ] = []
+
+        async def decide_human_disclosure(
+            self,
+            context: TrustedAuthorizationContext,
+            source_ids: tuple[UUID, ...],
+        ) -> object:
+            self.calls.append(("human", context.mode, tuple(source_ids)))
+            return SimpleNamespace(allowed=False)
+
+        async def decide_interactive_processing(
+            self,
+            context: TrustedAuthorizationContext,
+            source_ids: tuple[UUID, ...],
+        ) -> object:
+            self.calls.append(("interactive", context.mode, tuple(source_ids)))
+            return SimpleNamespace(allowed=False)
+
+        async def decide_noninteractive_processing(
+            self,
+            context: TrustedAuthorizationContext,
+            source_ids: tuple[UUID, ...],
+        ) -> object:
+            self.calls.append(("noninteractive", context.mode, tuple(source_ids)))
+            return SimpleNamespace(allowed=False)
+
+    authorization = Authorization()
+    verifier = _CanonicalEvidenceVerifier(
+        authorization=authorization,  # type: ignore[arg-type]
+        uow_factory=None,
+        boundary=object(),  # type: ignore[arg-type]
+        service_principal_id=UUID(int=7),
+        operation="verify_projection_evidence",
+    )
+    context = TrustedAuthorizationContext(
+        mode=mode,
+        workspace_id=UUID(int=1),
+        environment_id=UUID(int=2),
+        canonical_human_id=(
+            None
+            if mode is AuthorizationContextMode.NONINTERACTIVE_PROCESSING
+            else UUID(int=6)
+        ),
+        service_principal_id=(
+            None
+            if mode is AuthorizationContextMode.HUMAN_DISCLOSURE
+            else UUID(int=7)
+        ),
+        purpose="answer_question",
+        operation="retrieve_context",
+        membership_generation=1,
+        authority_generation=1,
+        service_authority_generation=(
+            None
+            if mode is AuthorizationContextMode.HUMAN_DISCLOSURE
+            else 1
+        ),
+        authority_snapshot_reference=UUID(int=8),
+        trace_id=UUID(int=9),
+        issued_at=datetime(2026, 10, 28, tzinfo=timezone.utc),
+        noninteractive_authority_reference=(
+            UUID(int=10)
+            if mode is AuthorizationContextMode.NONINTERACTIVE_PROCESSING
+            else None
+        ),
+    )
+
+    result = await verifier.verify(
+        item=SimpleNamespace(
+            chunk_id="synthetic-chunk",
+            evidence=(SimpleNamespace(source_object_id=source_object_id),),
+        ),
+        publication_pin=object(),
+        authorization_context=context,
+    )
+
+    assert isinstance(result, RejectedEvidenceItem)
+    assert result.reason_code is EvidenceVerificationReasonCode.AUTHORIZATION_DENIED
+    assert authorization.calls == [
+        (expected_method, mode, (source_object_id,))
+    ]
 
 
 @pytest.mark.asyncio
