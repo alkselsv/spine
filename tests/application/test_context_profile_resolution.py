@@ -10,6 +10,11 @@ from spine.application.context_profiles import (
     ContextProfileResolutionOutcome,
     ContextProfileResolutionReason,
     ContextProfileResolutionRequest,
+    ServerApprovedContextProfileResolver,
+)
+from spine.application.persistence.errors import (
+    ContextProfileError,
+    ContextProfileNotFoundError,
 )
 from spine.domain.context_profiles import (
     CompletenessRequirement,
@@ -70,6 +75,54 @@ def request(subject: ContextProfileVersion | None = None, **overrides: object) -
     }
     values.update(overrides)
     return ContextProfileResolutionRequest(**values)
+
+
+class _AllowProfileResolution:
+    async def allows(self, request: ContextProfileResolutionRequest) -> bool:
+        del request
+        return True
+
+
+class _FailingProfileRepository:
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    async def resolve_for_scope(self, **kwargs: object) -> ContextProfileVersion:
+        del kwargs
+        raise self._error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "safe_reason_code"),
+    (
+        (ContextProfileNotFoundError("protected profile identity"), "profile_not_found"),
+        (ContextProfileError("protected repository details"), "profile_repository_unavailable"),
+        (RuntimeError("protected unexpected details"), "profile_resolution_unexpected"),
+    ),
+)
+async def test_profile_lookup_failure_logs_only_content_free_resolution_reason(
+    caplog: pytest.LogCaptureFixture,
+    error: Exception,
+    safe_reason_code: str,
+) -> None:
+    resolver = ServerApprovedContextProfileResolver(
+        repository=_FailingProfileRepository(error),
+        capability_policy=_AllowProfileResolution(),
+    )
+
+    result = await resolver.resolve(request())
+
+    assert result.reason is ContextProfileResolutionReason.PROFILE_UNAVAILABLE
+    records = [
+        record
+        for record in caplog.records
+        if record.message == "context profile resolution rejected"
+    ]
+    assert len(records) == 1
+    assert records[0].safe_stage == "context_profile_resolution"
+    assert records[0].safe_reason_code == safe_reason_code
+    assert str(error) not in caplog.text
 
 
 @pytest.mark.asyncio
