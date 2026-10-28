@@ -17,6 +17,10 @@ V2_REPORT_PATH = (
     PROJECT_ROOT
     / "docs/qualification/issue-634-recovered-application-canary-v2.json"
 )
+V3_REPORT_PATH = (
+    PROJECT_ROOT
+    / "docs/qualification/issue-634-recovered-application-canary-v3.json"
+)
 
 
 def _load_report(path: Path) -> dict[str, Any]:
@@ -126,7 +130,10 @@ def test_issue634_cleanup_is_closed() -> None:
 
 
 def test_issue634_report_is_content_free() -> None:
-    reports = tuple(_load_report(path) for path in (V1_REPORT_PATH, V2_REPORT_PATH))
+    reports = tuple(
+        _load_report(path)
+        for path in (V1_REPORT_PATH, V2_REPORT_PATH, V3_REPORT_PATH)
+    )
 
     forbidden = (
         "://",
@@ -228,6 +235,87 @@ def test_issue634_provider_timeout_run_cleanup_is_closed() -> None:
         "temporary_authentication_material_rotated": True,
         "temporary_cognee_database_removed": True,
         "task_owned_graph_resource_count": 0,
+        "target_stopped_after_capture": True,
+        "serving_activated": False,
+        "cutover_performed": False,
+    }
+
+
+def test_issue634_repeated_timeout_run_records_blocked_decision() -> None:
+    report = _load_report(V3_REPORT_PATH)
+
+    assert report["schema_version"] == "recovered-application-canary:v3"
+    assert report["run_reference"] == "run:issue634-recovered-canary-003"
+    assert report["target_commit"] == "b8f1dee821bc2c455f3487745873e8713ffda116"
+    assert report["status"] == "blocked"
+    assert report["decision"] == "not_verified"
+    assert report["production_qualified"] is False
+    assert report["independent_review"] == "required"
+
+
+def test_issue634_repeated_timeout_run_records_offline_preparation() -> None:
+    report = _load_report(V3_REPORT_PATH)
+
+    assert report["offline_profile_preflight"] == {
+        "profile_document": "verified",
+        "profile_repository": "resolved",
+        "profile_reference_match": True,
+        "provider_request_count": 0,
+        "broker_request_count": 0,
+    }
+    assert report["projection_attempt"]["pre_provider_setup_completed"] is True
+
+
+def test_issue634_repeated_timeout_run_records_unpublished_projection() -> None:
+    projection = _load_report(V3_REPORT_PATH)["projection_attempt"]
+
+    assert projection["outcome"] == "failed_closed"
+    assert projection["safe_reason_code"] == "projection_request_physical_retryable"
+    assert projection["provider_boundary_reached"] is True
+    assert projection["provider_profile_limits_validated"] is True
+    assert projection["provider_internal_retry_limit"] == 2
+    assert projection["provider_backed_consumer_invocation_count"] == 1
+    assert projection["projection_run_count"] == 1
+    assert sum(
+        projection[key]
+        for key in (
+            "projection_receipt_count",
+            "projection_snapshot_count",
+            "projection_activation_count",
+            "active_projection_count",
+            "source_projection_reference_count",
+            "reconciliation_result_count",
+        )
+    ) == 0
+    assert projection["publication_status"] == "unpublished"
+
+
+def test_issue634_repeated_timeout_run_skips_broker_without_publication() -> None:
+    report = _load_report(V3_REPORT_PATH)
+
+    assert report["application_canary"] == {
+        "outcome": "not_executed",
+        "safe_reason_code": "publication_unavailable",
+        "broker_request_count": 0,
+        "context_bundle_count": 0,
+        "context_bundle_issued": False,
+        "temporary_authority_created": False,
+        "temporary_authority_revocation": "not_applicable",
+    }
+
+
+def test_issue634_repeated_timeout_run_cleanup_is_closed() -> None:
+    report = _load_report(V3_REPORT_PATH)
+
+    assert report["safety"] == {
+        "synthetic_content_only": True,
+        "temporary_authority_created": False,
+        "temporary_authority_revocation": "not_applicable",
+        "runtime_connect_revoked": True,
+        "temporary_authentication_material_rotated": True,
+        "temporary_cognee_database_removed": True,
+        "task_owned_graph_resource_count": 0,
+        "sensitive_run_logs_removed": True,
         "target_stopped_after_capture": True,
         "serving_activated": False,
         "cutover_performed": False,
