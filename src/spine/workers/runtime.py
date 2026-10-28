@@ -65,6 +65,7 @@ from spine.infrastructure.cognee_worker_settings import (
     CogneeWorkerBindingConfiguration,
     CogneeWorkerBindingSettings,
 )
+from spine.infrastructure.cognee_provider_usage_meter import CogneeProviderUsageMeter
 from spine.infrastructure.diagnostics import JsonLoggingDiagnosticSink
 from spine.infrastructure.ingestion_composition import register_ingestion_outbox_events
 from spine.infrastructure.local_cognee_provider_guards import (
@@ -921,6 +922,7 @@ class ProductionOutboxWorkerRuntime:
     settings: OutboxWorkerSettings
     runtime_engine: object
     dispatcher_engine: object
+    provider_usage_meter: CogneeProviderUsageMeter | None = None
 
     async def run_once(self):
         return await self.worker.dispatch_batch(
@@ -972,11 +974,13 @@ class ProductionOutboxWorkerRuntime:
                     pass
 
     async def close(self) -> None:
-        results = await asyncio.gather(
+        closures = [
             self.runtime_engine.dispose(),  # type: ignore[attr-defined]
             self.dispatcher_engine.dispose(),  # type: ignore[attr-defined]
-            return_exceptions=True,
-        )
+        ]
+        if self.provider_usage_meter is not None:
+            closures.append(self.provider_usage_meter.close())
+        results = await asyncio.gather(*closures, return_exceptions=True)
         if any(isinstance(result, BaseException) for result in results):
             raise RuntimeError("outbox dispatcher resource shutdown failed") from None
 
@@ -990,6 +994,7 @@ def create_production_outbox_worker_runtime(
     secret_resolver: SecretReferenceResolver | None = None,
     budget_authorization_resolver: BudgetAuthorizationResolver | None = None,
     provider_call_executor: CogneeProviderCallExecutor | None = None,
+    provider_usage_meter: CogneeProviderUsageMeter | None = None,
     secret_presence_settings: LocalCogneeProviderSecretPresenceSettings | None = None,
 ) -> ProductionOutboxWorkerRuntime:
     runtime_db = runtime_database or RuntimeDatabaseSettings()
@@ -1035,6 +1040,7 @@ def create_production_outbox_worker_runtime(
                 local_guards.budget_authorization_resolver
             )
             provider_call_executor = local_guards.provider_call_executor
+            provider_usage_meter = local_guards.provider_usage_meter
     runtime_engine = _create_outbox_database_engine(runtime_db)
     dispatcher_engine = _create_outbox_database_engine(dispatcher_db)
     runtime_sessions = async_sessionmaker(runtime_engine, expire_on_commit=False)
@@ -1210,6 +1216,7 @@ def create_production_outbox_worker_runtime(
         settings=settings,
         runtime_engine=runtime_engine,
         dispatcher_engine=dispatcher_engine,
+        provider_usage_meter=provider_usage_meter,
     )
 
 

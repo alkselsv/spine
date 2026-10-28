@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+import os
 from typing import Literal, TypeVar
 from uuid import UUID
 
@@ -14,6 +15,7 @@ from pydantic import Field, SecretStr, TypeAdapter, ValidationError, field_valid
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from spine.domain.common import DefinitionModel
+from spine.infrastructure.cognee_provider_usage_meter import CogneeProviderUsageMeter
 from spine.memory.cognee.projection_profile_binding import (
     BudgetAuthorizationResolver,
     CogneeProviderCallExecutor,
@@ -27,6 +29,7 @@ from spine.memory.contracts import ProjectionCommand
 
 
 T = TypeVar("T")
+ProviderUsageMeterRegistrar = Callable[[CogneeProviderUsageMeter], None]
 
 
 class LocalCogneeProviderAuthorization(DefinitionModel):
@@ -206,10 +209,20 @@ class _LocalRunBudgetAuthorizationResolver:
 
 
 class _LocalBoundedProviderCallExecutor:
-    def __init__(self, profile: CogneeWorkerProfile) -> None:
+    def __init__(
+        self,
+        profile: CogneeWorkerProfile,
+        provider_usage_meter: CogneeProviderUsageMeter,
+        authorizations: tuple[LocalCogneeProviderAuthorization, ...],
+    ) -> None:
         self._profile_digest = profile.profile_digest
         self._deadline_seconds = profile.limits.run_deadline_seconds
         self._semaphore = asyncio.Semaphore(profile.limits.max_concurrency)
+        self._provider_usage_meter = provider_usage_meter
+        self._authorizations = {
+            (authorization.workspace_id, authorization.environment_id): authorization
+            for authorization in authorizations
+        }
 
     async def invoke(
         self,
@@ -218,13 +231,37 @@ class _LocalBoundedProviderCallExecutor:
         command: ProjectionCommand,
         provider_call: Callable[[], Awaitable[T]],
     ) -> T:
-        del command
         if profile.profile_digest != self._profile_digest:
             raise LocalCogneeProviderAuthorizationError("profile_mismatch")
+        authorization = self._authorizations.get(
+            (command.workspace_id, command.environment_id)
+        )
+        if authorization is None:
+            raise LocalCogneeProviderAuthorizationError("authorization_missing")
         async with self._semaphore:
-            return await asyncio.wait_for(
-                provider_call(), timeout=self._deadline_seconds
-            )
+            run_id = str(command.projection_run_id)
+            async with self._provider_usage_meter.track_run(
+                run_id,
+                budget_amount=authorization.amount,
+                budget_currency=authorization.currency,
+            ):
+                result = await asyncio.wait_for(
+                    provider_call(), timeout=self._deadline_seconds
+                )
+                settled = await self._provider_usage_meter.wait_until_settled(
+                    run_id,
+                    timeout_seconds=profile.limits.request_timeout_seconds,
+                )
+                usage = await self._provider_usage_meter.snapshot(run_id)
+                if not settled or not usage.usage_complete:
+                    raise LocalCogneeProviderAuthorizationError(
+                        "provider_usage_incomplete"
+                    )
+                if usage.limit_breaches:
+                    raise LocalCogneeProviderAuthorizationError(
+                        "provider_usage_limit_exceeded"
+                    )
+                return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +269,78 @@ class LocalCogneeProviderGuards:
     secret_resolver: _LocalSecretReferenceResolver
     budget_authorization_resolver: BudgetAuthorizationResolver
     provider_call_executor: CogneeProviderCallExecutor
+    provider_usage_meter: CogneeProviderUsageMeter
+
+
+def register_litellm_provider_usage_meter(
+    meter: CogneeProviderUsageMeter,
+) -> None:
+    """Register the content-free meter on the provider library's callback seam."""
+
+    import httpx
+
+    os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+    import litellm
+    from litellm.integrations.custom_logger import CustomLogger
+
+    class _CogneeProviderUsageCallback(CustomLogger):
+        def __init__(self) -> None:
+            super().__init__(turn_off_message_logging=True)
+            self.meter_identity = str(id(meter))
+
+        def log_pre_api_call(
+            self,
+            model: str,
+            messages: list[object],
+            kwargs: dict[str, object],
+        ) -> None:
+            meter.log_pre_api_call(model, messages, kwargs)
+
+        async def async_log_success_event(
+            self,
+            kwargs: dict[str, object],
+            response_obj: object,
+            start_time: object,
+            end_time: object,
+        ) -> None:
+            await meter.async_log_success_event(
+                kwargs,
+                response_obj,
+                start_time,
+                end_time,
+            )
+
+        async def async_log_failure_event(
+            self,
+            kwargs: dict[str, object],
+            response_obj: object,
+            start_time: object,
+            end_time: object,
+        ) -> None:
+            await meter.async_log_failure_event(
+                kwargs,
+                response_obj,
+                start_time,
+                end_time,
+            )
+
+    async def observe_request(request: httpx.Request) -> None:
+        del request
+        await meter.observe_provider_request()
+
+    client = litellm.aclient_session
+    owns_client = client is None or client.is_closed
+    if client is None or client.is_closed:
+        client = httpx.AsyncClient(event_hooks={"request": [observe_request]})
+        litellm.aclient_session = client
+    else:
+        client.event_hooks.setdefault("request", []).append(observe_request)
+    meter.bind_http_client(client, observe_request, owned=owns_client)
+
+    callback = _CogneeProviderUsageCallback()
+    litellm.logging_callback_manager.add_litellm_input_callback(callback)
+    litellm.logging_callback_manager.add_litellm_callback(callback)
+    meter.bind_provider_callback(callback)
 
 
 def build_local_cognee_provider_guards(
@@ -240,6 +349,9 @@ def build_local_cognee_provider_guards(
     authorization: LocalCogneeProviderAuthorizationDocument,
     available_secret_references: frozenset[str],
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    provider_usage_meter_registrar: ProviderUsageMeterRegistrar = (
+        register_litellm_provider_usage_meter
+    ),
 ) -> LocalCogneeProviderGuards:
     """Validate one explicit local authorization and return all provider guards."""
 
@@ -274,6 +386,8 @@ def build_local_cognee_provider_guards(
         if approved_references != required_references:
             raise LocalCogneeProviderAuthorizationError("secret_reference_set_mismatch")
 
+    provider_usage_meter = CogneeProviderUsageMeter(limits=profile.limits)
+    provider_usage_meter_registrar(provider_usage_meter)
     return LocalCogneeProviderGuards(
         secret_resolver=_LocalSecretReferenceResolver(
             approved=required_references,
@@ -283,7 +397,12 @@ def build_local_cognee_provider_guards(
             profile=profile,
             authorizations=authorizations,
         ),
-        provider_call_executor=_LocalBoundedProviderCallExecutor(profile),
+        provider_call_executor=_LocalBoundedProviderCallExecutor(
+            profile,
+            provider_usage_meter,
+            authorizations,
+        ),
+        provider_usage_meter=provider_usage_meter,
     )
 
 
@@ -295,5 +414,7 @@ __all__ = [
     "LocalCogneeProviderAuthorizationSettings",
     "LocalCogneeProviderSecretPresenceSettings",
     "LocalCogneeProviderGuards",
+    "ProviderUsageMeterRegistrar",
     "build_local_cognee_provider_guards",
+    "register_litellm_provider_usage_meter",
 ]
