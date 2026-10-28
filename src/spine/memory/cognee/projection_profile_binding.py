@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 import inspect
+import os
+from threading import Lock
 from typing import Protocol, TypeVar
 
 from spine.memory.contracts import (
@@ -37,6 +40,42 @@ BudgetAuthorizationResult = (
 )
 BudgetAuthorizationResolver = Callable[[ProjectionCommand], BudgetAuthorizationResult]
 T = TypeVar("T")
+_COGNEE_CONNECTION_TEST_ENVIRONMENT_KEY = "COGNEE_SKIP_CONNECTION_TEST"
+_cognee_connection_test_environment_lock = Lock()
+_cognee_connection_test_environment_users = 0
+_cognee_connection_test_previous_value: str | None = None
+
+
+@contextmanager
+def _skip_cognee_connection_test() -> Iterator[None]:
+    """Scope Cognee's process-wide first-run policy to guarded provider work."""
+
+    global _cognee_connection_test_environment_users
+    global _cognee_connection_test_previous_value
+
+    with _cognee_connection_test_environment_lock:
+        if _cognee_connection_test_environment_users == 0:
+            _cognee_connection_test_previous_value = os.environ.get(
+                _COGNEE_CONNECTION_TEST_ENVIRONMENT_KEY
+            )
+            os.environ[_COGNEE_CONNECTION_TEST_ENVIRONMENT_KEY] = "true"
+        _cognee_connection_test_environment_users += 1
+    try:
+        yield
+    finally:
+        with _cognee_connection_test_environment_lock:
+            _cognee_connection_test_environment_users -= 1
+            if _cognee_connection_test_environment_users == 0:
+                if _cognee_connection_test_previous_value is None:
+                    os.environ.pop(
+                        _COGNEE_CONNECTION_TEST_ENVIRONMENT_KEY,
+                        None,
+                    )
+                else:
+                    os.environ[_COGNEE_CONNECTION_TEST_ENVIRONMENT_KEY] = (
+                        _cognee_connection_test_previous_value
+                    )
+                _cognee_connection_test_previous_value = None
 
 
 class CogneeProviderCallExecutor(Protocol):
@@ -130,10 +169,17 @@ class _ProfileBoundCogneeProjection:
             authorization = None
 
         async def bounded_provider_call() -> T:
+            async def invoke_projection() -> T:
+                # Spine has already completed the profile, secret-reference and
+                # run-budget gates. Cognee's live first-run probes duplicate the
+                # actual provider work governed by this bounded call.
+                with _skip_cognee_connection_test():
+                    return await operation()
+
             return await executor.invoke(
                 profile=profile,
                 command=command,
-                provider_call=operation,
+                provider_call=invoke_projection,
             )
 
         decision, result = await guarded_provider_call(
