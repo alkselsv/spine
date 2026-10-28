@@ -26,14 +26,16 @@ Before any provider or Context Broker call, the exact production profile
 repository resolved the server-approved stored reference. The preflight made
 zero provider and zero Broker requests.
 
-Exactly one provider-backed production consumer invocation was made. The scoped
-Cognee connection-test policy no longer failed at the preliminary connection
-probe that blocked canary v4: the consumer proceeded into the physical Cognee
-`add` operation. The operation nevertheless timed out within the authorized
-timeout/retry boundary and returned the bounded public outcome
-`projection.request.physical_retryable`. The run did not retain a provider
-request-count observation or evidence that an external provider accepted a
-request. No second consumer invocation occurred.
+Exactly one provider-capable production consumer invocation was made. The
+scoped `COGNEE_SKIP_CONNECTION_TEST` environment flag was applied and the
+consumer proceeded into the physical Cognee `add` operation. Post-run inspection
+of the pinned Cognee 1.5.4 source and bytecode found no consumer of that flag,
+so the intended connection-test bypass is **not verified** and no effect may be
+attributed to it. The `add` operation timed out before a receipt was produced and
+returned the bounded public outcome `projection.request.physical_retryable`.
+Post-run static-path and PostgreSQL-log correlation showed that no provider call
+was reached: Cognee `add` was still in local ingestion/database work. No second
+consumer invocation occurred.
 
 The target retained one open projection run and committed no projection receipt,
 snapshot, activation, active publication, source projection reference or
@@ -49,9 +51,16 @@ was created. Raw diagnostics, local Cognee state and temporary logs were removed
 after allowlisted safe outcome extraction. No serving, cutover or customer data
 was involved.
 
-The remaining blocker is now isolated beyond the connection-test lifecycle fix:
-the real Cognee `add` operation still times out within the approved production
-profile. Normal publication and reconciliation, followed by the single
-authorized Context Broker canary and its isolation, policy, publication-pin and
+The timeout is localized to Cognee's relational connection pool. The run set
+`pool_size=1` and `max_overflow=0`; Cognee 1.5.4 defaults `pool_timeout` to 280
+seconds. The PostgreSQL client lived for 281 seconds before the process reset the
+connection, matching a nested second-session wait. Provider concurrency 1 does
+not require a one-connection database pool. A future canary must keep provider
+concurrency at 1 while allowing at least two Cognee relational connections.
+
+The environment-flag change tested only a Spine fake and is not a supported
+Cognee 1.5.4 control, so it was removed. Normal provider-backed projection,
+publication and reconciliation, followed by the single authorized Context
+Broker canary and its isolation, policy, publication-pin and
 source-revision-lineage checks, remain unverified. Independent final evidence
 review is still required before any qualification claim.

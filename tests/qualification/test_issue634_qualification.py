@@ -25,6 +25,10 @@ V4_REPORT_PATH = (
     PROJECT_ROOT
     / "docs/qualification/issue-634-recovered-application-canary-v4.json"
 )
+V5_REPORT_PATH = (
+    PROJECT_ROOT
+    / "docs/qualification/issue-634-recovered-application-canary-v5.json"
+)
 
 
 def _load_report(path: Path) -> dict[str, Any]:
@@ -136,7 +140,13 @@ def test_issue634_cleanup_is_closed() -> None:
 def test_issue634_report_is_content_free() -> None:
     reports = tuple(
         _load_report(path)
-        for path in (V1_REPORT_PATH, V2_REPORT_PATH, V3_REPORT_PATH, V4_REPORT_PATH)
+        for path in (
+            V1_REPORT_PATH,
+            V2_REPORT_PATH,
+            V3_REPORT_PATH,
+            V4_REPORT_PATH,
+            V5_REPORT_PATH,
+        )
     )
 
     forbidden = (
@@ -513,6 +523,84 @@ def test_issue634_add_timeout_run_cleanup_is_closed() -> None:
         "temporary_authority_revocation": "not_applicable",
         "runtime_connect_revoked": True,
         "temporary_authentication_material_rotated": True,
+        "temporary_cognee_database_removed": True,
+        "task_owned_graph_resource_count": 0,
+        "sensitive_run_logs_removed": True,
+        "target_stopped_after_capture": True,
+        "serving_activated": False,
+        "cutover_performed": False,
+    }
+
+
+def test_issue634_scoped_connection_policy_run_records_blocked_decision() -> None:
+    report = _load_report(V5_REPORT_PATH)
+
+    assert report["schema_version"] == "recovered-application-canary:v5"
+    assert report["run_reference"] == "run:issue634-recovered-canary-005"
+    assert report["target_commit"] == "f810127529a9beb1dd2fc75431961a30dbc567b0"
+    assert report["status"] == "blocked"
+    assert report["decision"] == "not_verified"
+    assert report["production_qualified"] is False
+    assert report["independent_review"] == "required"
+
+
+def test_issue634_unsupported_connection_flag_run_reaches_physical_add_once() -> None:
+    report = _load_report(V5_REPORT_PATH)
+
+    assert report["connection_test_policy"] == {
+        "scoped_environment_flag_applied": True,
+        "cognee_1_5_4_flag_consumer_found": False,
+        "intended_bypass_verified": False,
+        "physical_add_entered": True,
+    }
+    projection = report["projection_attempt"]
+    assert projection["outcome"] == "failed_closed"
+    assert projection["safe_reason_code"] == "projection.request.physical_retryable"
+    assert projection["provider_backed_consumer_invocation_count"] == 1
+    assert projection["projection_run_count"] == 1
+    assert sum(
+        projection[key]
+        for key in (
+            "projection_receipt_count",
+            "projection_snapshot_count",
+            "projection_activation_count",
+            "active_projection_count",
+            "source_projection_reference_count",
+            "reconciliation_result_count",
+        )
+    ) == 0
+    assert projection["publication_status"] == "unpublished"
+
+
+def test_issue634_scoped_connection_policy_run_records_safe_timeout_boundary() -> None:
+    report = _load_report(V5_REPORT_PATH)
+
+    assert report["diagnostic_boundary"] == {
+        "failure_stage": "add",
+        "safe_exception_class": "TimeoutError",
+        "root_cause": "relational_connection_pool_exhaustion",
+        "configured_pool_size": 1,
+        "configured_max_overflow": 0,
+        "cognee_pool_timeout_seconds": 280,
+        "observed_connection_lifetime_seconds": 281,
+        "external_provider_reached": False,
+        "context_broker_reached": False,
+        "raw_failure_retained": False,
+    }
+    assert report["projection_attempt"]["provider_request_count_observation"] == 0
+    assert report["application_canary"]["broker_request_count"] == 0
+    assert report["application_canary"]["temporary_authority_created"] is False
+
+
+def test_issue634_scoped_connection_policy_run_cleanup_is_closed() -> None:
+    report = _load_report(V5_REPORT_PATH)
+
+    assert report["safety"] == {
+        "synthetic_content_only": True,
+        "temporary_authority_created": False,
+        "temporary_authority_revocation": "not_applicable",
+        "runtime_connect_revoked": True,
+        "temporary_authentication_material_rotated_count": 6,
         "temporary_cognee_database_removed": True,
         "task_owned_graph_resource_count": 0,
         "sensitive_run_logs_removed": True,

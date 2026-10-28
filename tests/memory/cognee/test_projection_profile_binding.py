@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-import os
 
 import pytest
 
@@ -147,13 +146,6 @@ class RecordingProjection:
         return successful_output(command)
 
 
-class ConnectionCheckSensitiveProjection(RecordingProjection):
-    async def project(self, command):
-        if os.environ.get("COGNEE_SKIP_CONNECTION_TEST") != "true":
-            raise TimeoutError
-        return await super().project(command)
-
-
 def command_for(command_type):
     values = _command().model_dump(mode="python", exclude={"operation"})
     if command_type is RetrieveCommand:
@@ -243,35 +235,6 @@ async def test_approved_profile_invokes_every_operation_with_run_scoped_budget(
     assert result == successful_output(command)
     assert resolved_commands == [command]
     assert delegate.calls == [method_name]
-
-
-@pytest.mark.asyncio
-async def test_approved_profile_scopes_connection_check_skip_to_project(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("COGNEE_SKIP_CONNECTION_TEST", "false")
-    selected_profile = profile()
-    command = _command()
-    projection = bind_cognee_projection_profile(
-        ConnectionCheckSensitiveProjection(),
-        CogneeProjectionProfileBinding(
-            profile=selected_profile,
-            approval=approval(selected_profile),
-            runtime_identity=runtime_identity(),
-            deployment_id=selected_profile.deployment_id,
-            release_id=selected_profile.release_id,
-            secret_resolver=ValidSecretReferences(),
-            budget_authorization_resolver=lambda value: budget_authorization(
-                selected_profile, value
-            ),
-            provider_call_executor=TestProviderCallExecutor(),
-            clock=lambda: NOW,
-        ),
-    )
-
-    await projection.project(command)
-
-    assert os.environ["COGNEE_SKIP_CONNECTION_TEST"] == "false"
 
 
 @pytest.mark.asyncio

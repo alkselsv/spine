@@ -58,16 +58,16 @@
     "corrected_before_consumer_invocation": true
   },
   "connection_test_policy": {
-    "scoped_skip_enabled_only_during_guarded_provider_work": true,
-    "previous_environment_value_restored": true,
-    "cognee_connection_probe_blocker_reproduced": false,
+    "scoped_environment_flag_applied": true,
+    "cognee_1_5_4_flag_consumer_found": false,
+    "intended_bypass_verified": false,
     "physical_add_entered": true
   },
   "projection_attempt": {
     "outcome": "failed_closed",
     "safe_reason_code": "projection.request.physical_retryable",
     "provider_backed_path_entered": true,
-    "provider_request_count_observation": "not_available",
+    "provider_request_count_observation": 0,
     "provider_profile_limits_validated": true,
     "provider_internal_retry_limit": 2,
     "provider_backed_consumer_invocation_count": 1,
@@ -92,7 +92,12 @@
   "diagnostic_boundary": {
     "failure_stage": "add",
     "safe_exception_class": "TimeoutError",
-    "external_provider_reached": "not_observed",
+    "root_cause": "relational_connection_pool_exhaustion",
+    "configured_pool_size": 1,
+    "configured_max_overflow": 0,
+    "cognee_pool_timeout_seconds": 280,
+    "observed_connection_lifetime_seconds": 281,
+    "external_provider_reached": false,
     "context_broker_reached": false,
     "raw_failure_retained": false
   },
