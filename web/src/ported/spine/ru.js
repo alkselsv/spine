@@ -7,6 +7,7 @@ export const ru = {
     overview: "Обзор",
     groupWork: "Работа",
     groupObserve: "Наблюдение",
+    workflowStart: "Новая работа",
     knowledge: "Знания",
     chat: "Чат",
     qaRuns: "Запуски Q&A",

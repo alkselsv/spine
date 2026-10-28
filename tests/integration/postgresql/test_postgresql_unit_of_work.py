@@ -81,6 +81,9 @@ from spine.application.persistence.command_digest import digest_command
 from spine.application.persistence.boundary import CanonicalBoundaryCaptureCommand
 from spine.application.persistence.projection import ProjectionRunCommand
 from spine.application.persistence.outbox import OpaqueObjectReference
+from spine.application.persistence.workflow_runs import register_workflow_run_outbox_event
+from spine.application.persisted_workflow_runs import PersistedWorkflowRunAdmissionService
+from spine.application.workflow_runs import StartWorkflowCommand
 from spine.application.persistence.unit_of_work_activity import (
     unit_of_work_is_active,
 )
@@ -99,6 +102,7 @@ from spine.domain.audit import (
     CommandAuditPayload,
 )
 from spine.domain.common import ActorKind, ActorRef, ContextOrigin, EnvironmentKind
+from spine.domain.workflows import ClientRequestV1
 from spine.domain.context_bundles import (
     ContextBundle,
     ContextBundleEvidenceReference,
@@ -3212,6 +3216,134 @@ async def test_real_postgresql_failure_rolls_back_mutation_and_outbox_intent(
                     )
                 ).one()
             assert tuple(persisted) == (False, False)
+        finally:
+            await migration_engine.dispose()
+    finally:
+        await engine.dispose()
+
+
+async def test_workflow_outbox_failure_rolls_back_work_item_run_and_receipt(
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    workspace_id = synthetic_uuid(63800)
+    environment_id = synthetic_uuid(63801)
+    actor_id = synthetic_uuid(63802)
+    command_id = synthetic_uuid(63803)
+    trace_id = synthetic_uuid(63806)
+    version_id = synthetic_uuid(63807)
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(63808),
+        secret=b"issue-638-workflow-rollback-context-secret",
+    )
+    context = boundary.interactive(
+        scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id),
+        acting_subject_id=actor_id,
+        purpose=PersistencePurpose("workflow_execution"),
+        operation=PersistenceOperation("workflow.run.start"),
+        trace_id=trace_id,
+    )
+    events = create_outbox_event_registry()
+    register_workflow_run_outbox_event(events)
+    seed_persistence = PostgreSQLPersistence(
+        session_factory=session_factory,
+        context_verifier=boundary,
+        outbox_events=events,
+    )
+    setup_context = boundary.interactive(
+        scope=WorkspaceScope(workspace_id=workspace_id),
+        acting_subject_id=actor_id,
+        purpose=PersistencePurpose("contract_test"),
+        operation=PersistenceOperation("workspace_repository"),
+        trace_id=trace_id,
+    )
+    try:
+        async with seed_persistence.uow_factory(setup_context) as uow:
+            await uow.workspaces.add(
+                Workspace(
+                    id=workspace_id,
+                    slug="issue-638-workflow-rollback",
+                    display_name="Issue 638 rollback workspace",
+                )
+            )
+            await uow.environments.add(
+                Environment(
+                    id=environment_id,
+                    workspace_id=workspace_id,
+                    kind=EnvironmentKind.PRODUCTION,
+                    display_name="Issue 638 environment",
+                )
+            )
+            await uow.commit()
+
+        failing_persistence = PostgreSQLPersistence(
+            session_factory=lambda: FailureInjectingSession(
+                session_factory(), "during_flush"
+            ),  # type: ignore[arg-type]
+            context_verifier=boundary,
+            outbox_events=events,
+        )
+        service = PersistedWorkflowRunAdmissionService(failing_persistence.uow_factory)
+        command = StartWorkflowCommand(
+            command_id=command_id,
+            idempotency_key="issue-638-workflow-rollback",
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            actor=ActorRef(kind=ActorKind.HUMAN, id=actor_id),
+            environment=EnvironmentKind.PRODUCTION,
+            workflow_key="commercial.requirements",
+            workflow_version_id=version_id,
+            workflow_version="1.0.0",
+            work_item_key="issue-638-workflow-rollback",
+            client_request=ClientRequestV1(message="Prepare a proposal"),
+            trace_id=trace_id,
+            correlation_id=trace_id,
+            causation_id=command_id,
+        )
+
+        with pytest.raises(PersistenceUnavailableError):
+            await service.start(context=context, command=command)
+
+        migration_engine = create_async_engine(
+            postgresql_contract_database.migration_url.get_secret_value(),
+            hide_parameters=True,
+        )
+        try:
+            async with migration_engine.connect() as connection:
+                counts = (
+                    await connection.execute(
+                        text(
+                            "SELECT "
+                            "(SELECT count(*) FROM spine.work_items "
+                            "WHERE workspace_id = :workspace_id AND environment_id = :environment_id "
+                            "AND work_item_key = :work_item_key), "
+                            "(SELECT count(*) FROM spine.workflow_runs "
+                            "WHERE workspace_id = :workspace_id AND environment_id = :environment_id "
+                            "AND command_id = :command_id), "
+                            "(SELECT count(*) FROM spine.idempotency_receipts "
+                            "WHERE workspace_id = :workspace_id AND environment_id = :environment_id "
+                            "AND idempotency_key = :idempotency_key), "
+                            "(SELECT count(*) FROM spine.outbox_intents "
+                            "WHERE workspace_id = :workspace_id AND environment_id = :environment_id "
+                            "AND event_type = 'workflow.run-started' "
+                            "AND payload->>'command_id' = :command_id_text)"
+                        ),
+                        {
+                            "workspace_id": workspace_id,
+                            "environment_id": environment_id,
+                            "work_item_key": command.work_item_key,
+                            "command_id": command_id,
+                            "command_id_text": str(command_id),
+                            "idempotency_key": command.idempotency_key,
+                        },
+                    )
+                ).one()
+            assert tuple(counts) == (0, 0, 0, 0)
         finally:
             await migration_engine.dispose()
     finally:

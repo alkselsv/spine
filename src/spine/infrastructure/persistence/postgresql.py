@@ -149,6 +149,12 @@ from spine.application.persistence.ask_admission import (
     QA_ASK_CANCELLATION_EVENT_TYPE,
     register_ask_admission_outbox_event,
 )
+from spine.application.persistence.workflow_runs import (
+    register_workflow_run_outbox_event,
+)
+from spine.infrastructure.persistence.postgresql_workflow_runs import (
+    PostgreSQLWorkflowRunAdmissionRepository,
+)
 from spine.application.persistence.outbox import (
     OpaqueObjectReference,
     OutboxEventRegistry,
@@ -6324,6 +6330,7 @@ class PostgreSQLTenantUnitOfWork:
             message_id_factory=ask_admission_message_id_factory,
             clock=ask_admission_clock,
         )
+        self._workflow_runs = PostgreSQLWorkflowRunAdmissionRepository(self)
         self._feedback = PostgreSQLFeedbackRepository(self)
         self._disclosure_validations = PostgreSQLDisclosureValidationRepository(self)
         self._answer_disclosures = PostgreSQLAnswerDisclosureRepository(self)
@@ -6383,6 +6390,11 @@ class PostgreSQLTenantUnitOfWork:
     def ask_admissions(self) -> PostgreSQLAskAdmissionRepository:
         self._guard_active()
         return self._ask_admissions
+
+    @property
+    def workflow_runs(self) -> PostgreSQLWorkflowRunAdmissionRepository:
+        self._guard_active()
+        return self._workflow_runs
 
     @property
     def feedback(self) -> PostgreSQLFeedbackRepository:
@@ -6942,6 +6954,7 @@ class PostgreSQLPersistence:
         )
         register_projection_outbox_events(outbox_events)
         register_ask_admission_outbox_event(outbox_events)
+        register_workflow_run_outbox_event(outbox_events)
         selected_audit_events.require_sealed()
         self.tenant_uow_factory = PostgreSQLTenantUnitOfWorkFactory(
             session_factory=session_factory,

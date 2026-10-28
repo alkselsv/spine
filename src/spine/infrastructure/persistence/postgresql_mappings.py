@@ -133,6 +133,44 @@ answer_question_runs = Table(
     ),
 )
 
+work_items = Table(
+    "work_items",
+    metadata,
+    Column("id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workflow_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("work_item_key", Text, nullable=False),
+    Column("title", Text, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("triggered_by", JSONB, nullable=False),
+    Column("input", JSONB, nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("workspace_id", "environment_id", "id", name="pk_work_items"),
+)
+
+workflow_runs = Table(
+    "workflow_runs",
+    metadata,
+    Column("run_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("command_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("work_item_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workflow_key", Text, nullable=False),
+    Column("workflow_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workflow_version", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("run_version", Integer, nullable=False),
+    Column("started_by", JSONB, nullable=False),
+    Column("trace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("correlation_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("causation_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("workspace_id", "environment_id", "run_id", name="pk_workflow_runs"),
+)
+
 answer_question_attempts = Table(
     "answer_question_attempts",
     metadata,
@@ -1341,6 +1379,8 @@ __all__ = [
     "outbox_intents",
     "outbox_deliveries",
     "workspaces",
+    "work_items",
+    "workflow_runs",
     "source_objects",
     "source_revisions",
     "source_revision_provenance",

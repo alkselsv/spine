@@ -177,6 +177,13 @@ flowchart LR
 
 Состояние одного бизнес-объекта не должно одновременно независимо редактироваться в Postgres и Cognee. Сначала фиксируется каноническое изменение, затем outbox запускает обновление проекции.
 
+Первый разговорный запрос, запускающий работу, создаёт один tenant-scoped
+`WorkItem` и pinned `WorkflowRun`. PostgreSQL атомарно сохраняет их вместе с
+idempotency receipt и content-safe outbox intent; повторная доставка запускает
+Temporal workflow с canonical `run_id` как стабильным workflow ID. Workflow
+version выбирает сервер из immutable deployment registry. Чтение run ограничено
+авторизованными workspace и environment. См. ADR-0045.
+
 PostgreSQL использует три раздельных credential surface: migration owner,
 tenant-scoped runtime и узкий cross-tenant dispatcher. Dispatcher может читать
 неизменяемые outbox intents и изменять только operational delivery state; у

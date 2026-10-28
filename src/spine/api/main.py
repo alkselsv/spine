@@ -38,6 +38,7 @@ from spine.api.authorized_ask import install_authorized_ask_routes
 from spine.api.citation_inspector import install_citation_inspector_routes
 from spine.api.feedback import install_feedback_routes
 from spine.api.qa_runs import install_qa_run_routes
+from spine.api.workflow_runs import install_workflow_run_routes
 from spine.api.qa_stream import (
     QAStreamDisclosureAuthorizer,
     QAStreamReader,
@@ -87,6 +88,10 @@ from spine.domain.common import EnvironmentKind
 from spine.application.citation_inspector import CitationInspectorService
 from spine.application.feedback import FeedbackService
 from spine.application.qa_run_history import QARunHistoryService
+from spine.application.persisted_workflow_runs import (
+    PersistedWorkflowRunAdmissionService,
+)
+from spine.application.workflow_runs import WorkflowVersionResolver
 from spine.application.parsed_content_inspection import ParsedContentInspectionService
 from spine.application.processing_commands import ProcessingCommandService
 from spine.application.telemetry import (
@@ -248,6 +253,8 @@ def create_app(
     feedback_service: FeedbackService | None = None,
     qa_run_history_service: QARunHistoryService | None = None,
     qa_run_history_cursor_secret: bytes | None = None,
+    workflow_run_admission_service: PersistedWorkflowRunAdmissionService | None = None,
+    workflow_version_resolver: WorkflowVersionResolver | None = None,
     qa_stream_service: QAStreamReader | None = None,
     qa_stream_disclosure_authorizer: QAStreamDisclosureAuthorizer | None = None,
     parsed_content_inspection_service: ParsedContentInspectionService | None = None,
@@ -527,6 +534,16 @@ def create_app(
             application,
             service=qa_run_history_service,
             cursor_secret=qa_run_history_cursor_secret,
+        )
+    if workflow_run_admission_service is not None:
+        if type(authorization_runtime) is not ApiAuthorizationRuntime:
+            raise RuntimeError("Workflow run routes require an authorization runtime.")
+        if workflow_version_resolver is None:
+            raise RuntimeError("Workflow run routes require a pinned version resolver.")
+        install_workflow_run_routes(
+            application,
+            service=workflow_run_admission_service,
+            version_resolver=workflow_version_resolver,
         )
     if parsed_content_inspection_service is not None:
         if type(authorization_runtime) is not ApiAuthorizationRuntime:

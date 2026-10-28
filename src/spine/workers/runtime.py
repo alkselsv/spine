@@ -85,6 +85,10 @@ from spine.infrastructure.persistence.projection_composition import (
     create_production_outbox_worker,
     register_projection_delivery_routes,
 )
+from spine.infrastructure.workflows.run_start import (
+    build_workflow_run_start_delivery_binding,
+    register_workflow_run_start_delivery_route,
+)
 from spine.memory.cognee.context_projection import CogneeContextProjection
 from spine.memory.cognee.indexing import CogneeChunkProjectionStore
 from spine.memory.cognee.projection_profile_binding import (
@@ -128,6 +132,8 @@ from spine.workflows.temporal.bootstrap import (
     register_ask_admission_delivery_route,
 )
 from spine.workflows.temporal.client import TemporalSdkWorkflowClient
+from spine.workflows.temporal.run_start_client import TemporalSdkWorkflowRunClient
+from spine.application.workflows.run_start_dispatch import WORKFLOW_RUN_START_TYPE
 
 
 class OutboxWorkerSettings(BaseSettings):
@@ -187,21 +193,31 @@ class _LazyTemporalWorkflowClient:
 
     def __init__(self, settings: OutboxWorkerSettings) -> None:
         self._settings = settings
+        self._sdk_client = None
         self._client: TemporalSdkWorkflowClient | None = None
+        self._run_client: TemporalSdkWorkflowRunClient | None = None
         self._lock = asyncio.Lock()
+
+    async def _resolved_sdk(self):
+        if self._sdk_client is not None:
+            return self._sdk_client
+        async with self._lock:
+            if self._sdk_client is None:
+                from temporalio.client import Client
+                self._sdk_client = await Client.connect(
+                    self._settings.temporal_address,
+                    namespace=self._settings.temporal_namespace,
+                )
+        return self._sdk_client
 
     async def _resolved(self) -> TemporalSdkWorkflowClient:
         if self._client is not None:
             return self._client
+        sdk = await self._resolved_sdk()
         async with self._lock:
             if self._client is None:
-                from temporalio.client import Client
                 from temporalio.common import WorkflowIDReusePolicy
 
-                sdk = await Client.connect(
-                    self._settings.temporal_address,
-                    namespace=self._settings.temporal_namespace,
-                )
                 self._client = TemporalSdkWorkflowClient(
                     sdk,
                     task_queue=self._settings.temporal_task_queue,
@@ -209,11 +225,28 @@ class _LazyTemporalWorkflowClient:
                 )
         return self._client
 
+    async def _resolved_run(self) -> TemporalSdkWorkflowRunClient:
+        if self._run_client is not None:
+            return self._run_client
+        sdk = await self._resolved_sdk()
+        async with self._lock:
+            if self._run_client is None:
+                from temporalio.common import WorkflowIDReusePolicy
+
+                self._run_client = TemporalSdkWorkflowRunClient(
+                    sdk,
+                    task_queue=self._settings.temporal_task_queue,
+                    id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+                )
+        return self._run_client
+
     async def start_workflow(self, **kwargs):
+        if kwargs.get("workflow_type") == WORKFLOW_RUN_START_TYPE:
+            return await (await self._resolved_run()).start_workflow(**kwargs)
         return await (await self._resolved()).start_workflow(**kwargs)
 
     async def get_workflow(self, **kwargs):
-        return await (await self._resolved()).get_workflow(**kwargs)
+        return await (await self._resolved_run()).get_workflow(**kwargs)
 
     async def request_cancellation(self, **kwargs):
         return await (await self._resolved()).request_cancellation(**kwargs)
@@ -1104,6 +1137,7 @@ def create_production_outbox_worker_runtime(
     routes = OutboxDeliveryRouteRegistry(version="issue508.worker.v1")
     register_projection_delivery_routes(routes)
     register_ask_admission_delivery_route(routes)
+    register_workflow_run_start_delivery_route(routes)
     routes.seal()
     repository = PostgreSQLOutboxDeliveryRepository(
         session_factory=dispatcher_sessions,
@@ -1117,6 +1151,7 @@ def create_production_outbox_worker_runtime(
         consumer_bindings=(
             build_ask_admission_delivery_binding(temporal_client),
             build_ask_cancellation_delivery_binding(temporal_client),
+            build_workflow_run_start_delivery_binding(temporal_client),
         ),
         audit_events=audit_events,
         diagnostic_events=diagnostic_events,
