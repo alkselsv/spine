@@ -167,16 +167,13 @@ thresholds не утверждены, recovered application canary не квал
 ### Актуальные release blockers
 
 - #634 — provider-backed projection publication и один authorized Context Broker
-  canary на fresh recovered target. Третий авторизованный run заранее завершил
-  локальный Cognee setup, повторно дошёл до approved provider и снова fail-closed
-  завершился по timeout в physical projection call без
-  receipt/snapshot/activation. Это воспроизводит physical projection-call
-  timeout независимо от прежней schema-setup ошибки; Broker не вызывался. Нужны
-  диагностика и устранение этого blocker, новый отдельно авторизованный run и
-  independent evidence review. Safe adapter diagnostic теперь исключает
-  traceback-derived filename и сохраняет только закрытые stage/exception-class,
-  поэтому следующий run сможет зафиксировать точный physical substage без raw
-  error; сам provider timeout этим не устранён.
+  canary на fresh recovered target. Четвёртый авторизованный run заранее
+  завершил локальный Cognee setup, выполнил ровно один consumer invocation и
+  fail-closed завершился по `TimeoutError` в точном Cognee `add` substage без
+  receipt/snapshot/activation. Безопасная диагностика теперь подтверждает место
+  сбоя без raw error; Broker не вызывался из-за отсутствия публикации. Нужны
+  диагностика и устранение timeout в `add`, новый отдельно авторизованный run и
+  independent evidence review.
 - #510 — полный 149-case run approved Golden Dataset через production durable
   Q&A/capture path, metadata-only baseline и отдельное утверждение versioned
   numerical thresholds Product Owner-ом.

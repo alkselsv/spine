@@ -21,6 +21,10 @@ V3_REPORT_PATH = (
     PROJECT_ROOT
     / "docs/qualification/issue-634-recovered-application-canary-v3.json"
 )
+V4_REPORT_PATH = (
+    PROJECT_ROOT
+    / "docs/qualification/issue-634-recovered-application-canary-v4.json"
+)
 
 
 def _load_report(path: Path) -> dict[str, Any]:
@@ -132,7 +136,7 @@ def test_issue634_cleanup_is_closed() -> None:
 def test_issue634_report_is_content_free() -> None:
     reports = tuple(
         _load_report(path)
-        for path in (V1_REPORT_PATH, V2_REPORT_PATH, V3_REPORT_PATH)
+        for path in (V1_REPORT_PATH, V2_REPORT_PATH, V3_REPORT_PATH, V4_REPORT_PATH)
     )
 
     forbidden = (
@@ -351,6 +355,157 @@ def test_issue634_repeated_timeout_run_skips_broker_without_publication() -> Non
 
 def test_issue634_repeated_timeout_run_cleanup_is_closed() -> None:
     report = _load_report(V3_REPORT_PATH)
+
+    assert report["safety"] == {
+        "synthetic_content_only": True,
+        "temporary_authority_created": False,
+        "temporary_authority_revocation": "not_applicable",
+        "runtime_connect_revoked": True,
+        "temporary_authentication_material_rotated": True,
+        "temporary_cognee_database_removed": True,
+        "task_owned_graph_resource_count": 0,
+        "sensitive_run_logs_removed": True,
+        "target_stopped_after_capture": True,
+        "serving_activated": False,
+        "cutover_performed": False,
+    }
+
+
+def test_issue634_add_timeout_run_records_blocked_decision() -> None:
+    report = _load_report(V4_REPORT_PATH)
+
+    assert report["schema_version"] == "recovered-application-canary:v4"
+    assert report["run_reference"] == "run:issue634-recovered-canary-004"
+    assert report["target_commit"] == "fb80cf52b24d392e9dc557b26ab1eb54149b5351"
+    assert report["status"] == "blocked"
+    assert report["decision"] == "not_verified"
+    assert report["production_qualified"] is False
+    assert report["independent_review"] == "required"
+
+
+def test_issue634_add_timeout_run_records_authorization() -> None:
+    report = _load_report(V4_REPORT_PATH)
+
+    assert report["authorization_reference"] == (
+        "session:issue634-recovered-canary-004"
+    )
+    assert report["authorization_publication"] == "not_authorized"
+    assert report["authorization_record"] == {
+        "record_timing": "before_provider_request",
+        "target_commit": "fb80cf52b24d392e9dc557b26ab1eb54149b5351",
+        "target_reference": "spine634canary004",
+        "provider_destination": "api.vsellm.ru/v1",
+        "provider_profile": "cognee-approved-production",
+        "budget_usd": "1.00",
+        "concurrency_limit": 1,
+        "provider_request_limit": 1000,
+        "input_token_limit": 1000000,
+        "output_token_limit": 100000,
+        "request_timeout_seconds": 120,
+        "provider_internal_retry_limit": 2,
+        "run_deadline_seconds": 3600,
+        "hard_expiry": "2026-10-28T15:30:00Z",
+        "projection_consumer_invocation_limit": 1,
+        "context_broker_request_limit": 1,
+        "synthetic_data_only": True,
+        "serving_and_cutover_authorized": False,
+    }
+
+
+def test_issue634_add_timeout_run_records_preflight() -> None:
+    report = _load_report(V4_REPORT_PATH)
+
+    assert report["offline_profile_preflight"] == {
+        "profile_document": "verified",
+        "profile_repository": "resolved",
+        "profile_reference_match": True,
+        "provider_request_count": 0,
+        "broker_request_count": 0,
+    }
+
+
+def test_issue634_add_timeout_run_records_pre_consumer_setup() -> None:
+    report = _load_report(V4_REPORT_PATH)
+
+    assert report["pre_consumer_runner_setup"] == {
+        "initial_attempt_outcome": "failed_closed",
+        "consumer_invocation_count": 0,
+        "provider_request_count": 0,
+        "corrected_before_consumer_invocation": True,
+    }
+
+
+def test_issue634_add_timeout_run_records_unpublished_projection() -> None:
+    report = _load_report(V4_REPORT_PATH)
+    projection = report["projection_attempt"]
+
+    assert projection["outcome"] == "failed_closed"
+    assert projection["safe_reason_code"] == "projection_request_physical_retryable"
+    assert projection["provider_backed_path_entered"] is True
+    assert projection["provider_profile_limits_validated"] is True
+    assert projection["provider_internal_retry_limit"] == 2
+    assert projection["pre_provider_setup_completed"] is True
+    assert projection["provider_backed_consumer_invocation_count"] == 1
+    assert projection["projection_run_count"] == 1
+    assert sum(
+        projection[key]
+        for key in (
+            "projection_receipt_count",
+            "projection_snapshot_count",
+            "projection_activation_count",
+            "active_projection_count",
+            "source_projection_reference_count",
+            "reconciliation_result_count",
+        )
+    ) == 0
+    assert projection["publication_status"] == "unpublished"
+
+
+def test_issue634_add_timeout_run_records_exact_failed_stage() -> None:
+    report = _load_report(V4_REPORT_PATH)
+
+    assert report["diagnostic_boundary"] == {
+        "failure_stage": "add",
+        "safe_exception_class": "TimeoutError",
+        "external_provider_reached": "not_observed",
+        "context_broker_reached": False,
+        "prior_authorized_timeout_reproduced": True,
+        "raw_failure_retained": False,
+    }
+
+
+def test_issue634_add_timeout_run_skips_broker_without_publication() -> None:
+    report = _load_report(V4_REPORT_PATH)
+
+    assert report["application_canary"] == {
+        "outcome": "not_executed",
+        "safe_reason_code": "publication_unavailable",
+        "broker_request_count": 0,
+        "context_bundle_count": 0,
+        "context_bundle_issued": False,
+        "temporary_authority_created": False,
+        "temporary_authority_revocation": "not_applicable",
+    }
+
+
+def test_issue634_add_timeout_run_records_exact_remaining_conditions() -> None:
+    report = _load_report(V4_REPORT_PATH)
+
+    assert report["remaining_conditions"] == [
+        "provider_backed_projection_completion_within_authorized_bounds_not_verified",
+        "reconciliation_not_verified",
+        "provider_backed_projection_and_publication_not_verified",
+        "authorized_context_broker_request_not_verified",
+        "workspace_and_environment_isolation_not_verified",
+        "current_policy_enforcement_not_verified",
+        "publication_pin_not_verified",
+        "source_revision_lineage_not_verified",
+        "independent_final_evidence_review_required",
+    ]
+
+
+def test_issue634_add_timeout_run_cleanup_is_closed() -> None:
+    report = _load_report(V4_REPORT_PATH)
 
     assert report["safety"] == {
         "synthetic_content_only": True,
