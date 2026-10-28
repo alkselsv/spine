@@ -665,25 +665,47 @@ class _ScopedPort:
         uow_factory: object,
         boundary: TrustedContextBoundary,
         service_principal_id: UUID,
-        operation: str,
     ) -> None:
         self._uow_factory = uow_factory
         self._boundary = boundary
         self._service_principal_id = service_principal_id
-        self._operation = operation
 
     def context(self):
         scope = _active_request_scope()
-        return self._boundary.worker(
-            scope=EnvironmentScope(
-                workspace_id=scope.workspace_id,
-                environment_id=scope.environment_id,
-            ),
+        return _context_broker_persistence_context(
+            boundary=self._boundary,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
             service_principal_id=self._service_principal_id,
-            purpose=PersistencePurpose("governed_qa.context.v1"),
-            operation=PersistenceOperation(self._operation),
             trace_id=scope.trace_id,
         )
+
+
+def _context_broker_persistence_context(
+    *,
+    boundary: TrustedContextBoundary,
+    workspace_id: UUID,
+    environment_id: UUID,
+    service_principal_id: UUID,
+    trace_id: UUID,
+):
+    """Issue the single qualified authority used by one Broker request.
+
+    Repository method names are implementation details, not independently
+    delegated operations. Qualification is bound to the Context Broker's
+    capability-level retrieval operation for every persistence unit of work.
+    """
+
+    return boundary.worker(
+        scope=EnvironmentScope(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+        ),
+        service_principal_id=service_principal_id,
+        purpose=PersistencePurpose("answer_question"),
+        operation=PersistenceOperation("retrieve_context"),
+        trace_id=trace_id,
+    )
 
 
 class _ProfileRepository(_ScopedPort):
@@ -2102,13 +2124,11 @@ class _ScopedContextBundleRepository:
         self._service_principal_id = service_principal_id
 
     def _context(self, workspace_id: UUID, environment_id: UUID, trace_id: UUID):
-        return self._boundary.worker(
-            scope=EnvironmentScope(
-                workspace_id=workspace_id, environment_id=environment_id
-            ),
+        return _context_broker_persistence_context(
+            boundary=self._boundary,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
             service_principal_id=self._service_principal_id,
-            purpose=PersistencePurpose("governed_qa.context_bundle.v1"),
-            operation=PersistenceOperation("context_bundles"),
             trace_id=trace_id,
         )
 
@@ -2292,7 +2312,7 @@ async def build_production_qa_capability_graph(
     }
     content_authorization = ContentAuthorizationDecisionService(
         repository=_CurrentContentAuthorization(
-            **port_values, operation="resolve_content_authorization"
+            **port_values
         ),
         identity_authority=_CurrentIdentityAuthority(session_factory),
         noninteractive_authority=_CurrentNoninteractiveAuthority(
@@ -2301,18 +2321,14 @@ async def build_production_qa_capability_graph(
             trusted_contexts,
         ),
     )
-    snapshot_members = _SnapshotMembers(
-        **port_values, operation="resolve_projection_members"
-    )
+    snapshot_members = _SnapshotMembers(**port_values)
     scope_resolver = AuthorizedRetrievalScopeResolver(
         authorization=content_authorization,
         snapshot_members=snapshot_members,  # type: ignore[arg-type]
         provider_scope_safety=_CanonicalSourceIsolation(),
     )
     profile_resolver = ServerApprovedContextProfileResolver(
-        repository=_ProfileRepository(
-            **port_values, operation="resolve_context_profile"
-        ),
+        repository=_ProfileRepository(**port_values),
         capability_policy=_AllowContextRetrieval(),
     )
     plan_builder = PhysicalReadPlanBuilder(
@@ -2324,18 +2340,13 @@ async def build_production_qa_capability_graph(
     broker = AuthorizedContextBrokerApplicationService(
         trusted_context=trusted_contexts,
         profile_resolver=profile_resolver,
-        publication=_ActivePublication(
-            **port_values, operation="resolve_active_projection"
-        ),
+        publication=_ActivePublication(**port_values),
         scope_resolver=scope_resolver,
-        read_model=_ContextReadModel(
-            **port_values, operation="resolve_projection_read_model"
-        ),
+        read_model=_ContextReadModel(**port_values),
         plan_builder=plan_builder,
         retrieval=retrieval,
         evidence_verifier=_CanonicalEvidenceVerifier(
             **port_values,
-            operation="verify_projection_evidence",
             authorization=content_authorization,
         ),
         bundles=bundle_repository,  # type: ignore[arg-type]
@@ -2346,13 +2357,10 @@ async def build_production_qa_capability_graph(
         authority_resolver=qualification_authority,
         service_principal_id=service_principal_id,
     )
-    revalidator = _CurrentBundleRevalidator(
-        **port_values, operation="revalidate_context_bundle"
-    )
+    revalidator = _CurrentBundleRevalidator(**port_values)
     disclosure_revalidator = DisclosureRevalidationService(
         state_provider=_CurrentDisclosureStateProvider(
             **port_values,
-            operation="revalidate_answer_disclosure",
             authorization=content_authorization,
         ),
         result_repository=disclosure_validation_repository,  # type: ignore[arg-type]
@@ -2379,7 +2387,6 @@ async def build_production_qa_capability_graph(
         validator=ExistingAnswerQuestionCandidateValidator(
             citations=_CurrentCitationValidator(  # type: ignore[arg-type]
                 **port_values,
-                operation="validate_answer_citation",
                 authorization=content_authorization,
             ),
             semantic_support=SemanticSupportValidationService(
@@ -2392,7 +2399,6 @@ async def build_production_qa_capability_graph(
             plans=_ValidationPlans(
                 boundary_members=_CanonicalBoundaryMembers(
                     **port_values,
-                    operation="resolve_canonical_completeness_scope",
                 ),
                 authorization=content_authorization,
                 conflict_validator=ConfiguredGroundedConflictValidator(

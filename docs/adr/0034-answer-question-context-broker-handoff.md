@@ -13,6 +13,12 @@ Broker without adding a second retrieval or authorization path.
   accepts the server-resolved `ContextProfile` and trusted request references;
   callers cannot choose a projection, physical namespace, activation,
   canonical boundary or `as_of` cut.
+- One broker request is one delegated persistence operation:
+  `answer_question` / `retrieve_context`. Every tenant Unit of Work opened to
+  resolve the profile, publication, authorized scope, read model, evidence or
+  immutable bundle uses that same server-selected authority. Repository method
+  names are implementation details and cannot select or broaden authority;
+  persistence outside the broker request retains its own bounded operation.
 - A successful response carries only a `ContextBundleRef`. The application
   seam loads the immutable bundle from its tenant-scoped store and validates
   request, run/attempt, idempotency, publication, profile and every execution

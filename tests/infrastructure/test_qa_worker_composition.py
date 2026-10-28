@@ -30,19 +30,24 @@ from spine.domain.context_profiles import (
 from spine.domain.projections import ProjectionFreshness, ProjectionHealth
 from spine.domain.sources import RevisionKind
 from spine.infrastructure.qa_worker_composition import (
+    _ACTIVE_REQUEST_SCOPE,
     _ACTIVE_AUTHORIZATION_CONTEXT,
     _ACTIVE_COMPLETENESS_INTENT,
     _ACTIVE_EVIDENCE_CONTENT,
     _ACTIVE_RETRIEVAL_SCOPE,
+    _ActiveRequestScope,
     _ActiveCompletenessIntent,
     _CanonicalEvidenceVerifier,
     _CurrentNoninteractiveAuthority,
     _ParsedProjectionRetrieval,
+    _ProfileRepository,
+    _ScopedContextBundleRepository,
     _TrustedContextRegistry,
     _ValidationPlans,
     _projection_reference_matches_evidence,
     OneShotQualifiedContextBroker,
 )
+from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.memory.contracts import (
     ContextOutcome,
     ContextReasonCode,
@@ -235,6 +240,82 @@ async def test_one_shot_qualified_broker_denies_before_request_without_authority
 
 
 @pytest.mark.asyncio
+async def test_broker_repositories_share_one_qualified_persistence_operation() -> None:
+    workspace_id = UUID(int=1)
+    environment_id = UUID(int=2)
+    trace_id = UUID(int=3)
+    service_principal_id = UUID(int=4)
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=UUID(int=5), secret=b"b" * 32
+    )
+    contexts = []
+
+    class ContextProfiles:
+        async def resolve_for_scope(self, **_: object) -> object:
+            return object()
+
+    class ContextBundles:
+        async def create(self, bundle: object) -> object:
+            return bundle
+
+    class UnitOfWork:
+        context_profiles = ContextProfiles()
+        context_bundles = ContextBundles()
+
+        async def __aenter__(self) -> "UnitOfWork":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def commit(self) -> None:
+            return None
+
+    def uow_factory(context: object) -> UnitOfWork:
+        contexts.append(boundary.verify(context))  # type: ignore[arg-type]
+        return UnitOfWork()
+
+    profile_repository = _ProfileRepository(
+        uow_factory=uow_factory,
+        boundary=boundary,
+        service_principal_id=service_principal_id,
+    )
+    bundle_repository = _ScopedContextBundleRepository(
+        uow_factory=uow_factory,
+        boundary=boundary,
+        service_principal_id=service_principal_id,
+    )
+    token = _ACTIVE_REQUEST_SCOPE.set(
+        _ActiveRequestScope(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            trace_id=trace_id,
+        )
+    )
+    try:
+        await profile_repository.resolve_for_scope()
+        await bundle_repository.create_or_replay(
+            SimpleNamespace(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                run_id=trace_id,
+            )
+        )
+    finally:
+        _ACTIVE_REQUEST_SCOPE.reset(token)
+
+    assert len(contexts) == 2
+    assert {
+        (
+            context.service_principal_id,
+            context.purpose.value,
+            context.operation.value,
+        )
+        for context in contexts
+    } == {(service_principal_id, "answer_question", "retrieve_context")}
+
+
+@pytest.mark.asyncio
 async def test_current_noninteractive_authority_requires_server_issued_reference() -> None:
     service_principal_id = UUID(int=7)
     registry = _TrustedContextRegistry(service_principal_id)
@@ -333,7 +414,6 @@ async def test_evidence_verifier_preserves_authorization_mode(
         uow_factory=None,
         boundary=object(),  # type: ignore[arg-type]
         service_principal_id=UUID(int=7),
-        operation="verify_projection_evidence",
     )
     context = TrustedAuthorizationContext(
         mode=mode,
