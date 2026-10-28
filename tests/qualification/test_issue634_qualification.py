@@ -45,6 +45,10 @@ V9_REPORT_PATH = (
     PROJECT_ROOT
     / "docs/qualification/issue-634-recovered-application-canary-v9.json"
 )
+V9_REVIEW_PATH = (
+    PROJECT_ROOT
+    / "docs/qualification/issue-634-recovered-application-canary-v9-review.json"
+)
 
 
 def _load_report(path: Path) -> dict[str, Any]:
@@ -888,6 +892,10 @@ def test_issue634_run009_records_active_reconciled_publication() -> None:
     assert report["schema_version"] == "recovered-application-canary:v9"
     assert report["run_reference"] == "run:issue634-recovered-canary-009"
     assert report["target_commit"] == "f5d7587b83cb5589a4bdf6a762438f2c20f1156d"
+    assert report["status"] == "review_pending"
+    assert report["decision"] == "verified_pending_independent_review"
+    assert report["production_qualified"] is False
+    assert report["independent_review"] == "required"
     projection = report["projection_attempt"]
     assert projection["outcome"] == "completed"
     assert projection["diagnostic_causation_matches_event_id"] is True
@@ -939,6 +947,34 @@ def test_issue634_run009_records_exact_remaining_conditions() -> None:
     assert report["remaining_conditions"] == [
         "provider_request_and_token_budget_independent_metering_not_verified",
         "independent_final_evidence_review_required",
+    ]
+
+
+def test_issue634_run009_review_approves_immutable_execution_record() -> None:
+    review = _load_report(V9_REVIEW_PATH)
+
+    assert review["schema_version"] == "recovered-application-canary-review:v1"
+    assert review["run_reference"] == "run:issue634-recovered-canary-009"
+    assert review["reviewed_record"]["schema_version"] == (
+        "recovered-application-canary:v9"
+    )
+    assert review["reviewed_record"]["sha256"] == (
+        "4648bdd561549bf1c4e349b79a2e19cc36e9be4b640cceb06912dccbaa013437"
+    )
+    assert review["standards_review"] == {
+        "decision": "approved",
+        "hard_violation_count": 0,
+        "judgement_call_smell_count": 0,
+    }
+    assert review["spec_review"] == {
+        "decision": "approved",
+        "finding_count": 0,
+    }
+    assert review["status"] == "passed"
+    assert review["decision"] == "verified"
+    assert review["production_qualified"] is True
+    assert review["remaining_conditions"] == [
+        "provider_request_and_token_budget_independent_metering_not_verified"
     ]
 
 
