@@ -74,10 +74,14 @@ class CogneePublicStructuredRetrievalSdk:
 
     def __init__(self, sdk: Any | None = None) -> None:
         if sdk is None:
-            from spine.memory.cognee_memory import configure_environment
+            from spine.memory.cognee_memory import (
+                configure_environment,
+                freeze_cognee_environment,
+            )
 
             configure_environment()
             import cognee
+            freeze_cognee_environment()
 
             sdk = cognee
         self._sdk = sdk

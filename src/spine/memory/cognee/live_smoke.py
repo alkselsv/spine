@@ -80,10 +80,14 @@ def _data_id(row: object) -> Any:
 async def run_local_smoke(config: LiveSmokeConfig) -> LiveSmokeReport:
     """Run the physical local profile against only public Cognee entrypoints."""
 
-    from spine.memory.cognee_memory import configure_environment
+    from spine.memory.cognee_memory import (
+        configure_environment,
+        freeze_cognee_environment,
+    )
 
     configure_environment()
     import cognee
+    freeze_cognee_environment()
 
     api = build_api_matrix(cognee)
     if api.status is not SmokeStatus.SUPPORTED:
