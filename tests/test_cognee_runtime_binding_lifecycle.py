@@ -141,6 +141,30 @@ def test_configure_environment_refreshes_cached_base_configuration(
     assert configured.data_root == str((tmp_path / "data").resolve())
 
 
+def test_configure_environment_selects_shared_pgvector_without_createdb(
+    cached_cognee_configuration: dict[str, ConfigGetter],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VECTOR_DB_PROVIDER", "pgvector")
+    monkeypatch.delenv("VECTOR_DATASET_DATABASE_HANDLER", raising=False)
+
+    cognee_memory.configure_environment()
+
+    assert os.environ["VECTOR_DATASET_DATABASE_HANDLER"] == "pgvector_shared"
+
+
+def test_configure_environment_preserves_explicit_vector_dataset_handler(
+    cached_cognee_configuration: dict[str, ConfigGetter],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VECTOR_DB_PROVIDER", "pgvector")
+    monkeypatch.setenv("VECTOR_DATASET_DATABASE_HANDLER", "operator_selected")
+
+    cognee_memory.configure_environment()
+
+    assert os.environ["VECTOR_DATASET_DATABASE_HANDLER"] == "operator_selected"
+
+
 def test_load_configured_cognee_accepts_the_frozen_binding_on_repeat(
     cached_cognee_configuration: dict[str, ConfigGetter],
 ) -> None:

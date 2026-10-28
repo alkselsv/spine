@@ -214,6 +214,10 @@ def _assert_exact_production_profile() -> None:
     assert os.environ.get("DB_PROVIDER", "").lower() in {"postgres", "postgresql"}
     assert os.environ.get("GRAPH_DATABASE_PROVIDER", "").lower() == "neo4j"
     assert os.environ.get("VECTOR_DB_PROVIDER", "").lower() == "pgvector"
+    assert (
+        os.environ.get("VECTOR_DATASET_DATABASE_HANDLER", "pgvector_shared")
+        == "pgvector_shared"
+    )
     missing = tuple(name for name in _REQUIRED_SETTINGS if not os.environ.get(name))
     assert missing == (), f"missing qualification settings: {', '.join(missing)}"
     missing_modules = tuple(

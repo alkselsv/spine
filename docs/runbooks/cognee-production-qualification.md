@@ -47,6 +47,7 @@ NEO4J_COMMUNITY_IMAGE=spine/neo4j-cognee:5-community
 NEO4J_ENCRYPTION_KEY=... # dedicated qualification secret, never use test_key
 NEO4J_COMMUNITY_MAX_CONTAINERS=4
 VECTOR_DB_PROVIDER=pgvector
+VECTOR_DATASET_DATABASE_HANDLER=pgvector_shared
 VECTOR_DB_HOST=...
 VECTOR_DB_PORT=...
 VECTOR_DB_NAME=...
@@ -59,6 +60,11 @@ EMBEDDING_MODEL=...
 EMBEDDING_DIMENSIONS=...
 SPINE_COGNEE_QUALIFICATION_RUN_ID=issue212-run-001
 ```
+
+`pgvector_shared` keeps each dataset in its own PostgreSQL schema inside the
+already provisioned Cognee database. The runtime role needs `CREATE` on that
+database but must not receive cluster-wide `CREATEDB`; Cognee's default
+`pgvector` handler is not an approved least-privilege production profile.
 
 Supply provider keys/endpoints through the deployment secret mechanism. Do not
 commit them or copy them into the qualification report.

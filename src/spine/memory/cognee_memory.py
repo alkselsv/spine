@@ -51,6 +51,7 @@ _COGNEE_DATABASE_ENVIRONMENT_KEYS = (
 _cognee_binding_lock = Lock()
 _cognee_database_binding_digest: str | None = None
 _cognee_database_binding_frozen = False
+_PGVECTOR_SHARED_DATASET_HANDLER = "pgvector_shared"
 
 
 class CogneeEnvironmentBindingError(RuntimeError):
@@ -85,6 +86,8 @@ def configure_environment() -> None:
     if settings.llm_api_key:
         os.environ.setdefault("LLM_API_KEY", settings.llm_api_key)
 
+    _select_least_privilege_vector_dataset_handler()
+
     for key in (
         "SYSTEM_ROOT_DIRECTORY",
         "DATA_ROOT_DIRECTORY",
@@ -94,6 +97,24 @@ def configure_environment() -> None:
         Path(os.environ[key]).mkdir(parents=True, exist_ok=True)
 
     _refresh_loaded_cognee_configuration()
+
+
+def _select_least_privilege_vector_dataset_handler() -> None:
+    """Keep the pgvector runtime inside its already provisioned database.
+
+    Cognee's default ``pgvector`` handler creates one PostgreSQL database per
+    dataset and therefore requires the runtime role to hold ``CREATEDB``.  The
+    pinned 1.5.4 ``pgvector_shared`` handler provides the same dataset boundary
+    with one schema per dataset.  An operator may still select another handler
+    explicitly, but Spine never broadens the role merely because the setting
+    was omitted.
+    """
+
+    if os.environ.get("VECTOR_DB_PROVIDER", "").lower() == "pgvector":
+        os.environ.setdefault(
+            "VECTOR_DATASET_DATABASE_HANDLER",
+            _PGVECTOR_SHARED_DATASET_HANDLER,
+        )
 
 
 def _refresh_loaded_cognee_configuration() -> None:
