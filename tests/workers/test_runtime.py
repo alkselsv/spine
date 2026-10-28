@@ -63,6 +63,14 @@ class RecordingEngine:
         self.disposed = True
 
 
+class RecordingProviderUsageMeter:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 def outbox_runtime(worker: RecordingWorker, *, shutdown_timeout_seconds: float = 1.0):
     from spine.workers.runtime import ProductionOutboxWorkerRuntime
 
@@ -92,6 +100,27 @@ async def test_shutdown_stops_claiming_after_current_dispatch_batch_drains() -> 
     await runtime.close()
 
     assert worker.calls == 1
+    assert runtime.runtime_engine.disposed is True
+    assert runtime.dispatcher_engine.disposed is True
+
+
+@pytest.mark.asyncio
+async def test_shutdown_closes_provider_usage_meter_with_database_engines() -> None:
+    from spine.workers.runtime import ProductionOutboxWorkerRuntime
+
+    worker = RecordingWorker()
+    meter = RecordingProviderUsageMeter()
+    runtime = ProductionOutboxWorkerRuntime(
+        worker=worker,
+        settings=OutboxWorkerSettings(service_principal_id=UUID(int=500)),
+        runtime_engine=RecordingEngine(),
+        dispatcher_engine=RecordingEngine(),
+        provider_usage_meter=meter,  # type: ignore[arg-type]
+    )
+
+    await runtime.close()
+
+    assert meter.closed is True
     assert runtime.runtime_engine.disposed is True
     assert runtime.dispatcher_engine.disposed is True
 

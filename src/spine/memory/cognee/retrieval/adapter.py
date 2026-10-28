@@ -74,12 +74,9 @@ class CogneePublicStructuredRetrievalSdk:
 
     def __init__(self, sdk: Any | None = None) -> None:
         if sdk is None:
-            from spine.memory.cognee_memory import configure_environment
+            from spine.memory.cognee_memory import load_configured_cognee
 
-            configure_environment()
-            import cognee
-
-            sdk = cognee
+            sdk = load_configured_cognee()
         self._sdk = sdk
         self.version = str(getattr(sdk, "__version__", ""))
         self.supports_source_isolation = bool(

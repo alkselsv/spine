@@ -2,11 +2,65 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 import os
 from pathlib import Path
+import sys
+from threading import Lock
 from typing import Any
 
 from spine.config import settings
+
+
+_COGNEE_DATABASE_ENVIRONMENT_KEYS = (
+    "DB_PROVIDER",
+    "DB_HOST",
+    "DB_PORT",
+    "DB_NAME",
+    "DB_USERNAME",
+    "DB_PASSWORD",
+    "DATABASE_CONNECT_ARGS",
+    "POOL_ARGS",
+    "MIGRATION_DB_PROVIDER",
+    "MIGRATION_DB_PATH",
+    "MIGRATION_DB_HOST",
+    "MIGRATION_DB_PORT",
+    "MIGRATION_DB_NAME",
+    "MIGRATION_DB_USERNAME",
+    "MIGRATION_DB_PASSWORD",
+    "VECTOR_DB_PROVIDER",
+    "VECTOR_DB_HOST",
+    "VECTOR_DB_PORT",
+    "VECTOR_DB_NAME",
+    "VECTOR_DB_USERNAME",
+    "VECTOR_DB_PASSWORD",
+    "VECTOR_DB_URL",
+    "VECTOR_DB_KEY",
+    "VECTOR_DATASET_DATABASE_HANDLER",
+    "VECTOR_POOL_ARGS",
+    "GRAPH_DATABASE_PROVIDER",
+    "GRAPH_DATABASE_HOST",
+    "GRAPH_DATABASE_PORT",
+    "GRAPH_DATABASE_NAME",
+    "GRAPH_DATABASE_USERNAME",
+    "GRAPH_DATABASE_PASSWORD",
+    "GRAPH_DATABASE_URL",
+    "GRAPH_DATABASE_KEY",
+    "GRAPH_DATASET_DATABASE_HANDLER",
+)
+_cognee_binding_lock = Lock()
+_cognee_database_binding_digest: str | None = None
+_cognee_database_binding_frozen = False
+_PGVECTOR_SHARED_DATASET_HANDLER = "pgvector_shared"
+
+
+class CogneeEnvironmentBindingError(RuntimeError):
+    """Bounded refusal to retarget an initialized Cognee process."""
+
+    reason_code = "cognee_runtime_binding_mismatch"
+
+    def __init__(self) -> None:
+        super().__init__(self.reason_code)
 
 
 def _absolute(path_value: str, root: Path) -> str:
@@ -32,6 +86,8 @@ def configure_environment() -> None:
     if settings.llm_api_key:
         os.environ.setdefault("LLM_API_KEY", settings.llm_api_key)
 
+    _select_least_privilege_vector_dataset_handler()
+
     for key in (
         "SYSTEM_ROOT_DIRECTORY",
         "DATA_ROOT_DIRECTORY",
@@ -40,6 +96,94 @@ def configure_environment() -> None:
     ):
         Path(os.environ[key]).mkdir(parents=True, exist_ok=True)
 
+    _refresh_loaded_cognee_configuration()
+
+
+def _select_least_privilege_vector_dataset_handler() -> None:
+    """Keep the pgvector runtime inside its already provisioned database.
+
+    Cognee's default ``pgvector`` handler creates one PostgreSQL database per
+    dataset and therefore requires the runtime role to hold ``CREATEDB``.  The
+    pinned 1.5.4 ``pgvector_shared`` handler provides the same dataset boundary
+    with one schema per dataset.  An operator may still select another handler
+    explicitly, but Spine never broadens the role merely because the setting
+    was omitted.
+    """
+
+    if os.environ.get("VECTOR_DB_PROVIDER", "").lower() == "pgvector":
+        os.environ.setdefault(
+            "VECTOR_DATASET_DATABASE_HANDLER",
+            _PGVECTOR_SHARED_DATASET_HANDLER,
+        )
+
+
+def _refresh_loaded_cognee_configuration() -> None:
+    """Invalidate Cognee's cached binding after the process target changes.
+
+    Cognee 1.5.4 memoizes its relational, vector and graph settings. A recovery
+    runner may perform an offline preflight before selecting its fresh target,
+    so the public SDK boundary must discard settings created for the earlier
+    target. The digest retains no configuration or credential values.
+    """
+
+    global _cognee_database_binding_digest
+
+    binding = "\0".join(
+        f"{key}={os.environ.get(key, '')}"
+        for key in _COGNEE_DATABASE_ENVIRONMENT_KEYS
+    )
+    binding_digest = sha256(binding.encode("utf-8")).hexdigest()
+    with _cognee_binding_lock:
+        if binding_digest == _cognee_database_binding_digest:
+            return
+        if _cognee_database_binding_frozen:
+            raise CogneeEnvironmentBindingError
+        if "cognee" in sys.modules:
+            for cached_configuration in _cognee_configuration_getters():
+                cached_configuration.cache_clear()
+        _cognee_database_binding_digest = binding_digest
+
+
+def freeze_cognee_environment() -> None:
+    """Materialize and pin the selected database target for this process."""
+
+    global _cognee_database_binding_frozen
+
+    with _cognee_binding_lock:
+        if _cognee_database_binding_digest is None or "cognee" not in sys.modules:
+            raise CogneeEnvironmentBindingError
+        for cached_configuration in _cognee_configuration_getters():
+            cached_configuration()
+        _cognee_database_binding_frozen = True
+
+
+def _cognee_configuration_getters() -> tuple[Any, ...]:
+    from cognee.base_config import get_base_config
+    from cognee.infrastructure.databases.graph.config import get_graph_config
+    from cognee.infrastructure.databases.relational.config import (
+        get_migration_config,
+        get_relational_config,
+    )
+    from cognee.infrastructure.databases.vector.config import get_vectordb_config
+
+    return (
+        get_base_config,
+        get_relational_config,
+        get_migration_config,
+        get_vectordb_config,
+        get_graph_config,
+    )
+
+
+def load_configured_cognee() -> Any:
+    """Import Cognee lazily after selecting and freezing its runtime binding."""
+
+    configure_environment()
+    import cognee
+
+    freeze_cognee_environment()
+    return cognee
+
 
 async def remember_texts(
     texts: list[str],
@@ -47,8 +191,7 @@ async def remember_texts(
     dataset: str | None = None,
     node_set: list[str] | None = None,
 ) -> Any:
-    configure_environment()
-    import cognee
+    cognee = load_configured_cognee()
 
     ds = dataset or settings.spine_dataset
     return await cognee.remember(
@@ -64,8 +207,7 @@ async def ask(
     dataset: str | None = None,
     session_id: str | None = None,
 ) -> list[Any]:
-    configure_environment()
-    import cognee
+    cognee = load_configured_cognee()
 
     kwargs: dict[str, Any] = {
         "datasets": dataset or settings.spine_dataset,

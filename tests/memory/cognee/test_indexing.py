@@ -665,6 +665,33 @@ async def test_physical_failure_returns_failed_effect_without_provider_content(
 
 
 @pytest.mark.asyncio
+async def test_add_timeout_logs_content_free_stage_without_origin(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class TimeoutCogneeSdk(FakeCogneeSdk):
+        async def add(self, **kwargs: object) -> dict[str, object]:
+            del kwargs
+            raise TimeoutError("protected provider endpoint detail")
+
+    source_revision, document = parsed_document(b"protected timeout text\n", REVISION_ID)
+    store = CogneeChunkProjectionStore(
+        sdk=TimeoutCogneeSdk(),
+        artifacts={REVISION_ID: document},
+    )
+
+    with caplog.at_level(logging.WARNING, logger="spine.memory.cognee.indexing.store"):
+        result = await store.apply(effect(source_revision=source_revision))
+
+    assert result.status is ProjectionEffectStatus.FAILED
+    assert "stage=add exception_class=TimeoutError" in caplog.text
+    assert "origin=" not in caplog.text
+    assert "protected timeout text" not in result.model_dump_json()
+    assert "protected provider endpoint detail" not in result.model_dump_json()
+    assert "protected timeout text" not in caplog.text
+    assert "protected provider endpoint detail" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_cognify_failure_logs_only_safe_stage_and_exception_class(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

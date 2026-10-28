@@ -10,6 +10,7 @@ dependencies = [
     "cognee==1.5.4",
     "fastapi>=0.115.0",
     "httpx>=0.27,<1",
+    "litellm==1.96.2",
     "psycopg[binary]>=3.2.12,<4",
     "PyJWT[crypto]>=2.14,<3",
     "sqlalchemy>=2.0.44,<2.1",

@@ -1,17 +1,18 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
 
-from spine.infrastructure.qa_worker_composition import (
-    _ACTIVE_AUTHORIZATION_CONTEXT,
-    _ACTIVE_COMPLETENESS_INTENT,
-    _ACTIVE_EVIDENCE_CONTENT,
-    _ACTIVE_RETRIEVAL_SCOPE,
-    _ActiveCompletenessIntent,
-    _ParsedProjectionRetrieval,
-    _ValidationPlans,
-    _projection_reference_matches_evidence,
+from spine.application.authorized_context_broker import AuthorizedContextRequest
+from spine.application.content_authorization import (
+    AuthorizationContextMode,
+    TrustedAuthorizationContext,
+)
+from spine.application.diagnostics import DiagnosticContext
+from spine.application.evidence_lineage_verification import (
+    EvidenceVerificationReasonCode,
+    RejectedEvidenceItem,
 )
 from spine.domain.capabilities.answer_evaluation import (
     AnswerDisclosureStatus,
@@ -21,9 +22,33 @@ from spine.domain.capabilities.answer_evaluation import (
     MissingCoverageImpact,
     PartialFallbackAuthority,
 )
-from spine.domain.context_profiles import CompletenessRequirement, PartialAnswerFallback
+from spine.domain.context_profiles import (
+    CompletenessRequirement,
+    ContextProfileRef,
+    PartialAnswerFallback,
+)
 from spine.domain.projections import ProjectionFreshness, ProjectionHealth
 from spine.domain.sources import RevisionKind
+from spine.infrastructure.qa_worker_composition import (
+    _ACTIVE_AUTHORIZATION_CONTEXT,
+    _ACTIVE_COMPLETENESS_INTENT,
+    _ACTIVE_EVIDENCE_CONTENT,
+    _ACTIVE_RETRIEVAL_SCOPE,
+    _ActiveCompletenessIntent,
+    _CanonicalEvidenceVerifier,
+    _CurrentNoninteractiveAuthority,
+    _ParsedProjectionRetrieval,
+    _ValidationPlans,
+    _projection_reference_matches_evidence,
+    OneShotQualifiedContextBroker,
+    TrustedQAAuthorizationContextRegistry,
+)
+from spine.memory.contracts import (
+    ContextOutcome,
+    ContextReasonCode,
+    ContextResponse,
+    ProjectionOutcome,
+)
 from tests.application.test_production_qa_capability import (
     ExistingCitationValidation,
     ExistingSemanticValidation,
@@ -32,7 +57,6 @@ from tests.domain.capabilities.test_answer_question_candidate import (
     candidate_input,
     candidate_output,
 )
-from spine.memory.contracts import ProjectionOutcome
 
 
 class _Rows:
@@ -81,6 +105,350 @@ class _Session:
             else []
         )
         return _Rows(rows)
+
+
+def _authorized_context_request() -> AuthorizedContextRequest:
+    return AuthorizedContextRequest(
+        request_id=UUID(int=20),
+        workspace_id=UUID(int=1),
+        environment_id=UUID(int=2),
+        query="Synthetic recovery control",
+        profile_ref=ContextProfileRef(
+            profile_id=UUID(int=21),
+            profile_version=1,
+            profile_digest="a" * 64,
+        ),
+        trusted_request_context_ref=UUID(int=22),
+        authorization_context_ref=UUID(int=23),
+        run_id=UUID(int=24),
+        attempt_id=UUID(int=25),
+        idempotency_key="issue634-canary",
+        diagnostic_context=DiagnosticContext(trace_id=UUID(int=26)),
+    )
+
+
+@pytest.mark.asyncio
+async def test_one_shot_qualified_broker_issues_current_service_context_once() -> None:
+    service_principal_id = UUID(int=7)
+    registry = TrustedQAAuthorizationContextRegistry(service_principal_id)
+
+    class Resolver:
+        calls: list[tuple[UUID, UUID, UUID, str, str]] = []
+
+        async def resolve_service_authority(
+            self,
+            *,
+            principal_id: UUID,
+            requested_scope: object,
+            purpose: str,
+            operation: str,
+        ) -> int | None:
+            self.calls.append(
+                (
+                    principal_id,
+                    requested_scope.workspace_id,
+                    requested_scope.environment_id,
+                    purpose,
+                    operation,
+                )
+            )
+            return 7
+
+    class Broker:
+        calls = 0
+        context: TrustedAuthorizationContext | None = None
+
+        async def retrieve(self, request: AuthorizedContextRequest) -> ContextResponse:
+            self.calls += 1
+            self.context = await registry.resolve(request)
+            return ContextResponse(
+                outcome=ContextOutcome.DENIED,
+                reason_code=ContextReasonCode.AUTHORIZATION_DENIED,
+            )
+
+    resolver = Resolver()
+    broker = Broker()
+    boundary = OneShotQualifiedContextBroker(
+        broker=broker,
+        trusted_contexts=registry,
+        authority_resolver=resolver,
+        service_principal_id=service_principal_id,
+        clock=lambda: datetime(2026, 10, 28, 15, tzinfo=timezone.utc),
+    )
+    request = _authorized_context_request()
+
+    response = await boundary.retrieve(request)
+
+    assert response.outcome is ContextOutcome.DENIED
+    assert broker.calls == 1
+    assert resolver.calls == [
+        (
+            service_principal_id,
+            request.workspace_id,
+            request.environment_id,
+            "answer_question",
+            "retrieve_context",
+        )
+    ]
+    assert broker.context is not None
+    assert broker.context.mode is AuthorizationContextMode.NONINTERACTIVE_PROCESSING
+    assert broker.context.canonical_human_id is None
+    assert broker.context.service_principal_id == service_principal_id
+    assert broker.context.authority_generation == 7
+    assert broker.context.service_authority_generation == 7
+    assert broker.context.authority_snapshot_reference == request.authorization_context_ref
+    assert broker.context.trace_id == request.diagnostic_context.trace_id
+    assert registry.request_active is False
+
+    with pytest.raises(RuntimeError, match="already used"):
+        await boundary.retrieve(request)
+    assert broker.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_one_shot_qualified_broker_denies_before_request_without_authority() -> None:
+    service_principal_id = UUID(int=7)
+    registry = TrustedQAAuthorizationContextRegistry(service_principal_id)
+
+    class Resolver:
+        async def resolve_service_authority(self, **_: object) -> int | None:
+            return None
+
+    class Broker:
+        calls = 0
+
+        async def retrieve(self, request: AuthorizedContextRequest) -> ContextResponse:
+            del request
+            self.calls += 1
+            raise AssertionError("Broker must not run without current authority")
+
+    broker = Broker()
+    boundary = OneShotQualifiedContextBroker(
+        broker=broker,
+        trusted_contexts=registry,
+        authority_resolver=Resolver(),
+        service_principal_id=service_principal_id,
+    )
+
+    with pytest.raises(RuntimeError, match="authority is unavailable"):
+        await boundary.retrieve(_authorized_context_request())
+    assert broker.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_one_shot_qualified_broker_clears_request_scope_after_failure() -> None:
+    service_principal_id = UUID(int=7)
+    registry = TrustedQAAuthorizationContextRegistry(service_principal_id)
+
+    class Resolver:
+        async def resolve_service_authority(self, **_: object) -> int | None:
+            return 7
+
+    class Broker:
+        async def retrieve(self, request: AuthorizedContextRequest) -> ContextResponse:
+            assert await registry.resolve(request) is not None
+            raise RuntimeError("synthetic broker failure")
+
+    boundary = OneShotQualifiedContextBroker(
+        broker=Broker(),
+        trusted_contexts=registry,
+        authority_resolver=Resolver(),
+        service_principal_id=service_principal_id,
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic broker failure"):
+        await boundary.retrieve(_authorized_context_request())
+
+    assert registry.request_active is False
+
+
+@pytest.mark.asyncio
+async def test_one_shot_qualified_broker_denies_other_workspace() -> None:
+    service_principal_id = UUID(int=7)
+    registry = TrustedQAAuthorizationContextRegistry(service_principal_id)
+
+    class Resolver:
+        async def resolve_service_authority(
+            self, *, requested_scope: object, **_: object
+        ) -> int | None:
+            return (
+                7
+                if requested_scope.workspace_id == UUID(int=1)
+                and requested_scope.environment_id == UUID(int=2)
+                else None
+            )
+
+    class Broker:
+        calls = 0
+
+        async def retrieve(self, request: AuthorizedContextRequest) -> ContextResponse:
+            del request
+            self.calls += 1
+            raise AssertionError("Broker must not run across workspaces")
+
+    broker = Broker()
+    boundary = OneShotQualifiedContextBroker(
+        broker=broker,
+        trusted_contexts=registry,
+        authority_resolver=Resolver(),
+        service_principal_id=service_principal_id,
+    )
+    request = _authorized_context_request().model_copy(
+        update={"workspace_id": UUID(int=99)}
+    )
+
+    with pytest.raises(RuntimeError, match="authority is unavailable"):
+        await boundary.retrieve(request)
+    assert broker.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_current_noninteractive_authority_requires_server_issued_reference() -> None:
+    service_principal_id = UUID(int=7)
+    registry = TrustedQAAuthorizationContextRegistry(service_principal_id)
+
+    class Resolver:
+        async def resolve_service_authority(self, **_: object) -> int | None:
+            return 7
+
+    class Broker:
+        context: TrustedAuthorizationContext | None = None
+        current_authority = False
+        altered_authority = True
+
+        async def retrieve(self, request: AuthorizedContextRequest) -> ContextResponse:
+            self.context = await registry.resolve(request)
+            assert self.context is not None
+            self.current_authority = await authority.authorize(self.context)
+            self.altered_authority = await authority.authorize(
+                self.context.model_copy(
+                    update={"noninteractive_authority_reference": UUID(int=99)}
+                )
+            )
+            return ContextResponse(
+                outcome=ContextOutcome.DENIED,
+                reason_code=ContextReasonCode.AUTHORIZATION_DENIED,
+            )
+
+    resolver = Resolver()
+    authority = _CurrentNoninteractiveAuthority(
+        resolver, service_principal_id, registry
+    )
+    request = _authorized_context_request()
+    broker = Broker()
+    boundary = OneShotQualifiedContextBroker(
+        broker=broker,
+        trusted_contexts=registry,
+        authority_resolver=resolver,
+        service_principal_id=service_principal_id,
+    )
+    await boundary.retrieve(request)
+
+    assert broker.context is not None
+    assert broker.current_authority is True
+    assert broker.altered_authority is False
+    assert await authority.authorize(broker.context) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "expected_method"),
+    (
+        (AuthorizationContextMode.HUMAN_DISCLOSURE, "human"),
+        (AuthorizationContextMode.INTERACTIVE_PROCESSING, "interactive"),
+        (AuthorizationContextMode.NONINTERACTIVE_PROCESSING, "noninteractive"),
+    ),
+)
+async def test_evidence_verifier_preserves_authorization_mode(
+    mode: AuthorizationContextMode,
+    expected_method: str,
+) -> None:
+    source_object_id = UUID(int=3)
+
+    class Authorization:
+        def __init__(self) -> None:
+            self.calls: list[
+                tuple[str, AuthorizationContextMode, tuple[UUID, ...]]
+            ] = []
+
+        async def decide_human_disclosure(
+            self,
+            context: TrustedAuthorizationContext,
+            source_ids: tuple[UUID, ...],
+        ) -> object:
+            self.calls.append(("human", context.mode, tuple(source_ids)))
+            return SimpleNamespace(allowed=False)
+
+        async def decide_interactive_processing(
+            self,
+            context: TrustedAuthorizationContext,
+            source_ids: tuple[UUID, ...],
+        ) -> object:
+            self.calls.append(("interactive", context.mode, tuple(source_ids)))
+            return SimpleNamespace(allowed=False)
+
+        async def decide_noninteractive_processing(
+            self,
+            context: TrustedAuthorizationContext,
+            source_ids: tuple[UUID, ...],
+        ) -> object:
+            self.calls.append(("noninteractive", context.mode, tuple(source_ids)))
+            return SimpleNamespace(allowed=False)
+
+    authorization = Authorization()
+    verifier = _CanonicalEvidenceVerifier(
+        authorization=authorization,  # type: ignore[arg-type]
+        uow_factory=None,
+        boundary=object(),  # type: ignore[arg-type]
+        service_principal_id=UUID(int=7),
+    )
+    context = TrustedAuthorizationContext(
+        mode=mode,
+        workspace_id=UUID(int=1),
+        environment_id=UUID(int=2),
+        canonical_human_id=(
+            None
+            if mode is AuthorizationContextMode.NONINTERACTIVE_PROCESSING
+            else UUID(int=6)
+        ),
+        service_principal_id=(
+            None
+            if mode is AuthorizationContextMode.HUMAN_DISCLOSURE
+            else UUID(int=7)
+        ),
+        purpose="answer_question",
+        operation="retrieve_context",
+        membership_generation=1,
+        authority_generation=1,
+        service_authority_generation=(
+            None
+            if mode is AuthorizationContextMode.HUMAN_DISCLOSURE
+            else 1
+        ),
+        authority_snapshot_reference=UUID(int=8),
+        trace_id=UUID(int=9),
+        issued_at=datetime(2026, 10, 28, tzinfo=timezone.utc),
+        noninteractive_authority_reference=(
+            UUID(int=10)
+            if mode is AuthorizationContextMode.NONINTERACTIVE_PROCESSING
+            else None
+        ),
+    )
+
+    result = await verifier.verify(
+        item=SimpleNamespace(
+            chunk_id="synthetic-chunk",
+            evidence=(SimpleNamespace(source_object_id=source_object_id),),
+        ),
+        publication_pin=object(),
+        authorization_context=context,
+    )
+
+    assert isinstance(result, RejectedEvidenceItem)
+    assert result.reason_code is EvidenceVerificationReasonCode.AUTHORIZATION_DENIED
+    assert authorization.calls == [
+        (expected_method, mode, (source_object_id,))
+    ]
 
 
 @pytest.mark.asyncio

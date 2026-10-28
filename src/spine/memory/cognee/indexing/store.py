@@ -47,10 +47,9 @@ class CogneeVersionError(ValueError):
 class _PhysicalProjectionStageError(RuntimeError):
     """Content-free internal marker for one failed physical adapter stage."""
 
-    def __init__(self, *, stage: str, exception_class: str, origin: str = "unknown") -> None:
+    def __init__(self, *, stage: str, exception_class: str) -> None:
         self.stage = stage
         self.exception_class = exception_class
-        self.origin = origin
         super().__init__("physical projection stage failed")
 
 
@@ -106,12 +105,9 @@ class CogneePublicSdk:
 
     def __init__(self, sdk: Any | None = None) -> None:
         if sdk is None:
-            from spine.memory.cognee_memory import configure_environment
+            from spine.memory.cognee_memory import load_configured_cognee
 
-            configure_environment()
-            import cognee
-
-            sdk = cognee
+            sdk = load_configured_cognee()
         self._sdk = sdk
         self.version = str(getattr(sdk, "__version__", ""))
         if self.version != SUPPORTED_COGNEE_VERSION:
@@ -340,19 +336,13 @@ class CogneeChunkProjectionStore:
                     if isinstance(error, _PhysicalProjectionStageError)
                     else type(error).__name__
                 )
-                origin = (
-                    error.origin
-                    if isinstance(error, _PhysicalProjectionStageError)
-                    else "adapter"
-                )
                 # Cognee disables existing loggers while installing its own
                 # handlers. Re-enable only this content-free diagnostic sink.
                 _logger.disabled = False
                 _logger.warning(
-                    "Cognee physical projection failed: stage=%s exception_class=%s origin=%s",
+                    "Cognee physical projection failed: stage=%s exception_class=%s",
                     stage,
                     exception_class,
-                    origin,
                 )
                 # The provider-neutral effect exposes only its status.
                 return effect.model_copy(
@@ -729,19 +719,9 @@ class CogneeChunkProjectionStore:
                 node_set=node_set,
             )
         except Exception as error:
-            traceback = error.__traceback__
-            while traceback is not None and traceback.tb_next is not None:
-                traceback = traceback.tb_next
-            origin = (
-                f"{traceback.tb_frame.f_code.co_filename.rsplit('/', 1)[-1]}:"
-                f"{traceback.tb_frame.f_code.co_name}:{traceback.tb_lineno}"
-                if traceback is not None
-                else "unknown"
-            )
             raise _PhysicalProjectionStageError(
                 stage="add",
                 exception_class=type(error).__name__,
-                origin=origin,
             ) from error
 
     @staticmethod

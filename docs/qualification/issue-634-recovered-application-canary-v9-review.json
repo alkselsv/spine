@@ -1,0 +1,28 @@
+{
+  "schema_version": "recovered-application-canary-review:v1",
+  "run_reference": "run:issue634-recovered-canary-009",
+  "ticket": 634,
+  "completed_at": "2026-10-28T20:40:57Z",
+  "immutable": true,
+  "content_free": true,
+  "reviewed_record": {
+    "path": "docs/qualification/issue-634-recovered-application-canary-v9.json",
+    "schema_version": "recovered-application-canary:v9",
+    "sha256": "4648bdd561549bf1c4e349b79a2e19cc36e9be4b640cceb06912dccbaa013437"
+  },
+  "standards_review": {
+    "decision": "approved",
+    "hard_violation_count": 0,
+    "judgement_call_smell_count": 0
+  },
+  "spec_review": {
+    "decision": "approved",
+    "finding_count": 0
+  },
+  "status": "passed",
+  "decision": "verified",
+  "production_qualified": true,
+  "remaining_conditions": [
+    "provider_request_and_token_budget_independent_metering_not_verified"
+  ]
+}

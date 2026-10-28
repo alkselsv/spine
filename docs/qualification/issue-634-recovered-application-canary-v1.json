@@ -1,0 +1,78 @@
+{
+  "schema_version": "recovered-application-canary:v1",
+  "run_reference": "run:issue634-recovered-canary-001",
+  "ticket": 634,
+  "target_commit": "17d5102bf92651ef354f19278e8b09b78600911e",
+  "completed_at": "2026-10-28T09:16:29Z",
+  "status": "blocked",
+  "decision": "not_verified",
+  "production_qualified": false,
+  "immutable": true,
+  "content_free": true,
+  "authorization_reference": "issue-comment:6464756991",
+  "recovery_basis": {
+    "recovery_set_reference": "recovery:issue509-005",
+    "restore_evidence_reference": "restore:b207b511e5e3c6fb3ef42ca94be6daa43462ba3daeedb71d15cced09437ea20f",
+    "fresh_target": "verified",
+    "archive_digest": "verified",
+    "owner_and_acl_posture": "verified",
+    "postgresql_tls": "verified"
+  },
+  "offline_profile_preflight": {
+    "profile_document": "verified",
+    "profile_repository": "resolved",
+    "profile_reference_match": true,
+    "provider_request_count": 0,
+    "broker_request_count": 0
+  },
+  "projection_attempt": {
+    "outcome": "not_executed",
+    "safe_reason_code": "cognee_runtime_binding_mismatch",
+    "provider_request_count": 0,
+    "projection_consumer_invocation_count": 0,
+    "projection_receipt_count": 0,
+    "projection_snapshot_count": 0,
+    "projection_activation_count": 0,
+    "active_projection_count": 0,
+    "publication_status": "unpublished"
+  },
+  "application_canary": {
+    "outcome": "not_executed",
+    "safe_reason_code": "publication_unavailable",
+    "broker_request_count": 0,
+    "context_bundle_count": 0,
+    "context_bundle_issued": false
+  },
+  "diagnostic_boundary": {
+    "failure_stage": "cognee_database_binding_preflight",
+    "configured_fresh_binding": "verified_in_isolated_preflight",
+    "effective_runner_binding": "mismatch",
+    "external_provider_reached": false,
+    "context_broker_reached": false
+  },
+  "remaining_conditions": [
+    "cognee_runtime_binding_resolution_not_verified",
+    "reconciliation_not_verified",
+    "runtime_readiness_not_verified",
+    "provider_backed_projection_and_publication_not_verified",
+    "authorized_context_broker_request_not_verified",
+    "workspace_and_environment_isolation_not_verified",
+    "current_policy_enforcement_not_verified",
+    "publication_pin_not_verified",
+    "source_revision_lineage_not_verified",
+    "independent_final_evidence_review_required"
+  ],
+  "safety": {
+    "synthetic_content_only": true,
+    "temporary_authority_created": true,
+    "temporary_authority_revoked": true,
+    "runtime_connect_revoked": true,
+    "temporary_authentication_material_rotated": true,
+    "temporary_cognee_database_removed": true,
+    "task_owned_graph_resource_count": 0,
+    "target_stopped_after_capture": true,
+    "serving_activated": false,
+    "cutover_performed": false
+  },
+  "independent_review": "required"
+}

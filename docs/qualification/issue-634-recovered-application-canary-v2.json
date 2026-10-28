@@ -1,0 +1,88 @@
+{
+  "schema_version": "recovered-application-canary:v2",
+  "run_reference": "run:issue634-recovered-canary-002",
+  "ticket": 634,
+  "target_commit": "de7fdf26f536004e5b4ba6919542cfa39b66a147",
+  "completed_at": "2026-10-28T11:25:58Z",
+  "status": "blocked",
+  "decision": "not_verified",
+  "production_qualified": false,
+  "immutable": true,
+  "content_free": true,
+  "authorization_reference": "issue-comment:6467328714",
+  "recovery_basis": {
+    "recovery_set_reference": "recovery:issue509-005",
+    "restore_evidence_reference": "restore:b207b511e5e3c6fb3ef42ca94be6daa43462ba3daeedb71d15cced09437ea20f",
+    "fresh_target": "verified",
+    "archive_digest": "verified",
+    "owner_and_acl_posture": "verified",
+    "forced_rls_posture": "verified",
+    "postgresql_tls": "verified",
+    "runtime_readiness": "verified"
+  },
+  "offline_profile_preflight": {
+    "profile_document": "verified",
+    "profile_repository": "resolved",
+    "profile_reference_match": true,
+    "provider_request_count": 0,
+    "broker_request_count": 0
+  },
+  "projection_attempt": {
+    "outcome": "failed_closed",
+    "safe_reason_code": "projection_request_physical_retryable",
+    "provider_boundary_reached": true,
+    "provider_request_count_observation": "not_available",
+    "provider_request_bounds_enforced": true,
+    "provider_internal_retry_limit": 2,
+    "pre_provider_setup_failure_count": 1,
+    "provider_backed_consumer_invocation_count": 1,
+    "projection_receipt_count": 0,
+    "projection_snapshot_count": 0,
+    "projection_activation_count": 0,
+    "active_projection_count": 0,
+    "source_projection_reference_count": 0,
+    "reconciliation_result_count": 0,
+    "publication_status": "unpublished"
+  },
+  "application_canary": {
+    "outcome": "not_executed",
+    "safe_reason_code": "publication_unavailable",
+    "broker_request_count": 0,
+    "context_bundle_count": 0,
+    "context_bundle_issued": false,
+    "temporary_authority_created": false,
+    "temporary_authority_revocation": "not_applicable"
+  },
+  "diagnostic_boundary": {
+    "failure_stage": "cognee_add",
+    "safe_exception_class": "TimeoutError",
+    "cognee_runtime_binding_resolution": "verified",
+    "external_provider_reached": true,
+    "context_broker_reached": false,
+    "raw_failure_recorded": false
+  },
+  "remaining_conditions": [
+    "provider_request_timeout_requires_resolution",
+    "reconciliation_not_verified",
+    "provider_backed_projection_and_publication_not_verified",
+    "authorized_context_broker_request_not_verified",
+    "workspace_and_environment_isolation_not_verified",
+    "current_policy_enforcement_not_verified",
+    "publication_pin_not_verified",
+    "source_revision_lineage_not_verified",
+    "independent_final_evidence_review_required"
+  ],
+  "safety": {
+    "synthetic_content_only": true,
+    "temporary_authority_created": false,
+    "temporary_authority_revocation": "not_applicable",
+    "runtime_connect_revoked": true,
+    "temporary_authentication_material_rotated": true,
+    "temporary_cognee_database_removed": true,
+    "task_owned_graph_resource_count": 0,
+    "target_stopped_after_capture": true,
+    "serving_activated": false,
+    "cutover_performed": false
+  },
+  "independent_review": "required"
+}

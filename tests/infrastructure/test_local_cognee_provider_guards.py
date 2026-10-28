@@ -6,8 +6,12 @@ from uuid import UUID
 
 import pytest
 
+from spine.infrastructure.cognee_provider_usage_meter import (
+    CogneeProviderUsageLimitError,
+)
 from spine.infrastructure.local_cognee_provider_guards import (
     LocalCogneeProviderAuthorization,
+    LocalCogneeProviderAuthorizationError,
     LocalCogneeProviderAuthorizationSet,
     LocalCogneeProviderAuthorizationSettings,
     LocalCogneeProviderSecretPresenceSettings,
@@ -177,6 +181,7 @@ async def test_local_authorization_allows_only_the_exact_profile_scope_and_secre
         authorization=authorization,
         available_secret_references=frozenset(authorization.secret_references),
         clock=lambda: NOW,
+        provider_usage_meter_registrar=lambda meter: None,
     )
     delegate = _RecordingProjection()
     projection = bind_cognee_projection_profile(
@@ -264,6 +269,7 @@ async def test_local_authorization_set_resolves_each_exact_scope_without_wildcar
         authorization=document,
         available_secret_references=frozenset(base.secret_references),
         clock=lambda: NOW,
+        provider_usage_meter_registrar=lambda meter: None,
     )
 
     first_budget = await guards.budget_authorization_resolver(first)
@@ -277,3 +283,174 @@ async def test_local_authorization_set_resolves_each_exact_scope_without_wildcar
     assert first_budget is not None and first_budget.workspace_id == first.workspace_id
     assert second_budget is not None and second_budget.workspace_id == second.workspace_id
     assert foreign_budget is None
+
+
+@pytest.mark.asyncio
+async def test_local_provider_executor_scopes_registered_usage_meter_to_projection_run() -> None:
+    profile = _profile()
+    command = _command()
+    authorization = LocalCogneeProviderAuthorization(
+        schema_version="cognee-local-provider-authorization:v1",
+        deployment_mode="development",
+        authorization_reference="operator-approved-independent-meter",
+        workspace_id=command.workspace_id,
+        environment_id=command.environment_id,
+        profile_id=profile.profile_id,
+        profile_digest=profile.profile_digest,
+        amount=Decimal("1.00"),
+        currency="USD",
+        expires_at=datetime(2026, 10, 23, tzinfo=timezone.utc),
+        secret_references=(
+            profile.postgres_secret_ref,
+            profile.neo4j_secret_ref,
+            profile.model_secret_ref,
+        ),
+    )
+    callbacks: list[object] = []
+    guards = build_local_cognee_provider_guards(
+        profile=profile,
+        authorization=authorization,
+        available_secret_references=frozenset(authorization.secret_references),
+        clock=lambda: NOW,
+        provider_usage_meter_registrar=callbacks.append,
+    )
+
+    async def provider_call() -> str:
+        callback = callbacks[0]
+        await callback.observe_provider_request()
+        await callback.async_log_pre_api_call("openai/gpt-5.4-nano", [], {})
+        await callback.async_log_success_event(
+            {"response_cost": 0.00001},
+            {"usage": {"prompt_tokens": 9, "completion_tokens": 4}},
+            NOW,
+            NOW,
+        )
+        return "ok"
+
+    result = await guards.provider_call_executor.invoke(
+        profile=profile,
+        command=command,
+        provider_call=provider_call,
+    )
+    usage = await guards.provider_usage_meter.snapshot(str(command.projection_run_id))
+
+    assert result == "ok"
+    assert callbacks == [guards.provider_usage_meter]
+    assert (usage.request_count, usage.input_tokens, usage.output_tokens) == (1, 9, 4)
+    assert usage.cost_amount == Decimal("0.00001")
+
+
+@pytest.mark.asyncio
+async def test_local_provider_executor_blocks_request_beyond_authorized_run_limit() -> None:
+    from spine.memory.cognee.worker_profile import CogneeWorkerProfile
+
+    values = cognee_worker_profile_values()
+    values["limits"]["max_requests_per_run"] = 1
+    values["profile_digest"] = CogneeWorkerProfile.digest_for(values)
+    profile = CogneeWorkerProfile.model_validate(values)
+    command = _command()
+    authorization = LocalCogneeProviderAuthorization(
+        schema_version="cognee-local-provider-authorization:v1",
+        deployment_mode="development",
+        authorization_reference="operator-approved-one-request",
+        workspace_id=command.workspace_id,
+        environment_id=command.environment_id,
+        profile_id=profile.profile_id,
+        profile_digest=profile.profile_digest,
+        amount=Decimal("1.00"),
+        currency="USD",
+        expires_at=datetime(2026, 10, 23, tzinfo=timezone.utc),
+        secret_references=(
+            profile.postgres_secret_ref,
+            profile.neo4j_secret_ref,
+            profile.model_secret_ref,
+        ),
+    )
+    callbacks: list[object] = []
+    guards = build_local_cognee_provider_guards(
+        profile=profile,
+        authorization=authorization,
+        available_secret_references=frozenset(authorization.secret_references),
+        clock=lambda: NOW,
+        provider_usage_meter_registrar=callbacks.append,
+    )
+
+    async def provider_call() -> str:
+        callback = callbacks[0]
+        for _ in range(2):
+            await callback.observe_provider_request()
+            await callback.async_log_pre_api_call("openai/gpt-5.4-nano", [], {})
+            await callback.async_log_success_event(
+                {"response_cost": 0.00001},
+                {"usage": {"prompt_tokens": 9, "completion_tokens": 4}},
+                NOW,
+                NOW,
+            )
+        return "must-not-publish"
+
+    with pytest.raises(CogneeProviderUsageLimitError) as captured:
+        await guards.provider_call_executor.invoke(
+            profile=profile,
+            command=command,
+            provider_call=provider_call,
+        )
+
+    assert captured.value.reason_code == "provider_request_limit_exceeded"
+    usage = await guards.provider_usage_meter.snapshot(str(command.projection_run_id))
+    assert usage.request_count == 1
+
+
+@pytest.mark.asyncio
+async def test_local_provider_executor_rejects_cost_over_exact_run_authorization() -> None:
+    profile = _profile()
+    command = _command()
+    authorization = LocalCogneeProviderAuthorization(
+        schema_version="cognee-local-provider-authorization:v1",
+        deployment_mode="development",
+        authorization_reference="operator-approved-exact-cost",
+        workspace_id=command.workspace_id,
+        environment_id=command.environment_id,
+        profile_id=profile.profile_id,
+        profile_digest=profile.profile_digest,
+        amount=Decimal("0.000015"),
+        currency="USD",
+        expires_at=datetime(2026, 10, 23, tzinfo=timezone.utc),
+        secret_references=(
+            profile.postgres_secret_ref,
+            profile.neo4j_secret_ref,
+            profile.model_secret_ref,
+        ),
+    )
+    callbacks: list[object] = []
+    guards = build_local_cognee_provider_guards(
+        profile=profile,
+        authorization=authorization,
+        available_secret_references=frozenset(authorization.secret_references),
+        clock=lambda: NOW,
+        provider_usage_meter_registrar=callbacks.append,
+    )
+
+    async def provider_call() -> str:
+        callback = callbacks[0]
+        for _ in range(2):
+            await callback.observe_provider_request()
+            await callback.async_log_pre_api_call("openai/gpt-5.4-nano", [], {})
+            await callback.async_log_success_event(
+                {"response_cost": 0.00001},
+                {"usage": {"prompt_tokens": 9, "completion_tokens": 4}},
+                NOW,
+                NOW,
+            )
+        return "must-not-publish"
+
+    with pytest.raises(LocalCogneeProviderAuthorizationError) as captured:
+        await guards.provider_call_executor.invoke(
+            profile=profile,
+            command=command,
+            provider_call=provider_call,
+        )
+
+    assert captured.value.reason_code == "provider_usage_limit_exceeded"
+    usage = await guards.provider_usage_meter.snapshot(str(command.projection_run_id))
+    assert usage.cost_amount == Decimal("0.000020000")
+    assert usage.limit_breaches == ("provider_cost_limit_exceeded",)
