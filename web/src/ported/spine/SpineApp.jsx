@@ -18,19 +18,23 @@ import { useSpineChat } from "./chat/useSpineChat";
 import QARunScreen from "./runs/QARunScreen";
 import QARunsList from "./runs/QARunsList";
 import { LIST_PARAMS } from "./runs/qaRunData";
+import { WorkflowStartPage } from "../../features/workflows/WorkflowStartPage";
+import { WorkflowRunPage } from "../../features/workflows/WorkflowRunPage";
 import { ru } from "./ru";
 
 const SHEET_BELOW = 1180;
 const COMPACT_TABLE_BELOW = 1520;
 const COMPACT_ALWAYS_BELOW = 940;
-const SCREENS = ["knowledge", "chat", "qaRuns", "qaRun", "ingestionRun"];
-const TITLES = { knowledge: ru.navigation.knowledge, chat: ru.navigation.chat, qaRuns: ru.qaRuns.title, qaRun: ru.qaRuns.detail.title, ingestionRun: ru.navigation.runs, documentProjection: ru.navigation.knowledge };
+const SCREENS = ["knowledge", "chat", "qaRuns", "qaRun", "ingestionRun", "workflowStart", "workflowRun"];
+const TITLES = { knowledge: ru.navigation.knowledge, chat: ru.navigation.chat, qaRuns: ru.qaRuns.title, qaRun: ru.qaRuns.detail.title, ingestionRun: ru.navigation.runs, documentProjection: ru.navigation.knowledge, workflowStart: ru.navigation.workflowStart, workflowRun: ru.navigation.runs };
 const URL_SCREEN = { chat: "chat", qaRuns: "qa-runs", qaRun: "qa-run" };
-const SCREEN_PATH = { knowledge: "/knowledge/documents", chat: "/chat", qaRuns: "/qa/runs", ingestionRun: "/runs" };
+const SCREEN_PATH = { knowledge: "/knowledge/documents", chat: "/chat", qaRuns: "/qa/runs", ingestionRun: "/runs", workflowStart: "/workflow/start" };
 const RUN_PARAMS = ["run", "attempt_id", "event_id"];
 const navOf = (screen) => screen === "qaRun" ? "qaRuns" : screen === "ingestionRun" ? "runs" : screen === "documentProjection" ? "knowledge" : screen;
 
 function readScreen(pathname, search) {
+  if (pathname.startsWith("/workflow/runs/")) return "workflowRun";
+  if (pathname === "/workflow/start") return "workflowStart";
   if (pathname.startsWith("/runs")) return "ingestionRun";
   if (pathname.startsWith("/knowledge/documents/") && new URLSearchParams(search).get("tab") === "projection") return "documentProjection";
   if (pathname.startsWith("/qa/runs/")) return "qaRun";
@@ -183,6 +187,8 @@ function SpineShell({ onToggleTheme }) {
           {screen === "knowledge" && <SpineDocuments kb={kb} viewport={viewport} dialog={dialog} setDialog={setDialog} />}
           {screen === "documentProjection" && <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 24 }}><DocumentDetailPage /></div>}
           {screen === "ingestionRun" && <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 24 }}><IngestionRunPage /></div>}
+          {screen === "workflowStart" && <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 24 }}><WorkflowStartPage /></div>}
+          {screen === "workflowRun" && <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 24 }}><WorkflowRunPage /></div>}
         </ScopeContext.Provider>
       </main>
 

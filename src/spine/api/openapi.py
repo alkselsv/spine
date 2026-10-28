@@ -75,6 +75,14 @@ from spine.application.document_lifecycle import (
     SourceLifecycleOperationReceipt,
     TombstoneDocumentCommand,
 )
+from spine.application.persisted_workflow_runs import (
+    PersistedWorkflowRunAdmissionService,
+)
+from spine.application.workflow_runs import (
+    PinnedWorkflowVersion,
+    StartWorkflowCommand,
+)
+from spine.domain.workflows import WorkflowCommandReceipt, WorkflowRun
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.auth import RoutePolicyRegistry
 
@@ -176,6 +184,28 @@ class _UnavailableDocumentLifecycleCommandService:
     ) -> SourceLifecycleOperationReceipt | None:
         del context, operation_id
         raise RuntimeError("The OpenAPI composition is not executable.")
+
+class _UnavailableWorkflowRunAdmissionService:
+    async def start(
+        self, *, context: TrustedPersistenceContext, command: StartWorkflowCommand
+    ) -> WorkflowCommandReceipt:
+        del context, command
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+    async def get_run(
+        self, *, context: TrustedPersistenceContext, run_id: UUID
+    ) -> WorkflowRun | None:
+        del context, run_id
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+
+class _UnavailableWorkflowVersionResolver:
+    async def resolve(
+        self, *, workspace_id: UUID, environment_id: UUID, workflow_key: str
+    ) -> PinnedWorkflowVersion:
+        del workspace_id, environment_id, workflow_key
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
 
 class _UnavailableBatchDocumentIngestionService:
     async def submit(
@@ -433,6 +463,11 @@ def create_openapi_app() -> FastAPI:
             _UnavailableDocumentLifecycleCommandService(),
         ),
         operational_correlation_reader=UnavailableOperationalCorrelationReader(),
+        workflow_run_admission_service=cast(
+            PersistedWorkflowRunAdmissionService,
+            _UnavailableWorkflowRunAdmissionService(),
+        ),
+        workflow_version_resolver=_UnavailableWorkflowVersionResolver(),
     )
 
 

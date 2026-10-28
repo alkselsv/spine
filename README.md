@@ -57,6 +57,9 @@ chmod 600 .env
 - `SPINE_DATABASE_*` и `SPINE_NEO4J_PASSWORD` — независимые локальные пароли;
 - `SPINE_LOCAL_AUTH_*` и `SPINE_API_CURSOR_SECRET` — development-only
   аутентификация и секреты длиной не менее 32 символов;
+- `SPINE_API_WORKFLOW_VERSIONS` — JSON-массив неизменяемых опубликованных
+  версий `{workflow_key, workflow_version_id, version}`; пустой массив
+  оставляет API запусков закрытым до регистрации версии;
 - `SPINE_QA_DEPLOYMENT_COMMIT_SHA` — текущий полный Git SHA;
 - `SPINE_QA_DEPLOYMENT_SETTINGS_JSON` — согласованный immutable deployment
   profile; его `commit_sha`, release/model identifiers должны совпадать с

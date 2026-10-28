@@ -47,6 +47,13 @@ from spine.application.projection_control import (
     ProjectionRecoveryRequestService,
 )
 from spine.application.qa_run_history import PersistedQARunHistoryService
+from spine.application.persisted_workflow_runs import (
+    PersistedWorkflowRunAdmissionService,
+)
+from spine.application.workflow_runs import (
+    ConfiguredWorkflowVersionResolver,
+    PinnedWorkflowVersion,
+)
 from spine.application.qa_events import InMemoryQAEventLog
 from spine.application.qa_streaming import AuthorizedQAStreamService
 from spine.auth import RoutePolicyRegistry
@@ -144,6 +151,9 @@ class DeployableApiSettings(BaseSettings):
     llm_endpoint: str = Field(default="https://api.openai.com/v1", validation_alias="LLM_ENDPOINT")
     qa_capture_worker_credential: SecretStr = Field(min_length=32, repr=False)
     qa_capture_observer_credential: SecretStr = Field(min_length=32, repr=False)
+    workflow_versions: tuple[PinnedWorkflowVersion, ...] = Field(
+        default=(), validation_alias="SPINE_API_WORKFLOW_VERSIONS"
+    )
 
     @model_validator(mode="after")
     def validate_capture_credentials(self) -> "DeployableApiSettings":
@@ -363,6 +373,12 @@ def create_production_app(
         ),
         qa_run_history_cursor_secret=(
             resolved_api.cursor_secret.get_secret_value().encode("utf-8")
+        ),
+        workflow_run_admission_service=PersistedWorkflowRunAdmissionService(
+            persistence.uow_factory
+        ),
+        workflow_version_resolver=ConfiguredWorkflowVersionResolver(
+            resolved_api.workflow_versions
         ),
         operational_correlation_reader=PostgreSQLOperationalCorrelationReader(
             persistence.uow_factory

@@ -352,6 +352,8 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "audit_events": ExpectedTablePrivileges(True, True, True, False, False),
         "workspaces": ExpectedTablePrivileges(True, True, True, True, True),
         "environments": ExpectedTablePrivileges(True, True, True, True, True),
+        "work_items": ExpectedTablePrivileges(True, True, True, False, False),
+        "workflow_runs": ExpectedTablePrivileges(True, True, True, False, False),
         "context_profiles": ExpectedTablePrivileges(True, True, True, False, False),
         "context_bundles": ExpectedTablePrivileges(True, True, True, False, False),
         "answer_question_runs": ExpectedTablePrivileges(True, True, True, True, False),

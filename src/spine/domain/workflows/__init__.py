@@ -6,5 +6,22 @@ from spine.domain.workflows.models import (
     WorkflowDefinition,
     WorkflowVersion,
 )
+from spine.domain.workflows.runs import (
+    AcceptedSourceRevisionRef,
+    ClientRequestV1,
+    WorkflowCommandReceipt,
+    WorkflowRun,
+    WorkflowRunState,
+)
 
-__all__ = ["StepDefinition", "StepKind", "WorkflowDefinition", "WorkflowVersion"]
+__all__ = [
+    "AcceptedSourceRevisionRef",
+    "ClientRequestV1",
+    "StepDefinition",
+    "StepKind",
+    "WorkflowCommandReceipt",
+    "WorkflowDefinition",
+    "WorkflowRun",
+    "WorkflowRunState",
+    "WorkflowVersion",
+]

@@ -43,6 +43,21 @@ def test_generation_export_matches_backend_openapi_document(tmp_path: Path) -> N
     assert "/api/v1/qa/citations/{citation_id}" in document["paths"]
     assert "/api/v1/qa/sessions/{session_id}/messages/{message_id}/events" in document["paths"]
     assert "/api/v1/knowledge/documents/{source_object_id}/revisions/{source_revision_id}/parsed-content" in document["paths"]
+    assert "/api/v1/runs" in document["paths"]
+    assert "/api/v1/runs/{run_id}" in document["paths"]
+
+    start_run = document["paths"]["/api/v1/runs"]["post"]
+    assert start_run["operationId"] == "workflow.runs.start"
+    assert any(
+        parameter["name"] == "Idempotency-Key"
+        and parameter["in"] == "header"
+        and parameter["required"] is True
+        for parameter in start_run["parameters"]
+    )
+    assert start_run["responses"]["202"]["content"]["application/json"][
+        "schema"
+    ]["$ref"] == "#/components/schemas/WorkflowRunReceiptResponse"
+    assert document["paths"]["/api/v1/runs/{run_id}"]["get"]["operationId"] == "workflow.runs.detail"
 
     upload_operation = document["paths"]["/api/v1/documents/uploads"]["post"]
     upload_parameter_names = {

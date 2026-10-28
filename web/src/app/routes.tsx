@@ -15,6 +15,8 @@ function SpineControlPlane() {
 }
 
 export const appRoutes: RouteObject[] = [
+  { path: '/workflow/start', element: <SpineControlPlane /> },
+  { path: '/workflow/runs/:runId', element: <SpineControlPlane /> },
   {
     path: '/knowledge/documents/:documentId',
     element: <SpineControlPlane />,
