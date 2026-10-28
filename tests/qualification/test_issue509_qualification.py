@@ -33,6 +33,9 @@ APPLICATION_RECOVERY_REPORT_V2_PATH = (
 APPLICATION_RECOVERY_REPORT_V3_PATH = (
     PROJECT_ROOT / "docs/qualification/issue-509-application-recovery-attempt-v3.json"
 )
+APPLICATION_RECOVERY_REPORT_V4_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-application-recovery-attempt-v4.json"
+)
 APPLICATION_RECOVERY_DIAGNOSTIC_PATH = (
     PROJECT_ROOT / "docs/qualification/issue-509-application-recovery-diagnostic-v1.json"
 )
@@ -90,6 +93,10 @@ def _load_application_recovery_report_v2() -> dict[str, Any]:
 
 def _load_application_recovery_report_v3() -> dict[str, Any]:
     return json.loads(APPLICATION_RECOVERY_REPORT_V3_PATH.read_text(encoding="utf-8"))
+
+
+def _load_application_recovery_report_v4() -> dict[str, Any]:
+    return json.loads(APPLICATION_RECOVERY_REPORT_V4_PATH.read_text(encoding="utf-8"))
 
 
 def _load_application_recovery_diagnostic() -> dict[str, Any]:
@@ -401,6 +408,43 @@ def test_issue509_application_recovery_v3_records_canonical_refusal_fail_closed(
 
 def test_issue509_application_recovery_v3_contains_only_safe_metadata() -> None:
     report = _load_application_recovery_report_v3()
+
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
+def test_issue509_application_recovery_v4_records_publication_and_closed_canary() -> None:
+    report = _load_application_recovery_report_v4()
+
+    assert report["schema_version"] == "r1-recovered-application-attempt:v4"
+    assert report["run_reference"] == "run:issue509-application-canary-004"
+    assert report["target_commit"] == "12693cd9fc3a857e1e196d00d8ed4eec4680e237"
+    assert report["decision"] == "not_verified"
+    assert report["production_qualified"] is False
+    assert report["projection_attempt"]["outcome"] == "completed"
+    assert report["projection_attempt"]["canonical_handoff"] == "completed"
+    assert report["projection_attempt"]["publication_status"] == "published"
+    assert report["projection_attempt"]["projection_receipt_count"] == 1
+    assert report["projection_attempt"]["projection_snapshot_count"] == 1
+    assert report["projection_attempt"]["projection_activation_count"] == 1
+    assert report["application_canary"] == {
+        "outcome": "not_executed",
+        "safe_reason_code": "qualification_authority_expired",
+        "authorized_source_read": "not_verified",
+        "application_read_count": 0,
+        "authority_mutation_attempted": False,
+    }
+    assert report["safety"]["runtime_connect_revoked"] is True
+    assert report["safety"]["temporary_graph_removed"] is True
+    assert report["safety"]["target_stopped_after_capture"] is True
+    assert report["independent_review"] == "required"
+
+
+def test_issue509_application_recovery_v4_contains_only_safe_metadata() -> None:
+    report = _load_application_recovery_report_v4()
 
     for text in _all_strings(report):
         lowered = text.lower()
