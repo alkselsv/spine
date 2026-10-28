@@ -98,8 +98,9 @@ deployment profile: runtime readiness (#560), пятиформатный canonic
 (#561), physical projection publication/recovery (#562) и реальный browser-flow
 без API mocking (#508) имеют `PASS`. Это не завершает релиз: approved private
 Golden Dataset ещё не прогнан через тот же production Q&A path, численные quality
-thresholds не утверждены, backup/isolated restore не квалифицированы, а финальный
-current-commit evidence aggregate и GO/NO-GO отсутствуют (#509–#511, #16).
+thresholds не утверждены, recovered application canary не квалифицирован, а
+финальный current-commit evidence aggregate и GO/NO-GO отсутствуют (#510, #511,
+#634, #16).
 
 - [x] Надёжная загрузка PDF, DOCX, XLSX, Markdown и text с версиями и checksum.
       `implemented, integrated and qualified`: Q16-02 R4 прошёл deployed upload,
@@ -165,16 +166,18 @@ current-commit evidence aggregate и GO/NO-GO отсутствуют (#509–#51
 
 ### Актуальные release blockers
 
-- #509 — deployment-approved coordinated backup, physically isolated restore,
-  reconciliation, projection recovery и authorized canary; текущий evidence
-  остаётся `BLOCKED / NOT_VERIFIED`.
+- #634 — provider-backed projection publication и один authorized Context Broker
+  canary на fresh recovered target; первый evidence остаётся `NOT_VERIFIED`,
+  потому что full runner fail-closed остановился на Cognee runtime binding до
+  provider и Broker boundaries.
 - #510 — полный 149-case run approved Golden Dataset через production durable
   Q&A/capture path, metadata-only baseline и отдельное утверждение versioned
   numerical thresholds Product Owner-ом.
 - #511 — current-commit aggregate всех обязательных R0/R1 evidence, repository
   gates, legacy disposition и финальное воспроизводимое решение GO/NO-GO.
 - #16 — родительский end-to-end release gate остаётся открытым до завершения
-  #509–#511; закрытые component tickets сами по себе не означают готовность R1.
+  #510, #511 и #634; закрытые component tickets сами по себе не означают
+  готовность R1.
 
 ### Текущий release verdict
 
