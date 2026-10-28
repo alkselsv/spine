@@ -173,7 +173,10 @@ thresholds не утверждены, recovered application canary не квал
   receipt/snapshot/activation. Это воспроизводит physical projection-call
   timeout независимо от прежней schema-setup ошибки; Broker не вызывался. Нужны
   диагностика и устранение этого blocker, новый отдельно авторизованный run и
-  independent evidence review.
+  independent evidence review. Safe adapter diagnostic теперь исключает
+  traceback-derived filename и сохраняет только закрытые stage/exception-class,
+  поэтому следующий run сможет зафиксировать точный physical substage без raw
+  error; сам provider timeout этим не устранён.
 - #510 — полный 149-case run approved Golden Dataset через production durable
   Q&A/capture path, metadata-only baseline и отдельное утверждение versioned
   numerical thresholds Product Owner-ом.
