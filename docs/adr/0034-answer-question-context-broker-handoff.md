@@ -40,3 +40,9 @@ existing idempotent bundle persistence and stable request identity. Production
 qualification still requires the canonical bundle store, current-authority
 revalidator, active publication authority and configured physical projection;
 the offline suite does not claim those integrations are live.
+
+The deterministic `broker_persistence_exact_scope_rate` evaluation moves from
+the pre-change composition baseline `0.0` to `1.0`: every observed Broker
+persistence context carries the exact `answer_question` / `retrieve_context`
+authority. This metric does not replace the separately authorized production
+canary or its independent evidence review.

@@ -80,6 +80,7 @@ from spine.application.persistence.context import (
     EnvironmentScope,
     PersistenceOperation,
     PersistencePurpose,
+    TrustedPersistenceContext,
 )
 from spine.application.persistence.errors import ContextBundleNotFoundError
 from spine.domain.agents import (
@@ -679,7 +680,26 @@ class OneShotQualifiedContextBroker:
                 )
 
 
-class _ScopedPort:
+class _PersistencePort:
+    def __init__(
+        self,
+        *,
+        uow_factory: object,
+        boundary: TrustedContextBoundary,
+        service_principal_id: UUID,
+    ) -> None:
+        self._uow_factory = uow_factory
+        self._boundary = boundary
+        self._service_principal_id = service_principal_id
+
+    def context(self) -> TrustedPersistenceContext:
+        raise NotImplementedError
+
+    def unit_of_work(self) -> object:
+        return self._uow_factory(self.context())  # type: ignore[operator]
+
+
+class _ScopedPort(_PersistencePort):
     def __init__(
         self,
         *,
@@ -688,12 +708,14 @@ class _ScopedPort:
         service_principal_id: UUID,
         operation: str,
     ) -> None:
-        self._uow_factory = uow_factory
-        self._boundary = boundary
-        self._service_principal_id = service_principal_id
+        super().__init__(
+            uow_factory=uow_factory,
+            boundary=boundary,
+            service_principal_id=service_principal_id,
+        )
         self._operation = operation
 
-    def context(self):
+    def context(self) -> TrustedPersistenceContext:
         scope = _active_request_scope()
         return self._boundary.worker(
             scope=EnvironmentScope(
@@ -707,7 +729,34 @@ class _ScopedPort:
         )
 
 
-class _BrokerScopedPort(_ScopedPort):
+class ContextBrokerPersistenceAuthority:
+    """Issue persistence contexts for one qualified Broker retrieval operation."""
+
+    def __init__(
+        self,
+        *,
+        boundary: TrustedContextBoundary,
+        service_principal_id: UUID,
+    ) -> None:
+        self._boundary = boundary
+        self._service_principal_id = service_principal_id
+
+    def issue(
+        self, *, workspace_id: UUID, environment_id: UUID, trace_id: UUID
+    ) -> TrustedPersistenceContext:
+        return self._boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            ),
+            service_principal_id=self._service_principal_id,
+            purpose=PersistencePurpose("answer_question"),
+            operation=PersistenceOperation("retrieve_context"),
+            trace_id=trace_id,
+        )
+
+
+class _BrokerScopedPort(_PersistencePort):
     """Bind persistence inside one Broker request to its capability authority."""
 
     def __init__(
@@ -721,45 +770,19 @@ class _BrokerScopedPort(_ScopedPort):
             uow_factory=uow_factory,
             boundary=boundary,
             service_principal_id=service_principal_id,
-            operation="retrieve_context",
+        )
+        self._authority = ContextBrokerPersistenceAuthority(
+            boundary=boundary,
+            service_principal_id=service_principal_id,
         )
 
-    def context(self):
+    def context(self) -> TrustedPersistenceContext:
         scope = _active_request_scope()
-        return _context_broker_persistence_context(
-            boundary=self._boundary,
+        return self._authority.issue(
             workspace_id=scope.workspace_id,
             environment_id=scope.environment_id,
-            service_principal_id=self._service_principal_id,
             trace_id=scope.trace_id,
         )
-
-
-def _context_broker_persistence_context(
-    *,
-    boundary: TrustedContextBoundary,
-    workspace_id: UUID,
-    environment_id: UUID,
-    service_principal_id: UUID,
-    trace_id: UUID,
-):
-    """Issue the single qualified authority used by one Broker request.
-
-    Repository method names are implementation details, not independently
-    delegated operations. Qualification is bound to the Context Broker's
-    capability-level retrieval operation for every persistence unit of work.
-    """
-
-    return boundary.worker(
-        scope=EnvironmentScope(
-            workspace_id=workspace_id,
-            environment_id=environment_id,
-        ),
-        service_principal_id=service_principal_id,
-        purpose=PersistencePurpose("answer_question"),
-        operation=PersistenceOperation("retrieve_context"),
-        trace_id=trace_id,
-    )
 
 
 class _ProfileRepository(_BrokerScopedPort):
@@ -811,7 +834,10 @@ class _CanonicalBoundaryMembers(_ScopedPort):
             return heads
 
 
-class _CurrentContentAuthorization(_ScopedPort):
+class _CurrentContentAuthorization:
+    def __init__(self, persistence: _PersistencePort) -> None:
+        self._persistence = persistence
+
     async def resolve_current_content_authorization(
         self,
         *,
@@ -822,7 +848,7 @@ class _CurrentContentAuthorization(_ScopedPort):
         scope = _active_request_scope()
         if (workspace_id, environment_id) != (scope.workspace_id, scope.environment_id):
             return None
-        async with self._uow_factory(self.context()) as uow:  # type: ignore[operator]
+        async with self._persistence.unit_of_work() as uow:
             source = await uow.sources.resolve_source(source_object_id)
             head = await uow.canonical.resolve_current(source_object_id)
             current_policy = await uow.access_policies.resolve_current(source_object_id)
@@ -858,12 +884,6 @@ class _CurrentContentAuthorization(_ScopedPort):
             current_policy=current_policy,
             policy=policy,
         )
-
-
-class _BrokerCurrentContentAuthorization(
-    _CurrentContentAuthorization, _BrokerScopedPort
-):
-    """Resolve current policy only within the Broker retrieval authority."""
 
 
 class _CurrentIdentityAuthority:
@@ -2256,12 +2276,27 @@ class _ScopedContextBundleRepository:
 class _BrokerContextBundleRepository(_ScopedContextBundleRepository):
     """Persist immutable bundles within the Broker retrieval authority."""
 
+    def __init__(
+        self,
+        *,
+        uow_factory: object,
+        boundary: TrustedContextBoundary,
+        service_principal_id: UUID,
+    ) -> None:
+        super().__init__(
+            uow_factory=uow_factory,
+            boundary=boundary,
+            service_principal_id=service_principal_id,
+        )
+        self._authority = ContextBrokerPersistenceAuthority(
+            boundary=boundary,
+            service_principal_id=service_principal_id,
+        )
+
     def _context(self, workspace_id: UUID, environment_id: UUID, trace_id: UUID):
-        return _context_broker_persistence_context(
-            boundary=self._boundary,
+        return self._authority.issue(
             workspace_id=workspace_id,
             environment_id=environment_id,
-            service_principal_id=self._service_principal_id,
             trace_id=trace_id,
         )
 
@@ -2397,13 +2432,13 @@ async def build_production_qa_capability_graph(
         trusted_contexts,
     )
     broker_content_authorization = ContentAuthorizationDecisionService(
-        repository=_BrokerCurrentContentAuthorization(**port_values),
+        repository=_CurrentContentAuthorization(_BrokerScopedPort(**port_values)),
         identity_authority=identity_authority,
         noninteractive_authority=noninteractive_authority,
     )
     content_authorization = ContentAuthorizationDecisionService(
         repository=_CurrentContentAuthorization(
-            **port_values, operation="resolve_content_authorization"
+            _ScopedPort(**port_values, operation="resolve_content_authorization")
         ),
         identity_authority=identity_authority,
         noninteractive_authority=noninteractive_authority,
@@ -2516,6 +2551,7 @@ async def build_production_qa_capability_graph(
 
 
 __all__ = [
+    "ContextBrokerPersistenceAuthority",
     "OneShotQualifiedContextBroker",
     "ProductionQACapabilityGraph",
     "build_production_qa_capability_graph",

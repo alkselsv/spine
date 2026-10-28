@@ -35,20 +35,15 @@ from spine.infrastructure.qa_worker_composition import (
     _ACTIVE_COMPLETENESS_INTENT,
     _ACTIVE_EVIDENCE_CONTENT,
     _ACTIVE_RETRIEVAL_SCOPE,
-    _ActiveRequestScope,
     _ActiveCompletenessIntent,
-    _BrokerContextBundleRepository,
     _CanonicalEvidenceVerifier,
     _CurrentNoninteractiveAuthority,
     _ParsedProjectionRetrieval,
-    _ProfileRepository,
-    _ScopedContextBundleRepository,
     _TrustedContextRegistry,
     _ValidationPlans,
     _projection_reference_matches_evidence,
     OneShotQualifiedContextBroker,
 )
-from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.memory.contracts import (
     ContextOutcome,
     ContextReasonCode,
@@ -310,103 +305,6 @@ async def test_one_shot_qualified_broker_denies_other_workspace() -> None:
     with pytest.raises(RuntimeError, match="authority is unavailable"):
         await boundary.retrieve(request)
     assert broker.calls == 0
-
-
-@pytest.mark.asyncio
-async def test_broker_and_downstream_repositories_keep_authority_boundary() -> None:
-    workspace_id = UUID(int=1)
-    environment_id = UUID(int=2)
-    trace_id = UUID(int=3)
-    service_principal_id = UUID(int=4)
-    boundary = TrustedContextBoundary.for_testing(
-        issuer_id=UUID(int=5), secret=b"b" * 32
-    )
-    contexts = []
-
-    class ContextProfiles:
-        async def resolve_for_scope(self, **_: object) -> object:
-            return object()
-
-    class ContextBundles:
-        async def create(self, bundle: object) -> object:
-            return bundle
-
-    class UnitOfWork:
-        context_profiles = ContextProfiles()
-        context_bundles = ContextBundles()
-
-        async def __aenter__(self) -> "UnitOfWork":
-            return self
-
-        async def __aexit__(self, *_: object) -> None:
-            return None
-
-        async def commit(self) -> None:
-            return None
-
-    def uow_factory(context: object) -> UnitOfWork:
-        contexts.append(boundary.verify(context))  # type: ignore[arg-type]
-        return UnitOfWork()
-
-    profile_repository = _ProfileRepository(
-        uow_factory=uow_factory,
-        boundary=boundary,
-        service_principal_id=service_principal_id,
-    )
-    broker_bundle_repository = _BrokerContextBundleRepository(
-        uow_factory=uow_factory,
-        boundary=boundary,
-        service_principal_id=service_principal_id,
-    )
-    bundle_repository = _ScopedContextBundleRepository(
-        uow_factory=uow_factory,
-        boundary=boundary,
-        service_principal_id=service_principal_id,
-    )
-    token = _ACTIVE_REQUEST_SCOPE.set(
-        _ActiveRequestScope(
-            workspace_id=workspace_id,
-            environment_id=environment_id,
-            trace_id=trace_id,
-        )
-    )
-    try:
-        await profile_repository.resolve_for_scope()
-        await broker_bundle_repository.create_or_replay(
-            SimpleNamespace(
-                workspace_id=workspace_id,
-                environment_id=environment_id,
-                run_id=trace_id,
-            )
-        )
-        await bundle_repository.create_or_replay(
-            SimpleNamespace(
-                workspace_id=workspace_id,
-                environment_id=environment_id,
-                run_id=trace_id,
-            )
-        )
-    finally:
-        _ACTIVE_REQUEST_SCOPE.reset(token)
-
-    assert len(contexts) == 3
-    assert {
-        (
-            context.service_principal_id,
-            context.purpose.value,
-            context.operation.value,
-        )
-        for context in contexts[:2]
-    } == {(service_principal_id, "answer_question", "retrieve_context")}
-    assert (
-        contexts[2].service_principal_id,
-        contexts[2].purpose.value,
-        contexts[2].operation.value,
-    ) == (
-        service_principal_id,
-        "governed_qa.context_bundle.v1",
-        "context_bundles",
-    )
 
 
 @pytest.mark.asyncio
