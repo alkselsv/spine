@@ -8,9 +8,11 @@ replaced by workflow-specific shortcuts.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from contextvars import ContextVar
 import hashlib
 import json
 import logging
@@ -32,6 +34,7 @@ from spine.application.answer_disclosure import (
 from spine.application.answer_question_context import AnswerQuestionContextService
 from spine.application.answer_question_execution import AnswerQuestionExecutionBoundary
 from spine.application.authorized_context_broker import (
+    AuthorizedContextRequest,
     AuthorizedContextBrokerApplicationService,
     ContextBrokerReadModel,
 )
@@ -143,6 +146,7 @@ from spine.domain.disclosure import (
     DisclosureRevalidationObservation,
 )
 from spine.memory.contracts import (
+    ContextResponse,
     EvidenceReference,
     ProjectionChunk,
     ProjectionOutcome,
@@ -467,12 +471,52 @@ class _TrustedContextRegistry:
     def __init__(self, service_principal_id: UUID) -> None:
         self._service_principal_id = service_principal_id
         self._commands: dict[UUID, object] = {}
+        self._contexts: dict[UUID, TrustedAuthorizationContext] = {}
 
     def register(self, reference: UUID, command: object) -> None:
         self._commands[reference] = command
 
+    def register_context(
+        self, reference: UUID, context: TrustedAuthorizationContext
+    ) -> None:
+        if (
+            type(context) is not TrustedAuthorizationContext
+            or context.authority_snapshot_reference != reference
+            or context.service_principal_id != self._service_principal_id
+            or reference in self._commands
+            or reference in self._contexts
+        ):
+            raise ValueError("qualified Q&A authorization context is invalid")
+        self._contexts[reference] = context
+
+    def unregister_context(self, reference: UUID) -> None:
+        self._contexts.pop(reference, None)
+
+    def contains_context(self, context: TrustedAuthorizationContext) -> bool:
+        return (
+            type(context) is TrustedAuthorizationContext
+            and self._contexts.get(context.authority_snapshot_reference) == context
+        )
+
     async def resolve(self, request: object) -> TrustedAuthorizationContext | None:
         reference = getattr(request, "authorization_context_ref", None)
+        issued = self._contexts.get(reference)
+        if issued is not None:
+            diagnostic = getattr(request, "diagnostic_context", None)
+            command_id = getattr(request, "request_id", None)
+            if (
+                getattr(request, "workspace_id", None) != issued.workspace_id
+                or getattr(request, "environment_id", None) != issued.environment_id
+                or getattr(diagnostic, "trace_id", None) != issued.trace_id
+                or not isinstance(command_id, UUID)
+            ):
+                return None
+            self._activate(
+                issued,
+                allow_partial_answer=getattr(request, "allow_partial_answer", None),
+                command_id=command_id,
+            )
+            return issued
         command = self._commands.get(reference)
         request_context = getattr(command, "request_context", None)
         if (
@@ -482,22 +526,9 @@ class _TrustedContextRegistry:
             or getattr(request, "diagnostic_context", None) is None
         ):
             return None
-        _ACTIVE_REQUEST_SCOPE.set(
-            _ActiveRequestScope(
-                workspace_id=request_context.workspace_id,
-                environment_id=request_context.environment_id,
-                trace_id=request_context.trace_id,
-            )
-        )
         command_id = getattr(command, "command_id", None)
         if not isinstance(command_id, UUID):
             raise RuntimeError("active Q&A command identity is unavailable")
-        _ACTIVE_COMPLETENESS_INTENT.set(
-            _ActiveCompletenessIntent(
-                allow_partial_answer=getattr(command, "allow_partial_answer", None),
-                command_id=command_id,
-            )
-        )
         context = TrustedAuthorizationContext(
             mode=AuthorizationContextMode.INTERACTIVE_PROCESSING,
             workspace_id=request_context.workspace_id,
@@ -513,8 +544,118 @@ class _TrustedContextRegistry:
             trace_id=request_context.trace_id,
             issued_at=datetime.now(timezone.utc),
         )
-        _ACTIVE_AUTHORIZATION_CONTEXT.set(context)
+        self._activate(
+            context,
+            allow_partial_answer=getattr(command, "allow_partial_answer", None),
+            command_id=command_id,
+        )
         return context
+
+    @staticmethod
+    def _activate(
+        context: TrustedAuthorizationContext,
+        *,
+        allow_partial_answer: bool | None,
+        command_id: UUID,
+    ) -> None:
+        _ACTIVE_REQUEST_SCOPE.set(
+            _ActiveRequestScope(
+                workspace_id=context.workspace_id,
+                environment_id=context.environment_id,
+                trace_id=context.trace_id,
+            )
+        )
+        _ACTIVE_COMPLETENESS_INTENT.set(
+            _ActiveCompletenessIntent(
+                allow_partial_answer=allow_partial_answer,
+                command_id=command_id,
+            )
+        )
+        _ACTIVE_AUTHORIZATION_CONTEXT.set(context)
+
+
+def _noninteractive_authority_reference(reference: UUID) -> UUID:
+    return uuid5(reference, "spine:qualified-context-broker:noninteractive:v1")
+
+
+class OneShotQualifiedContextBroker:
+    """Issue current service authority and perform at most one Broker request.
+
+    This operator-only module is not wired to an HTTP route or worker startup.
+    Binding creation and revocation remain outside its interface.
+    """
+
+    def __init__(
+        self,
+        *,
+        broker: object,
+        trusted_contexts: _TrustedContextRegistry,
+        authority_resolver: object,
+        service_principal_id: UUID,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._broker = broker
+        self._trusted_contexts = trusted_contexts
+        self._authority_resolver = authority_resolver
+        self._service_principal_id = service_principal_id
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._used = False
+        self._lock = asyncio.Lock()
+
+    async def retrieve(self, request: AuthorizedContextRequest) -> ContextResponse:
+        if type(request) is not AuthorizedContextRequest:
+            raise TypeError("qualified Context Broker request is invalid")
+        async with self._lock:
+            if self._used:
+                raise RuntimeError("qualified Context Broker request was already used")
+            generation = await self._authority_resolver.resolve_service_authority(
+                principal_id=self._service_principal_id,
+                requested_scope=RequestedAuthorizationScope(
+                    workspace_id=request.workspace_id,
+                    environment_id=request.environment_id,
+                ),
+                purpose="answer_question",
+                operation="retrieve_context",
+            )
+            if (
+                not isinstance(generation, int)
+                or isinstance(generation, bool)
+                or generation < 1
+            ):
+                raise RuntimeError("qualified Q&A service authority is unavailable")
+            context = TrustedAuthorizationContext(
+                mode=AuthorizationContextMode.NONINTERACTIVE_PROCESSING,
+                workspace_id=request.workspace_id,
+                environment_id=request.environment_id,
+                canonical_human_id=None,
+                service_principal_id=self._service_principal_id,
+                purpose="answer_question",
+                operation="retrieve_context",
+                membership_generation=generation,
+                authority_generation=generation,
+                service_authority_generation=generation,
+                authority_snapshot_reference=request.authorization_context_ref,
+                trace_id=request.diagnostic_context.trace_id,
+                issued_at=self._clock(),
+                noninteractive_authority_reference=(
+                    _noninteractive_authority_reference(
+                        request.authorization_context_ref
+                    )
+                ),
+            )
+            self._trusted_contexts.register_context(
+                request.authorization_context_ref, context
+            )
+            self._used = True
+            try:
+                response = await self._broker.retrieve(request)
+                if type(response) is not ContextResponse:
+                    raise RuntimeError("qualified Context Broker response is invalid")
+                return response
+            finally:
+                self._trusted_contexts.unregister_context(
+                    request.authorization_context_ref
+                )
 
 
 class _ScopedPort:
@@ -687,6 +828,53 @@ class _CurrentIdentityAuthority:
                 "authority_generation": current_generation,
                 "service_authority_generation": service_generation,
             }
+        )
+
+
+class _CurrentNoninteractiveAuthority:
+    """Revalidate the exact server-issued service-only Broker authority."""
+
+    def __init__(
+        self,
+        resolver: object,
+        service_principal_id: UUID,
+        trusted_contexts: _TrustedContextRegistry,
+    ) -> None:
+        self._resolver = resolver
+        self._service_principal_id = service_principal_id
+        self._trusted_contexts = trusted_contexts
+
+    async def authorize(self, context: TrustedAuthorizationContext) -> bool:
+        if (
+            type(context) is not TrustedAuthorizationContext
+            or context.mode is not AuthorizationContextMode.NONINTERACTIVE_PROCESSING
+            or context.canonical_human_id is not None
+            or context.service_principal_id != self._service_principal_id
+            or context.purpose != "answer_question"
+            or context.operation != "retrieve_context"
+            or not self._trusted_contexts.contains_context(context)
+            or context.noninteractive_authority_reference
+            != _noninteractive_authority_reference(
+                context.authority_snapshot_reference
+            )
+        ):
+            return False
+        generation = await self._resolver.resolve_service_authority(
+            principal_id=self._service_principal_id,
+            requested_scope=RequestedAuthorizationScope(
+                workspace_id=context.workspace_id,
+                environment_id=context.environment_id,
+            ),
+            purpose=context.purpose,
+            operation=context.operation,
+        )
+        return (
+            isinstance(generation, int)
+            and not isinstance(generation, bool)
+            and generation >= 1
+            and context.membership_generation == generation
+            and context.authority_generation == generation
+            and context.service_authority_generation == generation
         )
 
 
@@ -2020,6 +2208,7 @@ class ProductionQACapabilityGraph:
     execution: AnswerQuestionExecutionBoundary
     artifacts: Any
     configuration: Any
+    qualified_context_broker: OneShotQualifiedContextBroker
 
 
 async def build_production_qa_capability_graph(
@@ -2093,6 +2282,9 @@ async def build_production_qa_capability_graph(
         service_principal_id=service_principal_id,
     )
     trusted_contexts = _TrustedContextRegistry(service_principal_id)
+    qualification_authority = PostgreSQLQualificationAuthorityResolver(
+        session_factory  # type: ignore[arg-type]
+    )
     port_values = {
         "uow_factory": uow_factory,
         "boundary": boundary,
@@ -2103,6 +2295,11 @@ async def build_production_qa_capability_graph(
             **port_values, operation="resolve_content_authorization"
         ),
         identity_authority=_CurrentIdentityAuthority(session_factory),
+        noninteractive_authority=_CurrentNoninteractiveAuthority(
+            qualification_authority,
+            service_principal_id,
+            trusted_contexts,
+        ),
     )
     snapshot_members = _SnapshotMembers(
         **port_values, operation="resolve_projection_members"
@@ -2142,6 +2339,12 @@ async def build_production_qa_capability_graph(
             authorization=content_authorization,
         ),
         bundles=bundle_repository,  # type: ignore[arg-type]
+    )
+    qualified_context_broker = OneShotQualifiedContextBroker(
+        broker=broker,
+        trusted_contexts=trusted_contexts,
+        authority_resolver=qualification_authority,
+        service_principal_id=service_principal_id,
     )
     revalidator = _CurrentBundleRevalidator(
         **port_values, operation="revalidate_context_bundle"
@@ -2210,7 +2413,12 @@ async def build_production_qa_capability_graph(
         execution=execution,
         artifacts=artifacts,
         configuration=configuration,
+        qualified_context_broker=qualified_context_broker,
     )
 
 
-__all__ = ["ProductionQACapabilityGraph", "build_production_qa_capability_graph"]
+__all__ = [
+    "OneShotQualifiedContextBroker",
+    "ProductionQACapabilityGraph",
+    "build_production_qa_capability_graph",
+]
