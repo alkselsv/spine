@@ -303,6 +303,34 @@ async def test_changed_message_changes_idempotency_digest() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_retry_ignores_attempt_specific_correlation_metadata() -> None:
+    digests = []
+    for correlation_id, causation_id in (
+        (
+            UUID("63000000-0000-4000-8000-000000000010"),
+            UUID("63000000-0000-4000-8000-000000000011"),
+        ),
+        (
+            UUID("63000000-0000-4000-8000-000000000012"),
+            UUID("63000000-0000-4000-8000-000000000013"),
+        ),
+    ):
+        uow = FakeUow()
+        repository = PostgreSQLWorkflowRunAdmissionRepository(uow)
+        await repository.admit(
+            _command().model_copy(
+                update={
+                    "correlation_id": correlation_id,
+                    "causation_id": causation_id,
+                }
+            )
+        )
+        digests.append(uow.digest.value)
+
+    assert digests[0] == digests[1]
+
+
+@pytest.mark.asyncio
 async def test_same_idempotency_key_replays_original_run_without_new_effects() -> None:
     uow = FakeUow()
     uow.claim_result = IdempotencyReplay(

@@ -94,8 +94,6 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
                 "workflow_version": command.workflow_version,
                 "work_item_key": command.work_item_key,
                 "client_request": command.client_request.model_dump(mode="json"),
-                "correlation_id": command.correlation_id,
-                "causation_id": command.causation_id,
             },
         )
         claim = await self._uow.idempotency.claim(
