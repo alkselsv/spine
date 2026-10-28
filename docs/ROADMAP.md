@@ -167,11 +167,11 @@ thresholds не утверждены, recovered application canary не квал
 ### Актуальные release blockers
 
 - #634 — provider-backed projection publication и один authorized Context Broker
-  canary на fresh recovered target; первый evidence остаётся `NOT_VERIFIED`,
-  потому что full runner fail-closed остановился на Cognee runtime binding до
-  provider и Broker boundaries. Cognee binding lifecycle исправлен и проверен
-  offline; новый provider/Broker run всё ещё требует отдельной авторизации и
-  independent evidence review.
+  canary на fresh recovered target. Второй авторизованный run подтвердил
+  исправленный Cognee runtime binding и дошёл до approved provider, но
+  fail-closed завершился по timeout в `add` без receipt/snapshot/activation;
+  Broker не вызывался. Нужны новый отдельно авторизованный run после устранения
+  provider connectivity blocker и independent evidence review.
 - #510 — полный 149-case run approved Golden Dataset через production durable
   Q&A/capture path, metadata-only baseline и отдельное утверждение versioned
   numerical thresholds Product Owner-ом.

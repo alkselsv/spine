@@ -9,9 +9,13 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-REPORT_PATH = (
+V1_REPORT_PATH = (
     PROJECT_ROOT
     / "docs/qualification/issue-634-recovered-application-canary-v1.json"
+)
+V2_REPORT_PATH = (
+    PROJECT_ROOT
+    / "docs/qualification/issue-634-recovered-application-canary-v2.json"
 )
 
 
@@ -44,7 +48,7 @@ def _collect_nested_keys(value: Any) -> list[str]:
 
 
 def test_issue634_failed_pre_provider_run_makes_no_qualification_claim() -> None:
-    report = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
+    report = json.loads(V1_REPORT_PATH.read_text(encoding="utf-8"))
 
     assert report["schema_version"] == "recovered-application-canary:v1"
     assert report["ticket"] == 634
@@ -81,7 +85,7 @@ def test_issue634_failed_pre_provider_run_makes_no_qualification_claim() -> None
 
 
 def test_issue634_report_records_all_remaining_conditions() -> None:
-    report = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
+    report = json.loads(V1_REPORT_PATH.read_text(encoding="utf-8"))
 
     assert report["remaining_conditions"] == [
         "cognee_runtime_binding_resolution_not_verified",
@@ -98,7 +102,7 @@ def test_issue634_report_records_all_remaining_conditions() -> None:
 
 
 def test_issue634_cleanup_is_closed() -> None:
-    report = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
+    report = json.loads(V1_REPORT_PATH.read_text(encoding="utf-8"))
 
     safety = report["safety"]
     assert safety["temporary_authority_revoked"] is True
@@ -113,7 +117,10 @@ def test_issue634_cleanup_is_closed() -> None:
 
 
 def test_issue634_report_is_content_free() -> None:
-    report = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
+    reports = tuple(
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (V1_REPORT_PATH, V2_REPORT_PATH)
+    )
 
     forbidden = (
         "://",
@@ -128,9 +135,79 @@ def test_issue634_report_is_content_free() -> None:
         "raw_error",
         "raw_exception",
     )
-    for value in _collect_nested_strings(report):
-        assert not any(token in value.lower() for token in forbidden)
-        assert re.search(r"\b[^/\s]+\.(pdf|docx|xlsx|txt|md)\b", value, re.I) is None
+    for report in reports:
+        for value in _collect_nested_strings(report):
+            assert not any(token in value.lower() for token in forbidden)
+            assert re.search(r"\b[^/\s]+\.(pdf|docx|xlsx|txt|md)\b", value, re.I) is None
 
-    serialized_keys = "\n".join(key.lower() for key in _collect_nested_keys(report))
+    serialized_keys = "\n".join(
+        key.lower()
+        for report in reports
+        for key in _collect_nested_keys(report)
+    )
     assert not any(token in serialized_keys for token in forbidden)
+
+
+def test_issue634_provider_timeout_run_remains_blocked_without_broker_call() -> None:
+    report = json.loads(V2_REPORT_PATH.read_text(encoding="utf-8"))
+
+    assert report["schema_version"] == "recovered-application-canary:v2"
+    assert report["run_reference"] == "run:issue634-recovered-canary-002"
+    assert report["target_commit"] == "de7fdf26f536004e5b4ba6919542cfa39b66a147"
+    assert report["status"] == "blocked"
+    assert report["decision"] == "not_verified"
+    assert report["production_qualified"] is False
+    assert report["offline_profile_preflight"] == {
+        "profile_document": "verified",
+        "profile_repository": "resolved",
+        "profile_reference_match": True,
+        "provider_request_count": 0,
+        "broker_request_count": 0,
+    }
+    projection = report["projection_attempt"]
+    assert projection["outcome"] == "failed_closed"
+    assert projection["safe_reason_code"] == "projection_request_physical_retryable"
+    assert projection["provider_boundary_reached"] is True
+    assert projection["provider_request_bounds_enforced"] is True
+    assert projection["provider_internal_retry_limit"] == 2
+    assert projection["pre_provider_setup_failure_count"] == 1
+    assert projection["provider_backed_consumer_invocation_count"] == 1
+    assert sum(
+        projection[key]
+        for key in (
+            "projection_receipt_count",
+            "projection_snapshot_count",
+            "projection_activation_count",
+            "active_projection_count",
+            "source_projection_reference_count",
+            "reconciliation_result_count",
+        )
+    ) == 0
+    assert projection["publication_status"] == "unpublished"
+    assert report["application_canary"] == {
+        "outcome": "not_executed",
+        "safe_reason_code": "publication_unavailable",
+        "broker_request_count": 0,
+        "context_bundle_count": 0,
+        "context_bundle_issued": False,
+        "temporary_authority_created": False,
+        "temporary_authority_revocation": "not_applicable",
+    }
+
+
+def test_issue634_provider_timeout_run_cleanup_is_closed() -> None:
+    report = json.loads(V2_REPORT_PATH.read_text(encoding="utf-8"))
+
+    assert report["safety"] == {
+        "synthetic_content_only": True,
+        "temporary_authority_created": False,
+        "temporary_authority_revocation": "not_applicable",
+        "runtime_connect_revoked": True,
+        "temporary_authentication_material_rotated": True,
+        "temporary_cognee_database_removed": True,
+        "task_owned_graph_resource_count": 0,
+        "target_stopped_after_capture": True,
+        "serving_activated": False,
+        "cutover_performed": False,
+    }
+    assert report["independent_review"] == "required"
