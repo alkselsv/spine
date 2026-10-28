@@ -33,6 +33,10 @@ V6_REPORT_PATH = (
     PROJECT_ROOT
     / "docs/qualification/issue-634-recovered-application-canary-v6.json"
 )
+V7_REPORT_PATH = (
+    PROJECT_ROOT
+    / "docs/qualification/issue-634-recovered-application-canary-v7.json"
+)
 
 
 def _load_report(path: Path) -> dict[str, Any]:
@@ -690,4 +694,101 @@ def test_issue634_larger_pool_run_cleanup_is_closed() -> None:
         "evidence_volume_retained": True,
         "serving_activated": False,
         "cutover_performed": False,
+    }
+
+
+def test_issue634_shared_pgvector_run_records_published_projection() -> None:
+    report = _load_report(V7_REPORT_PATH)
+
+    assert report["schema_version"] == "recovered-application-canary:v7"
+    assert report["run_reference"] == "run:issue634-recovered-canary-007"
+    assert report["target_commit"] == "e6338687abee5b5eb08fcf9a9ed7b2ae6743ca6f"
+    assert report["status"] == "blocked"
+    assert report["decision"] == "not_verified"
+    assert report["production_qualified"] is False
+    projection = report["projection_attempt"]
+    assert projection == {
+        "outcome": "delivered",
+        "provider_backed_path_entered": True,
+        "provider_request_count_exactly_measured": False,
+        "provider_request_limit_exceeded": False,
+        "provider_backed_consumer_invocation_count": 1,
+        "projection_run_count": 1,
+        "projection_receipt_count": 1,
+        "projection_snapshot_count": 1,
+        "projection_activation_count": 1,
+        "active_projection_count": 1,
+        "source_projection_reference_count": 3,
+        "reconciliation_result_count": 1,
+        "publication_status": "published",
+        "vector_dataset_handler": "pgvector_shared",
+        "database_role_createdb": False,
+        "dataset_database_create_attempted": False,
+    }
+
+
+def test_issue634_shared_pgvector_run_fails_closed_before_broker() -> None:
+    report = _load_report(V7_REPORT_PATH)
+
+    assert report["application_canary"] == {
+        "outcome": "not_executed",
+        "safe_reason_code": "noninteractive_evidence_authorization_mode_unsupported",
+        "broker_request_count": 0,
+        "context_bundle_count": 0,
+        "context_bundle_issued": False,
+        "temporary_authority_created": False,
+        "temporary_authority_version_count": 0,
+        "temporary_authority_revocation": "not_applicable",
+    }
+    assert report["pre_broker_validation"] == {
+        "validation_kind": "static_production_composition_contract",
+        "single_binding_path": "qa_service_noninteractive_processing",
+        "service_source_grant_present": True,
+        "scope_resolver_accepts_noninteractive_processing": True,
+        "identity_revalidation_supports_service_only_authority": True,
+        "noninteractive_authority_port_available": True,
+        "evidence_verifier_dispatches_by_authorization_mode": False,
+        "evidence_verifier_forced_mode": "interactive_processing",
+        "existing_human_qualification_deadline_current": False,
+        "human_binding_deadline_mutable": False,
+        "same_scope_replacement_binding_allowed": False,
+        "additional_policy_or_canonical_mutation_permitted": False,
+        "fail_closed_before_authority_or_broker_request": True,
+    }
+
+
+def test_issue634_shared_pgvector_run_records_remaining_broker_conditions() -> None:
+    report = _load_report(V7_REPORT_PATH)
+
+    assert report["remaining_conditions"] == [
+        "provider_request_and_token_budget_independent_metering_not_verified",
+        "noninteractive_evidence_authorization_mode_dispatch_not_implemented",
+        "authorized_context_broker_request_not_verified",
+        "workspace_and_environment_isolation_not_verified",
+        "current_policy_enforcement_not_verified",
+        "publication_pin_not_verified",
+        "source_revision_lineage_not_verified",
+        "independent_final_evidence_review_required",
+    ]
+
+
+def test_issue634_shared_pgvector_run_cleanup_is_closed() -> None:
+    report = _load_report(V7_REPORT_PATH)
+
+    assert report["safety"] == {
+        "synthetic_content_only": True,
+        "temporary_authority_created": False,
+        "temporary_authority_revocation": "not_applicable",
+        "runtime_connect_revoked": True,
+        "temporary_authentication_material_rotated_count": 6,
+        "temporary_cognee_database_removed": True,
+        "task_owned_graph_resources_created_count": 2,
+        "task_owned_graph_resources_removed_count": 2,
+        "task_owned_graph_resource_count": 0,
+        "sensitive_run_logs_removed": True,
+        "target_stopped_after_capture": True,
+        "evidence_volume_retained": True,
+        "serving_activated": False,
+        "cutover_performed": False,
+        "direct_canonical_or_active_pointer_edit_performed": False,
     }
