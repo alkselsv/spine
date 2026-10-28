@@ -2,6 +2,18 @@
 
 Status: **BLOCKED / NOT_VERIFIED**.
 
+The run-specific authorization was recorded locally before the provider request;
+publication of that authorization as a GitHub comment was not authorized. The
+metadata record is preserved in the companion JSON. It binds commit
+`b8f1dee821bc2c455f3487745873e8713ffda116`, target
+`spine634canary003`, destination `api.vsellm.ru/v1`, profile
+`cognee-approved-production`, USD 1.00, concurrency 1, at most 1000 provider
+requests, 1,000,000 input tokens and 100,000 output tokens, 120 seconds per
+request, at most two internal retries, a 3600-second run deadline and hard
+expiry `2026-10-28T15:30:00Z`. It permits one projection consumer invocation
+and at most one Context Broker request using synthetic data, without serving or
+cutover.
+
 The separately authorized synthetic run restored the verified Issue #509
 recovery set into the fresh isolated `spine634canary003` target at commit
 `b8f1dee821bc2c455f3487745873e8713ffda116`. Archive integrity, application
@@ -33,9 +45,9 @@ stopped the PostgreSQL target. No graph container or graph volume was created.
 Raw provider diagnostics and temporary logs were removed after allowlisted safe
 outcome extraction. No serving, cutover or customer data was involved.
 
-The remaining blocker is reproducible provider connectivity within the approved
-timeout and retry boundary. Normal publication and reconciliation, followed by
-the single authorized Context Broker canary and its isolation, policy,
-publication-pin and source-revision-lineage checks, remain unverified.
-Independent final evidence review is still required before any qualification
-claim.
+The remaining blocker is the reproducible physical projection-call timeout
+within the approved timeout and retry boundary. Normal publication and
+reconciliation, followed by the single authorized Context Broker canary and its
+isolation, policy, publication-pin and source-revision-lineage checks, remain
+unverified. Independent final evidence review is still required before any
+qualification claim.

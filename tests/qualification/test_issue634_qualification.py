@@ -253,6 +253,51 @@ def test_issue634_repeated_timeout_run_records_blocked_decision() -> None:
     assert report["independent_review"] == "required"
 
 
+def test_issue634_repeated_timeout_run_records_authorization_bounds() -> None:
+    report = _load_report(V3_REPORT_PATH)
+
+    assert report["authorization_reference"] == (
+        "session:issue634-recovered-canary-003"
+    )
+    assert report["authorization_publication"] == "not_authorized"
+    assert report["authorization_record"] == {
+        "record_timing": "before_provider_request",
+        "target_commit": "b8f1dee821bc2c455f3487745873e8713ffda116",
+        "target_reference": "spine634canary003",
+        "provider_destination": "api.vsellm.ru/v1",
+        "provider_profile": "cognee-approved-production",
+        "budget_usd": "1.00",
+        "concurrency_limit": 1,
+        "provider_request_limit": 1000,
+        "input_token_limit": 1000000,
+        "output_token_limit": 100000,
+        "request_timeout_seconds": 120,
+        "provider_internal_retry_limit": 2,
+        "run_deadline_seconds": 3600,
+        "hard_expiry": "2026-10-28T15:30:00Z",
+        "projection_consumer_invocation_limit": 1,
+        "context_broker_request_limit": 1,
+        "synthetic_data_only": True,
+        "serving_and_cutover_authorized": False,
+    }
+
+
+def test_issue634_repeated_timeout_run_records_exact_remaining_conditions() -> None:
+    report = _load_report(V3_REPORT_PATH)
+
+    assert report["remaining_conditions"] == [
+        "provider_backed_projection_completion_within_authorized_bounds_not_verified",
+        "reconciliation_not_verified",
+        "provider_backed_projection_and_publication_not_verified",
+        "authorized_context_broker_request_not_verified",
+        "workspace_and_environment_isolation_not_verified",
+        "current_policy_enforcement_not_verified",
+        "publication_pin_not_verified",
+        "source_revision_lineage_not_verified",
+        "independent_final_evidence_review_required",
+    ]
+
+
 def test_issue634_repeated_timeout_run_records_offline_preparation() -> None:
     report = _load_report(V3_REPORT_PATH)
 

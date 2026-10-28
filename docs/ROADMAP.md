@@ -170,10 +170,10 @@ thresholds не утверждены, recovered application canary не квал
   canary на fresh recovered target. Третий авторизованный run заранее завершил
   локальный Cognee setup, повторно дошёл до approved provider и снова fail-closed
   завершился по timeout в physical projection call без
-  receipt/snapshot/activation. Это воспроизводит provider connectivity blocker
-  независимо от прежней schema-setup ошибки; Broker не вызывался. Нужны
-  устранение внешнего blocker, новый отдельно авторизованный run и independent
-  evidence review.
+  receipt/snapshot/activation. Это воспроизводит physical projection-call
+  timeout независимо от прежней schema-setup ошибки; Broker не вызывался. Нужны
+  диагностика и устранение этого blocker, новый отдельно авторизованный run и
+  independent evidence review.
 - #510 — полный 149-case run approved Golden Dataset через production durable
   Q&A/capture path, metadata-only baseline и отдельное утверждение versioned
   numerical thresholds Product Owner-ом.

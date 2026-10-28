@@ -11,6 +11,26 @@
   "content_free": true,
   "authorization_reference": "session:issue634-recovered-canary-003",
   "authorization_publication": "not_authorized",
+  "authorization_record": {
+    "record_timing": "before_provider_request",
+    "target_commit": "b8f1dee821bc2c455f3487745873e8713ffda116",
+    "target_reference": "spine634canary003",
+    "provider_destination": "api.vsellm.ru/v1",
+    "provider_profile": "cognee-approved-production",
+    "budget_usd": "1.00",
+    "concurrency_limit": 1,
+    "provider_request_limit": 1000,
+    "input_token_limit": 1000000,
+    "output_token_limit": 100000,
+    "request_timeout_seconds": 120,
+    "provider_internal_retry_limit": 2,
+    "run_deadline_seconds": 3600,
+    "hard_expiry": "2026-10-28T15:30:00Z",
+    "projection_consumer_invocation_limit": 1,
+    "context_broker_request_limit": 1,
+    "synthetic_data_only": true,
+    "serving_and_cutover_authorized": false
+  },
   "recovery_basis": {
     "recovery_set_reference": "recovery:issue509-005",
     "restore_evidence_reference": "restore:b207b511e5e3c6fb3ef42ca94be6daa43462ba3daeedb71d15cced09437ea20f",
@@ -64,7 +84,7 @@
     "raw_failure_retained": false
   },
   "remaining_conditions": [
-    "provider_connectivity_timeout_reproduced",
+    "provider_backed_projection_completion_within_authorized_bounds_not_verified",
     "reconciliation_not_verified",
     "provider_backed_projection_and_publication_not_verified",
     "authorized_context_broker_request_not_verified",
