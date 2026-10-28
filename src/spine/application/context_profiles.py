@@ -8,6 +8,7 @@ decision.  Those authorities remain separate ports.
 
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from typing import Literal, Protocol
 from uuid import UUID
@@ -31,6 +32,9 @@ from spine.domain.context_profiles import (
     PartialAnswerFallback,
     RetrievalStrategy,
 )
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class ContextProfileCapability(str, Enum):
@@ -208,11 +212,20 @@ class ServerApprovedContextProfileResolver:
         except ContextProfileMalformedError:
             return self._rejected(ContextProfileResolutionReason.PROFILE_MALFORMED)
         except ContextProfileNotFoundError:
-            return self._rejected(ContextProfileResolutionReason.PROFILE_UNAVAILABLE)
+            return self._rejected(
+                ContextProfileResolutionReason.PROFILE_UNAVAILABLE,
+                diagnostic_reason="profile_not_found",
+            )
         except ContextProfileError:
-            return self._rejected(ContextProfileResolutionReason.PROFILE_UNAVAILABLE)
+            return self._rejected(
+                ContextProfileResolutionReason.PROFILE_UNAVAILABLE,
+                diagnostic_reason="profile_repository_unavailable",
+            )
         except Exception:
-            return self._rejected(ContextProfileResolutionReason.PROFILE_UNAVAILABLE)
+            return self._rejected(
+                ContextProfileResolutionReason.PROFILE_UNAVAILABLE,
+                diagnostic_reason="profile_resolution_unexpected",
+            )
 
         if type(profile) is not ContextProfileVersion:
             return self._rejected(ContextProfileResolutionReason.PROFILE_MALFORMED)
@@ -244,7 +257,18 @@ class ServerApprovedContextProfileResolver:
         )
 
     @staticmethod
-    def _rejected(reason: ContextProfileResolutionReason) -> ContextProfileResolution:
+    def _rejected(
+        reason: ContextProfileResolutionReason,
+        *,
+        diagnostic_reason: str | None = None,
+    ) -> ContextProfileResolution:
+        _LOGGER.warning(
+            "context profile resolution rejected",
+            extra={
+                "safe_stage": "context_profile_resolution",
+                "safe_reason_code": diagnostic_reason or reason.value,
+            },
+        )
         return ContextProfileResolution(
             outcome=ContextProfileResolutionOutcome.REJECTED,
             reason=reason,

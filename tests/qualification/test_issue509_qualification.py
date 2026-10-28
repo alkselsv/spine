@@ -21,6 +21,33 @@ RUNTIME_COMPOSITION_REPORT_PATH = (
 TEMPORAL_READINESS_REPORT_V2_PATH = (
     PROJECT_ROOT / "docs/qualification/issue-509-temporal-readiness-report-v2.json"
 )
+PROJECTION_RECOVERY_REPORT_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-projection-recovery-attempt-v1.json"
+)
+APPLICATION_RECOVERY_REPORT_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-application-recovery-attempt-v1.json"
+)
+APPLICATION_RECOVERY_REPORT_V2_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-application-recovery-attempt-v2.json"
+)
+APPLICATION_RECOVERY_REPORT_V3_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-application-recovery-attempt-v3.json"
+)
+APPLICATION_RECOVERY_REPORT_V4_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-application-recovery-attempt-v4.json"
+)
+APPLICATION_RECOVERY_REPORT_V5_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-application-recovery-attempt-v5.json"
+)
+APPLICATION_RECOVERY_REPORT_V6_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-application-recovery-attempt-v6.json"
+)
+APPLICATION_RECOVERY_DIAGNOSTIC_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-application-recovery-diagnostic-v1.json"
+)
+NEO4J_RUNTIME_COMPATIBILITY_REPORT_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-neo4j-runtime-compatibility-v1.json"
+)
 COMPOSE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/compose.yaml"
 DOCKERIGNORE_PATH = PROJECT_ROOT / ".dockerignore"
 QUALIFICATION_DOCKERFILE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/Dockerfile"
@@ -56,6 +83,44 @@ def _load_report() -> dict[str, Any]:
 
 def _load_readiness_report() -> dict[str, Any]:
     return json.loads(READINESS_REPORT_PATH.read_text(encoding="utf-8"))
+
+
+def _load_projection_recovery_report() -> dict[str, Any]:
+    return json.loads(PROJECTION_RECOVERY_REPORT_PATH.read_text(encoding="utf-8"))
+
+
+def _load_application_recovery_report() -> dict[str, Any]:
+    return json.loads(APPLICATION_RECOVERY_REPORT_PATH.read_text(encoding="utf-8"))
+
+
+def _load_application_recovery_report_v2() -> dict[str, Any]:
+    return json.loads(APPLICATION_RECOVERY_REPORT_V2_PATH.read_text(encoding="utf-8"))
+
+
+def _load_application_recovery_report_v3() -> dict[str, Any]:
+    return json.loads(APPLICATION_RECOVERY_REPORT_V3_PATH.read_text(encoding="utf-8"))
+
+
+def _load_application_recovery_report_v4() -> dict[str, Any]:
+    return json.loads(APPLICATION_RECOVERY_REPORT_V4_PATH.read_text(encoding="utf-8"))
+
+
+def _load_application_recovery_report_v5() -> dict[str, Any]:
+    return json.loads(APPLICATION_RECOVERY_REPORT_V5_PATH.read_text(encoding="utf-8"))
+
+
+def _load_application_recovery_report_v6() -> dict[str, Any]:
+    return json.loads(APPLICATION_RECOVERY_REPORT_V6_PATH.read_text(encoding="utf-8"))
+
+
+def _load_application_recovery_diagnostic() -> dict[str, Any]:
+    return json.loads(APPLICATION_RECOVERY_DIAGNOSTIC_PATH.read_text(encoding="utf-8"))
+
+
+def _load_neo4j_runtime_compatibility_report() -> dict[str, Any]:
+    return json.loads(
+        NEO4J_RUNTIME_COMPATIBILITY_REPORT_PATH.read_text(encoding="utf-8")
+    )
 
 
 def _all_strings(value: Any) -> list[str]:
@@ -175,6 +240,428 @@ def test_issue509_report_does_not_promote_repository_evidence_to_live_recovery()
         "no_production_readiness_or_cutover_claim_made",
         "physical_projection_remains_non_authoritative",
     ]
+
+
+def test_issue509_projection_recovery_report_records_verified_candidate_fail_closed() -> None:
+    report = _load_projection_recovery_report()
+
+    assert report["schema_version"] == "r1-projection-recovery-attempt:v1"
+    assert report["run_reference"] == "run:issue509-projection-recovery-001"
+    assert report["target_commit"] == "868b1ff14068671c06c11db60d88aa7f6a06c0a2"
+    assert report["decision"] == "not_verified"
+    assert report["production_qualified"] is False
+    assert report["immutable"] is True
+    assert report["content_free"] is True
+    assert report["projection_recovery"] == {
+        "outcome": "verified",
+        "source_revision_count": 1,
+        "projection_effect_count": 1,
+        "physical_retrieval_outcome": "verified",
+        "physical_retrieval_chunk_count": 3,
+        "physical_retrieval_evidence_count": 3,
+        "lineage_check": "verified",
+    }
+    assert report["application_canary"] == {
+        "publication_status": "unpublished",
+        "fail_closed_status_check": "verified",
+        "authorized_source_read": "not_verified",
+    }
+    assert report["safety"] == {
+        "serving_activated": False,
+        "promotion_performed": False,
+        "cutover_performed": False,
+        "temporary_restore_privileges_revoked": True,
+        "restore_function_owner_reverted": True,
+        "target_stopped_after_capture": True,
+    }
+    assert report["independent_review"] == "required"
+
+
+def test_issue509_projection_recovery_report_contains_only_safe_metadata() -> None:
+    report = _load_projection_recovery_report()
+
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
+def test_issue509_application_recovery_report_records_provider_timeout_fail_closed() -> None:
+    report = _load_application_recovery_report()
+
+    assert report["schema_version"] == "r1-recovered-application-attempt:v1"
+    assert report["run_reference"] == "run:issue509-application-canary-001"
+    assert report["target_commit"] == "dc912739f9513247f9d0e7d7d48c61a5efcaa3b2"
+    assert report["decision"] == "not_verified"
+    assert report["production_qualified"] is False
+    assert report["projection_attempt"] == {
+        "outcome": "failed_closed",
+        "safe_reason_code": "provider_connectivity_timeout",
+        "provider_attempted": True,
+        "projection_receipt_count": 0,
+        "projection_snapshot_count": 0,
+        "projection_activation_count": 0,
+        "publication_status": "unpublished",
+    }
+    assert report["application_canary"] == {
+        "outcome": "not_executed",
+        "safe_reason_code": "publication_unavailable",
+        "authorized_source_read": "not_verified",
+    }
+    assert report["safety"] == {
+        "synthetic_content_only": True,
+        "serving_activated": False,
+        "cutover_performed": False,
+        "runtime_connect_revoked": True,
+        "temporary_operator_auth_rotated": True,
+        "target_stopped_after_capture": True,
+    }
+    assert report["independent_review"] == "required"
+
+
+def test_issue509_application_recovery_report_contains_only_safe_metadata() -> None:
+    report = _load_application_recovery_report()
+
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
+def test_issue509_application_recovery_v2_records_neo4j_refusal_fail_closed() -> None:
+    report = _load_application_recovery_report_v2()
+
+    assert report["schema_version"] == "r1-recovered-application-attempt:v2"
+    assert report["run_reference"] == "run:issue509-application-canary-002"
+    assert report["target_commit"] == "b7144457dc5c1a02780cb7bd3120578bdc23da29"
+    assert report["decision"] == "not_verified"
+    assert report["production_qualified"] is False
+    assert report["projection_attempt"] == {
+        "outcome": "failed_closed",
+        "safe_reason_code": "neo4j_multi_database_unsupported",
+        "provider_attempted": True,
+        "llm_connection_check": "verified",
+        "embedding_connection_check": "verified",
+        "projection_receipt_count": 0,
+        "projection_snapshot_count": 0,
+        "projection_activation_count": 0,
+        "publication_status": "unpublished",
+    }
+    assert report["application_canary"] == {
+        "outcome": "not_executed",
+        "safe_reason_code": "publication_unavailable",
+        "authorized_source_read": "not_verified",
+    }
+    assert report["safety"] == {
+        "synthetic_content_only": True,
+        "serving_activated": False,
+        "cutover_performed": False,
+        "runtime_connect_revoked": True,
+        "temporary_operator_auth_rotated": True,
+        "temporary_auth_volume_removed": True,
+        "target_stopped_after_capture": True,
+    }
+    assert report["independent_review"] == "required"
+
+
+def test_issue509_application_recovery_v2_contains_only_safe_metadata() -> None:
+    report = _load_application_recovery_report_v2()
+
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
+def test_issue509_application_recovery_v3_records_canonical_refusal_fail_closed() -> None:
+    report = _load_application_recovery_report_v3()
+
+    assert report["schema_version"] == "r1-recovered-application-attempt:v3"
+    assert report["run_reference"] == "run:issue509-application-canary-003"
+    assert report["target_commit"] == "9c37fdc20a86e7afd9dd2d973d58ecb93194b610"
+    assert report["decision"] == "not_verified"
+    assert report["production_qualified"] is False
+    assert report["projection_attempt"] == {
+        "outcome": "failed_closed",
+        "safe_reason_code": "projection_request_integrity_conflict",
+        "provider_attempted": True,
+        "llm_connection_check": "verified",
+        "embedding_connection_check": "verified",
+        "physical_projection": "completed",
+        "graph_handler": "neo4j_community",
+        "graph_dataset_isolation": "verified",
+        "projection_receipt_count": 0,
+        "projection_snapshot_count": 0,
+        "projection_activation_count": 0,
+        "active_projection_count": 0,
+        "publication_status": "unpublished",
+    }
+    assert report["application_canary"] == {
+        "outcome": "not_executed",
+        "safe_reason_code": "publication_unavailable",
+        "authorized_source_read": "not_verified",
+        "application_read_count": 0,
+    }
+    assert report["safety"] == {
+        "synthetic_content_only": True,
+        "backend_access_control_enabled": True,
+        "postgresql_tls_required": True,
+        "serving_activated": False,
+        "cutover_performed": False,
+        "runtime_connect_revoked": True,
+        "temporary_operator_auth_rotated": True,
+        "temporary_auth_volume_removed": True,
+        "temporary_graph_removed": True,
+        "target_stopped_after_capture": True,
+    }
+    assert report["independent_review"] == "required"
+
+
+def test_issue509_application_recovery_v3_contains_only_safe_metadata() -> None:
+    report = _load_application_recovery_report_v3()
+
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
+def test_issue509_application_recovery_v4_records_publication_and_closed_canary() -> None:
+    report = _load_application_recovery_report_v4()
+
+    assert report["schema_version"] == "r1-recovered-application-attempt:v4"
+    assert report["run_reference"] == "run:issue509-application-canary-004"
+    assert report["target_commit"] == "12693cd9fc3a857e1e196d00d8ed4eec4680e237"
+    assert report["decision"] == "not_verified"
+    assert report["production_qualified"] is False
+    assert report["projection_attempt"]["outcome"] == "completed"
+    assert report["projection_attempt"]["canonical_handoff"] == "completed"
+    assert report["projection_attempt"]["publication_status"] == "published"
+    assert report["projection_attempt"]["projection_receipt_count"] == 1
+    assert report["projection_attempt"]["projection_snapshot_count"] == 1
+    assert report["projection_attempt"]["projection_activation_count"] == 1
+    assert report["application_canary"] == {
+        "outcome": "not_executed",
+        "safe_reason_code": "qualification_authority_expired",
+        "authorized_source_read": "not_verified",
+        "application_read_count": 0,
+        "authority_mutation_attempted": False,
+    }
+    assert report["safety"]["runtime_connect_revoked"] is True
+    assert report["safety"]["temporary_graph_removed"] is True
+    assert report["safety"]["target_stopped_after_capture"] is True
+    assert report["independent_review"] == "required"
+
+
+def test_issue509_application_recovery_v4_contains_only_safe_metadata() -> None:
+    report = _load_application_recovery_report_v4()
+
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
+def test_issue509_application_recovery_v5_records_profile_resolution_fail_closed() -> None:
+    report = _load_application_recovery_report_v5()
+
+    assert report["schema_version"] == "r1-recovered-application-attempt:v5"
+    assert report["run_reference"] == "run:issue509-application-canary-005"
+    assert report["target_commit"] == "13457e0877d05dd21991b2e730fa7304648a9591"
+    assert report["decision"] == "not_verified"
+    assert report["production_qualified"] is False
+    assert report["projection_attempt"]["publication_status"] == "published"
+    assert report["projection_attempt"]["projection_receipt_count"] == 1
+    assert report["application_canary"] == {
+        "outcome": "failed_closed",
+        "safe_reason_code": "profile_unavailable",
+        "broker_request_count": 1,
+        "authorized_source_read": "not_verified",
+        "permitted_source_read_count": 0,
+        "context_bundle_issued": False,
+        "temporary_authority_created": True,
+        "temporary_authority_revoked": True,
+    }
+    assert report["diagnostic_boundary"] == {
+        "source_retrieval_reached": False,
+        "failure_stage": "context_profile_resolution",
+        "missing_request_scope_initialization": "identified",
+    }
+    assert report["safety"]["runtime_connect_revoked"] is True
+    assert report["safety"]["temporary_authority_revoked"] is True
+    assert report["safety"]["temporary_graph_removed"] is True
+    assert report["safety"]["target_stopped_after_capture"] is True
+
+
+def test_issue509_application_recovery_v5_contains_only_safe_metadata() -> None:
+    report = _load_application_recovery_report_v5()
+
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
+def test_issue509_application_recovery_v6_records_corrected_preflight_and_fail_closed() -> None:
+    report = _load_application_recovery_report_v6()
+
+    assert report["schema_version"] == "r1-recovered-application-attempt:v6"
+    assert report["run_reference"] == "run:issue509-application-canary-006"
+    assert report["target_commit"] == "a7c3f8de4aa8cfd49d0611fceb2fc6858a723638"
+    assert report["decision"] == "not_verified"
+    assert report["production_qualified"] is False
+    assert report["projection_attempt"]["publication_status"] == "published"
+    assert report["projection_attempt"]["projection_receipt_count"] == 1
+    assert report["projection_attempt"]["projection_snapshot_count"] == 1
+    assert report["projection_attempt"]["projection_activation_count"] == 1
+    assert report["application_canary"] == {
+        "outcome": "failed_closed",
+        "safe_reason_code": "profile_unavailable",
+        "broker_request_count": 1,
+        "authorized_source_read": "not_verified",
+        "permitted_source_read_count": 0,
+        "context_bundle_issued": False,
+        "temporary_authority_created": True,
+        "temporary_authority_revoked": True,
+    }
+    assert report["diagnostic_boundary"] == {
+        "offline_request_scope_preflight": "verified",
+        "profile_document_integrity": "verified",
+        "source_retrieval_reached": False,
+        "failure_stage": "context_profile_resolution",
+        "remaining_root_cause": "not_verified",
+    }
+    assert report["safety"]["runtime_connect_revoked"] is True
+    assert report["safety"]["temporary_authority_revoked"] is True
+    assert report["safety"]["temporary_graph_removed"] is True
+    assert report["safety"]["target_stopped_after_capture"] is True
+
+
+def test_issue509_application_recovery_v6_contains_only_safe_metadata() -> None:
+    report = _load_application_recovery_report_v6()
+
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
+def test_issue509_application_recovery_diagnostic_proves_operation_mismatch() -> None:
+    report = _load_application_recovery_diagnostic()
+
+    assert report["schema_version"] == "r1-recovered-application-diagnostic:v1"
+    assert report["source_attempt_reference"] == "run:issue509-application-canary-003"
+    assert report["decision"] == "verified_root_cause"
+    assert report["production_qualified"] is False
+    assert report["provider_call_count"] == 0
+    assert report["failure_control"] == {
+        "trusted_operation": "projection_result",
+        "mapping_outcome": "failed_closed",
+        "safe_reason_code": "projection_request_integrity_conflict",
+        "projection_receipt_count": 0,
+    }
+    assert report["causal_control"] == {
+        "trusted_operation": "projection_receipt",
+        "mapping_outcome": "completed",
+        "safe_reason_code": "none",
+        "projection_receipt_count": 1,
+        "source_reference_count": 3,
+        "receipt_claim_count": 1,
+    }
+    assert report["source_target_mutated"] is False
+    assert report["diagnostic_clone_disposable"] is True
+    assert report["independent_review"] == "required"
+
+
+def test_issue509_application_recovery_diagnostic_contains_only_safe_metadata() -> None:
+    report = _load_application_recovery_diagnostic()
+
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
+def test_issue509_neo4j_runtime_compatibility_records_real_handler_probe() -> None:
+    report = _load_neo4j_runtime_compatibility_report()
+
+    assert report == {
+        "schema_version": "r1-cognee-graph-runtime-compatibility:v1",
+        "run_reference": "run:issue509-neo4j-compatibility-001",
+        "target_commit": "d152ddad63dd9c56ef810e34a8b1149fe2879e9e",
+        "completed_at": "2026-10-27T19:43:44Z",
+        "decision": "verified_configuration",
+        "production_qualified": False,
+        "immutable": True,
+        "content_free": True,
+        "failed_placement": {
+            "execution_mode": "container",
+            "handler": "neo4j",
+            "server_edition": "community",
+            "safe_reason_code": "neo4j_multi_database_unsupported",
+        },
+        "compatible_placement": {
+            "execution_mode": "host",
+            "handler": "neo4j_community",
+            "server_edition": "community",
+            "backend_access_control": "enabled",
+            "dataset_isolation": "verified",
+            "bolt_readiness": "verified",
+            "cleanup": "verified",
+        },
+        "provider_call_count": 0,
+        "application_projection_retried": False,
+        "remaining_conditions": [
+            "fresh_recovered_application_target_required",
+            "new_provider_run_authorization_required",
+            "provider_backed_projection_and_publication_not_verified",
+            "authorized_application_source_read_not_verified",
+            "independent_final_evidence_review_required",
+        ],
+    }
+
+
+def test_issue509_neo4j_runtime_compatibility_contains_only_safe_metadata() -> None:
+    report = _load_neo4j_runtime_compatibility_report()
+
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
+def test_issue509_runbook_pins_safe_graph_handler_placement() -> None:
+    runbook = (
+        PROJECT_ROOT / "deploy/qualification/issue-509/README.md"
+    ).read_text(encoding="utf-8")
+
+    for required in (
+        "GRAPH_DATASET_DATABASE_HANDLER=neo4j_community",
+        "host-side qualification runner",
+        "Neo4j Enterprise or AuraDB",
+        "ENABLE_BACKEND_ACCESS_CONTROL=false",
+        "issue-509-neo4j-runtime-compatibility-v1.json",
+    ):
+        assert required in runbook
+
+
+def test_issue509_runbook_pins_projection_receipt_trusted_operation() -> None:
+    runbook = (
+        PROJECT_ROOT / "deploy/qualification/issue-509/README.md"
+    ).read_text(encoding="utf-8")
+
+    assert "_projection_receipt_context" in runbook
+    assert "ProjectionReceiptCommand requires `projection_receipt`" in runbook
+    assert "must not issue `projection_result`" in runbook
 
 
 def test_issue509_temporal_services_use_the_pinned_image_dynamic_config() -> None:

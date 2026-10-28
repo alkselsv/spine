@@ -522,16 +522,18 @@ class AuthorizedContextBrokerApplicationService:
             return self._response_from_bundle(replay)
 
         profile_resolution = await self._resolve_profile(request)
-        if (
-            profile_resolution is None
-            or profile_resolution.outcome
-            is not ContextProfileResolutionOutcome.RESOLVED
-            or profile_resolution.profile is None
-            or profile_resolution.policy is None
-            or profile_resolution.profile.reference != request.profile_ref
-            or profile_resolution.policy.workspace_id != request.workspace_id
-            or profile_resolution.policy.environment_id != request.environment_id
-        ):
+        profile_rejection = self._profile_rejection_reason(
+            profile_resolution,
+            request,
+        )
+        if profile_rejection is not None:
+            _LOGGER.warning(
+                "authorized context profile rejected",
+                extra={
+                    "safe_stage": "context_profile_resolution",
+                    "safe_reason_code": profile_rejection,
+                },
+            )
             return self._response(
                 ContextOutcome.UNAVAILABLE, ContextReasonCode.PROFILE_UNAVAILABLE
             )
@@ -710,6 +712,26 @@ class AuthorizedContextBrokerApplicationService:
             )
         except Exception:
             return None
+
+    @staticmethod
+    def _profile_rejection_reason(
+        resolution: ContextProfileResolution | None,
+        request: AuthorizedContextRequest,
+    ) -> str | None:
+        if resolution is None:
+            return "profile_resolution_port_unavailable"
+        if resolution.outcome is not ContextProfileResolutionOutcome.RESOLVED:
+            return resolution.reason.value
+        if resolution.profile is None or resolution.policy is None:
+            return "profile_resolution_payload_missing"
+        if resolution.profile.reference != request.profile_ref:
+            return "profile_reference_mismatch"
+        if (
+            resolution.policy.workspace_id != request.workspace_id
+            or resolution.policy.environment_id != request.environment_id
+        ):
+            return "profile_policy_scope_mismatch"
+        return None
 
     async def _resolve_publication(
         self,

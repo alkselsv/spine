@@ -84,6 +84,12 @@ def _log_mapping_rejection(stage: str, error: ProjectionMappingError) -> None:
     )
 
 
+def _log_mapping_conflict(stage: str) -> None:
+    """Record a content-free stage marker for an integrity conflict."""
+
+    _LOGGER.warning("Projection request integrity conflict at %s", stage)
+
+
 class ProjectionRequestEnvelope(BaseModel):
     """Content-free canonical lookup input reconstructed from one outbox intent."""
 
@@ -510,6 +516,7 @@ class ProjectionRequestConsumer:
         try:
             canonical = await self._canonical_resolver.resolve(request)
         except ProjectionMappingConflictError:
+            _log_mapping_conflict("resolution")
             await self._observe_projection_failure(request, diagnostic_context)
             raise TerminalOutboxConsumerFailure(
                 "projection.request.integrity_conflict"
@@ -554,6 +561,7 @@ class ProjectionRequestConsumer:
         try:
             replay = await self._result_bridge.prepare(command)
         except ProjectionMappingConflictError:
+            _log_mapping_conflict("preparation")
             await self._observe_projection_failure(
                 request, diagnostic_context, command=command
             )
@@ -618,12 +626,16 @@ class ProjectionRequestConsumer:
             raise TerminalOutboxConsumerFailure(
                 "projection.request.physical_rejected"
             )
+        handoff_stage = "receipt"
         try:
             receipt = await self._receipt_builder.build(command, result)
+            handoff_stage = "mapping"
             mapping = await self._result_bridge.map(command, receipt)
             if self._completion is not None:
+                handoff_stage = "publication_completion"
                 await self._completion.complete(mapping)
         except ProjectionMappingConflictError:
+            _log_mapping_conflict(handoff_stage)
             await self._observe_projection_failure(
                 request, diagnostic_context, command=command
             )

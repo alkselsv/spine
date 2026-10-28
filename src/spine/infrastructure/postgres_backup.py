@@ -229,6 +229,7 @@ class PostgreSQLCustomFormatBackupSource:
                 (
                     "--format=custom",
                     "--no-password",
+                    "--enable-row-security",
                     "--role",
                     self._connection.backup_role,
                     "--file",

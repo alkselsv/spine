@@ -1,0 +1,79 @@
+{
+  "schema_version": "r1-projection-recovery-attempt:v1",
+  "run_reference": "run:issue509-projection-recovery-001",
+  "target_commit": "868b1ff14068671c06c11db60d88aa7f6a06c0a2",
+  "completed_at": "2026-10-27T17:31:08Z",
+  "decision": "not_verified",
+  "production_qualified": false,
+  "immutable": true,
+  "content_free": true,
+  "authorization_reference": "approval:issue509-projection-recovery-001",
+  "recovery_basis": {
+    "recovery_set_id": "recovery:issue509-005",
+    "restore_evidence_reference": "restore:b207b511e5e3c6fb3ef42ca94be6daa43462ba3daeedb71d15cced09437ea20f",
+    "source_revision_id": "a2b9e71c-6991-5c9d-8345-2d058020aea9",
+    "workspace_id": "50900000-0000-4000-8000-00000000000a",
+    "environment_id": "50900000-0000-4000-8000-00000000000e"
+  },
+  "projection_identity": {
+    "projection_run_id": "14c483d2-5079-5a51-ad56-4d744653b497",
+    "physical_namespace_digest": "38d41f5d7e19dc65c5912a9ab490b8b196d9340d631a3f7d87777e727d698f6c",
+    "provider_profile_id": "cognee-approved-production",
+    "provider_profile_digest": "8935297e3def5e786f7e3d34db87d13c2106fbb7f82f8d695c747cee4fe1c84f"
+  },
+  "projection_recovery": {
+    "outcome": "verified",
+    "source_revision_count": 1,
+    "projection_effect_count": 1,
+    "physical_retrieval_outcome": "verified",
+    "physical_retrieval_chunk_count": 3,
+    "physical_retrieval_evidence_count": 3,
+    "lineage_check": "verified"
+  },
+  "application_canary": {
+    "publication_status": "unpublished",
+    "fail_closed_status_check": "verified",
+    "authorized_source_read": "not_verified"
+  },
+  "bounded_attempts": [
+    {
+      "attempt": "initial",
+      "outcome": "failed_closed",
+      "safe_reason_code": "provider_connectivity_timeout"
+    },
+    {
+      "attempt": "retry_1",
+      "outcome": "failed_closed",
+      "safe_reason_code": "provider_connectivity_timeout"
+    },
+    {
+      "attempt": "retry_2",
+      "outcome": "failed_closed",
+      "safe_reason_code": "provider_connectivity_timeout"
+    },
+    {
+      "attempt": "owner_authorized_resume",
+      "outcome": "verified",
+      "safe_reason_code": "none"
+    }
+  ],
+  "restored_runtime_findings": [
+    "restored_runtime_table_acl_absent",
+    "restored_security_definer_owner_cannot_observe_tenant_rows",
+    "canonical_resolver_requires_row_lock_write_grant"
+  ],
+  "remaining_conditions": [
+    "authorized_application_source_read_not_exercised_without_publication",
+    "restored_runtime_acl_and_function_ownership_procedure_not_corrected",
+    "independent_final_evidence_review_required"
+  ],
+  "safety": {
+    "serving_activated": false,
+    "promotion_performed": false,
+    "cutover_performed": false,
+    "temporary_restore_privileges_revoked": true,
+    "restore_function_owner_reverted": true,
+    "target_stopped_after_capture": true
+  },
+  "independent_review": "required"
+}

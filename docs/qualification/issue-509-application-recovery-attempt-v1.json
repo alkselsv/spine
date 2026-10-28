@@ -1,0 +1,58 @@
+{
+  "schema_version": "r1-recovered-application-attempt:v1",
+  "run_reference": "run:issue509-application-canary-001",
+  "target_commit": "dc912739f9513247f9d0e7d7d48c61a5efcaa3b2",
+  "completed_at": "2026-10-27T18:45:59Z",
+  "decision": "not_verified",
+  "production_qualified": false,
+  "immutable": true,
+  "content_free": true,
+  "authorization_reference": "issue-comment:6450498083",
+  "recovery_basis": {
+    "recovery_set_id": "recovery:issue509-005",
+    "restore_evidence_reference": "restore:b207b511e5e3c6fb3ef42ca94be6daa43462ba3daeedb71d15cced09437ea20f",
+    "workspace_id": "50900000-0000-4000-8000-00000000000a",
+    "environment_id": "50900000-0000-4000-8000-00000000000e",
+    "source_revision_id": "a2b9e71c-6991-5c9d-8345-2d058020aea9"
+  },
+  "application_target": {
+    "target_reference": "target:spine509application001",
+    "database_reference": "database:spine_application_issue509_001",
+    "restore_outcome": "verified",
+    "runtime_readiness": "verified",
+    "owner_and_acl_posture": "verified"
+  },
+  "projection_identity": {
+    "projection_kind": "qa",
+    "provider_profile_id": "cognee-approved-production",
+    "provider_profile_digest": "8935297e3def5e786f7e3d34db87d13c2106fbb7f82f8d695c747cee4fe1c84f"
+  },
+  "projection_attempt": {
+    "outcome": "failed_closed",
+    "safe_reason_code": "provider_connectivity_timeout",
+    "provider_attempted": true,
+    "projection_receipt_count": 0,
+    "projection_snapshot_count": 0,
+    "projection_activation_count": 0,
+    "publication_status": "unpublished"
+  },
+  "application_canary": {
+    "outcome": "not_executed",
+    "safe_reason_code": "publication_unavailable",
+    "authorized_source_read": "not_verified"
+  },
+  "remaining_conditions": [
+    "provider_backed_projection_and_publication_not_verified",
+    "authorized_application_source_read_not_verified",
+    "independent_final_evidence_review_required"
+  ],
+  "safety": {
+    "synthetic_content_only": true,
+    "serving_activated": false,
+    "cutover_performed": false,
+    "runtime_connect_revoked": true,
+    "temporary_operator_auth_rotated": true,
+    "target_stopped_after_capture": true
+  },
+  "independent_review": "required"
+}

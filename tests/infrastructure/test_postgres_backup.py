@@ -56,6 +56,7 @@ def tools(tmp_path: Path, *, fail_dump: bool = False) -> tuple[Path, Path]:
         + ("print('secret connection details', file=sys.stderr); raise SystemExit(1)\n" if fail_dump else "")
         + "assert '--format=custom' in sys.argv\n"
         "assert '--no-password' in sys.argv\n"
+        "assert '--enable-row-security' in sys.argv\n"
         "target = pathlib.Path(sys.argv[sys.argv.index('--file') + 1])\n"
         "target.write_bytes(b'PGDMP\x01synthetic archive')\n",
         encoding="utf-8",

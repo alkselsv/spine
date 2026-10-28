@@ -1,0 +1,80 @@
+{
+  "schema_version": "r1-recovered-application-attempt:v6",
+  "run_reference": "run:issue509-application-canary-006",
+  "target_commit": "a7c3f8de4aa8cfd49d0611fceb2fc6858a723638",
+  "completed_at": "2026-10-28T07:32:40Z",
+  "decision": "not_verified",
+  "production_qualified": false,
+  "immutable": true,
+  "content_free": true,
+  "authorization_reference": "issue-comment:6463229332",
+  "recovery_basis": {
+    "recovery_set_id": "recovery:issue509-005",
+    "restore_evidence_reference": "restore:b207b511e5e3c6fb3ef42ca94be6daa43462ba3daeedb71d15cced09437ea20f",
+    "workspace_id": "50900000-0000-4000-8000-00000000000a",
+    "environment_id": "50900000-0000-4000-8000-00000000000e",
+    "source_revision_id": "a2b9e71c-6991-5c9d-8345-2d058020aea9"
+  },
+  "application_target": {
+    "target_reference": "target:spine509application006",
+    "database_reference": "database:spine_application_issue509_006",
+    "restore_outcome": "verified",
+    "runtime_readiness": "verified",
+    "owner_and_acl_posture": "verified"
+  },
+  "projection_identity": {
+    "projection_kind": "qa",
+    "provider_profile_id": "cognee-approved-production",
+    "provider_profile_digest": "8935297e3def5e786f7e3d34db87d13c2106fbb7f82f8d695c747cee4fe1c84f"
+  },
+  "projection_attempt": {
+    "outcome": "completed",
+    "safe_reason_code": "none",
+    "provider_attempted": true,
+    "physical_projection": "completed",
+    "canonical_handoff": "completed",
+    "graph_handler": "neo4j_community",
+    "graph_dataset_isolation": "verified",
+    "projection_receipt_count": 1,
+    "projection_snapshot_count": 1,
+    "projection_activation_count": 1,
+    "active_projection_count": 1,
+    "publication_status": "published",
+    "post_commit_evidence_capture": "recovered_from_canonical_counts"
+  },
+  "application_canary": {
+    "outcome": "failed_closed",
+    "safe_reason_code": "profile_unavailable",
+    "broker_request_count": 1,
+    "authorized_source_read": "not_verified",
+    "permitted_source_read_count": 0,
+    "context_bundle_issued": false,
+    "temporary_authority_created": true,
+    "temporary_authority_revoked": true
+  },
+  "diagnostic_boundary": {
+    "offline_request_scope_preflight": "verified",
+    "profile_document_integrity": "verified",
+    "source_retrieval_reached": false,
+    "failure_stage": "context_profile_resolution",
+    "remaining_root_cause": "not_verified"
+  },
+  "remaining_conditions": [
+    "context_profile_runtime_resolution_not_verified",
+    "authorized_application_source_read_not_verified",
+    "independent_final_evidence_review_required"
+  ],
+  "safety": {
+    "synthetic_content_only": true,
+    "backend_access_control_enabled": true,
+    "postgresql_tls_required": true,
+    "serving_activated": false,
+    "cutover_performed": false,
+    "runtime_connect_revoked": true,
+    "temporary_operator_auth_rotated": true,
+    "temporary_authority_revoked": true,
+    "temporary_graph_removed": true,
+    "target_stopped_after_capture": true
+  },
+  "independent_review": "required"
+}

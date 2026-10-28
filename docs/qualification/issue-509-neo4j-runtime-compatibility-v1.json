@@ -1,0 +1,34 @@
+{
+  "schema_version": "r1-cognee-graph-runtime-compatibility:v1",
+  "run_reference": "run:issue509-neo4j-compatibility-001",
+  "target_commit": "d152ddad63dd9c56ef810e34a8b1149fe2879e9e",
+  "completed_at": "2026-10-27T19:43:44Z",
+  "decision": "verified_configuration",
+  "production_qualified": false,
+  "immutable": true,
+  "content_free": true,
+  "failed_placement": {
+    "execution_mode": "container",
+    "handler": "neo4j",
+    "server_edition": "community",
+    "safe_reason_code": "neo4j_multi_database_unsupported"
+  },
+  "compatible_placement": {
+    "execution_mode": "host",
+    "handler": "neo4j_community",
+    "server_edition": "community",
+    "backend_access_control": "enabled",
+    "dataset_isolation": "verified",
+    "bolt_readiness": "verified",
+    "cleanup": "verified"
+  },
+  "provider_call_count": 0,
+  "application_projection_retried": false,
+  "remaining_conditions": [
+    "fresh_recovered_application_target_required",
+    "new_provider_run_authorization_required",
+    "provider_backed_projection_and_publication_not_verified",
+    "authorized_application_source_read_not_verified",
+    "independent_final_evidence_review_required"
+  ]
+}

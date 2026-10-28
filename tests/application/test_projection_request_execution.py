@@ -30,6 +30,7 @@ from spine.application.projection_request_execution import (
 )
 from spine.application.projection_result_mapping import (
     AdapterProjectionReceipt,
+    ProjectionMappingConflictError,
     ProjectionResultMappingBridge,
 )
 from spine.application.telemetry import (
@@ -116,6 +117,12 @@ class _FailAfterPhysicalProjection:
         if self.attempts == 1:
             raise RuntimeError("protected provider detail")
         return result
+
+
+class _ConflictingPublicationCompletion:
+    async def complete(self, mapping: object) -> None:
+        del mapping
+        raise ProjectionMappingConflictError("protected document text")
 
 
 def _canonical_context(command: ProjectCommand) -> CanonicalProjectionRequestContext:
@@ -325,7 +332,9 @@ async def test_partial_handoff_failure_retries_without_duplicate_physical_effect
 
 
 @pytest.mark.asyncio
-async def test_same_command_identity_with_changed_digest_is_integrity_conflict() -> None:
+async def test_same_command_identity_with_changed_digest_is_integrity_conflict(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     command = _command()
     resolver = _CanonicalResolver(command)
     projection = DeterministicContextProjection()
@@ -356,6 +365,40 @@ async def test_same_command_identity_with_changed_digest_is_integrity_conflict()
     replay = await gateway.replay_for(command)
     assert replay is not None
     assert replay.handoff.command.command_digest == command.command_digest
+    assert "Projection request integrity conflict at preparation" in caplog.text
+    assert "protected text" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_publication_conflict_logs_only_content_free_stage(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    command = _command()
+    consumer = ProjectionRequestConsumer(
+        canonical_resolver=_CanonicalResolver(command),
+        projection=DeterministicContextProjection(),
+        receipt_builder=_AdapterReceiptBuilder(),
+        result_bridge=ProjectionResultMappingBridge(
+            DeterministicCanonicalProjectionGateway((_context(command),)),
+            id_source=lambda: UUID(int=118),
+        ),
+        completion=_ConflictingPublicationCompletion(),
+    )
+    intent = _intent()
+
+    with pytest.raises(TerminalOutboxConsumerFailure) as captured:
+        await consumer.consume(
+            intent,
+            DiagnosticContext(
+                trace_id=intent.trace_id,
+                correlation_id=intent.correlation_id,
+                causation_id=intent.event_id,
+            ),
+        )
+
+    assert captured.value.code == "projection.request.integrity_conflict"
+    assert "Projection request integrity conflict at publication_completion" in caplog.text
+    assert "protected document text" not in caplog.text
 
 
 @pytest.mark.asyncio

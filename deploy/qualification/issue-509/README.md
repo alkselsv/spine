@@ -5,17 +5,97 @@ synthetic qualification work. It has separate SOURCE and RESTORE networks,
 PostgreSQL databases, Neo4j instances, Temporal data and original-storage
 volumes. It does not connect to production and does not contain credentials.
 
-The profile deliberately does not claim a complete Spine production runtime.
-The repository currently has no reviewed deployment composition root for the
-PostgreSQL-backed API/Temporal worker graph and no reviewed operator entrypoint
-that binds `CoordinatedBackupProfile` and `IsolatedRestoreVerifier` to this
-deployment. Those are implementation gaps, not reasons to substitute ad-hoc
-backup commands or fake evidence.
+The application Compose file in this directory is retained for the earlier
+readiness evidence. Physical recovery now uses the production runtime Compose
+root plus the explicit one-shot composition in `recovery_job.py`. Build its
+tooling image with `Dockerfile.recovery`; mount the script and one immutable
+opaque-reference profile into the job container. Concrete database settings,
+passfiles and volume roots remain deployment bindings supplied out of band.
 
-The Compose profile uses the existing `spine-db-bootstrap` and
-`spine-db-migrate` entrypoints. It intentionally does not create backup,
-restore, verifier or AccessPolicy identities: no reviewed coordinator currently
-consumes those identities in this deployment.
+The job invokes the existing `RecoveryOperatorService`,
+`CoordinatedBackupProfile`, `BackupRecoveryCoordinator`, physical PostgreSQL and
+original-storage sources, `IsolatedRestoreVerifier` and reconciliation path. It
+does not add an HTTP route, scheduler, promotion or cutover path. Identity and
+target provisioning remains an operator action and is not performed by the
+job.
+
+## 2026-10-27 physical attempt
+
+The authorized synthetic run is recorded in
+`docs/qualification/issue-509-recovery-attempt-v2.json`. It failed closed before
+durable quiescence and produced three immutable incomplete manifests. RESTORE
+remained empty and was never served. The attempt therefore does not qualify
+backup, restore, projection recovery or canary behavior.
+
+The exercise confirmed that tenant-scoped PostgreSQL dumps require
+`--enable-row-security`, persisted strict enums require explicit conversion,
+the backup identity needs a reviewed relation inventory, and the current
+filesystem profile needs initialization access. Do not rerun the recorded
+profiles or reuse their degraded deployment-scope references. A new run needs a
+new authorization, recovery set, deployment-scope reference and independent
+evidence review.
+
+A later authorized retry is recorded in
+`docs/qualification/issue-509-recovery-attempt-v3.json`. It verified the
+coherent physical backup, isolated restore, original-storage reconciliation and
+tenant-scoped storage canary.
+
+The subsequent provider-backed run is recorded in
+`docs/qualification/issue-509-projection-recovery-attempt-v1.json`. It verified
+physical Context Projection recovery, strict candidate retrieval lineage and
+the restored application's fail-closed `unpublished` status. It also exposed
+restore-time ACL and SECURITY DEFINER ownership gaps. Overall qualification
+remains incomplete because an authorized application read through an active
+publication was outside the approved no-activation scope, the restore procedure
+still needs those gaps corrected, and independent final evidence review has not
+run.
+
+The recovered-application retry and its graph-runtime diagnosis are recorded in
+`docs/qualification/issue-509-application-recovery-attempt-v2.json` and
+`docs/qualification/issue-509-neo4j-runtime-compatibility-v1.json`. The retry
+proved provider connectivity, then failed closed because a containerized runner
+used Cognee's default multi-database `neo4j` handler against Community edition.
+
+For the pinned Community image, use a host-side qualification runner with
+Docker access and all of these bindings:
+
+```text
+GRAPH_DATABASE_PROVIDER=neo4j
+GRAPH_DATASET_DATABASE_HANDLER=neo4j_community
+NEO4J_COMMUNITY_IMAGE=spine/neo4j-cognee:5-community
+NEO4J_ENCRYPTION_KEY=<dedicated-qualification-binding>
+ENABLE_BACKEND_ACCESS_CONTROL=true
+```
+
+The community handler creates one container and volume per dataset and returns a
+localhost Bolt address, so it must not be used from the existing containerized
+qualification runner. Keep that runner only with Neo4j Enterprise or AuraDB,
+where Cognee's default `neo4j` multi-database handler is supported. Never set
+`ENABLE_BACKEND_ACCESS_CONTROL=false` as a workaround: that removes the required
+dataset isolation and cannot produce qualification evidence. Run the no-provider
+graph compatibility probe before requesting a new provider authorization, and
+remove its synthetic dataset through Cognee's public handler lifecycle.
+
+The third recovered-application attempt used this compatible placement and
+completed the physical provider-backed pipeline, but the canonical handoff
+failed closed with `projection.request.integrity_conflict`. The immutable result
+is recorded in
+`docs/qualification/issue-509-application-recovery-attempt-v3.json`. Do not
+interpret physical completion as publication: the attempt committed no receipt,
+snapshot, activation or active pointer, and it performed no application read.
+The consumer now emits a content-free stage marker for resolution, preparation,
+receipt, mapping or publication-completion conflicts. A future authorized retry
+must capture that marker without exposing exception text or content.
+
+The offline, no-provider diagnosis is recorded in
+`docs/qualification/issue-509-application-recovery-diagnostic-v1.json`. It
+reproduced the mapping refusal on an isolated clone and proved that the attempt's
+qualification composition issued the wrong trusted persistence operation.
+ProjectionReceiptCommand requires `projection_receipt`. Recovered-application
+composition must use the production `_projection_receipt_context` helper and
+must not issue `projection_result` for the result bridge, receipt builder or
+canonical locator resolver. Run the existing worker regression that asserts the
+helper's exact operation before requesting a provider-backed retry.
 
 ## Start
 

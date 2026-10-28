@@ -281,6 +281,41 @@ async def test_profile_resolution_failure_is_unavailable_and_does_not_read_publi
 
 
 @pytest.mark.asyncio
+async def test_profile_reference_mismatch_logs_only_content_free_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mismatched = ContextProfileVersion.create(
+        profile_id=UUID(int=40),
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        profile_version=1,
+        retrieval_strategy=RetrievalStrategy.HYBRID,
+        max_results=10,
+        max_tokens=1000,
+        max_relation_hops=2,
+        freshness_max_age_seconds=60,
+        completeness_requirement=CompletenessRequirement.BEST_EFFORT,
+        partial_answer_fallback=PartialAnswerFallback.DISALLOWED,
+        server_approved=True,
+        created_at=NOW,
+    )
+
+    response = await service(profiles=ResolvedProfiles(mismatched)).retrieve(request())
+
+    assert response.reason_code is ContextReasonCode.PROFILE_UNAVAILABLE
+    records = [
+        record
+        for record in caplog.records
+        if record.message == "authorized context profile rejected"
+    ]
+    assert len(records) == 1
+    assert records[0].safe_stage == "context_profile_resolution"
+    assert records[0].safe_reason_code == "profile_reference_mismatch"
+    assert str(mismatched.profile_id) not in caplog.text
+    assert mismatched.profile_digest not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_bundle_store_failure_is_safe_unavailable_without_restarting_retrieval() -> (
     None
 ):

@@ -16,6 +16,7 @@ from spine.application.storage.recovery import (
 )
 from spine.domain.storage.recovery import (
     BackupFenceLease,
+    FenceState,
     FenceOperationTicket,
     QuiescentEvidence,
     ComponentState,
@@ -26,6 +27,7 @@ from spine.domain.storage.recovery import (
     RecoveryManifestProfile,
     RecoveryManifestStatus,
     StorageRecoveryManifest,
+    TicketAdmission,
 )
 from spine.domain.storage.backup_profile import BackupProtectionProfile
 
@@ -140,8 +142,8 @@ class _PostgreSQLRecoveryTransaction:
             .values(**_quiescent_evidence_values(deployment_scope_id, evidence))
             .on_conflict_do_nothing(
                 index_elements=[
-                    recovery_quiescent_evidence.c.deployment_scope_id,
-                    recovery_quiescent_evidence.c.fence_epoch,
+                    recovery_quiescence_evidence.c.deployment_scope_id,
+                    recovery_quiescence_evidence.c.fence_epoch,
                 ]
             )
         )
@@ -298,23 +300,24 @@ def _invalidation_values(event: RecoveryEvidenceInvalidation) -> dict[str, objec
 
 
 def _lease_from_row(row: object) -> BackupFenceLease:
-    return BackupFenceLease.model_validate(
-        {
-            key: row[key]
-            for key in (
-                "deployment_scope_id",
-                "active_fence_epoch",
-                "fence_state",
-                "cutoff_ticket_sequence",
-                "lease_owner",
-                "lease_expires_at",
-                "lease_renewal",
-                "takeover_reference",
-                "ticket_admission",
-                "cleanup_release_progress",
-            )
-        }
-    )
+    values = {
+        key: row[key]
+        for key in (
+            "deployment_scope_id",
+            "active_fence_epoch",
+            "fence_state",
+            "cutoff_ticket_sequence",
+            "lease_owner",
+            "lease_expires_at",
+            "lease_renewal",
+            "takeover_reference",
+            "ticket_admission",
+            "cleanup_release_progress",
+        )
+    }
+    values["fence_state"] = FenceState(values["fence_state"])
+    values["ticket_admission"] = TicketAdmission(values["ticket_admission"])
+    return BackupFenceLease.model_validate(values)
 
 
 def _ticket_from_row(row: object) -> FenceOperationTicket:
