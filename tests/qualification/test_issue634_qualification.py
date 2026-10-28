@@ -31,12 +31,25 @@ def _collect_nested_strings(value: Any) -> list[str]:
     return []
 
 
+def _collect_nested_keys(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        return [
+            item
+            for key, nested in value.items()
+            for item in (key, *_collect_nested_keys(nested))
+        ]
+    if isinstance(value, list):
+        return [item for nested in value for item in _collect_nested_keys(nested)]
+    return []
+
+
 def test_issue634_failed_pre_provider_run_makes_no_qualification_claim() -> None:
     report = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
 
     assert report["schema_version"] == "recovered-application-canary:v1"
     assert report["ticket"] == 634
     assert re.fullmatch(r"[0-9a-f]{40}", report["target_commit"])
+    assert report["status"] == "blocked"
     assert report["decision"] == "not_verified"
     assert report["production_qualified"] is False
     assert report["immutable"] is True
@@ -102,6 +115,22 @@ def test_issue634_cleanup_is_closed() -> None:
 def test_issue634_report_is_content_free() -> None:
     report = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
 
-    forbidden = ("postgresql://", "api_key", "source_text", "raw_payload")
+    forbidden = (
+        "://",
+        "api_key",
+        "password",
+        "credential",
+        "connection_string",
+        "filename",
+        "source_text",
+        "raw_payload",
+        "provider_payload",
+        "raw_error",
+        "raw_exception",
+    )
     for value in _collect_nested_strings(report):
         assert not any(token in value.lower() for token in forbidden)
+        assert re.search(r"\b[^/\s]+\.(pdf|docx|xlsx|txt|md)\b", value, re.I) is None
+
+    serialized_keys = "\n".join(key.lower() for key in _collect_nested_keys(report))
+    assert not any(token in serialized_keys for token in forbidden)

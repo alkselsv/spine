@@ -185,8 +185,11 @@ thresholds не утверждены, recovered application canary не квал
 
 `NO-GO`: продуктовый R1 путь реализован и квалифицирован на зафиксированных
 изолированных deployment targets, но release qualification ещё не завершена.
-Отсутствие recovery exercise, реального baseline/approved thresholds или единого
-совместимого evidence package является блокирующим, а не неявным `PASS`.
+Отсутствие завершённого recovered-application canary, реального
+baseline/approved thresholds или единого совместимого evidence package является
+блокирующим, а не неявным `PASS`. Физический restore/recovery basis уже проверен;
+не закрыта provider-backed проверка приложения и Context Broker на восстановленном
+target.
 
 ### Exit criteria
 

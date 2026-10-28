@@ -106,16 +106,9 @@ class CogneePublicSdk:
 
     def __init__(self, sdk: Any | None = None) -> None:
         if sdk is None:
-            from spine.memory.cognee_memory import (
-                configure_environment,
-                freeze_cognee_environment,
-            )
+            from spine.memory.cognee_memory import load_configured_cognee
 
-            configure_environment()
-            import cognee
-            freeze_cognee_environment()
-
-            sdk = cognee
+            sdk = load_configured_cognee()
         self._sdk = sdk
         self.version = str(getattr(sdk, "__version__", ""))
         if self.version != SUPPORTED_COGNEE_VERSION:

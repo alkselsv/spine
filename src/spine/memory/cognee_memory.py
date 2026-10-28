@@ -21,6 +21,13 @@ _COGNEE_DATABASE_ENVIRONMENT_KEYS = (
     "DB_PASSWORD",
     "DATABASE_CONNECT_ARGS",
     "POOL_ARGS",
+    "MIGRATION_DB_PROVIDER",
+    "MIGRATION_DB_PATH",
+    "MIGRATION_DB_HOST",
+    "MIGRATION_DB_PORT",
+    "MIGRATION_DB_NAME",
+    "MIGRATION_DB_USERNAME",
+    "MIGRATION_DB_PASSWORD",
     "VECTOR_DB_PROVIDER",
     "VECTOR_DB_HOST",
     "VECTOR_DB_PORT",
@@ -147,15 +154,23 @@ def _cognee_configuration_getters() -> tuple[Any, ...]:
     )
 
 
+def load_configured_cognee() -> Any:
+    """Import Cognee lazily after selecting and freezing its runtime binding."""
+
+    configure_environment()
+    import cognee
+
+    freeze_cognee_environment()
+    return cognee
+
+
 async def remember_texts(
     texts: list[str],
     *,
     dataset: str | None = None,
     node_set: list[str] | None = None,
 ) -> Any:
-    configure_environment()
-    import cognee
-    freeze_cognee_environment()
+    cognee = load_configured_cognee()
 
     ds = dataset or settings.spine_dataset
     return await cognee.remember(
@@ -171,9 +186,7 @@ async def ask(
     dataset: str | None = None,
     session_id: str | None = None,
 ) -> list[Any]:
-    configure_environment()
-    import cognee
-    freeze_cognee_environment()
+    cognee = load_configured_cognee()
 
     kwargs: dict[str, Any] = {
         "datasets": dataset or settings.spine_dataset,

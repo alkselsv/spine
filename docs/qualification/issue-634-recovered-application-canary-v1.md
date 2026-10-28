@@ -1,6 +1,6 @@
 # Issue #634 recovered application canary v1
 
-Status: **NOT_VERIFIED**.
+Status: **BLOCKED / NOT_VERIFIED**.
 
 The authorized run restored the verified `recovery:issue509-005` archive into a
 fresh isolated PostgreSQL target. Archive integrity, application ownership and
@@ -26,10 +26,10 @@ database and role, and rotated all temporary database authentication material.
 No task-owned graph container or volume had been created. The PostgreSQL target
 was stopped. No serving, cutover or customer data was involved.
 
-A subsequent run needs a separately authorized fresh target after the full
-runner's Cognee configuration lifecycle is made deterministic. It must still
-verify reconciliation and runtime readiness; provider-backed projection and
-active publication; the single authorized Context Broker result; workspace and
-environment isolation; current policy enforcement; the publication pin; and
-source-revision lineage. Independent final evidence review of any qualification
-claim also remains required.
+A subsequent run needs a separately authorized fresh target using the
+remediated Cognee configuration lifecycle. It must still verify reconciliation
+and runtime readiness; provider-backed projection and active publication; the
+single authorized Context Broker result; workspace and environment isolation;
+current policy enforcement; the publication pin; and source-revision lineage.
+Independent final evidence review of any qualification claim also remains
+required.

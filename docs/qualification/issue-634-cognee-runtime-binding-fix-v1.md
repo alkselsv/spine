@@ -1,14 +1,14 @@
 # Issue #634 Cognee runtime binding lifecycle fix v1
 
-Status: **implemented and verified offline; recovered application remains
-NOT_VERIFIED**.
+Status: **implemented and covered by deterministic offline tests; recovered
+application remains BLOCKED / NOT_VERIFIED**.
 
 The first authorized #634 run proved that the complete runner could retain a
 Cognee 1.5.4 database configuration created before the fresh recovery target
-was selected. Cognee memoizes its relational, vector and graph settings. The
-Spine public-SDK boundary configured project-local storage but did not discard
-those earlier settings, so the runner correctly stopped before migrations,
-provider calls or Context Broker access with
+was selected. Cognee memoizes its relational, migration, vector and graph
+settings. The Spine public-SDK boundary configured project-local storage but
+did not discard those earlier settings, so the runner correctly stopped before
+migrations, provider calls or Context Broker access with
 `cognee_runtime_binding_mismatch`.
 
 The adapter now fingerprints the process database environment without retaining
@@ -19,12 +19,13 @@ life of the process. Repeating construction with the same binding is stable. A
 later attempt to retarget the initialized process fails closed with the same
 content-free reason code.
 
-The deterministic regression starts with all three Cognee database surfaces
-cached against synthetic stale targets, selects fresh synthetic targets and
-constructs the real installed Cognee 1.5.4 public SDK bridge. It proves that the
-fresh relational, vector and graph settings are selected, that repeated setup
-does not recreate them, and that a subsequent target change is rejected without
-including the target in the exception.
+The default deterministic regression uses a cache-shaped Cognee port fake. It
+starts with all four database configuration surfaces cached against synthetic
+stale targets and proves that fresh relational, migration, vector and graph
+settings are selected. Separate tests prove that repeated setup with the same
+binding is accepted and that a subsequent target change is rejected without
+including the target in the exception. The provider-backed recovery canary
+remains a separately authorized, opt-in integration exercise.
 
 Offline verification:
 

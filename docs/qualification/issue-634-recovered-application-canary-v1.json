@@ -4,6 +4,7 @@
   "ticket": 634,
   "target_commit": "17d5102bf92651ef354f19278e8b09b78600911e",
   "completed_at": "2026-10-28T09:16:29Z",
+  "status": "blocked",
   "decision": "not_verified",
   "production_qualified": false,
   "immutable": true,
