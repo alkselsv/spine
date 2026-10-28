@@ -8,7 +8,8 @@ Run008 used the separately authorized synthetic recovery set on isolated target
 `cognee-approved-production` profile. The authorization retained the run007
 provider, spend, request, token, timeout, retry, consumer, authority and Broker
 limits, with hard expiry `2026-10-29T18:00:00Z`. Authorization publication was
-not requested.
+not requested. The temporary authority binding and sole Broker request remained
+authorized only after successful publication.
 
 The restored target was migrated from revision 69 to current revision 71 before
 the run. PostgreSQL TLS, runtime readiness and the exact production profile
@@ -40,6 +41,6 @@ canonical edit or active-pointer edit occurred.
 The next run must construct the projection consumer diagnostic context with
 `causation_id=event_id` before entering the one-shot consumer. It requires a new
 run-specific authorization because run008's single consumer invocation was
-used. Provider-backed publication, the single Broker canary and its isolation,
-policy, publication-pin and lineage checks remain unverified. Independent final
-evidence review is still required.
+used. Provider-backed publication and reconciliation, the single Broker canary
+and its isolation, policy, publication-pin and lineage checks remain
+unverified. Independent final evidence review is still required.

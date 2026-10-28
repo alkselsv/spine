@@ -838,6 +838,23 @@ def test_issue634_run008_records_unchanged_canonical_state() -> None:
     assert report["application_canary"]["temporary_authority_created"] is False
 
 
+def test_issue634_run008_records_reconciliation_as_remaining() -> None:
+    report = _load_report(V8_REPORT_PATH)
+
+    assert "reconciliation_not_verified" in report["remaining_conditions"]
+
+
+def test_issue634_run008_preserves_post_publication_authorization_ordering() -> None:
+    report = _load_report(V8_REPORT_PATH)
+
+    assert (
+        report["authorization_record"][
+            "authority_and_broker_after_publication_only"
+        ]
+        is True
+    )
+
+
 def test_issue634_run008_cleanup_is_closed() -> None:
     report = _load_report(V8_REPORT_PATH)
 
