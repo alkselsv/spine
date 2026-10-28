@@ -216,6 +216,9 @@ current-commit evidence aggregate и GO/NO-GO отсутствуют (#509–#51
 
 - [x] Канонический разговорный запуск: idempotent `WorkItem` и pinned
       `WorkflowRun`, транзакционный outbox, scoped readback и composer (#638).
+- [x] Продолжение того же `WorkflowRun`: typed `add_context` command, optimistic
+      command receipts, disclosure-safe snapshot/event feed с stable cursor и
+      восстановление минимальной web timeline после reload (#639).
 - [ ] Google Sheets connector для реестра смет и Google Drive/file connector для материалов.
 - [ ] Связывание строки реестра, запроса, встречи, клиента и итоговой сметы.
 - [ ] Domain model: `ClientRequest`, `Requirement`, `ProposalDraft`, `Estimate`,

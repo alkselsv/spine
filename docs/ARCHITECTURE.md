@@ -184,6 +184,14 @@ Temporal workflow с canonical `run_id` как стабильным workflow ID.
 version выбирает сервер из immutable deployment registry. Чтение run ограничено
 авторизованными workspace и environment. См. ADR-0045.
 
+Продолжение разговорной работы идёт через версионированный `WorkflowCommand` на
+том же run. PostgreSQL отдельно сохраняет command receipt и защищённый typed
+payload, optimistic `run_version` и disclosure-safe `WorkflowEvent`; повтор
+того же idempotency identity возвращает исходный receipt без второго эффекта.
+`WorkflowRunSnapshot` и подписанные sequence-cursor страницы событий являются
+продуктовым read model: они не раскрывают Temporal history, command payload или
+chain-of-thought и повторно авторизуются при каждом чтении. См. ADR-0046.
+
 PostgreSQL использует три раздельных credential surface: migration owner,
 tenant-scoped runtime и узкий cross-tenant dispatcher. Dispatcher может читать
 неизменяемые outbox intents и изменять только operational delivery state; у

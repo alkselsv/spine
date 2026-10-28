@@ -380,6 +380,9 @@ def create_production_app(
         workflow_version_resolver=ConfiguredWorkflowVersionResolver(
             resolved_api.workflow_versions
         ),
+        workflow_run_cursor_secret=(
+            resolved_api.cursor_secret.get_secret_value().encode("utf-8")
+        ),
         operational_correlation_reader=PostgreSQLOperationalCorrelationReader(
             persistence.uow_factory
         ),

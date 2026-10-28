@@ -7,13 +7,14 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 
 from spine.application.persistence.command_digest import digest_command
 from spine.application.persistence.errors import (
     ConstraintConflictError,
     IdempotencyConflictError,
     InvalidPersistenceContextError,
+    OptimisticConflictError,
 )
 from spine.application.persistence.idempotency import (
     IdempotencyKey,
@@ -22,6 +23,9 @@ from spine.application.persistence.idempotency import (
 )
 from spine.application.persistence.outbox import OpaqueObjectReference
 from spine.application.persistence.workflow_runs import (
+    COMMAND_WORKFLOW_OPERATION,
+    COMMAND_WORKFLOW_RESULT_TYPE,
+    COMMAND_WORKFLOW_SCHEMA_VERSION,
     START_WORKFLOW_EVENT_SCHEMA_VERSION,
     START_WORKFLOW_EVENT_TYPE,
     START_WORKFLOW_OPERATION,
@@ -29,19 +33,24 @@ from spine.application.persistence.workflow_runs import (
     START_WORKFLOW_SCHEMA_VERSION,
     StartWorkflowDispatchPayload,
     WorkflowRunAdmissionRepository,
+    validate_workflow_command_context,
     validate_workflow_run_context,
 )
-from spine.application.workflow_runs import StartWorkflowCommand
+from spine.application.workflow_runs import StartWorkflowCommand, WorkflowCommand
 from spine.domain.work_items import WorkItem, WorkItemStatus
 from spine.domain.workflows import (
     AcceptedSourceRevisionRef,
     ClientRequestV1,
     WorkflowCommandReceipt,
+    WorkflowEvent,
+    WorkflowEventPage,
     WorkflowRun,
     WorkflowRunState,
 )
 from spine.infrastructure.persistence.postgresql_mappings import (
     work_items,
+    workflow_command_receipts,
+    workflow_run_events,
     workflow_runs,
 )
 
@@ -85,8 +94,6 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
                 "workflow_version": command.workflow_version,
                 "work_item_key": command.work_item_key,
                 "client_request": command.client_request.model_dump(mode="json"),
-                "correlation_id": command.correlation_id,
-                "causation_id": command.causation_id,
             },
         )
         claim = await self._uow.idempotency.claim(
@@ -159,6 +166,25 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
         )
         await self._uow._execute(insert(work_items).values(**self._work_item_values(work_item, command, now)))
         await self._uow._execute(insert(workflow_runs).values(**self._run_values(run)))
+        start_event_id = uuid5(
+            NAMESPACE_URL, f"spine.workflow.run-event:v1:{run_id}:1"
+        )
+        await self._uow._execute(
+            insert(workflow_run_events).values(
+                event_id=start_event_id,
+                workspace_id=command.workspace_id,
+                environment_id=command.environment_id,
+                run_id=run_id,
+                sequence=1,
+                event_type="workflow.run-started",
+                event_schema_version=1,
+                run_version=1,
+                summary="Workflow run started.",
+                correlation_id=command.correlation_id,
+                causation_id=command.command_id,
+                occurred_at=now,
+            )
+        )
 
         event_id = uuid5(NAMESPACE_URL, f"spine.workflow.start:v1:{run_id}")
         intent = self._uow._outbox_events.build_intent(
@@ -209,6 +235,221 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
             workspace_id=workspace_id,
             environment_id=environment_id,
             run_id=run_id,
+        )
+
+    async def dispatch(self, command: WorkflowCommand) -> WorkflowCommandReceipt:
+        """Persist one typed continuation with one optimistic logical effect."""
+
+        self._uow._guard_active()
+        context = self._uow._context_snapshot_active()
+        try:
+            validate_workflow_command_context(context, command)
+        except ValueError as error:
+            await self._uow._fail(InvalidPersistenceContextError(str(error)))
+        digest = digest_command(
+            operation=COMMAND_WORKFLOW_OPERATION,
+            operation_schema_version=COMMAND_WORKFLOW_SCHEMA_VERSION,
+            payload={
+                "command_id": command.command_id,
+                "run_id": command.run_id,
+                "workspace_id": command.workspace_id,
+                "environment_id": command.environment_id,
+                "actor": command.actor.model_dump(mode="json"),
+                "command_type": command.command_type,
+                "command_schema_version": command.command_schema_version,
+                "expected_run_version": command.expected_run_version,
+                "payload": command.payload.model_dump(mode="json"),
+                "artifact_refs": [item.model_dump(mode="json") for item in command.artifact_refs],
+                "correlation_id": command.correlation_id,
+                "causation_id": command.causation_id,
+            },
+        )
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=COMMAND_WORKFLOW_SCHEMA_VERSION,
+            key=IdempotencyKey(command.idempotency_key),
+            digest=digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            if claim.result.result_type != COMMAND_WORKFLOW_RESULT_TYPE:
+                await self._uow._fail(
+                    ConstraintConflictError("Workflow command replay is invalid.")
+                )
+            receipt = await self._resolve_command_receipt(
+                workspace_id=command.workspace_id,
+                environment_id=command.environment_id,
+                command_id=claim.result.result_id,
+            )
+            if receipt is None or receipt.run_id != command.run_id:
+                await self._uow._fail(
+                    ConstraintConflictError("Workflow command replay is unavailable.")
+                )
+            return receipt.model_copy(update={"admission": "replayed"})
+
+        run = await self._resolve_run(
+            workspace_id=command.workspace_id,
+            environment_id=command.environment_id,
+            run_id=command.run_id,
+        )
+        if run is None:
+            await self._uow._fail(ConstraintConflictError("Workflow run is unavailable."))
+        if run.run_version != command.expected_run_version:
+            await self._uow._fail(OptimisticConflictError("Workflow run version is stale."))
+        if run.state in {
+            WorkflowRunState.COMPLETED,
+            WorkflowRunState.FAILED,
+            WorkflowRunState.CANCELLED,
+        }:
+            await self._uow._fail(ConstraintConflictError("Workflow transition is invalid."))
+
+        resulting_version = run.run_version + 1
+        update_result = await self._uow._execute(
+            update(workflow_runs)
+            .where(
+                workflow_runs.c.workspace_id == command.workspace_id,
+                workflow_runs.c.environment_id == command.environment_id,
+                workflow_runs.c.run_id == command.run_id,
+                workflow_runs.c.run_version == command.expected_run_version,
+            )
+            .values(run_version=resulting_version)
+        )
+        if update_result.rowcount != 1:
+            await self._uow._fail(OptimisticConflictError("Workflow run version is stale."))
+        now = self._clock().astimezone(timezone.utc)
+        await self._uow._execute(
+            insert(workflow_command_receipts).values(
+                command_id=command.command_id,
+                workspace_id=command.workspace_id,
+                environment_id=command.environment_id,
+                run_id=command.run_id,
+                work_item_id=run.work_item_id,
+                workflow_version_id=run.workflow_version_id,
+                idempotency_key=command.idempotency_key,
+                command_type=command.command_type,
+                command_schema_version=command.command_schema_version,
+                expected_run_version=command.expected_run_version,
+                resulting_run_version=resulting_version,
+                run_state=run.state.value,
+                actor=command.actor.model_dump(mode="json"),
+                command_payload=command.payload.model_dump(mode="json"),
+                artifact_refs=[item.model_dump(mode="json") for item in command.artifact_refs],
+                command_digest=digest.value,
+                trace_id=command.trace_id,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+                created_at=now,
+            )
+        )
+        event_id = uuid5(
+            NAMESPACE_URL, f"spine.workflow.command-event:v1:{command.command_id}"
+        )
+        await self._uow._execute(
+            insert(workflow_run_events).values(
+                event_id=event_id,
+                workspace_id=command.workspace_id,
+                environment_id=command.environment_id,
+                run_id=command.run_id,
+                sequence=resulting_version,
+                event_type="workflow.context-added",
+                event_schema_version=1,
+                run_version=resulting_version,
+                summary="Additional context received.",
+                correlation_id=command.correlation_id,
+                causation_id=command.command_id,
+                occurred_at=now,
+            )
+        )
+        await self._uow.idempotency.complete(
+            claim,
+            OpaqueResultReference(
+                COMMAND_WORKFLOW_RESULT_TYPE,
+                command.command_id,
+                COMMAND_WORKFLOW_SCHEMA_VERSION,
+            ),
+        )
+        return WorkflowCommandReceipt(
+            command_id=command.command_id,
+            work_item_id=run.work_item_id,
+            run_id=run.run_id,
+            workflow_version_id=run.workflow_version_id,
+            state=run.state,
+            run_version=resulting_version,
+            admission="accepted",
+        )
+
+    async def list_events(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        run_id: UUID,
+        after_sequence: int | None,
+        limit: int,
+    ) -> WorkflowEventPage:
+        self._uow._guard_active()
+        run = await self._resolve_run(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            run_id=run_id,
+        )
+        if run is None:
+            return WorkflowEventPage(items=())
+        statement = select(workflow_run_events).where(
+            workflow_run_events.c.workspace_id == workspace_id,
+            workflow_run_events.c.environment_id == environment_id,
+            workflow_run_events.c.run_id == run_id,
+        )
+        if after_sequence is not None:
+            statement = statement.where(workflow_run_events.c.sequence > after_sequence)
+        rows = (
+            await self._uow._execute(
+                statement.order_by(workflow_run_events.c.sequence).limit(limit + 1)
+            )
+        ).mappings().all()
+        has_more = len(rows) > limit
+        selected = rows[:limit]
+        items = tuple(self._event_from_row(row) for row in selected)
+        return WorkflowEventPage(
+            items=items,
+            next_sequence=items[-1].sequence if has_more and items else None,
+        )
+
+    async def _resolve_command_receipt(
+        self, *, workspace_id: UUID, environment_id: UUID, command_id: UUID
+    ) -> WorkflowCommandReceipt | None:
+        row = (
+            await self._uow._execute(
+                select(workflow_command_receipts).where(
+                    workflow_command_receipts.c.workspace_id == workspace_id,
+                    workflow_command_receipts.c.environment_id == environment_id,
+                    workflow_command_receipts.c.command_id == command_id,
+                )
+            )
+        ).mappings().one_or_none()
+        if row is None:
+            return None
+        return WorkflowCommandReceipt(
+            command_id=row["command_id"],
+            work_item_id=row["work_item_id"],
+            run_id=row["run_id"],
+            workflow_version_id=row["workflow_version_id"],
+            state=WorkflowRunState(row["run_state"]),
+            run_version=row["resulting_run_version"],
+            admission="accepted",
+        )
+
+    @staticmethod
+    def _event_from_row(row: Mapping[str, object]) -> WorkflowEvent:
+        return WorkflowEvent(
+            event_id=row["event_id"],
+            run_id=row["run_id"],
+            sequence=row["sequence"],
+            event_type=row["event_type"],
+            event_schema_version=row["event_schema_version"],
+            run_version=row["run_version"],
+            summary=row["summary"],
+            correlation_id=row["correlation_id"],
+            causation_id=row["causation_id"],
+            occurred_at=row["occurred_at"],
         )
 
     async def _resolve_run(

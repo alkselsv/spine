@@ -10,7 +10,10 @@ from spine.domain.workflows.runs import (
     AcceptedSourceRevisionRef,
     ClientRequestV1,
     WorkflowCommandReceipt,
+    WorkflowEvent,
+    WorkflowEventPage,
     WorkflowRun,
+    WorkflowRunSnapshot,
     WorkflowRunState,
 )
 
@@ -20,8 +23,11 @@ __all__ = [
     "StepDefinition",
     "StepKind",
     "WorkflowCommandReceipt",
+    "WorkflowEvent",
+    "WorkflowEventPage",
     "WorkflowDefinition",
     "WorkflowRun",
+    "WorkflowRunSnapshot",
     "WorkflowRunState",
     "WorkflowVersion",
 ]

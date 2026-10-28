@@ -13,8 +13,8 @@ from spine.application.persistence.context import (
     TrustedPersistenceContext,
 )
 from spine.application.persistence.errors import InvalidPersistenceContextError
-from spine.application.workflow_runs import StartWorkflowCommand
-from spine.domain.workflows import WorkflowCommandReceipt, WorkflowRun
+from spine.application.workflow_runs import StartWorkflowCommand, WorkflowCommand
+from spine.domain.workflows import WorkflowCommandReceipt, WorkflowEventPage, WorkflowRun
 
 
 START_WORKFLOW_OPERATION = PersistenceOperation("workflow.run.start")
@@ -22,6 +22,9 @@ START_WORKFLOW_SCHEMA_VERSION = 1
 START_WORKFLOW_RESULT_TYPE = "workflow_run_admission"
 START_WORKFLOW_EVENT_TYPE = "workflow.run-started"
 START_WORKFLOW_EVENT_SCHEMA_VERSION = 1
+COMMAND_WORKFLOW_OPERATION = PersistenceOperation("workflow.run.command")
+COMMAND_WORKFLOW_SCHEMA_VERSION = 1
+COMMAND_WORKFLOW_RESULT_TYPE = "workflow_command_receipt"
 
 
 class StartWorkflowDispatchPayload(BaseModel):
@@ -51,6 +54,13 @@ class WorkflowRunAdmissionRepository(Protocol):
         self, *, workspace_id: UUID, environment_id: UUID, run_id: UUID
     ) -> WorkflowRun | None: ...
 
+    async def dispatch(self, command: WorkflowCommand) -> WorkflowCommandReceipt: ...
+
+    async def list_events(
+        self, *, workspace_id: UUID, environment_id: UUID, run_id: UUID,
+        after_sequence: int | None, limit: int,
+    ) -> WorkflowEventPage: ...
+
 
 def validate_workflow_run_context(
     context: TrustedPersistenceContext,
@@ -70,6 +80,24 @@ def validate_workflow_run_context(
         raise InvalidPersistenceContextError("Workflow start context is invalid.")
 
 
+def validate_workflow_command_context(
+    context: TrustedPersistenceContext,
+    command: WorkflowCommand,
+) -> None:
+    """Reject any command whose authority differs from server-issued context."""
+
+    actor_id = context.acting_subject_id or context.service_principal_id
+    if (
+        not isinstance(context.scope, EnvironmentScope)
+        or context.operation != COMMAND_WORKFLOW_OPERATION
+        or actor_id != command.actor.id
+        or context.scope.workspace_id != command.workspace_id
+        or context.scope.environment_id != command.environment_id
+        or context.trace_id != command.trace_id
+    ):
+        raise InvalidPersistenceContextError("Workflow command context is invalid.")
+
+
 def register_workflow_run_outbox_event(registry: object) -> None:
     register = getattr(registry, "register")
     register(
@@ -80,6 +108,9 @@ def register_workflow_run_outbox_event(registry: object) -> None:
 
 
 __all__ = [
+    "COMMAND_WORKFLOW_OPERATION",
+    "COMMAND_WORKFLOW_RESULT_TYPE",
+    "COMMAND_WORKFLOW_SCHEMA_VERSION",
     "START_WORKFLOW_EVENT_SCHEMA_VERSION",
     "START_WORKFLOW_EVENT_TYPE",
     "START_WORKFLOW_OPERATION",
@@ -89,4 +120,5 @@ __all__ = [
     "WorkflowRunAdmissionRepository",
     "register_workflow_run_outbox_event",
     "validate_workflow_run_context",
+    "validate_workflow_command_context",
 ]

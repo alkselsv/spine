@@ -253,6 +253,7 @@ def create_app(
     feedback_service: FeedbackService | None = None,
     qa_run_history_service: QARunHistoryService | None = None,
     qa_run_history_cursor_secret: bytes | None = None,
+    workflow_run_cursor_secret: bytes | None = None,
     workflow_run_admission_service: PersistedWorkflowRunAdmissionService | None = None,
     workflow_version_resolver: WorkflowVersionResolver | None = None,
     qa_stream_service: QAStreamReader | None = None,
@@ -540,10 +541,13 @@ def create_app(
             raise RuntimeError("Workflow run routes require an authorization runtime.")
         if workflow_version_resolver is None:
             raise RuntimeError("Workflow run routes require a pinned version resolver.")
+        if workflow_run_cursor_secret is None:
+            raise RuntimeError("Workflow run routes require a cursor secret.")
         install_workflow_run_routes(
             application,
             service=workflow_run_admission_service,
             version_resolver=workflow_version_resolver,
+            cursor_secret=workflow_run_cursor_secret,
         )
     if parsed_content_inspection_service is not None:
         if type(authorization_runtime) is not ApiAuthorizationRuntime:

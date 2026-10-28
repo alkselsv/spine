@@ -12,14 +12,14 @@ from spine.application.persistence.context import (
     PersistencePurpose,
 )
 from spine.application.persistence.outbox import OutboxEventRegistry
-from spine.application.persistence.errors import IdempotencyConflictError
+from spine.application.persistence.errors import IdempotencyConflictError, OptimisticConflictError
 from spine.application.persistence.idempotency import (
     IdempotencyKey,
     IdempotencyReplay,
     OpaqueResultReference,
 )
 from spine.application.persistence.workflow_runs import register_workflow_run_outbox_event
-from spine.application.workflow_runs import StartWorkflowCommand
+from spine.application.workflow_runs import AddContextCommandV1, StartWorkflowCommand, WorkflowCommand
 from spine.domain.common import ActorKind, ActorRef, EnvironmentKind
 from spine.domain.workspaces import Environment
 from spine.domain.workflows import ClientRequestV1
@@ -41,8 +41,9 @@ NOW = datetime(2026, 10, 28, tzinfo=timezone.utc)
 
 
 class FakeResult:
-    def __init__(self, row=None) -> None:
+    def __init__(self, row=None, *, rowcount: int = 1) -> None:
         self.row = row
+        self.rowcount = rowcount
 
     def mappings(self):
         return self
@@ -52,7 +53,7 @@ class FakeResult:
 
 
 class FakeUow:
-    def __init__(self) -> None:
+    def __init__(self, *, operation: str = "workflow.run.start") -> None:
         self.context = TrustedContextBoundary.for_testing(
             issuer_id=UUID("63000000-0000-4000-8000-000000000009"),
             secret=b"workflow-run-test-secret-630012345678901234567890",
@@ -60,7 +61,7 @@ class FakeUow:
             scope=EnvironmentScope(WORKSPACE_ID, ENVIRONMENT_ID),
             acting_subject_id=ACTOR_ID,
             purpose=PersistencePurpose("workflow_execution"),
-            operation=PersistenceOperation("workflow.run.start"),
+            operation=PersistenceOperation(operation),
             trace_id=TRACE_ID,
         )
         self._outbox_events = OutboxEventRegistry()
@@ -136,6 +137,125 @@ def _command(message: str = "Prepare a proposal") -> StartWorkflowCommand:
     )
 
 
+def _continuation(*, expected_run_version: int = 1) -> WorkflowCommand:
+    return WorkflowCommand(
+        command_id=UUID("63900000-0000-4000-8000-000000000001"),
+        idempotency_key="context-639",
+        run_id=RUN_ID,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        actor=ActorRef(kind=ActorKind.HUMAN, id=ACTOR_ID),
+        command_type="add_context",
+        command_schema_version=1,
+        expected_run_version=expected_run_version,
+        payload=AddContextCommandV1(message="The delivery deadline is December 20."),
+        trace_id=TRACE_ID,
+        correlation_id=UUID("63900000-0000-4000-8000-000000000002"),
+        causation_id=UUID("63900000-0000-4000-8000-000000000003"),
+    )
+
+
+def _run_row(*, state: str = "running", run_version: int = 1) -> dict[str, object]:
+    return {
+        "run_id": RUN_ID,
+        "command_id": COMMAND_ID,
+        "work_item_id": WORK_ITEM_ID,
+        "workspace_id": WORKSPACE_ID,
+        "environment_id": ENVIRONMENT_ID,
+        "workflow_key": "commercial.requirements",
+        "workflow_version_id": VERSION_ID,
+        "workflow_version": "1.0.0",
+        "state": state,
+        "run_version": run_version,
+        "triggered_by": {"kind": "human", "id": str(ACTOR_ID)},
+        "input": {"schema_version": 1, "message": "Prepare a proposal", "accepted_sources": []},
+        "trace_id": TRACE_ID,
+        "correlation_id": UUID("63000000-0000-4000-8000-000000000010"),
+        "causation_id": UUID("63000000-0000-4000-8000-000000000011"),
+        "created_at": NOW,
+    }
+
+
+@pytest.mark.asyncio
+async def test_add_context_updates_run_and_persists_safe_event_and_receipt() -> None:
+    uow = FakeUow(operation="workflow.run.command")
+    uow.replay_row = _run_row()
+    repository = PostgreSQLWorkflowRunAdmissionRepository(uow, clock=lambda: NOW)
+
+    receipt = await repository.dispatch(_continuation())
+
+    writes = [statement.table.name for statement in uow.statements if hasattr(statement, "table")]
+    assert writes == ["workflow_runs", "workflow_command_receipts", "workflow_run_events"]
+    assert receipt.run_id == RUN_ID
+    assert receipt.run_version == 2
+    assert receipt.admission == "accepted"
+    receipt_insert = next(
+        statement for statement in uow.statements
+        if getattr(getattr(statement, "table", None), "name", None) == "workflow_command_receipts"
+    )
+    event_insert = next(
+        statement for statement in uow.statements
+        if getattr(getattr(statement, "table", None), "name", None) == "workflow_run_events"
+    )
+    assert receipt_insert.compile().params["command_payload"]["message"] == "The delivery deadline is December 20."
+    assert "delivery deadline" not in str(event_insert.compile().params).lower()
+
+
+@pytest.mark.asyncio
+async def test_add_context_rejects_stale_run_without_writes() -> None:
+    uow = FakeUow(operation="workflow.run.command")
+    uow.replay_row = _run_row(run_version=2)
+    repository = PostgreSQLWorkflowRunAdmissionRepository(uow, clock=lambda: NOW)
+
+    with pytest.raises(OptimisticConflictError):
+        await repository.dispatch(_continuation(expected_run_version=1))
+
+    assert not [statement for statement in uow.statements if hasattr(statement, "table")]
+
+
+@pytest.mark.asyncio
+async def test_add_context_replay_returns_original_receipt_without_second_effect() -> None:
+    command = _continuation()
+    uow = FakeUow(operation="workflow.run.command")
+    uow.claim_result = IdempotencyReplay(
+        kind="replay",
+        receipt_id=command.command_id,
+        operation=PersistenceOperation("workflow.run.command"),
+        operation_schema_version=1,
+        key=IdempotencyKey(command.idempotency_key),
+        result=OpaqueResultReference("workflow_command_receipt", command.command_id, 1),
+    )
+    uow.replay_row = {
+        "command_id": command.command_id,
+        "work_item_id": WORK_ITEM_ID,
+        "run_id": RUN_ID,
+        "workflow_version_id": VERSION_ID,
+        "run_state": "running",
+        "resulting_run_version": 2,
+    }
+    repository = PostgreSQLWorkflowRunAdmissionRepository(uow, clock=lambda: NOW)
+
+    receipt = await repository.dispatch(command)
+
+    assert receipt.admission == "replayed"
+    assert receipt.run_version == 2
+    assert not [statement for statement in uow.statements if hasattr(statement, "table")]
+    assert uow.completed == []
+
+
+@pytest.mark.asyncio
+async def test_add_context_payload_conflict_has_no_second_effect() -> None:
+    uow = FakeUow(operation="workflow.run.command")
+    uow.claim_error = IdempotencyConflictError("protected conflict")
+    repository = PostgreSQLWorkflowRunAdmissionRepository(uow, clock=lambda: NOW)
+
+    with pytest.raises(IdempotencyConflictError):
+        await repository.dispatch(_continuation())
+
+    assert uow.statements == []
+    assert uow.completed == []
+
+
 @pytest.mark.asyncio
 async def test_admission_writes_pinned_run_and_content_safe_dispatch_atomically() -> None:
     uow = FakeUow()
@@ -151,11 +271,17 @@ async def test_admission_writes_pinned_run_and_content_safe_dispatch_atomically(
     assert [statement.table.name for statement in uow.statements if hasattr(statement, "table")] == [
         "work_items",
         "workflow_runs",
+        "workflow_run_events",
     ]
     assert receipt.run_id == RUN_ID
     assert receipt.workflow_version_id == VERSION_ID
     assert len(uow.intents) == 1
     assert "Prepare a proposal" not in uow.intents[0].payload_json()
+    event_insert = next(
+        statement for statement in uow.statements
+        if getattr(getattr(statement, "table", None), "name", None) == "workflow_run_events"
+    )
+    assert "Prepare a proposal" not in str(event_insert.compile().params)
     assert len(uow.completed) == 1
 
 
@@ -174,6 +300,34 @@ async def test_changed_message_changes_idempotency_digest() -> None:
         digests.append(uow.digest.value)
 
     assert digests[0] != digests[1]
+
+
+@pytest.mark.asyncio
+async def test_start_retry_ignores_attempt_specific_correlation_metadata() -> None:
+    digests = []
+    for correlation_id, causation_id in (
+        (
+            UUID("63000000-0000-4000-8000-000000000010"),
+            UUID("63000000-0000-4000-8000-000000000011"),
+        ),
+        (
+            UUID("63000000-0000-4000-8000-000000000012"),
+            UUID("63000000-0000-4000-8000-000000000013"),
+        ),
+    ):
+        uow = FakeUow()
+        repository = PostgreSQLWorkflowRunAdmissionRepository(uow)
+        await repository.admit(
+            _command().model_copy(
+                update={
+                    "correlation_id": correlation_id,
+                    "causation_id": causation_id,
+                }
+            )
+        )
+        digests.append(uow.digest.value)
+
+    assert digests[0] == digests[1]
 
 
 @pytest.mark.asyncio

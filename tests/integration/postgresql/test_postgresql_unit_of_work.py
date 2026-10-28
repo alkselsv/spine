@@ -59,6 +59,7 @@ from spine.application.persistence.errors import (
     ContextBundleEvidenceUnavailableError,
     ContextBundleNotFoundError,
     IdempotencyConflictError,
+    OptimisticConflictError,
     PersistenceUnavailableError,
     UnexpectedPersistenceError,
 )
@@ -83,7 +84,7 @@ from spine.application.persistence.projection import ProjectionRunCommand
 from spine.application.persistence.outbox import OpaqueObjectReference
 from spine.application.persistence.workflow_runs import register_workflow_run_outbox_event
 from spine.application.persisted_workflow_runs import PersistedWorkflowRunAdmissionService
-from spine.application.workflow_runs import StartWorkflowCommand
+from spine.application.workflow_runs import AddContextCommandV1, StartWorkflowCommand, WorkflowCommand
 from spine.application.persistence.unit_of_work_activity import (
     unit_of_work_is_active,
 )
@@ -3348,6 +3349,104 @@ async def test_workflow_outbox_failure_rolls_back_work_item_run_and_receipt(
             await migration_engine.dispose()
     finally:
         await engine.dispose()
+
+
+async def test_workflow_add_context_replays_and_restores_events_from_postgresql(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(63900)
+    environment_id = synthetic_uuid(63901)
+    actor_id = synthetic_uuid(959)
+    version_id = synthetic_uuid(63904)
+    start_id = synthetic_uuid(63905)
+    continuation_id = synthetic_uuid(63906)
+    setup_context = postgresql_adapter.workspace_context(workspace_id)
+    async with postgresql_adapter.uow_factory(setup_context) as uow:
+        await uow.workspaces.add(
+            Workspace(
+                id=workspace_id,
+                slug="issue-639-workflow-command",
+                display_name="Issue 639 workflow command",
+            )
+        )
+        await uow.environments.add(
+            Environment(
+                id=environment_id,
+                workspace_id=workspace_id,
+                kind=EnvironmentKind.PRODUCTION,
+                display_name="Issue 639 environment",
+            )
+        )
+        await uow.commit()
+    service = PersistedWorkflowRunAdmissionService(postgresql_adapter.uow_factory)
+    assert postgresql_adapter.ingestion_context is not None
+    start_context = postgresql_adapter.ingestion_context(
+        workspace_id, environment_id, "workflow.run.start"
+    )
+    trace_id = start_context.trace_id
+    start = StartWorkflowCommand(
+        command_id=start_id,
+        idempotency_key="issue-639-start",
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        actor=ActorRef(kind=ActorKind.SERVICE, id=actor_id),
+        environment=EnvironmentKind.PRODUCTION,
+        workflow_key="commercial.requirements",
+        workflow_version_id=version_id,
+        workflow_version="1.0.0",
+        work_item_key="issue-639-work-item",
+        client_request=ClientRequestV1(message="Prepare proposal requirements"),
+        trace_id=trace_id,
+        correlation_id=start_id,
+        causation_id=start_id,
+    )
+    started = await service.start(context=start_context, command=start)
+    command_context = postgresql_adapter.ingestion_context(
+        workspace_id, environment_id, "workflow.run.command"
+    )
+    continuation = WorkflowCommand(
+        command_id=continuation_id,
+        idempotency_key="issue-639-context",
+        run_id=started.run_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        actor=ActorRef(kind=ActorKind.SERVICE, id=actor_id),
+        command_type="add_context",
+        command_schema_version=1,
+        expected_run_version=1,
+        payload=AddContextCommandV1(message="Delivery deadline is December 20."),
+        trace_id=trace_id,
+        correlation_id=start_id,
+        causation_id=start_id,
+    )
+
+    accepted = await service.dispatch(context=command_context, command=continuation)
+    replayed = await service.dispatch(context=command_context, command=continuation)
+    events = await service.list_events(
+        context=command_context,
+        run_id=started.run_id,
+        after_sequence=None,
+        limit=20,
+    )
+
+    assert accepted is not None and accepted.run_version == 2
+    assert replayed is not None and replayed.admission == "replayed"
+    assert events is not None
+    assert [item.event_type for item in events.items] == [
+        "workflow.run-started",
+        "workflow.context-added",
+    ]
+    assert all("deadline" not in item.summary.lower() for item in events.items)
+    with pytest.raises(OptimisticConflictError):
+        await service.dispatch(
+            context=command_context,
+            command=continuation.model_copy(
+                update={
+                    "command_id": synthetic_uuid(63907),
+                    "idempotency_key": "issue-639-stale",
+                }
+            ),
+        )
 
 
 async def test_concurrent_duplicate_claims_have_one_owner_and_stable_replay(

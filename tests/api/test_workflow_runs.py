@@ -6,11 +6,14 @@ from uuid import UUID
 import httpx
 
 from spine.api.workflow_runs import install_workflow_run_routes
+from spine.application.persistence.errors import OptimisticConflictError
 from spine.application.workflow_runs import PinnedWorkflowVersion
 from spine.domain.common import ActorKind, ActorRef
 from spine.domain.workflows import (
     ClientRequestV1,
     WorkflowCommandReceipt,
+    WorkflowEvent,
+    WorkflowEventPage,
     WorkflowRun,
     WorkflowRunState,
 )
@@ -35,6 +38,7 @@ ACTOR_ID = UUID("20000000-0000-0000-0000-000000000071")
 class FakeWorkflowRunService:
     def __init__(self) -> None:
         self.command = None
+        self.continuation = None
         self.run = WorkflowRun(
             command_id=COMMAND_ID,
             run_id=RUN_ID,
@@ -53,6 +57,20 @@ class FakeWorkflowRunService:
             causation_id=COMMAND_ID,
             created_at=NOW,
         )
+        self.events = [
+            WorkflowEvent(
+                event_id=UUID("63900000-0000-0000-0000-000000000010"),
+                run_id=RUN_ID,
+                sequence=1,
+                event_type="workflow.run-started",
+                event_schema_version=1,
+                run_version=1,
+                summary="Workflow run started.",
+                correlation_id=COMMAND_ID,
+                causation_id=COMMAND_ID,
+                occurred_at=NOW,
+            )
+        ]
 
     async def start(self, *, context, command):
         del context
@@ -75,6 +93,51 @@ class FakeWorkflowRunService:
         ):
             return None
         return self.run
+
+    async def dispatch(self, *, context, command):
+        scope = context.scope
+        if (
+            command.run_id != RUN_ID
+            or scope.workspace_id != self.run.workspace_id
+            or scope.environment_id != self.run.environment_id
+        ):
+            return None
+        self.continuation = command
+        self.run = self.run.model_copy(update={"run_version": 2})
+        self.events.append(
+            WorkflowEvent(
+                event_id=UUID("63900000-0000-0000-0000-000000000011"),
+                run_id=RUN_ID,
+                sequence=2,
+                event_type="workflow.context-added",
+                event_schema_version=1,
+                run_version=2,
+                summary="Additional context received.",
+                correlation_id=command.correlation_id,
+                causation_id=command.command_id,
+                occurred_at=NOW,
+            )
+        )
+        return WorkflowCommandReceipt(
+            command_id=command.command_id,
+            work_item_id=WORK_ITEM_ID,
+            run_id=RUN_ID,
+            workflow_version_id=VERSION_ID,
+            state=WorkflowRunState.ADMITTED,
+            run_version=2,
+            admission="accepted",
+        )
+
+    async def list_events(self, *, context, run_id, after_sequence, limit):
+        run = await self.get_run(context=context, run_id=run_id)
+        if run is None:
+            return None
+        items = [item for item in self.events if after_sequence is None or item.sequence > after_sequence]
+        page = items[:limit]
+        return WorkflowEventPage(
+            items=tuple(page),
+            next_sequence=page[-1].sequence if len(items) > limit else None,
+        )
 
 
 class FakeWorkflowVersionResolver:
@@ -108,6 +171,7 @@ def _app(service: FakeWorkflowRunService, *, authorize_other_workspace: bool = F
         service=service,  # type: ignore[arg-type]
         version_resolver=FakeWorkflowVersionResolver(),
         command_id_source=lambda: COMMAND_ID,
+        cursor_secret=b"workflow-run-api-cursor-secret-639",
     )
     return application
 
@@ -123,6 +187,109 @@ def _headers(*, workspace_id: UUID = WORKSPACE_ID) -> dict[str, str]:
         ),
         "Idempotency-Key": "workflow-start-638",
     }
+
+
+async def test_add_context_uses_trusted_scope_and_restores_safe_event_feed() -> None:
+    service = FakeWorkflowRunService()
+    transport = httpx.ASGITransport(app=_app(service))
+    continuation_id = UUID("63900000-0000-0000-0000-000000000001")
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        command_response = await client.post(
+            f"/api/v1/runs/{RUN_ID}/commands",
+            headers={**_headers(), "Idempotency-Key": "workflow-context-639"},
+            json={
+                "schema_version": 1,
+                "command_id": str(continuation_id),
+                "command_type": "add_context",
+                "command_schema_version": 1,
+                "expected_run_version": 1,
+                "payload": {"schema_version": 1, "message": "The deadline is December 20."},
+                "artifact_refs": [],
+                "correlation_id": str(COMMAND_ID),
+                "causation_id": str(COMMAND_ID),
+            },
+        )
+        run_response = await client.get(f"/api/v1/runs/{RUN_ID}", headers=_headers())
+        events_response = await client.get(
+            f"/api/v1/runs/{RUN_ID}/events?limit=20", headers=_headers()
+        )
+
+    assert command_response.status_code == 202
+    assert command_response.json()["run_version"] == 2
+    assert service.continuation.workspace_id == WORKSPACE_ID
+    assert service.continuation.environment_id == ENVIRONMENT_ID
+    assert service.continuation.actor.id == authorization_entry().canonical_human_identity_id
+    assert "message" not in run_response.json()
+    assert "accepted_sources" not in run_response.json()
+    assert events_response.status_code == 200
+    assert [item["event_type"] for item in events_response.json()["items"]] == [
+        "workflow.run-started",
+        "workflow.context-added",
+    ]
+    assert "deadline" not in events_response.text.lower()
+
+
+async def test_event_cursor_is_stable_and_bound_to_run_scope() -> None:
+    service = FakeWorkflowRunService()
+    service.events.append(
+        WorkflowEvent(
+            event_id=UUID("63900000-0000-0000-0000-000000000011"),
+            run_id=RUN_ID,
+            sequence=2,
+            event_type="workflow.context-added",
+            event_schema_version=1,
+            run_version=2,
+            summary="Additional context received.",
+            correlation_id=COMMAND_ID,
+            causation_id=COMMAND_ID,
+            occurred_at=NOW,
+        )
+    )
+    transport = httpx.ASGITransport(app=_app(service))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.get(f"/api/v1/runs/{RUN_ID}/events?limit=1", headers=_headers())
+        cursor = first.json()["next_cursor"]
+        second = await client.get(
+            f"/api/v1/runs/{RUN_ID}/events?limit=1&cursor={cursor}", headers=_headers()
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["items"][0]["sequence"] == 1
+    assert second.json()["items"][0]["sequence"] == 2
+
+
+async def test_stale_command_returns_current_safe_snapshot() -> None:
+    class StaleService(FakeWorkflowRunService):
+        async def dispatch(self, *, context, command):
+            del context, command
+            self.run = self.run.model_copy(update={"run_version": 3})
+            raise OptimisticConflictError("protected concurrent command")
+
+    service = StaleService()
+    transport = httpx.ASGITransport(app=_app(service))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/v1/runs/{RUN_ID}/commands",
+            headers={**_headers(), "Idempotency-Key": "stale-context-639"},
+            json={
+                "command_id": "63900000-0000-0000-0000-000000000001",
+                "command_type": "add_context",
+                "command_schema_version": 1,
+                "expected_run_version": 1,
+                "payload": {"message": "Protected stale content"},
+                "correlation_id": str(COMMAND_ID),
+                "causation_id": str(COMMAND_ID),
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "workflow.run_stale"
+    assert response.json()["current"]["run_version"] == 3
+    assert "protected stale content" not in response.text.lower()
 
 
 async def test_start_uses_server_scope_and_pins_selected_workflow_version() -> None:
@@ -148,6 +315,7 @@ async def test_start_uses_server_scope_and_pins_selected_workflow_version() -> N
         "run_id": str(RUN_ID),
         "workflow_version_id": str(VERSION_ID),
         "state": "admitted",
+        "run_version": 1,
         "admission": "accepted",
     }
     assert service.command.workspace_id == WORKSPACE_ID
@@ -167,3 +335,27 @@ async def test_run_read_hides_runs_outside_authorized_workspace() -> None:
 
     assert response.status_code == 404
     assert response.json() == {"code": "workflow.run_not_found"}
+
+
+async def test_run_command_hides_runs_outside_authorized_workspace() -> None:
+    service = FakeWorkflowRunService()
+    transport = httpx.ASGITransport(app=_app(service, authorize_other_workspace=True))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/v1/runs/{RUN_ID}/commands",
+            headers={**_headers(workspace_id=OTHER_WORKSPACE_ID), "Idempotency-Key": "foreign-639"},
+            json={
+                "command_id": "63900000-0000-0000-0000-000000000001",
+                "command_type": "add_context",
+                "command_schema_version": 1,
+                "expected_run_version": 1,
+                "payload": {"message": "Do not disclose this"},
+                "correlation_id": str(COMMAND_ID),
+                "causation_id": str(COMMAND_ID),
+            },
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {"code": "workflow.run_not_found"}
+    assert "do not disclose" not in response.text.lower()

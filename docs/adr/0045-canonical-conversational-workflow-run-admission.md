@@ -38,8 +38,9 @@ after an outbox handoff.
   Temporal dispatch. Dispatch is at-least-once and safe to retry.
 - The run record pins its selected version even if the deployment later
   publishes another version.
-- The first message is stored with the canonical work item for authorized
-  readback. It is deliberately absent from dispatch payloads and diagnostics.
+- The first message is stored with the canonical work item for later authorized
+  workflow processing. The generic run snapshot, event feed, dispatch payloads,
+  and diagnostics deliberately exclude it; see ADR-0046 for readback.
 - Execution behavior for individual business workflows remains the
   responsibility of their versioned workflow definitions and workers.
 
