@@ -37,6 +37,10 @@ V7_REPORT_PATH = (
     PROJECT_ROOT
     / "docs/qualification/issue-634-recovered-application-canary-v7.json"
 )
+V8_REPORT_PATH = (
+    PROJECT_ROOT
+    / "docs/qualification/issue-634-recovered-application-canary-v8.json"
+)
 
 
 def _load_report(path: Path) -> dict[str, Any]:
@@ -784,6 +788,69 @@ def test_issue634_shared_pgvector_run_cleanup_is_closed() -> None:
         "temporary_cognee_database_removed": True,
         "task_owned_graph_resources_created_count": 2,
         "task_owned_graph_resources_removed_count": 2,
+        "task_owned_graph_resource_count": 0,
+        "sensitive_run_logs_removed": True,
+        "target_stopped_after_capture": True,
+        "evidence_volume_retained": True,
+        "serving_activated": False,
+        "cutover_performed": False,
+        "direct_canonical_or_active_pointer_edit_performed": False,
+    }
+
+
+def test_issue634_run008_records_one_failed_consumer_without_provider_or_broker() -> None:
+    report = _load_report(V8_REPORT_PATH)
+
+    assert report["schema_version"] == "recovered-application-canary:v8"
+    assert report["run_reference"] == "run:issue634-recovered-canary-008"
+    assert report["target_commit"] == "8860651013991f093dc6cd4bccd320cd30214153"
+    assert report["status"] == "blocked"
+    assert report["decision"] == "not_verified"
+    assert report["production_qualified"] is False
+    projection = report["projection_attempt"]
+    assert projection["outcome"] == "failed_closed"
+    assert projection["safe_reason_code"] == "projection.request.invalid"
+    assert projection["failure_stage"] == "request_envelope_validation"
+    assert projection["provider_request_count"] == 0
+    assert projection["provider_backed_consumer_invocation_count"] == 1
+    assert projection["second_consumer_invocation_performed"] is False
+    assert report["application_canary"]["broker_request_count"] == 0
+
+
+def test_issue634_run008_records_unchanged_canonical_state() -> None:
+    report = _load_report(V8_REPORT_PATH)
+    projection = report["projection_attempt"]
+
+    assert projection["projection_run_count"] == 1
+    assert sum(
+        projection[key]
+        for key in (
+            "projection_receipt_count",
+            "projection_snapshot_count",
+            "projection_activation_count",
+            "active_projection_count",
+            "source_projection_reference_count",
+            "reconciliation_result_count",
+        )
+    ) == 0
+    assert projection["publication_status"] == "unpublished"
+    assert report["application_canary"]["context_bundle_count"] == 0
+    assert report["application_canary"]["temporary_authority_created"] is False
+
+
+def test_issue634_run008_cleanup_is_closed() -> None:
+    report = _load_report(V8_REPORT_PATH)
+
+    assert report["safety"] == {
+        "synthetic_content_only": True,
+        "temporary_authority_created": False,
+        "temporary_authority_revocation": "not_applicable",
+        "runtime_connect_revoked": True,
+        "temporary_authentication_material_rotated_count": 6,
+        "temporary_cognee_database_removed": True,
+        "temporary_cognee_role_removed": True,
+        "task_owned_graph_resources_created_count": 0,
+        "task_owned_graph_resources_removed_count": 0,
         "task_owned_graph_resource_count": 0,
         "sensitive_run_logs_removed": True,
         "target_stopped_after_capture": True,
