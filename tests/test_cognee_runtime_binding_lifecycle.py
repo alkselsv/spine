@@ -131,6 +131,16 @@ def test_configure_environment_refreshes_each_cached_database_binding(
     assert getattr(configured, attribute) == fresh_value
 
 
+def test_configure_environment_refreshes_cached_base_configuration(
+    cached_cognee_configuration: dict[str, ConfigGetter],
+    tmp_path: Path,
+) -> None:
+    cognee_memory.configure_environment()
+
+    configured = cached_cognee_configuration["base"]()
+    assert configured.data_root == str((tmp_path / "data").resolve())
+
+
 def test_load_configured_cognee_accepts_the_frozen_binding_on_repeat(
     cached_cognee_configuration: dict[str, ConfigGetter],
 ) -> None:
