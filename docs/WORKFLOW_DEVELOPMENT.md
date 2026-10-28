@@ -298,6 +298,12 @@ class. Command handlers могут быть отдельными application use
 точную immutable `WorkflowVersion` и не начинает использовать более новую
 версию после deployment switch.
 
+Application contract не требует отдельного стартового экрана. Product UI может
+собрать trigger через форму, импорт, событие или conversational composer. В
+последнем случае первое сообщение входит в typed trigger payload и создаёт run,
+а последующие сообщения преобразуются в `WorkflowCommand` того же run. UI не
+должен создавать chat session как побочный эффект запуска workflow.
+
 `work_item_key` и `idempotency_key` решают разные задачи. Первый не допускает два
 независимых процесса для одной бизнес-работы в одинаковом scope. Второй делает
 безопасным повтор конкретной команды. Одинаковый idempotency identity и payload
