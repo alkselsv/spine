@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -210,6 +210,13 @@ class _ActiveRequestScope:
 class _ActiveCompletenessIntent:
     allow_partial_answer: bool | None
     command_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class _ActiveRequestTokens:
+    request_scope: Token[_ActiveRequestScope | None]
+    completeness_intent: Token[_ActiveCompletenessIntent | None]
+    authorization_context: Token[TrustedAuthorizationContext | None]
 
 
 _ACTIVE_REQUEST_SCOPE: ContextVar[_ActiveRequestScope | None] = ContextVar(
@@ -472,6 +479,7 @@ class _TrustedContextRegistry:
         self._service_principal_id = service_principal_id
         self._commands: dict[UUID, object] = {}
         self._contexts: dict[UUID, TrustedAuthorizationContext] = {}
+        self._activation_tokens: dict[UUID, _ActiveRequestTokens] = {}
 
     def register(self, reference: UUID, command: object) -> None:
         self._commands[reference] = command
@@ -485,12 +493,18 @@ class _TrustedContextRegistry:
             or context.service_principal_id != self._service_principal_id
             or reference in self._commands
             or reference in self._contexts
+            or reference in self._activation_tokens
         ):
             raise ValueError("qualified Q&A authorization context is invalid")
         self._contexts[reference] = context
 
     def unregister_context(self, reference: UUID) -> None:
         self._contexts.pop(reference, None)
+        tokens = self._activation_tokens.pop(reference, None)
+        if tokens is not None:
+            _ACTIVE_AUTHORIZATION_CONTEXT.reset(tokens.authorization_context)
+            _ACTIVE_COMPLETENESS_INTENT.reset(tokens.completeness_intent)
+            _ACTIVE_REQUEST_SCOPE.reset(tokens.request_scope)
 
     def contains_context(self, context: TrustedAuthorizationContext) -> bool:
         return (
@@ -511,7 +525,9 @@ class _TrustedContextRegistry:
                 or not isinstance(command_id, UUID)
             ):
                 return None
-            self._activate(
+            if reference in self._activation_tokens:
+                raise RuntimeError("qualified Q&A request context is already active")
+            self._activation_tokens[reference] = self._activate(
                 issued,
                 allow_partial_answer=getattr(request, "allow_partial_answer", None),
                 command_id=command_id,
@@ -557,21 +573,26 @@ class _TrustedContextRegistry:
         *,
         allow_partial_answer: bool | None,
         command_id: UUID,
-    ) -> None:
-        _ACTIVE_REQUEST_SCOPE.set(
+    ) -> _ActiveRequestTokens:
+        request_scope = _ACTIVE_REQUEST_SCOPE.set(
             _ActiveRequestScope(
                 workspace_id=context.workspace_id,
                 environment_id=context.environment_id,
                 trace_id=context.trace_id,
             )
         )
-        _ACTIVE_COMPLETENESS_INTENT.set(
+        completeness_intent = _ACTIVE_COMPLETENESS_INTENT.set(
             _ActiveCompletenessIntent(
                 allow_partial_answer=allow_partial_answer,
                 command_id=command_id,
             )
         )
-        _ACTIVE_AUTHORIZATION_CONTEXT.set(context)
+        authorization_context = _ACTIVE_AUTHORIZATION_CONTEXT.set(context)
+        return _ActiveRequestTokens(
+            request_scope=request_scope,
+            completeness_intent=completeness_intent,
+            authorization_context=authorization_context,
+        )
 
 
 def _noninteractive_authority_reference(reference: UUID) -> UUID:
@@ -665,10 +686,43 @@ class _ScopedPort:
         uow_factory: object,
         boundary: TrustedContextBoundary,
         service_principal_id: UUID,
+        operation: str,
     ) -> None:
         self._uow_factory = uow_factory
         self._boundary = boundary
         self._service_principal_id = service_principal_id
+        self._operation = operation
+
+    def context(self):
+        scope = _active_request_scope()
+        return self._boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=scope.workspace_id,
+                environment_id=scope.environment_id,
+            ),
+            service_principal_id=self._service_principal_id,
+            purpose=PersistencePurpose("governed_qa.context.v1"),
+            operation=PersistenceOperation(self._operation),
+            trace_id=scope.trace_id,
+        )
+
+
+class _BrokerScopedPort(_ScopedPort):
+    """Bind persistence inside one Broker request to its capability authority."""
+
+    def __init__(
+        self,
+        *,
+        uow_factory: object,
+        boundary: TrustedContextBoundary,
+        service_principal_id: UUID,
+    ) -> None:
+        super().__init__(
+            uow_factory=uow_factory,
+            boundary=boundary,
+            service_principal_id=service_principal_id,
+            operation="retrieve_context",
+        )
 
     def context(self):
         scope = _active_request_scope()
@@ -708,7 +762,7 @@ def _context_broker_persistence_context(
     )
 
 
-class _ProfileRepository(_ScopedPort):
+class _ProfileRepository(_BrokerScopedPort):
     async def resolve_for_scope(self, **kwargs: object) -> ContextProfileVersion:
         async with self._uow_factory(self.context()) as uow:  # type: ignore[operator]
             result = await uow.context_profiles.resolve_for_scope(**kwargs)
@@ -725,7 +779,7 @@ class _AllowContextRetrieval:
         )
 
 
-class _ActivePublication(_ScopedPort):
+class _ActivePublication(_BrokerScopedPort):
     async def resolve_active_publication(self, projection_kind: str) -> object:
         async with self._uow_factory(self.context()) as uow:  # type: ignore[operator]
             result = await uow.projections.resolve_active_publication(projection_kind)
@@ -733,7 +787,7 @@ class _ActivePublication(_ScopedPort):
             return result
 
 
-class _SnapshotMembers(_ScopedPort):
+class _SnapshotMembers(_BrokerScopedPort):
     async def list_snapshot_members(self, projection_snapshot_id: UUID) -> tuple[object, ...]:
         async with self._uow_factory(self.context()) as uow:  # type: ignore[operator]
             result = await uow.projections.list_snapshot_members(projection_snapshot_id)
@@ -804,6 +858,12 @@ class _CurrentContentAuthorization(_ScopedPort):
             current_policy=current_policy,
             policy=policy,
         )
+
+
+class _BrokerCurrentContentAuthorization(
+    _CurrentContentAuthorization, _BrokerScopedPort
+):
+    """Resolve current policy only within the Broker retrieval authority."""
 
 
 class _CurrentIdentityAuthority:
@@ -925,7 +985,7 @@ class _CanonicalSourceIsolation:
         return bool(constraints)
 
 
-class _ContextReadModel(_ScopedPort):
+class _ContextReadModel(_BrokerScopedPort):
     async def load(self, *, publication: object, scope: object) -> ContextBrokerReadModel:
         del scope
         if not isinstance(publication, PublishedActivePublication):
@@ -1085,7 +1145,7 @@ class _ParsedProjectionRetrieval:
         )
 
 
-class _CanonicalEvidenceVerifier(_ScopedPort):
+class _CanonicalEvidenceVerifier(_BrokerScopedPort):
     def __init__(self, *, authorization: ContentAuthorizationDecisionService, **kwargs: object) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self._authorization = authorization
@@ -2124,11 +2184,13 @@ class _ScopedContextBundleRepository:
         self._service_principal_id = service_principal_id
 
     def _context(self, workspace_id: UUID, environment_id: UUID, trace_id: UUID):
-        return _context_broker_persistence_context(
-            boundary=self._boundary,
-            workspace_id=workspace_id,
-            environment_id=environment_id,
+        return self._boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id, environment_id=environment_id
+            ),
             service_principal_id=self._service_principal_id,
+            purpose=PersistencePurpose("governed_qa.context_bundle.v1"),
+            operation=PersistenceOperation("context_bundles"),
             trace_id=trace_id,
         )
 
@@ -2189,6 +2251,19 @@ class _ScopedContextBundleRepository:
 
     async def load(self, **kwargs: object) -> object:
         return await self.resolve(**kwargs)  # type: ignore[arg-type]
+
+
+class _BrokerContextBundleRepository(_ScopedContextBundleRepository):
+    """Persist immutable bundles within the Broker retrieval authority."""
+
+    def _context(self, workspace_id: UUID, environment_id: UUID, trace_id: UUID):
+        return _context_broker_persistence_context(
+            boundary=self._boundary,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            service_principal_id=self._service_principal_id,
+            trace_id=trace_id,
+        )
 
 
 class _ContextReferences:
@@ -2289,6 +2364,11 @@ async def build_production_qa_capability_graph(
         boundary=boundary,
         service_principal_id=service_principal_id,
     )
+    broker_bundle_repository = _BrokerContextBundleRepository(
+        uow_factory=uow_factory,
+        boundary=boundary,
+        service_principal_id=service_principal_id,
+    )
     disclosure_repository = _ScopedRepositoryProxy(
         uow_factory=uow_factory,
         repository_name="answer_disclosures",
@@ -2310,20 +2390,27 @@ async def build_production_qa_capability_graph(
         "boundary": boundary,
         "service_principal_id": service_principal_id,
     }
+    identity_authority = _CurrentIdentityAuthority(session_factory)
+    noninteractive_authority = _CurrentNoninteractiveAuthority(
+        qualification_authority,
+        service_principal_id,
+        trusted_contexts,
+    )
+    broker_content_authorization = ContentAuthorizationDecisionService(
+        repository=_BrokerCurrentContentAuthorization(**port_values),
+        identity_authority=identity_authority,
+        noninteractive_authority=noninteractive_authority,
+    )
     content_authorization = ContentAuthorizationDecisionService(
         repository=_CurrentContentAuthorization(
-            **port_values
+            **port_values, operation="resolve_content_authorization"
         ),
-        identity_authority=_CurrentIdentityAuthority(session_factory),
-        noninteractive_authority=_CurrentNoninteractiveAuthority(
-            qualification_authority,
-            service_principal_id,
-            trusted_contexts,
-        ),
+        identity_authority=identity_authority,
+        noninteractive_authority=noninteractive_authority,
     )
     snapshot_members = _SnapshotMembers(**port_values)
     scope_resolver = AuthorizedRetrievalScopeResolver(
-        authorization=content_authorization,
+        authorization=broker_content_authorization,
         snapshot_members=snapshot_members,  # type: ignore[arg-type]
         provider_scope_safety=_CanonicalSourceIsolation(),
     )
@@ -2347,9 +2434,9 @@ async def build_production_qa_capability_graph(
         retrieval=retrieval,
         evidence_verifier=_CanonicalEvidenceVerifier(
             **port_values,
-            authorization=content_authorization,
+            authorization=broker_content_authorization,
         ),
-        bundles=bundle_repository,  # type: ignore[arg-type]
+        bundles=broker_bundle_repository,  # type: ignore[arg-type]
     )
     qualified_context_broker = OneShotQualifiedContextBroker(
         broker=broker,
@@ -2357,10 +2444,13 @@ async def build_production_qa_capability_graph(
         authority_resolver=qualification_authority,
         service_principal_id=service_principal_id,
     )
-    revalidator = _CurrentBundleRevalidator(**port_values)
+    revalidator = _CurrentBundleRevalidator(
+        **port_values, operation="revalidate_context_bundle"
+    )
     disclosure_revalidator = DisclosureRevalidationService(
         state_provider=_CurrentDisclosureStateProvider(
             **port_values,
+            operation="revalidate_answer_disclosure",
             authorization=content_authorization,
         ),
         result_repository=disclosure_validation_repository,  # type: ignore[arg-type]
@@ -2387,6 +2477,7 @@ async def build_production_qa_capability_graph(
         validator=ExistingAnswerQuestionCandidateValidator(
             citations=_CurrentCitationValidator(  # type: ignore[arg-type]
                 **port_values,
+                operation="validate_answer_citation",
                 authorization=content_authorization,
             ),
             semantic_support=SemanticSupportValidationService(
@@ -2399,6 +2490,7 @@ async def build_production_qa_capability_graph(
             plans=_ValidationPlans(
                 boundary_members=_CanonicalBoundaryMembers(
                     **port_values,
+                    operation="resolve_canonical_completeness_scope",
                 ),
                 authorization=content_authorization,
                 conflict_validator=ConfiguredGroundedConflictValidator(

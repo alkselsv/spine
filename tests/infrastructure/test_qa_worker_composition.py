@@ -37,6 +37,7 @@ from spine.infrastructure.qa_worker_composition import (
     _ACTIVE_RETRIEVAL_SCOPE,
     _ActiveRequestScope,
     _ActiveCompletenessIntent,
+    _BrokerContextBundleRepository,
     _CanonicalEvidenceVerifier,
     _CurrentNoninteractiveAuthority,
     _ParsedProjectionRetrieval,
@@ -203,6 +204,9 @@ async def test_one_shot_qualified_broker_issues_current_service_context_once() -
     assert broker.context.service_authority_generation == 7
     assert broker.context.authority_snapshot_reference == request.authorization_context_ref
     assert broker.context.trace_id == request.diagnostic_context.trace_id
+    assert _ACTIVE_REQUEST_SCOPE.get() is None
+    assert _ACTIVE_COMPLETENESS_INTENT.get() is None
+    assert _ACTIVE_AUTHORIZATION_CONTEXT.get() is None
 
     with pytest.raises(RuntimeError, match="already used"):
         await boundary.retrieve(request)
@@ -240,7 +244,76 @@ async def test_one_shot_qualified_broker_denies_before_request_without_authority
 
 
 @pytest.mark.asyncio
-async def test_broker_repositories_share_one_qualified_persistence_operation() -> None:
+async def test_one_shot_qualified_broker_clears_request_scope_after_failure() -> None:
+    service_principal_id = UUID(int=7)
+    registry = _TrustedContextRegistry(service_principal_id)
+
+    class Resolver:
+        async def resolve_service_authority(self, **_: object) -> int | None:
+            return 7
+
+    class Broker:
+        async def retrieve(self, request: AuthorizedContextRequest) -> ContextResponse:
+            assert await registry.resolve(request) is not None
+            raise RuntimeError("synthetic broker failure")
+
+    boundary = OneShotQualifiedContextBroker(
+        broker=Broker(),
+        trusted_contexts=registry,
+        authority_resolver=Resolver(),
+        service_principal_id=service_principal_id,
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic broker failure"):
+        await boundary.retrieve(_authorized_context_request())
+
+    assert _ACTIVE_REQUEST_SCOPE.get() is None
+    assert _ACTIVE_COMPLETENESS_INTENT.get() is None
+    assert _ACTIVE_AUTHORIZATION_CONTEXT.get() is None
+
+
+@pytest.mark.asyncio
+async def test_one_shot_qualified_broker_denies_other_workspace() -> None:
+    service_principal_id = UUID(int=7)
+    registry = _TrustedContextRegistry(service_principal_id)
+
+    class Resolver:
+        async def resolve_service_authority(
+            self, *, requested_scope: object, **_: object
+        ) -> int | None:
+            return (
+                7
+                if requested_scope.workspace_id == UUID(int=1)
+                and requested_scope.environment_id == UUID(int=2)
+                else None
+            )
+
+    class Broker:
+        calls = 0
+
+        async def retrieve(self, request: AuthorizedContextRequest) -> ContextResponse:
+            del request
+            self.calls += 1
+            raise AssertionError("Broker must not run across workspaces")
+
+    broker = Broker()
+    boundary = OneShotQualifiedContextBroker(
+        broker=broker,
+        trusted_contexts=registry,
+        authority_resolver=Resolver(),
+        service_principal_id=service_principal_id,
+    )
+    request = _authorized_context_request().model_copy(
+        update={"workspace_id": UUID(int=99)}
+    )
+
+    with pytest.raises(RuntimeError, match="authority is unavailable"):
+        await boundary.retrieve(request)
+    assert broker.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_broker_and_downstream_repositories_keep_authority_boundary() -> None:
     workspace_id = UUID(int=1)
     environment_id = UUID(int=2)
     trace_id = UUID(int=3)
@@ -280,6 +353,11 @@ async def test_broker_repositories_share_one_qualified_persistence_operation() -
         boundary=boundary,
         service_principal_id=service_principal_id,
     )
+    broker_bundle_repository = _BrokerContextBundleRepository(
+        uow_factory=uow_factory,
+        boundary=boundary,
+        service_principal_id=service_principal_id,
+    )
     bundle_repository = _ScopedContextBundleRepository(
         uow_factory=uow_factory,
         boundary=boundary,
@@ -294,6 +372,13 @@ async def test_broker_repositories_share_one_qualified_persistence_operation() -
     )
     try:
         await profile_repository.resolve_for_scope()
+        await broker_bundle_repository.create_or_replay(
+            SimpleNamespace(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                run_id=trace_id,
+            )
+        )
         await bundle_repository.create_or_replay(
             SimpleNamespace(
                 workspace_id=workspace_id,
@@ -304,15 +389,24 @@ async def test_broker_repositories_share_one_qualified_persistence_operation() -
     finally:
         _ACTIVE_REQUEST_SCOPE.reset(token)
 
-    assert len(contexts) == 2
+    assert len(contexts) == 3
     assert {
         (
             context.service_principal_id,
             context.purpose.value,
             context.operation.value,
         )
-        for context in contexts
+        for context in contexts[:2]
     } == {(service_principal_id, "answer_question", "retrieve_context")}
+    assert (
+        contexts[2].service_principal_id,
+        contexts[2].purpose.value,
+        contexts[2].operation.value,
+    ) == (
+        service_principal_id,
+        "governed_qa.context_bundle.v1",
+        "context_bundles",
+    )
 
 
 @pytest.mark.asyncio

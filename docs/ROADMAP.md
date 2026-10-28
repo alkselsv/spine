@@ -167,13 +167,16 @@ thresholds не утверждены, recovered application canary не квал
 ### Актуальные release blockers
 
 - #634 — provider-backed projection publication и один authorized Context Broker
-  canary на fresh recovered target. Четвёртый авторизованный run заранее
-  завершил локальный Cognee setup, выполнил ровно один consumer invocation и
-  fail-closed завершился по `TimeoutError` в точном Cognee `add` substage без
-  receipt/snapshot/activation. Безопасная диагностика теперь подтверждает место
-  сбоя без raw error; Broker не вызывался из-за отсутствия публикации. Нужны
-  диагностика и устранение timeout в `add`, новый отдельно авторизованный run и
-  independent evidence review.
+  canary на fresh recovered target. Run007 выполнил ровно один production
+  projection consumer invocation и подтвердил receipt, finalized snapshot,
+  activation, active publication, reconciliation и source-revision lineage для
+  synthetic recovery data. Broker не вызывался: pre-Broker проверка обнаружила,
+  что production evidence verifier требовал interactive authority вместо
+  server-only noninteractive path. Mode-aware evidence authorization,
+  one-shot qualified Broker boundary и единая Broker-only persistence authority
+  реализованы и покрыты offline-тестами, но после этих изменений fresh canary не
+  выполнялся. Нужны новый отдельно авторизованный run, ровно один Broker request
+  с Context Bundle evidence и independent evidence review.
 - #510 — полный 149-case run approved Golden Dataset через production durable
   Q&A/capture path, metadata-only baseline и отдельное утверждение versioned
   numerical thresholds Product Owner-ом.
