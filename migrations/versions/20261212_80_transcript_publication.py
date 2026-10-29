@@ -77,12 +77,14 @@ def upgrade() -> None:
             name=op.f("ck_transcript_publications_projection_state"),
         ),
         schema=SCHEMA,
+        if_not_exists=True,
     )
     op.create_index(
         "ix_transcript_publications_source_revision",
         "transcript_publications",
         ["workspace_id", "environment_id", "source_revision_id"],
         schema=SCHEMA,
+        if_not_exists=True,
     )
     op.create_index(
         "uq_transcript_publications_artifact",
@@ -91,6 +93,7 @@ def upgrade() -> None:
         unique=True,
         postgresql_where=sa.text("is_current"),
         schema=SCHEMA,
+        if_not_exists=True,
     )
     _tenant_scope("transcript_publications", mutable=True)
 
@@ -106,6 +109,8 @@ def _tenant_scope(table: str, *, mutable: bool = False) -> None:
     env = f"CASE WHEN {env_setting} OPERATOR(pg_catalog.~) '{pattern}' THEN CAST({env_setting} AS pg_catalog.uuid) ELSE NULL END"
     op.execute(f"ALTER TABLE {qualified} ENABLE ROW LEVEL SECURITY")
     op.execute(f"ALTER TABLE {qualified} FORCE ROW LEVEL SECURITY")
+    op.execute(f'DROP POLICY IF EXISTS "pol_{table}_tenant_isolation" ON {qualified}')
+    op.execute(f'DROP POLICY IF EXISTS "pol_{table}_migration_maintenance" ON {qualified}')
     op.execute(
         f'CREATE POLICY "pol_{table}_tenant_isolation" ON {qualified} FOR ALL TO {runtime} '
         f"USING (workspace_id = ({ws}) AND environment_id = ({env})) "
