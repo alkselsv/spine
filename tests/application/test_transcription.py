@@ -9,10 +9,12 @@ from spine.application.transcription import (
     InMemoryTranscriptionRepository,
     AudioProcessingAuthorization,
     AudioProcessingDeniedError,
+    AudioEvidenceAccessRequest,
     SpeechToTextCancelled,
     SpeechToTextFailed,
     TranscribeAudioCommand,
     TranscriptionConflictError,
+    TranscriptionEvidenceResolver,
     TranscriptionService,
 )
 from spine.domain.artifacts.transcription import (
@@ -255,6 +257,145 @@ async def test_long_audio_is_inspected_chunked_and_reassembled_reproducibly() ->
     assert [request.chunk.boundary.ordinal for request in adapter.requests] == [1, 2, 3]
     assert len({request.chunk.chunk_id for request in adapter.requests}) == 3
     assert preparation.active == set()
+
+
+@pytest.mark.asyncio
+async def test_expired_worker_resumes_after_durable_chunk_checkpoint() -> None:
+    class CrashesOnceOnSecondChunk(ChunkedSpeechToText):
+        def __init__(self) -> None:
+            super().__init__()
+            self.crashed = False
+
+        async def transcribe(self, request):
+            if request.chunk.boundary.ordinal == 2 and not self.crashed:
+                self.requests.append(request)
+                self.crashed = True
+                raise RuntimeError("synthetic worker loss")
+            return await super().transcribe(request)
+
+    current_time = [NOW]
+    repository = InMemoryTranscriptionRepository()
+    adapter = CrashesOnceOnSecondChunk()
+    requested = command().model_copy(
+        update={
+            "schema_version": "transcribe-audio-command:v2",
+            "recording_duration_ms": 10_000,
+            "processing_profile_reference": "transcription-long:v1",
+            "processing_profile": bounded_profile(),
+            "idempotency_key": "resume-after-durable-chunk",
+        }
+    )
+    service = TranscriptionService(
+        repository=repository,
+        speech_to_text=adapter,
+        authorizer=FakeAuthorizer(),
+        media_preparation=FakeAudioPreparation(),
+        clock=lambda: current_time[0],
+    )
+
+    with pytest.raises(RuntimeError, match="worker loss"):
+        await service.transcribe(requested)
+    job_id = uuid5(
+        NAMESPACE_URL,
+        "spine:transcription-job:v2:"
+        f"{WORKSPACE}:{ENVIRONMENT}:{audio_revision().revision_id}:"
+        "transcription-long:v1:resume-after-durable-chunk",
+    )
+    first_attempt = await repository.get_job(
+        workspace_id=WORKSPACE, environment_id=ENVIRONMENT, job_id=job_id
+    )
+    checkpoint = await repository.get_checkpoint(
+        workspace_id=WORKSPACE, environment_id=ENVIRONMENT, job_id=job_id
+    )
+    assert checkpoint is not None
+    assert [item.boundary.ordinal for item in checkpoint.chunk_receipts] == [1]
+
+    current_time[0] = NOW + timedelta(minutes=6)
+    resumed = await service.transcribe(requested)
+
+    assert resumed.job.state is TranscriptionJobState.COMPLETED
+    assert resumed.job.execution_attempt == 2
+    assert [request.chunk.boundary.ordinal for request in adapter.requests] == [1, 2, 2, 3]
+    with pytest.raises(TranscriptionConflictError, match="lease is stale"):
+        await repository.checkpoint_chunk(
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+            job_id=job_id,
+            lease_id=first_attempt.execution_lease_id,
+            expected_completed_chunks=1,
+            checkpoint=checkpoint,
+        )
+
+
+@pytest.mark.asyncio
+async def test_authorized_time_range_resolves_to_exact_original_audio() -> None:
+    repository = InMemoryTranscriptionRepository()
+    result = await TranscriptionService(
+        repository=repository,
+        speech_to_text=FakeSpeechToText(),
+        authorizer=FakeAuthorizer(),
+        clock=lambda: NOW,
+    ).transcribe(command())
+    locator = result.artifact.locate_time_range(start_ms=120, end_ms=700)
+
+    class Revisions:
+        async def resolve_revision(self, *, workspace_id, environment_id, revision_id):
+            revision = audio_revision()
+            if (
+                workspace_id == revision.workspace_id
+                and environment_id == revision.environment_id
+                and revision_id == revision.revision_id
+            ):
+                return revision
+            return None
+
+    class EvidenceAuthorizer:
+        def __init__(self) -> None:
+            self.requests: list[AudioEvidenceAccessRequest] = []
+
+        async def authorize(self, request):
+            self.requests.append(request)
+            return True
+
+    authorizer = EvidenceAuthorizer()
+    resolved = await TranscriptionEvidenceResolver(
+        repository=repository,
+        revisions=Revisions(),
+        authorizer=authorizer,
+    ).resolve(locator)
+
+    assert resolved.original_reference == audio_revision().original_reference
+    assert (resolved.locator.start_ms, resolved.locator.end_ms) == (120, 700)
+    assert authorizer.requests[0].artifact_id == result.artifact.artifact_id
+
+
+@pytest.mark.asyncio
+async def test_time_range_resolution_rejects_mismatched_artifact_lineage() -> None:
+    repository = InMemoryTranscriptionRepository()
+    result = await TranscriptionService(
+        repository=repository,
+        speech_to_text=FakeSpeechToText(),
+        authorizer=FakeAuthorizer(),
+        clock=lambda: NOW,
+    ).transcribe(command())
+    locator = result.artifact.locate_time_range(start_ms=120, end_ms=700).model_copy(
+        update={"artifact_digest": "0" * 64}
+    )
+
+    class Revisions:
+        async def resolve_revision(self, **kwargs):
+            return audio_revision()
+
+    class EvidenceAuthorizer:
+        async def authorize(self, request):
+            return True
+
+    with pytest.raises(TranscriptionConflictError, match="lineage"):
+        await TranscriptionEvidenceResolver(
+            repository=repository,
+            revisions=Revisions(),
+            authorizer=EvidenceAuthorizer(),
+        ).resolve(locator)
 
 
 @pytest.mark.asyncio

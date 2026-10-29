@@ -30,9 +30,12 @@ from .transcription import (
     SpeechToTextSegment,
     TranscriptSegment,
     TranscriptionArtifact,
+    TranscriptionChunkCheckpoint,
+    TranscriptionChunkReceipt,
     TranscriptionFailureCode,
     TranscriptionJob,
     TranscriptionJobState,
+    TranscriptionTimeRangeLocator,
 )
 
 __all__ = [
@@ -63,7 +66,10 @@ __all__ = [
     "SpeechToTextSegment",
     "TranscriptSegment",
     "TranscriptionArtifact",
+    "TranscriptionChunkCheckpoint",
+    "TranscriptionChunkReceipt",
     "TranscriptionFailureCode",
     "TranscriptionJob",
     "TranscriptionJobState",
+    "TranscriptionTimeRangeLocator",
 ]

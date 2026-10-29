@@ -291,6 +291,83 @@ class TranscriptionChunkReceipt(DefinitionModel):
         return self
 
 
+class TranscriptionChunkCheckpoint(DefinitionModel):
+    """Durable cumulative output committed after one completed model window."""
+
+    schema_version: Literal["transcription-chunk-checkpoint:v1"] = (
+        "transcription-chunk-checkpoint:v1"
+    )
+    job_id: UUID
+    source_revision_id: UUID
+    source_revision_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    processing_profile_reference: VersionIdentifier
+    decoder_reference: VersionIdentifier
+    decoded_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reassembly_reference: VersionIdentifier
+    detected_language: str | None = Field(default=None, min_length=2, max_length=35)
+    chunk_receipts: tuple[TranscriptionChunkReceipt, ...] = Field(min_length=1)
+    segments: tuple[SpeechToTextSegment, ...]
+    updated_at: datetime
+
+    @model_validator(mode="after")
+    def validate_checkpoint(self) -> "TranscriptionChunkCheckpoint":
+        if self.job_id.int == 0 or self.source_revision_id.int == 0:
+            raise ValueError("checkpoint identifiers must be non-zero")
+        if self.updated_at.tzinfo is None or self.updated_at.utcoffset() is None:
+            raise ValueError("checkpoint updated_at must be timezone-aware")
+        if tuple(item.boundary.ordinal for item in self.chunk_receipts) != tuple(
+            range(1, len(self.chunk_receipts) + 1)
+        ):
+            raise ValueError("checkpoint chunk receipts must be a contiguous prefix")
+        for receipt in self.chunk_receipts:
+            boundary = receipt.boundary
+            expected_chunk_id = uuid5(
+                NAMESPACE_URL,
+                "spine:audio-chunk:v1:"
+                f"{self.decoded_sha256}:{self.decoder_reference}:"
+                f"{boundary.ordinal}:{boundary.start_ms}:{boundary.end_ms}",
+            )
+            if receipt.chunk_id != expected_chunk_id:
+                raise ValueError("checkpoint chunk receipt identity does not match lineage")
+        return self
+
+
+class TranscriptionTimeRangeLocator(DefinitionModel):
+    """Stable audio evidence range pinned to one source and transcript version."""
+
+    schema_version: Literal["transcription-time-range-locator:v1"] = (
+        "transcription-time-range-locator:v1"
+    )
+    workspace_id: UUID
+    environment_id: UUID
+    source_object_id: UUID
+    source_revision_id: UUID
+    source_revision_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    original_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    artifact_id: UUID
+    artifact_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    artifact_schema_version: Literal[
+        "transcription-artifact:v1", "transcription-artifact:v2"
+    ]
+    start_ms: StrictInt = Field(ge=0)
+    end_ms: StrictInt = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_locator(self) -> "TranscriptionTimeRangeLocator":
+        identifiers = (
+            self.workspace_id,
+            self.environment_id,
+            self.source_object_id,
+            self.source_revision_id,
+            self.artifact_id,
+        )
+        if any(value.int == 0 for value in identifiers):
+            raise ValueError("time-range locator identifiers must be non-zero")
+        if self.end_ms <= self.start_ms:
+            raise ValueError("time-range locator end_ms must be greater than start_ms")
+        return self
+
+
 class TranscriptionArtifactOutcome(str, Enum):
     COMPLETED = "completed"
     PARTIAL = "partial"
@@ -427,9 +504,21 @@ class TranscriptionArtifact(DefinitionModel):
                 receipt.boundary.ordinal for receipt in self.chunk_receipts
             ) != tuple(range(1, len(self.chunk_receipts) + 1)):
                 raise ValueError("chunk receipt ordinals must be contiguous")
+            for receipt in self.chunk_receipts:
+                boundary = receipt.boundary
+                expected_chunk_id = uuid5(
+                    NAMESPACE_URL,
+                    "spine:audio-chunk:v1:"
+                    f"{self.decoded_sha256}:{self.decoder_reference}:"
+                    f"{boundary.ordinal}:{boundary.start_ms}:{boundary.end_ms}",
+                )
+                if receipt.chunk_id != expected_chunk_id:
+                    raise ValueError("chunk receipt identity does not match provenance")
         if self.outcome is TranscriptionArtifactOutcome.COMPLETED:
             if self.failure is not None:
                 raise ValueError("completed artifact cannot contain failure provenance")
+            if self.schema_version == "transcription-artifact:v2" and not self._has_full_chunk_coverage():
+                raise ValueError("completed artifact requires full recording chunk coverage")
         elif self.failure is None or not self.chunk_receipts or not self.segments:
             raise ValueError(
                 "partial artifact requires completed work and failure provenance"
@@ -486,6 +575,62 @@ class TranscriptionArtifact(DefinitionModel):
             if segment.segment_id != expected_segment_id:
                 raise ValueError("segment id does not match immutable content")
         return self
+
+    def _has_full_chunk_coverage(self) -> bool:
+        if not self.chunk_receipts:
+            return False
+        boundaries = tuple(receipt.boundary for receipt in self.chunk_receipts)
+        if boundaries[0].start_ms != 0 or boundaries[-1].end_ms != self.recording_duration_ms:
+            return False
+        return all(
+            current.start_ms == previous.end_ms - current.overlap_before_ms
+            for previous, current in zip(boundaries, boundaries[1:])
+        )
+
+    def locate_time_range(self, *, start_ms: int, end_ms: int) -> TranscriptionTimeRangeLocator:
+        if start_ms < 0 or end_ms <= start_ms or end_ms > self.recording_duration_ms:
+            raise ValueError("time range must be within the original recording")
+        return TranscriptionTimeRangeLocator(
+            workspace_id=self.workspace_id,
+            environment_id=self.environment_id,
+            source_object_id=self.source_object_id,
+            source_revision_id=self.source_revision_id,
+            source_revision_digest=self.source_revision_digest,
+            original_sha256=self.original_sha256,
+            artifact_id=self.artifact_id,
+            artifact_digest=self.artifact_digest,
+            artifact_schema_version=self.schema_version,
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+
+    def validate_time_range_locator(self, locator: TranscriptionTimeRangeLocator) -> None:
+        expected = (
+            self.workspace_id,
+            self.environment_id,
+            self.source_object_id,
+            self.source_revision_id,
+            self.source_revision_digest,
+            self.original_sha256,
+            self.artifact_id,
+            self.artifact_digest,
+            self.schema_version,
+        )
+        actual = (
+            locator.workspace_id,
+            locator.environment_id,
+            locator.source_object_id,
+            locator.source_revision_id,
+            locator.source_revision_digest,
+            locator.original_sha256,
+            locator.artifact_id,
+            locator.artifact_digest,
+            locator.artifact_schema_version,
+        )
+        if actual != expected:
+            raise ValueError("time-range locator lineage does not match artifact")
+        if locator.end_ms > self.recording_duration_ms:
+            raise ValueError("time-range locator exceeds recording duration")
 
     @classmethod
     def create(
@@ -910,10 +1055,12 @@ __all__ = [
     "TranscriptSegment",
     "TranscriptionArtifact",
     "TranscriptionArtifactOutcome",
+    "TranscriptionChunkCheckpoint",
     "TranscriptionChunkReceipt",
     "TranscriptionFailureProvenance",
     "TranscriptionFailureCode",
     "TranscriptionJob",
     "TranscriptionJobState",
     "TranscriptionProcessingProfile",
+    "TranscriptionTimeRangeLocator",
 ]

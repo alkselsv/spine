@@ -1521,6 +1521,7 @@ async def pending_postgresql_transcription(
         "isolates_transcription": 66700,
         "foreign_revision": 66800,
         "forged_digest": 66900,
+        "chunk_checkpoint": 67200,
     }.get(
         next(
             (marker for marker in (
@@ -1529,6 +1530,7 @@ async def pending_postgresql_transcription(
                 "isolates_transcription",
                 "foreign_revision",
                 "forged_digest",
+                "chunk_checkpoint",
             ) if marker in request.node.name),
             "",
         ),
@@ -1686,6 +1688,78 @@ async def test_postgresql_expired_transcription_reclaims_one_pending_job(
     assert terminal.state is TranscriptionJobState.FAILED
 
 
+async def test_postgresql_chunk_checkpoint_survives_reclaim_and_fences_stale_worker(
+    pending_postgresql_transcription,
+) -> None:
+    from spine.application.transcription import TranscriptionConflictError
+    from spine.domain.artifacts.transcription import (
+        AudioChunkBoundary,
+        SpeechToTextSegment,
+        TranscriptionChunkCheckpoint,
+        TranscriptionChunkReceipt,
+    )
+
+    scenario = pending_postgresql_transcription
+    boundary = AudioChunkBoundary(
+        ordinal=1, start_ms=0, end_ms=1000, overlap_before_ms=0
+    )
+    checkpoint = TranscriptionChunkCheckpoint(
+        job_id=scenario.job.job_id,
+        source_revision_id=scenario.job.source_revision_id,
+        source_revision_digest=scenario.job.source_revision_digest,
+        processing_profile_reference=scenario.job.processing_profile_reference,
+        decoder_reference="fake-decoder:v1",
+        decoded_sha256=scenario.job.original_sha256,
+        reassembly_reference="first-chunk-wins:v1",
+        detected_language="ru",
+        chunk_receipts=(
+            TranscriptionChunkReceipt(
+                chunk_id=uuid5(
+                    NAMESPACE_URL,
+                    "spine:audio-chunk:v1:"
+                    f"{scenario.job.original_sha256}:fake-decoder:v1:1:0:1000",
+                ),
+                boundary=boundary,
+                model_attempts=1,
+            ),
+        ),
+        segments=(SpeechToTextSegment(start_ms=100, end_ms=500, text="Готово"),),
+        updated_at=scenario.now,
+    )
+    persisted = await scenario.repository.checkpoint_chunk(
+        workspace_id=scenario.job.workspace_id,
+        environment_id=scenario.job.environment_id,
+        job_id=scenario.job.job_id,
+        lease_id=scenario.job.execution_lease_id,
+        expected_completed_chunks=0,
+        checkpoint=checkpoint,
+    )
+    reclaim_time = scenario.now + timedelta(minutes=6)
+    successor = scenario.job.reclaim(
+        lease_id=synthetic_uuid(67211),
+        lease_expires_at=reclaim_time + timedelta(minutes=5),
+        now=reclaim_time,
+    )
+    await scenario.repository.admit(successor, now=reclaim_time)
+
+    recovered = await scenario.repository.get_checkpoint(
+        workspace_id=scenario.job.workspace_id,
+        environment_id=scenario.job.environment_id,
+        job_id=scenario.job.job_id,
+    )
+    with pytest.raises(TranscriptionConflictError, match="lease is stale"):
+        await scenario.repository.checkpoint_chunk(
+            workspace_id=scenario.job.workspace_id,
+            environment_id=scenario.job.environment_id,
+            job_id=scenario.job.job_id,
+            lease_id=scenario.job.execution_lease_id,
+            expected_completed_chunks=1,
+            checkpoint=checkpoint,
+        )
+
+    assert recovered == persisted
+
+
 async def test_postgresql_rejects_terminal_update_that_replaces_execution_lease(
     pending_postgresql_transcription,
 ) -> None:
@@ -1803,7 +1877,11 @@ async def test_postgresql_persists_cancellation_and_exact_partial_artifact(
         reassembly_reference="first-chunk-wins:v1",
         chunk_receipts=(
             TranscriptionChunkReceipt(
-                chunk_id=synthetic_uuid(66509),
+                chunk_id=uuid5(
+                    NAMESPACE_URL,
+                    "spine:audio-chunk:v1:"
+                    f"{'e' * 64}:fake-decoder:v1:1:0:1000",
+                ),
                 boundary=boundary,
                 model_attempts=1,
             ),

@@ -11,6 +11,7 @@ from spine.domain.artifacts.transcription import (
     TranscriptionArtifact,
     TranscriptionChunkReceipt,
     TranscriptionProcessingProfile,
+    TranscriptionTimeRangeLocator,
 )
 
 
@@ -152,3 +153,89 @@ def test_v1_artifact_rejects_v2_chunk_receipts() -> None:
         TranscriptionArtifact.model_validate(
             {**artifact.model_dump(), "chunk_receipts": (receipt,)}
         )
+
+
+def test_time_range_locator_binds_exact_source_and_artifact_lineage() -> None:
+    artifact = TranscriptionArtifact.create(
+        workspace_id=UUID(int=1),
+        environment_id=UUID(int=2),
+        source_object_id=UUID(int=3),
+        source_revision_id=UUID(int=4),
+        source_revision_digest="a" * 64,
+        original_sha256="b" * 64,
+        processing_job_id=UUID(int=5),
+        processing_profile_reference="short:v1",
+        adapter_reference="fake:v1",
+        model_config_reference="ru:v1",
+        recording_duration_ms=1000,
+        language="ru",
+        segments=(SpeechToTextSegment(start_ms=100, end_ms=900, text="Да"),),
+    )
+
+    locator = artifact.locate_time_range(start_ms=120, end_ms=700)
+
+    artifact.validate_time_range_locator(locator)
+    assert locator.source_revision_id == artifact.source_revision_id
+    assert locator.artifact_id == artifact.artifact_id
+    assert locator.artifact_digest == artifact.artifact_digest
+
+
+@pytest.mark.parametrize(
+    ("start_ms", "end_ms"),
+    [(-1, 10), (10, 10), (10, 1001)],
+)
+def test_time_range_locator_rejects_invalid_or_out_of_range_offsets(
+    start_ms: int, end_ms: int
+) -> None:
+    artifact = TranscriptionArtifact.create(
+        workspace_id=UUID(int=1),
+        environment_id=UUID(int=2),
+        source_object_id=UUID(int=3),
+        source_revision_id=UUID(int=4),
+        source_revision_digest="a" * 64,
+        original_sha256="b" * 64,
+        processing_job_id=UUID(int=5),
+        processing_profile_reference="short:v1",
+        adapter_reference="fake:v1",
+        model_config_reference="ru:v1",
+        recording_duration_ms=1000,
+        language="ru",
+        segments=(SpeechToTextSegment(start_ms=100, end_ms=900, text="Да"),),
+    )
+
+    with pytest.raises((ValueError, ValidationError)):
+        artifact.locate_time_range(start_ms=start_ms, end_ms=end_ms)
+
+
+def test_time_range_locator_rejects_another_artifact_version() -> None:
+    locator = TranscriptionTimeRangeLocator(
+        workspace_id=UUID(int=1),
+        environment_id=UUID(int=2),
+        source_object_id=UUID(int=3),
+        source_revision_id=UUID(int=4),
+        source_revision_digest="a" * 64,
+        original_sha256="b" * 64,
+        artifact_id=UUID(int=6),
+        artifact_digest="c" * 64,
+        artifact_schema_version="transcription-artifact:v1",
+        start_ms=0,
+        end_ms=100,
+    )
+    artifact = TranscriptionArtifact.create(
+        workspace_id=UUID(int=1),
+        environment_id=UUID(int=2),
+        source_object_id=UUID(int=3),
+        source_revision_id=UUID(int=4),
+        source_revision_digest="a" * 64,
+        original_sha256="b" * 64,
+        processing_job_id=UUID(int=5),
+        processing_profile_reference="short:v1",
+        adapter_reference="fake:v1",
+        model_config_reference="ru:v1",
+        recording_duration_ms=1000,
+        language="ru",
+        segments=(SpeechToTextSegment(start_ms=0, end_ms=100, text="Да"),),
+    )
+
+    with pytest.raises(ValueError, match="lineage"):
+        artifact.validate_time_range_locator(locator)
