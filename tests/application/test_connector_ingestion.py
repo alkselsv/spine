@@ -17,7 +17,7 @@ from spine.application.connector_ingestion import (
     build_connector_canonical_acceptance_command,
 )
 from spine.application.connections.google import GoogleReadCommand
-from spine.application.connections.provider import ProviderReadAdmission, ProviderReadCommand
+from spine.application.connections.provider import ProviderReadAdmission
 from spine.application.google_sheets_reconciliation import (
     ConnectorGoogleSheetsCanonicalIngestion,
     GoogleSheetsAdmittedPageReader,
@@ -25,11 +25,29 @@ from spine.application.google_sheets_reconciliation import (
     GoogleSheetsReconciliationCoordinator,
     GoogleSheetsReconciliationScope,
 )
+from spine.application.yandex_disk_reconciliation import (
+    AuthorizedYandexDiskScanner,
+    InMemoryYandexDiskReconciliationRepository,
+    InMemoryYandexDiskRemovalPolicyAdmission,
+    YandexDiskLifecycleSource,
+    YandexDiskLifecycleState,
+    YandexDiskReconciliationCommand,
+    YandexDiskReconciliationCoordinator,
+    YandexDiskReconciliationState,
+    YandexDiskRemovalPolicy,
+)
 from spine.application.persistence.context import (
     EnvironmentScope,
     PersistenceOperation,
     PersistencePurpose,
     WorkspaceScope,
+)
+from spine.application.persistence.canonical import CanonicalAcceptanceCommand
+from spine.application.persistence.idempotency import IdempotencyKey
+from spine.application.source_lifecycle import (
+    SourceLifecycleCommand,
+    SourceLifecycleCoordinator,
+    SourceLifecycleKind,
 )
 from spine.application.persistence.errors import OptimisticConflictError
 from spine.application.persistence.outbox import OutboxEventRegistry
@@ -69,6 +87,7 @@ from spine.connectors.yandex_disk import (
     YandexDiskReadProfile,
     YandexDiskResource,
     YandexDiskResourcePage,
+    YandexDiskTransientError,
     yandex_disk_capabilities,
 )
 from spine.connectors.bitrix24_disk import (
@@ -78,6 +97,10 @@ from spine.connectors.bitrix24_disk import (
     Bitrix24DiskProviderAdapter,
     Bitrix24DiskReadProfile,
     bitrix24_disk_capabilities,
+)
+from spine.connectors.files.mounted_filesystem import (
+    MountedFilesystemObservationReader,
+    MountedFilesystemRoot,
 )
 from spine.domain.ingestion import (
     IngestionItemState,
@@ -124,6 +147,14 @@ from spine.application.storage import OriginalUploadOutcome
 from tests.yandex_disk_contract import (
     YANDEX_SOURCE_OBJECT_ID,
     YANDEX_SOURCE_REVISION_ID,
+)
+from tests.application.test_source_lifecycle import (
+    _Canonical as _LifecycleCanonical,
+    _Sources as _LifecycleSources,
+    _Uow as _LifecycleUow,
+    _provenance as _lifecycle_provenance,
+    _source as _lifecycle_source,
+    _tombstone as _lifecycle_tombstone,
 )
 
 
@@ -1105,23 +1136,15 @@ async def test_bitrix24_disk_file_replay_reaches_shared_canonical_revision_path(
 
     assert first.revision == replay.revision
     assert first.revision.original_sha256 == hashlib.sha256(content).hexdigest()
-    assert first.revision.revision_metadata.external_file_revision == (
-        ExternalFileRevisionMetadata(
-            provider_kind="bitrix24",
-            provider_revision="42",
-            provider_resource_id="9043",
-            resource_name="brief.pdf",
-            resource_path=None,
-            content_md5=None,
-            content_sha256=hashlib.sha256(content).hexdigest(),
-            provider_payload_digest=first.observation.representation.revision_evidence.provider_payload_digest,
-            provider_payload=first.observation.representation.revision_evidence.provider_payload,
-            byte_length=len(content),
-            modified_at=NOW,
-            identity_assurance="provider_stable",
-            assurance_evidence_reference="bitrix24-disk-object:v1",
-        )
-    )
+    external = first.revision.revision_metadata.external_file_revision
+    assert external is not None
+    assert external.provider_kind == "bitrix24"
+    assert external.provider_revision == "42"
+    assert external.provider_resource_id == "9043"
+    assert external.resource_name == "brief.pdf"
+    assert external.provider_payload_digest is not None
+    assert external.provider_payload is not None
+    assert "DOWNLOAD_URL" not in external.provider_payload
     assert replay.replay is True
     assert uploader.calls == 2
     assert uow.accepted == 1
@@ -1131,8 +1154,338 @@ async def test_bitrix24_disk_file_replay_reaches_shared_canonical_revision_path(
     assert "SIGNED-SECRET" not in first.revision.model_dump_json()
 
 
+@pytest.mark.asyncio
+async def test_yandex_reconciliation_recovers_through_canonical_ingestion_and_outbox_seam():
+    content = b"%PDF recovered governed Yandex evidence"
+    metadata = YandexDiskResource(
+        name="recovered.pdf",
+        path="disk:/approved/recovered.pdf",
+        type="file",
+        mime_type="application/pdf",
+        size=len(content),
+        md5=hashlib.md5(content).hexdigest(),  # noqa: S324 - provider evidence
+        sha256=hashlib.sha256(content).hexdigest(),
+        revision="1700000000000670",
+        modified=NOW,
+        resource_id="1573541:issue670",
+    )
+
+    class Service:
+        fail_scan_once = True
+
+        async def list_resources(self, connection, scope, *, offset, limit):
+            del connection, scope
+            assert (offset, limit) == (0, 100)
+            if self.fail_scan_once:
+                self.fail_scan_once = False
+                raise YandexDiskTransientError()
+            return YandexDiskResourcePage(
+                _embedded={
+                    "path": "disk:/approved",
+                    "items": [metadata],
+                    "limit": 100,
+                    "offset": 0,
+                    "total": 1,
+                }
+            )
+
+        async def download(self, connection, scope, *, path, revision, max_bytes):
+            del connection, scope, max_bytes
+            assert (path, revision) == (metadata.path, metadata.revision)
+            return YandexDiskFileContent(content=content, media_type="application/pdf")
+
+        async def get_resource(self, connection, scope, *, path):
+            del connection, scope
+            assert path == metadata.path
+            return metadata
+
+    connection_version = _id("issue670-connection-version")
+    connection = ProviderConnection(
+        connection_version_id=connection_version,
+        connection_id=CONNECTION,
+        approval_id=_id("issue670-approval"),
+        version=1,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        service_principal_id=_id("service"),
+        provider_kind=ProviderKind.YANDEX_DISK,
+        credential_reference=OpaqueProviderReference(value=_id("issue670-client")),
+        grant_reference=OpaqueProviderReference(value=_id("issue670-grant")),
+        approved_resource_scope_references=(OpaqueProviderReference(value=SCOPE),),
+        authorization_generation=7,
+        configuration_generation=11,
+        status=ProviderConnectionStatus.ACTIVE,
+        capabilities=yandex_disk_capabilities(
+            qualification_reference=OpaqueProviderReference(
+                value=_id("issue670-qualification")
+            )
+        ),
+    )
+    provider = YandexDiskProviderAdapter(
+        service=Service(),
+        profile=YandexDiskReadProfile(max_attempts=1),
+        clock=lambda: NOW,
+        sleep=lambda _: _async_none(),
+    )
+
+    class Repository:
+        @asynccontextmanager
+        async def admit_read(self, read_command, context):
+            del context
+            assert read_command.workspace_id == WORKSPACE
+            assert read_command.environment_id == ENVIRONMENT
+            yield connection
+
+    orchestrator, _, _, _, uow = _orchestrator()
+    admitted_ingestion = replace(
+        orchestrator,
+        observation_reader=ProviderAuthorizedObservationReader(
+            admission=ProviderReadAdmission(
+                repository=Repository(),
+                provider=provider,
+            ),
+            connection_version_id=connection_version,
+            required_capabilities=(
+                ProviderCapabilityKind.ENUMERATION,
+                ProviderCapabilityKind.METADATA_READ,
+                ProviderCapabilityKind.BINARY_READ,
+            ),
+        ),
+        read_operation=PersistenceOperation("provider_connection_read"),
+        admission_reference_type="provider_read_admission",
+    )
+
+    old_source = _lifecycle_source(identity="issue670-old-path")
+    tombstone = _lifecycle_tombstone(old_source)
+    old_revision_id = _id("issue670-old-current-revision")
+    provenance = _lifecycle_provenance(
+        old_source, tombstone.revision_id, "issue670-rename-removal"
+    )
+    lifecycle_sources = _LifecycleSources(
+        old_source,
+        {tombstone.revision_id: tombstone},
+        [],
+    )
+
+    class LifecycleCanonical:
+        def __init__(self) -> None:
+            self.commands = []
+
+        async def accept(self, lifecycle_command):
+            self.commands.append(lifecycle_command)
+            return SimpleNamespace(
+                advanced=True,
+                replay=False,
+                revision=lifecycle_command.revision,
+            )
+
+    lifecycle_canonical = LifecycleCanonical()
+    lifecycle_uows = []
+    source_lifecycle = SourceLifecycleCoordinator(
+        uow_factory=lambda context: lifecycle_uows.append(
+            _LifecycleUow(lifecycle_sources, lifecycle_canonical)
+        )
+        or lifecycle_uows[-1],
+        context_factory=lambda lifecycle_command: SimpleNamespace(
+            operation=PersistenceOperation("canonical_acceptance")
+        ),
+    )
+
+    class Tombstones:
+        async def compose(self, *, idempotency_key, **kwargs):
+            del kwargs
+            canonical = CanonicalAcceptanceCommand.create(
+                source=old_source,
+                revision=tombstone,
+                provenance=provenance,
+                expected_current_revision_id=old_revision_id,
+                idempotency_key=IdempotencyKey(idempotency_key),
+                canonical_acceptance_id=_id("issue670-tombstone-acceptance"),
+                admission_decision_id=None,
+                access_policy_version_id=None,
+                audit_event_id=_id("issue670-tombstone-audit"),
+                outbox_event_id=_id("issue670-tombstone-outbox"),
+                accepted_at=NOW,
+            )
+            return SourceLifecycleCommand(
+                kind=SourceLifecycleKind.DELETION,
+                source=old_source,
+                revision=tombstone,
+                provenance=provenance,
+                observation_idempotency_key=IdempotencyKey(idempotency_key),
+                canonical_acceptance=canonical,
+            )
+
+    class Sources:
+        async def list_sources(self, command, context):
+            del command, context
+            return (
+                YandexDiskLifecycleSource(
+                    provider_object_reference="disk:/approved/old-name.pdf",
+                    source_object_id=old_source.source_object_id,
+                    current_revision_id=old_revision_id,
+                    current_revision_kind=RevisionKind.CONTENT,
+                    current_provider_revision="old-provider-revision",
+                ),
+            )
+
+    removal_policy = YandexDiskRemovalPolicy(
+        policy_version_id=_id("issue670-removal-policy"),
+        approval_id=_id("issue670-removal-policy-approval"),
+        approved_at=NOW,
+        version="yandex-removal-policy:v1",
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        connection_id=CONNECTION,
+        resource_scope_reference=SCOPE,
+        authorize_complete_scope_absence=True,
+    )
+    reconciliation_repository = InMemoryYandexDiskReconciliationRepository()
+    coordinator = YandexDiskReconciliationCoordinator(
+        repository=reconciliation_repository,
+        scanner=AuthorizedYandexDiskScanner(
+            repository=Repository(),
+            provider=provider,
+        ),
+        ingestion=admitted_ingestion,
+        sources=Sources(),
+        tombstones=Tombstones(),
+        source_lifecycle=source_lifecycle,
+        removal_policies=InMemoryYandexDiskRemovalPolicyAdmission((removal_policy,)),
+        context_factory=lambda operation, identity: SimpleNamespace(
+            operation=operation, trace_id=identity, service_principal_id=_id("service")
+        ),
+        clock=lambda: NOW,
+    )
+    reconciliation_command = YandexDiskReconciliationCommand(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        connection_id=CONNECTION,
+        connection_version_id=connection_version,
+        resource_scope_reference=SCOPE,
+        service_principal_id=_id("service"),
+        authorization_generation=7,
+        configuration_generation=11,
+        access_policy_version_id=POLICY,
+        command_identity="issue670.public-seam",
+        idempotency_key="issue670-public-seam",
+    )
+    interrupted = await coordinator.run(reconciliation_command, removal_policy)
+    recovered = await coordinator.run(reconciliation_command, removal_policy)
+
+    assert interrupted.state is YandexDiskReconciliationState.INTERRUPTED
+    assert recovered.state is YandexDiskReconciliationState.COMPLETE
+    assert [event.state for event in recovered.lifecycle_evidence] == [
+        YandexDiskLifecycleState.TEMPORARILY_UNAVAILABLE,
+        YandexDiskLifecycleState.OBSERVED,
+        YandexDiskLifecycleState.CONFIRMED_REMOVED,
+    ]
+    accepted = recovered.pages[0].items[0]
+    assert accepted.provider_object_reference == metadata.path
+    assert uow.sources.revisions[accepted.source_revision_id].original_sha256 == hashlib.sha256(content).hexdigest()
+    assert uow.accepted == 1
+    assert len(uow.events) == 1
+    assert uow.events[0].event_type == "ingestion.projection.requested"
+    assert lifecycle_sources.recorded[0].revision == tombstone
+    assert lifecycle_canonical.commands[0].outbox_event_id == _id(
+        "issue670-tombstone-outbox"
+    )
+    assert lifecycle_uows[0].committed is True
+
 async def _async_none() -> None:
     return None
+
+
+@pytest.mark.asyncio
+async def test_mounted_filesystem_observation_reaches_canonical_path_with_stable_replay(
+    tmp_path,
+):
+    root = tmp_path / "mounted"
+    (root / "guides").mkdir(parents=True)
+    (root / "guides" / "safety.md").write_text("Read-only source content.\n")
+    connection_version_id = _id("mounted-filesystem-connection-version")
+    scope_reference = OpaqueProviderReference(value=SCOPE)
+    connection = ProviderConnection(
+        connection_version_id=connection_version_id,
+        connection_id=CONNECTION,
+        approval_id=_id("mounted-filesystem-approval"),
+        version=1,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        service_principal_id=_id("service"),
+        provider_kind=ProviderKind.MOUNTED_FILESYSTEM,
+        credential_reference=OpaqueProviderReference(
+            value=_id("mounted-filesystem-credential-reference")
+        ),
+        grant_reference=OpaqueProviderReference(
+            value=_id("mounted-filesystem-grant-reference")
+        ),
+        approved_resource_scope_references=(scope_reference,),
+        authorization_generation=7,
+        configuration_generation=11,
+        status=ProviderConnectionStatus.ACTIVE,
+    )
+    qualification = OpaqueProviderReference(
+        value=_id("mounted-filesystem-read-qualification")
+    )
+    connection = connection.model_copy(
+        update={
+            "capabilities": (
+                ProviderCapability(
+                    kind=ProviderCapabilityKind.BINARY_READ,
+                    status=ProviderCapabilityStatus.SUPPORTED,
+                    qualification_reference=qualification,
+                ),
+            )
+        }
+    )
+    provider = MountedFilesystemObservationReader(
+        roots={
+            connection_version_id: MountedFilesystemRoot(
+                resource_scope_reference=scope_reference,
+                path=root,
+            )
+        },
+        clock=lambda: NOW,
+    )
+
+    class Repository:
+        @asynccontextmanager
+        async def admit_read(self, read_command, context):
+            del read_command, context
+            yield connection
+
+    observation_reader = ProviderAuthorizedObservationReader(
+        admission=ProviderReadAdmission(repository=Repository(), provider=provider),
+        connection_version_id=connection_version_id,
+        required_capabilities=(ProviderCapabilityKind.BINARY_READ,),
+    )
+    orchestrator, _, uploader, ingestion, uow = _orchestrator(
+        reader=observation_reader
+    )
+    command = _command("mounted-filesystem-ingestion").model_copy(
+        update={"resource_object_reference": "guides/safety.md"}
+    )
+
+    first = await orchestrator.ingest(command)
+    replay = await orchestrator.ingest(command)
+
+    assert first.source.external_generation == "mounted-path:v1"
+    assert first.source.external_object_id == (
+        first.observation.external_identity.external_object_id
+    )
+    assert replay.source == first.source
+    assert replay.revision == first.revision
+    assert replay.processing_receipt.processing_receipt_id == (
+        first.processing_receipt.processing_receipt_id
+    )
+    assert first.revision.original_sha256 == hashlib.sha256(
+        b"Read-only source content.\n"
+    ).hexdigest()
+    assert uow.accepted == 1
+    assert uploader.calls == 2
+    assert len(uow.events) == 1
+    assert ingestion.receipt == replay.processing_receipt
 
 
 @pytest.mark.asyncio

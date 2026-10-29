@@ -1532,7 +1532,7 @@ async def pending_postgresql_transcription(
             ) if marker in request.node.name),
             "",
         ),
-        67000,
+        66850,
     )
     case = await prepare_canonical_case(postgresql_adapter, case_seed)
     assert case.revision.original_sha256 is not None
@@ -1570,6 +1570,7 @@ async def pending_postgresql_transcription(
     )
     now = case.revision.observed_at
     job = TranscriptionJob(
+        schema_version="transcription-job:v2",
         job_id=synthetic_uuid(66504),
         workspace_id=case.revision.workspace_id,
         environment_id=case.revision.environment_id,
@@ -1724,6 +1725,128 @@ async def test_postgresql_rejects_terminal_update_that_replaces_execution_lease(
         raised.value.orig.diag.constraint_name
         == "ck_transcription_jobs_terminal_lease_immutable"
     )
+
+
+async def test_postgresql_persists_cancellation_and_exact_partial_artifact(
+    pending_postgresql_transcription,
+) -> None:
+    from spine.application.transcription import TranscriptionConflictError
+    from spine.domain.artifacts.transcription import (
+        AudioChunkBoundary,
+        AudioMediaInspection,
+        SpeechToTextSegment,
+        TranscriptionArtifact,
+        TranscriptionArtifactOutcome,
+        TranscriptionChunkReceipt,
+        TranscriptionFailureProvenance,
+        TranscriptionJobState,
+    )
+
+    scenario = pending_postgresql_transcription
+    cancellation_time = scenario.now + timedelta(seconds=1)
+    with pytest.raises(TranscriptionConflictError, match="unavailable"):
+        await scenario.repository.request_cancellation(
+            workspace_id=synthetic_uuid(66710),
+            environment_id=scenario.job.environment_id,
+            job_id=scenario.job.job_id,
+            requested_at=cancellation_time,
+        )
+    with pytest.raises(TranscriptionConflictError, match="unavailable"):
+        await scenario.repository.request_cancellation(
+            workspace_id=scenario.job.workspace_id,
+            environment_id=synthetic_uuid(66711),
+            job_id=scenario.job.job_id,
+            requested_at=cancellation_time,
+        )
+    requested = await scenario.repository.request_cancellation(
+        workspace_id=scenario.job.workspace_id,
+        environment_id=scenario.job.environment_id,
+        job_id=scenario.job.job_id,
+        requested_at=cancellation_time,
+    )
+    replayed_request = await scenario.repository.request_cancellation(
+        workspace_id=scenario.job.workspace_id,
+        environment_id=scenario.job.environment_id,
+        job_id=scenario.job.job_id,
+        requested_at=cancellation_time + timedelta(seconds=1),
+    )
+    boundary = AudioChunkBoundary(
+        ordinal=1,
+        start_ms=0,
+        end_ms=1_000,
+        overlap_before_ms=0,
+    )
+    artifact = TranscriptionArtifact.create(
+        workspace_id=scenario.job.workspace_id,
+        environment_id=scenario.job.environment_id,
+        source_object_id=scenario.job.source_object_id,
+        source_revision_id=scenario.job.source_revision_id,
+        source_revision_digest=scenario.job.source_revision_digest,
+        original_sha256=scenario.job.original_sha256,
+        processing_job_id=scenario.job.job_id,
+        processing_profile_reference=scenario.job.processing_profile_reference,
+        adapter_reference=scenario.job.adapter_reference,
+        model_config_reference=scenario.job.model_config_reference,
+        recording_duration_ms=2_000,
+        language="ru",
+        media_inspection=AudioMediaInspection(
+            inspected_media_type="audio/wav",
+            container="wav",
+            codec="pcm_s16le",
+            byte_length=32_000,
+            duration_ms=2_000,
+            audio_stream_count=1,
+            silent=False,
+        ),
+        decoder_reference="fake-decoder:v1",
+        decoded_sha256="e" * 64,
+        reassembly_reference="first-chunk-wins:v1",
+        chunk_receipts=(
+            TranscriptionChunkReceipt(
+                chunk_id=synthetic_uuid(66509),
+                boundary=boundary,
+                model_attempts=1,
+            ),
+        ),
+        outcome=TranscriptionArtifactOutcome.PARTIAL,
+        failure=TranscriptionFailureProvenance(
+            code="cancelled",
+            failed_chunk_ordinal=2,
+            model_attempts=0,
+            retryable=False,
+        ),
+        segments=(
+            SpeechToTextSegment(
+                start_ms=100,
+                end_ms=900,
+                text="Готовый фрагмент",
+            ),
+        ),
+        created_at=cancellation_time,
+    )
+
+    terminal = await scenario.repository.finish(
+        job_id=scenario.job.job_id,
+        workspace_id=scenario.job.workspace_id,
+        environment_id=scenario.job.environment_id,
+        state=TranscriptionJobState.CANCELLED,
+        completed_at=cancellation_time + timedelta(seconds=1),
+        artifact=artifact,
+        terminal_code="cancelled",
+        retryable=False,
+        lease_id=scenario.job.execution_lease_id,
+    )
+    stored = await scenario.repository.get_artifact(
+        workspace_id=scenario.job.workspace_id,
+        environment_id=scenario.job.environment_id,
+        artifact_id=artifact.artifact_id,
+    )
+
+    assert requested.cancellation_requested_at == cancellation_time
+    assert replayed_request.cancellation_requested_at == cancellation_time
+    assert terminal.state is TranscriptionJobState.CANCELLED
+    assert terminal.artifact_id == artifact.artifact_id
+    assert stored == artifact
 
 
 async def test_postgresql_cognee_receipt_maps_after_physical_read(
@@ -7319,6 +7442,79 @@ async def test_drive_lifecycle_decision_repository_persists_tenant_scoped_transi
         workspace_id=decision.workspace_id,
         environment_id=decision.environment_id,
     ) == tombstoned
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_yandex_reconciliation_repository_persists_checkpoint_and_tenant_scope(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    from spine.application.yandex_disk_reconciliation import (
+        YandexDiskReconciliationRun,
+        YandexDiskReconciliationState,
+    )
+    from spine.infrastructure.persistence.postgresql_yandex_disk_reconciliation import (
+        PostgreSQLYandexDiskReconciliationRepository,
+    )
+
+    case = await prepare_canonical_case(postgresql_adapter, 67000)
+    assert postgresql_adapter.ingestion_context is not None
+    repository = PostgreSQLYandexDiskReconciliationRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=lambda operation, identity: postgresql_adapter.ingestion_context(
+            case.source.workspace_id,
+            case.source.environment_id,
+            operation.value,
+        ),
+    )
+    now = datetime(2026, 10, 29, 15, tzinfo=timezone.utc)
+    run = YandexDiskReconciliationRun(
+        run_id=synthetic_uuid(67010),
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        connection_id=synthetic_uuid(67011),
+        connection_version_id=synthetic_uuid(67012),
+        resource_scope_reference=synthetic_uuid(67013),
+        authorization_generation=1,
+        configuration_generation=1,
+        idempotency_key="issue670-postgresql-reconciliation",
+        removal_policy_version_id=synthetic_uuid(67014),
+        removal_policy_approval_id=synthetic_uuid(67015),
+        state=YandexDiskReconciliationState.RUNNING,
+        started_at=now,
+        updated_at=now,
+    )
+
+    assert await repository.save(run) == run
+    assert await repository.resolve(
+        run.run_id, case.source.workspace_id, case.source.environment_id
+    ) == run
+
+    advanced = run.model_copy(
+        update={
+            "state": YandexDiskReconciliationState.INTERRUPTED,
+            "committed_checkpoint": "opaque-page-1",
+            "next_checkpoint": "opaque-page-2",
+        }
+    )
+    assert await repository.save(advanced) == advanced
+    assert await repository.resolve(
+        run.run_id, case.source.workspace_id, case.source.environment_id
+    ) == advanced
+
+    other_case = await prepare_canonical_case(postgresql_adapter, 67020)
+    hidden_repository = PostgreSQLYandexDiskReconciliationRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=lambda operation, identity: postgresql_adapter.ingestion_context(
+            other_case.source.workspace_id,
+            other_case.source.environment_id,
+            operation.value,
+        ),
+    )
+    assert await hidden_repository.resolve(
+        run.run_id,
+        other_case.source.workspace_id,
+        other_case.source.environment_id,
+    ) is None
 
 
 @pytest.mark.asyncio(loop_scope="session")

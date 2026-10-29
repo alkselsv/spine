@@ -32,6 +32,10 @@ from spine.infrastructure.persistence.postgresql_drive_lifecycle import (
     PostgreSQLDriveLifecycleDecisionRepository,
     PostgreSQLGoogleDriveLifecycleSourceReader,
 )
+from spine.infrastructure.persistence.postgresql_yandex_disk_reconciliation import (
+    PostgreSQLYandexDiskLifecycleSourceReader,
+    PostgreSQLYandexDiskReconciliationRepository,
+)
 from spine.infrastructure.persistence.postgresql_google_sheets_lifecycle import (
     PostgreSQLGoogleSheetsLifecycleRepository,
     PostgreSQLGoogleSheetsLifecycleSourceReader,
@@ -66,6 +70,8 @@ __all__ = [
     "PostgreSQLRegisterAssociationRepository",
     "PostgreSQLDriveLifecycleDecisionRepository",
     "PostgreSQLGoogleDriveLifecycleSourceReader",
+    "PostgreSQLYandexDiskReconciliationRepository",
+    "PostgreSQLYandexDiskLifecycleSourceReader",
     "PostgreSQLGoogleSheetsLifecycleRepository",
     "PostgreSQLGoogleSheetsLifecycleSourceReader",
     "CogneeProjectionReceiptBuilder",

@@ -125,6 +125,9 @@ class ConnectorIngestionCommand(BaseModel):
     authorization_generation: int = Field(ge=1)
     configuration_generation: int = Field(ge=1)
     resource_object_reference: str | None = Field(default=None, min_length=1, max_length=256)
+    external_identity_occurrence: str | None = Field(
+        default=None, min_length=1, max_length=128
+    )
     access_policy_version_id: UUID
     expected_current_revision_id: UUID | None = None
 
@@ -231,6 +234,7 @@ class ProviderAuthorizedObservationReader:
                 required_capabilities=self.required_capabilities,
                 resource_object_reference=command.resource_object_reference,
                 acting_subject_id=getattr(context, "acting_subject_id", None),
+                external_identity_occurrence=command.external_identity_occurrence,
             ),
             context,
         )

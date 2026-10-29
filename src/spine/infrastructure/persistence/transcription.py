@@ -20,8 +20,11 @@ from spine.application.transcription import (
     TranscriptionConflictError,
 )
 from spine.domain.artifacts.transcription import (
+    AudioMediaInspection,
     TranscriptSegment,
     TranscriptionArtifact,
+    TranscriptionChunkReceipt,
+    TranscriptionFailureProvenance,
     TranscriptionJob,
     TranscriptionJobState,
 )
@@ -157,6 +160,15 @@ class PostgreSQLTranscriptionRepository:
                     and current.execution_lease_id != lease_id
                 ):
                     raise TranscriptionConflictError("transcription execution lease is stale")
+                if (
+                    current.state is TranscriptionJobState.PENDING
+                    and current.cancellation_requested_at is not None
+                    and state is not TranscriptionJobState.CANCELLED
+                ):
+                    state = TranscriptionJobState.CANCELLED
+                    artifact = None
+                    terminal_code = "cancelled"
+                    retryable = False
                 try:
                     terminal = current.terminal(
                         state=state,
@@ -244,6 +256,47 @@ class PostgreSQLTranscriptionRepository:
                 ).mappings().all()
                 return _artifact_from_rows(row, segment_rows)
 
+    async def request_cancellation(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        job_id: UUID,
+        requested_at: Any,
+    ) -> TranscriptionJob:
+        async with self._session_factory() as session:
+            async with session.begin():
+                await self._bind_scope(session, workspace_id, environment_id)
+                row = (
+                    await session.execute(
+                        select(transcription_jobs)
+                        .where(
+                            transcription_jobs.c.workspace_id == workspace_id,
+                            transcription_jobs.c.environment_id == environment_id,
+                            transcription_jobs.c.job_id == job_id,
+                        )
+                        .with_for_update()
+                    )
+                ).mappings().one_or_none()
+                if row is None:
+                    raise TranscriptionConflictError("transcription job is unavailable")
+                current = _job_from_row(row)
+                updated = current.request_cancellation(requested_at=requested_at)
+                if updated == current:
+                    return current
+                await session.execute(
+                    update(transcription_jobs)
+                    .where(
+                        transcription_jobs.c.workspace_id == workspace_id,
+                        transcription_jobs.c.environment_id == environment_id,
+                        transcription_jobs.c.job_id == job_id,
+                        transcription_jobs.c.state == TranscriptionJobState.PENDING.value,
+                        transcription_jobs.c.cancellation_requested_at.is_(None),
+                    )
+                    .values(cancellation_requested_at=requested_at)
+                )
+                return updated
+
     async def _bind_scope(
         self, session: Any, workspace_id: UUID, environment_id: UUID
     ) -> None:
@@ -291,6 +344,7 @@ def _job_values(job: TranscriptionJob) -> dict[str, Any]:
         "workspace_id": job.workspace_id,
         "environment_id": job.environment_id,
         "job_id": job.job_id,
+        "schema_version": job.schema_version,
         "source_object_id": job.source_object_id,
         "source_revision_id": job.source_revision_id,
         "source_revision_digest": job.source_revision_digest,
@@ -309,6 +363,7 @@ def _job_values(job: TranscriptionJob) -> dict[str, Any]:
         "artifact_id": job.artifact_id,
         "terminal_code": job.terminal_code,
         "retryable": job.retryable,
+        "cancellation_requested_at": job.cancellation_requested_at,
         "created_at": job.created_at,
         "completed_at": job.completed_at,
     }
@@ -316,6 +371,7 @@ def _job_values(job: TranscriptionJob) -> dict[str, Any]:
 
 def _job_from_row(row: Any) -> TranscriptionJob:
     return TranscriptionJob(
+        schema_version=row["schema_version"],
         job_id=row["job_id"],
         workspace_id=row["workspace_id"],
         environment_id=row["environment_id"],
@@ -337,6 +393,7 @@ def _job_from_row(row: Any) -> TranscriptionJob:
         artifact_id=row["artifact_id"],
         terminal_code=row["terminal_code"],
         retryable=row["retryable"],
+        cancellation_requested_at=row["cancellation_requested_at"],
         created_at=row["created_at"],
         completed_at=row["completed_at"],
     )
@@ -358,6 +415,23 @@ def _artifact_values(artifact: TranscriptionArtifact) -> dict[str, Any]:
         "model_config_reference": artifact.model_config_reference,
         "recording_duration_ms": artifact.recording_duration_ms,
         "language": artifact.language,
+        "media_inspection": (
+            artifact.media_inspection.model_dump(mode="json")
+            if artifact.media_inspection is not None
+            else None
+        ),
+        "decoder_reference": artifact.decoder_reference,
+        "decoded_sha256": artifact.decoded_sha256,
+        "reassembly_reference": artifact.reassembly_reference,
+        "chunk_receipts": [
+            receipt.model_dump(mode="json") for receipt in artifact.chunk_receipts
+        ],
+        "outcome": artifact.outcome.value,
+        "failure": (
+            artifact.failure.model_dump(mode="json")
+            if artifact.failure is not None
+            else None
+        ),
         "schema_version": artifact.schema_version,
         "created_at": artifact.created_at,
     }
@@ -397,6 +471,24 @@ def _artifact_from_rows(row: Any, segment_rows: list[Any]) -> TranscriptionArtif
         model_config_reference=row["model_config_reference"],
         recording_duration_ms=row["recording_duration_ms"],
         language=row["language"],
+        media_inspection=(
+            AudioMediaInspection.model_validate(row["media_inspection"])
+            if row["media_inspection"] is not None
+            else None
+        ),
+        decoder_reference=row["decoder_reference"],
+        decoded_sha256=row["decoded_sha256"],
+        reassembly_reference=row["reassembly_reference"],
+        chunk_receipts=tuple(
+            TranscriptionChunkReceipt.model_validate(item)
+            for item in row["chunk_receipts"]
+        ),
+        outcome=row["outcome"],
+        failure=(
+            TranscriptionFailureProvenance.model_validate(row["failure"])
+            if row["failure"] is not None
+            else None
+        ),
         segments=tuple(
             TranscriptSegment(
                 segment_id=item["segment_id"],
