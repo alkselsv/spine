@@ -107,6 +107,7 @@ test('test_requirements_artifact_is_restored_from_scoped_api_after_browser_reloa
           state: 'partial',
           upstream_artifact_ids: [],
           predecessor_version: null,
+          clarifications: [],
           requirements: [{
             requirement_id: 'b0000000-0000-4000-8000-000000000004',
             category: 'functional',

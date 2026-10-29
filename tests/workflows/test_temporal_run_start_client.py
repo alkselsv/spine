@@ -8,6 +8,11 @@ from spine.application.workflows.run_start_dispatch import (
     TemporalWorkflowAlreadyStarted,
     WorkflowRunStartInput,
 )
+from spine.application.persistence.workflow_runs import (
+    ClarificationAnsweredDispatchPayload,
+    ClarificationRequestedDispatchPayload,
+    WorkflowCancelledDispatchPayload,
+)
 from spine.workflows.temporal.run_start_client import TemporalSdkWorkflowRunClient
 
 
@@ -16,13 +21,18 @@ class WorkflowAlreadyStartedError(Exception):
 
 
 class SdkHandle:
-    pass
+    def __init__(self) -> None:
+        self.signals = []
+
+    async def signal(self, name, payload):
+        self.signals.append((name, payload))
 
 
 class SdkClientFake:
     def __init__(self) -> None:
         self.started = []
         self.fail_duplicate = False
+        self.handles = {}
 
     async def start_workflow(self, workflow, arg, *, id, task_queue, id_reuse_policy=None):
         self.started.append((workflow, arg, id, task_queue))
@@ -30,7 +40,7 @@ class SdkClientFake:
             raise WorkflowAlreadyStartedError()
 
     def get_workflow_handle(self, workflow_id: str):
-        return SdkHandle()
+        return self.handles.setdefault(workflow_id, SdkHandle())
 
 
 def _input() -> WorkflowRunStartInput:
@@ -80,3 +90,46 @@ async def test_temporal_client_translates_duplicate_start_to_safe_identity() -> 
         )
 
     assert failure.value.workflow_id == str(workflow_input.run_id)
+
+
+@pytest.mark.asyncio
+async def test_temporal_client_signals_wait_resume_and_cancel_on_the_same_run() -> None:
+    sdk = SdkClientFake()
+    client = TemporalSdkWorkflowRunClient(sdk, task_queue="spine")
+    workflow_input = _input()
+    clarification_id = UUID("64300000-0000-4000-8000-000000000001")
+    artifact_id = UUID("64300000-0000-4000-8000-000000000002")
+    await client.signal_clarification_requested(
+        ClarificationRequestedDispatchPayload(
+            run_id=workflow_input.run_id,
+            clarification_id=clarification_id,
+            artifact_id=artifact_id,
+            artifact_version=1,
+            workflow_version_id=workflow_input.workflow_version_id,
+        )
+    )
+    await client.signal_clarification_answered(
+        ClarificationAnsweredDispatchPayload(
+            command_id=UUID("64300000-0000-4000-8000-000000000003"),
+            run_id=workflow_input.run_id,
+            clarification_id=clarification_id,
+            artifact_id=artifact_id,
+            artifact_version=2,
+            workflow_version_id=workflow_input.workflow_version_id,
+        )
+    )
+    await client.signal_run_cancelled(
+        WorkflowCancelledDispatchPayload(
+            command_id=UUID("64300000-0000-4000-8000-000000000004"),
+            run_id=workflow_input.run_id,
+            workflow_version_id=workflow_input.workflow_version_id,
+        )
+    )
+
+    handle = sdk.handles[str(workflow_input.run_id)]
+    assert [item[0] for item in handle.signals] == [
+        "clarification_requested",
+        "clarification_answered",
+        "run_cancelled",
+    ]
+    assert all("answer" not in str(payload) for _, payload in handle.signals)

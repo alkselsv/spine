@@ -112,6 +112,7 @@ function WorkflowRunDetail({
 }) {
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const commandRef = useRef<{
     commandId: string;
@@ -120,6 +121,8 @@ function WorkflowRunDetail({
     expectedRunVersion: number;
   } | null>(null);
   const canAddContext = run.allowed_commands.includes('add_context');
+  const canCancel = run.allowed_commands.includes('cancel');
+  const cancelRef = useRef<{ commandId: string; idempotencyKey: string; expectedRunVersion: number } | null>(null);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -160,6 +163,42 @@ function WorkflowRunDetail({
     await onRefresh();
   }
 
+  async function cancel() {
+    if (cancelling || !canCancel) return;
+    const command = cancelRef.current ?? {
+      commandId: crypto.randomUUID(),
+      idempotencyKey: crypto.randomUUID(),
+      expectedRunVersion: run.run_version,
+    };
+    cancelRef.current = command;
+    setCancelling(true);
+    setError(null);
+    const { data, error: responseError } = await client.POST('/api/v1/runs/{run_id}/commands', {
+      params: {
+        path: { run_id: run.run_id },
+        header: { 'Idempotency-Key': command.idempotencyKey },
+      },
+      body: {
+        schema_version: 1,
+        command_id: command.commandId,
+        command_type: 'cancel',
+        command_schema_version: 1,
+        expected_run_version: command.expectedRunVersion,
+        payload: { schema_version: 1 },
+        artifact_refs: [],
+        correlation_id: run.run_id,
+        causation_id: run.run_id,
+      },
+    });
+    setCancelling(false);
+    if (responseError || !data) {
+      setError('Не удалось отменить запуск. Обновите состояние и повторите команду.');
+      return;
+    }
+    cancelRef.current = null;
+    await onRefresh();
+  }
+
   return (
     <section className={styles.page} aria-labelledby="workflow-run-heading">
       <button className={styles.textButton} onClick={onBack} type="button">Новая работа</button>
@@ -175,6 +214,8 @@ function WorkflowRunDetail({
         allowedCommands={run.allowed_commands}
         client={client}
         onRefresh={onRefresh}
+        canAnswerClarification={run.allowed_commands.includes('answer_clarification')}
+        onAnswered={onRefresh}
         queryKey={queryKey}
         runId={run.run_id}
         runVersion={run.run_version}
@@ -192,6 +233,11 @@ function WorkflowRunDetail({
         </ol>
       ) : null}
       {!eventsLoading && !eventsDegraded && !events.items.length ? <p>Событий пока нет.</p> : null}
+      {canCancel ? (
+        <button className={styles.secondaryButton} disabled={cancelling} onClick={() => void cancel()} type="button">
+          {cancelling ? 'Отменяем…' : 'Отменить запуск'}
+        </button>
+      ) : null}
       {canAddContext ? (
         <form className={styles.askForm} onSubmit={(event) => void submit(event)}>
           <label htmlFor="workflow-add-context">Дополнительный контекст</label>

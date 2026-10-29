@@ -19,6 +19,8 @@ export function RequirementsArtifactCard({
   queryKey,
   runId,
   runVersion,
+  canAnswerClarification = false,
+  onAnswered,
 }: {
   client: Client;
   allowedCommands?: AllowedCommand[];
@@ -26,6 +28,8 @@ export function RequirementsArtifactCard({
   queryKey: readonly unknown[];
   runId: string;
   runVersion?: number;
+  canAnswerClarification?: boolean;
+  onAnswered?: () => Promise<void>;
 }) {
   const [editingRequirementId, setEditingRequirementId] = useState<string | null>(null);
   const [statement, setStatement] = useState('');
@@ -119,6 +123,20 @@ export function RequirementsArtifactCard({
     <section aria-label="Требования к работе" className={styles.page}>
       <h3>Требования · версия {artifact.artifact_version}</h3>
       <p role="status">Статус: {artifact.state}</p>
+      {artifact.clarifications.map((clarification) => (
+        <ClarificationPrompt
+          key={clarification.clarification_id}
+          artifact={artifact}
+          canAnswer={canAnswerClarification}
+          clarification={clarification}
+          client={client}
+          onAnswered={async () => {
+            await query.refetch();
+            await onAnswered?.();
+          }}
+          runVersion={runVersion}
+        />
+      ))}
       <ul>
         {artifact.requirements.map((requirement) => (
           <li key={requirement.requirement_id}>
@@ -216,6 +234,103 @@ export function RequirementsArtifactCard({
           <button type="button" onClick={() => void refreshCard()}>Обновить версию</button>
         </div>
       ) : null}
+    </section>
+  );
+}
+
+function ClarificationPrompt({
+  artifact,
+  canAnswer,
+  clarification,
+  client,
+  onAnswered,
+  runVersion,
+}: {
+  artifact: RequirementsArtifact;
+  canAnswer: boolean;
+  clarification: RequirementsArtifact['clarifications'][number];
+  client: Client;
+  onAnswered?: () => Promise<void>;
+  runVersion?: number;
+}) {
+  const [answer, setAnswer] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const commandRef = useRef<{ commandId: string; idempotencyKey: string; answer: string } | null>(null);
+  if (clarification.answer) {
+    return <p role="status">Уточнение получено и учтено в версии {clarification.resulting_artifact_version}.</p>;
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!client.POST || !canAnswer || !runVersion || !answer.trim() || submitting) return;
+    const command = commandRef.current ?? {
+      commandId: crypto.randomUUID(),
+      idempotencyKey: crypto.randomUUID(),
+      answer: answer.trim(),
+    };
+    commandRef.current = command;
+    setSubmitting(true);
+    setError(null);
+    const { data, error: responseError } = await client.POST('/api/v1/runs/{run_id}/commands', {
+      params: {
+        path: { run_id: artifact.run_id },
+        header: { 'Idempotency-Key': command.idempotencyKey },
+      },
+      body: {
+        schema_version: 1,
+        command_id: command.commandId,
+        command_type: 'answer_clarification',
+        command_schema_version: 1,
+        expected_run_version: runVersion,
+        payload: {
+          schema_version: 1,
+          clarification_id: clarification.clarification_id,
+          requirement_id: clarification.requirement_id,
+          answer: command.answer,
+        },
+        artifact_refs: [{
+          artifact_id: artifact.artifact_id,
+          schema_name: 'requirements',
+          schema_version: artifact.schema_version,
+          artifact_version: artifact.artifact_version,
+        }],
+        correlation_id: artifact.run_id,
+        causation_id: clarification.asked_event_id,
+      },
+    });
+    setSubmitting(false);
+    if (responseError || !data) {
+      setError('Не удалось сохранить ответ. Обновите запуск и повторите команду.');
+      return;
+    }
+    commandRef.current = null;
+    setAnswer('');
+    await onAnswered?.();
+  }
+
+  return (
+    <section aria-label="Запрос уточнения">
+      <h4>Нужно уточнение</h4>
+      <p>{clarification.question}</p>
+      {canAnswer ? (
+        <form onSubmit={(event) => void submit(event)}>
+          <label htmlFor={`clarification-${clarification.clarification_id}`}>Ответ менеджера</label>
+          <textarea
+            disabled={submitting}
+            id={`clarification-${clarification.clarification_id}`}
+            onChange={(event) => {
+              setAnswer(event.target.value);
+              commandRef.current = null;
+            }}
+            value={answer}
+          />
+          <button disabled={submitting || !answer.trim()} type="submit">
+            {submitting ? 'Сохраняем…' : 'Ответить и продолжить'}
+          </button>
+        </form>
+      ) : <p role="status">Обновите запуск, чтобы ответить на актуальную версию вопроса.</p>}
+      {error ? <p role="alert">{error}</p> : null}
     </section>
   );
 }

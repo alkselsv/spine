@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from uuid import UUID
 
 import pytest
@@ -6,6 +7,9 @@ from pydantic import ValidationError
 from spine.domain.artifacts import ArtifactRef, PhysicalLineLocator
 from spine.domain.workflows import (
     AcceptedSourceRevisionRef,
+    Clarification,
+    ClarificationAnswer,
+    ClarificationReason,
     Requirement,
     RequirementEvidenceRef,
     RequirementEvidenceRelationship,
@@ -14,6 +18,7 @@ from spine.domain.workflows import (
     RequirementState,
     RequirementsArtifact,
 )
+from spine.domain.common import ActorKind, ActorRef
 
 
 def test_requirement_defaults_to_unaccepted_candidate() -> None:
@@ -114,6 +119,73 @@ def test_requirements_artifact_preserves_exact_run_scope_and_version() -> None:
         UUID(int=3), UUID(int=4), UUID(int=5), UUID(int=6)
     )
     assert artifact.artifact_version == 1
+
+
+def test_clarification_preserves_question_answer_and_successor_lineage() -> None:
+    asked_at = datetime(2026, 10, 29, 9, tzinfo=timezone.utc)
+    answered_at = datetime(2026, 10, 29, 10, tzinfo=timezone.utc)
+    clarification = Clarification(
+        clarification_id=UUID(int=20),
+        run_id=UUID(int=6),
+        requirement_id=UUID(int=1),
+        originating_artifact_id=UUID(int=2),
+        originating_artifact_version=1,
+        question="Please provide the delivery deadline.",
+        reason=ClarificationReason.MISSING_INFORMATION,
+        asked_by=ActorRef(kind=ActorKind.AGENT, id=UUID(int=21)),
+        asked_event_id=UUID(int=22),
+        asked_at=asked_at,
+        correlation_id=UUID(int=23),
+        answer=ClarificationAnswer(
+            text="December 20.",
+            answered_by=ActorRef(kind=ActorKind.HUMAN, id=UUID(int=24)),
+            answered_event_id=UUID(int=25),
+            answered_at=answered_at,
+        ),
+        resulting_artifact_version=2,
+        affected_validation_references=(UUID(int=26),),
+    )
+    artifact = RequirementsArtifact(
+        artifact_id=UUID(int=2),
+        artifact_version=2,
+        predecessor_version=1,
+        production_identity="clarification-answer:25",
+        production_digest="0" * 64,
+        workspace_id=UUID(int=3),
+        environment_id=UUID(int=4),
+        work_item_id=UUID(int=5),
+        run_id=UUID(int=6),
+        requirements=(
+            Requirement(
+                requirement_id=UUID(int=1),
+                category="functional",
+                statement="Deliver by the confirmed deadline.",
+            ),
+        ),
+        clarifications=(clarification,),
+    )
+
+    assert artifact.clarifications[0].answer is not None
+    assert artifact.clarifications[0].answer.text == "December 20."
+    assert artifact.clarifications[0].resulting_artifact_version == 2
+
+
+def test_open_clarification_rejects_answer_only_lineage() -> None:
+    with pytest.raises(ValidationError, match="answered clarification"):
+        Clarification(
+            clarification_id=UUID(int=20),
+            run_id=UUID(int=6),
+            requirement_id=UUID(int=1),
+            originating_artifact_id=UUID(int=2),
+            originating_artifact_version=1,
+            question="Please clarify the scope.",
+            reason="ambiguous_information",
+            asked_by=ActorRef(kind=ActorKind.AGENT, id=UUID(int=21)),
+            asked_event_id=UUID(int=22),
+            asked_at=datetime(2026, 10, 29, 9, tzinfo=timezone.utc),
+            correlation_id=UUID(int=23),
+            resulting_artifact_version=2,
+        )
 
 
 def test_requirement_rejects_unknown_fields() -> None:

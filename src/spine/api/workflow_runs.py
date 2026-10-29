@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from fastapi import Body, Depends, FastAPI, Query, Request
@@ -42,12 +42,15 @@ from spine.application.workflow_runs import (
     EditRequirementCommandV1,
     RequestRequirementsReworkCommandV1,
     SaveRequirementsReviewCommandV1,
+    AnswerClarificationCommandV1,
+    CancelWorkflowCommandV1,
     StartWorkflowCommand,
     WorkflowArtifactRef,
     WorkflowCommand,
     WorkflowVersionResolver,
     WorkflowVersionUnavailableError,
 )
+from spine.application.parsed_content_inspection import ParsedContentInspectionRequester
 from spine.auth import (
     AuthorizationRole,
     AuthorizationScopeRequirement,
@@ -104,7 +107,15 @@ class WorkflowRunResponse(BaseModel):
     run_version: int = Field(ge=1)
     state: str
     allowed_commands: tuple[
-        Literal["add_context", "edit_requirement", "save_review", "request_rework"], ...
+        Literal[
+            "add_context",
+            "edit_requirement",
+            "save_review",
+            "request_rework",
+            "answer_clarification",
+            "cancel",
+        ],
+        ...,
     ]
     created_at: datetime
 
@@ -149,6 +160,7 @@ class RequirementsReviewPayloadRequestV1(BaseModel):
 
 
 class EditRequirementWorkflowCommandRequestV1(BaseModel):
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_version: Literal[1] = 1
@@ -157,6 +169,29 @@ class EditRequirementWorkflowCommandRequestV1(BaseModel):
     command_schema_version: Literal[1]
     expected_run_version: int = Field(ge=1, strict=True)
     payload: EditRequirementPayloadRequestV1
+    artifact_refs: tuple[WorkflowArtifactRefRequestV1, ...]
+    correlation_id: UUID
+    causation_id: UUID
+
+
+class AnswerClarificationPayloadRequestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    clarification_id: UUID
+    requirement_id: UUID
+    answer: str = Field(min_length=1, max_length=32_768)
+
+
+class AnswerClarificationWorkflowCommandRequestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    command_id: UUID
+    command_type: Literal["answer_clarification"]
+    command_schema_version: Literal[1]
+    expected_run_version: int = Field(ge=1, strict=True)
+    payload: AnswerClarificationPayloadRequestV1
     artifact_refs: tuple[WorkflowArtifactRefRequestV1, ...]
     correlation_id: UUID
     causation_id: UUID
@@ -172,6 +207,21 @@ class SaveRequirementsReviewWorkflowCommandRequestV1(BaseModel):
     expected_run_version: int = Field(ge=1, strict=True)
     payload: RequirementsReviewPayloadRequestV1
     artifact_refs: tuple[WorkflowArtifactRefRequestV1, ...]
+
+    correlation_id: UUID
+    causation_id: UUID
+
+
+class CancelWorkflowCommandRequestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    command_id: UUID
+    command_type: Literal["cancel"]
+    command_schema_version: Literal[1]
+    expected_run_version: int = Field(ge=1, strict=True)
+    payload: CancelWorkflowCommandV1
+    artifact_refs: tuple[WorkflowArtifactRefRequestV1, ...] = ()
     correlation_id: UUID
     causation_id: UUID
 
@@ -190,12 +240,15 @@ class RequestRequirementsReworkWorkflowCommandRequestV1(BaseModel):
     causation_id: UUID
 
 
-WorkflowCommandRequestV1 = (
+WorkflowCommandRequestV1 = Annotated[
     AddContextWorkflowCommandRequestV1
     | EditRequirementWorkflowCommandRequestV1
     | SaveRequirementsReviewWorkflowCommandRequestV1
     | RequestRequirementsReworkWorkflowCommandRequestV1
-)
+    | AnswerClarificationWorkflowCommandRequestV1
+    | CancelWorkflowCommandRequestV1,
+    Field(discriminator="command_type"),
+]
 
 
 class RequirementsReviewReceiptResponse(BaseModel):
@@ -352,7 +405,7 @@ def install_workflow_run_routes(
     async def command_endpoint(
         run_id: UUID,
         request: Request,
-        body: WorkflowCommandRequestV1 = Body(..., discriminator="command_type"),
+        body: WorkflowCommandRequestV1 = Body(...),
         request_context: AuthorizedRequestContext[object] = Depends(get_authorized_request_context),
         persistence_context: TrustedPersistenceContext = Depends(get_authorized_persistence_context),
     ) -> JSONResponse:
@@ -386,10 +439,85 @@ def install_workflow_run_routes(
                 correlation_id=body.correlation_id,
                 causation_id=body.causation_id,
             )
-            if body.command_type == "add_context":
+            clarification_successor = None
+            if command.command_type == "answer_clarification":
+                if requirements_artifact_service is None:
+                    return JSONResponse(
+                        status_code=503,
+                        content={"code": "workflow.clarification_unavailable"},
+                    )
+                try:
+                    clarification_successor = (
+                        await requirements_artifact_service.prepare_clarification_answer(
+                            context=persistence_context,
+                            command=command,
+                            requester=ParsedContentInspectionRequester(
+                                subject_id=request_context.acting_subject_id
+                            ),
+                        )
+                    )
+                except OptimisticConflictError:
+                    try:
+                        replay = await service.dispatch(
+                            context=persistence_context,
+                            command=command,
+                            clarification_successor=None,
+                        )
+                    except (ConstraintConflictError, OptimisticConflictError):
+                        replay = None
+                    if replay is not None:
+                        response = WorkflowRunReceiptResponse(
+                            command_id=replay.command_id,
+                            work_item_id=replay.work_item_id,
+                            run_id=replay.run_id,
+                            workflow_version_id=replay.workflow_version_id,
+                            state=replay.state.value,
+                            run_version=replay.run_version,
+                            admission=replay.admission,
+                        )
+                        return JSONResponse(
+                            status_code=202, content=response.model_dump(mode="json")
+                        )
+                    current = await service.get_run(
+                        context=persistence_context, run_id=run_id
+                    )
+                    if current is None:
+                        return JSONResponse(
+                            status_code=404, content={"code": "workflow.run_not_found"}
+                        )
+                    return JSONResponse(
+                        status_code=409,
+                        content={
+                            "code": "workflow.artifact_stale",
+                            "current": _response(current).model_dump(mode="json"),
+                        },
+                    )
+                except ConstraintConflictError:
+                    current = await service.get_run(
+                        context=persistence_context, run_id=run_id
+                    )
+                    if current is None:
+                        return JSONResponse(
+                            status_code=404, content={"code": "workflow.run_not_found"}
+                        )
+                    return JSONResponse(
+                        status_code=409,
+                        content={
+                            "code": "workflow.clarification_conflict",
+                            "current": _response(current).model_dump(mode="json"),
+                        },
+                    )
+
+            if command.command_type in {"add_context", "cancel"}:
                 receipt = await service.dispatch(
                     context=persistence_context,
                     command=command,
+                )
+            elif command.command_type == "answer_clarification":
+                receipt = await service.dispatch(
+                    context=persistence_context,
+                    command=command,
+                    clarification_successor=clarification_successor,
                 )
             elif requirements_review_service is None:
                 return JSONResponse(
@@ -419,8 +547,6 @@ def install_workflow_run_routes(
             )
         except RequirementsReviewUnavailableError:
             return JSONResponse(status_code=404, content={"code": "artifact.not_found"})
-        except ConstraintConflictError:
-            return JSONResponse(status_code=409, content={"code": "workflow.run_terminal"})
         except OptimisticConflictError:
             current = await service.get_run(context=persistence_context, run_id=run_id)
             if current is None:
@@ -429,6 +555,25 @@ def install_workflow_run_routes(
                 status_code=409,
                 content={
                     "code": "workflow.run_stale",
+                    "current": _response(current).model_dump(mode="json"),
+                },
+            )
+        except ConstraintConflictError:
+            if command.command_type in {
+                "edit_requirement",
+                "save_review",
+                "request_rework",
+            }:
+                return JSONResponse(
+                    status_code=409, content={"code": "workflow.run_terminal"}
+                )
+            current = await service.get_run(context=persistence_context, run_id=run_id)
+            if current is None:
+                return JSONResponse(status_code=404, content={"code": "workflow.run_not_found"})
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "code": "workflow.command_conflict",
                     "current": _response(current).model_dump(mode="json"),
                 },
             )
@@ -601,7 +746,11 @@ def _application_payload(body: WorkflowCommandRequestV1):
         return EditRequirementCommandV1.model_validate(data)
     if body.command_type == "save_review":
         return SaveRequirementsReviewCommandV1.model_validate(data)
-    return RequestRequirementsReworkCommandV1.model_validate(data)
+    if body.command_type == "request_rework":
+        return RequestRequirementsReworkCommandV1.model_validate(data)
+    if body.command_type == "answer_clarification":
+        return AnswerClarificationCommandV1.model_validate(data)
+    return CancelWorkflowCommandV1.model_validate(data)
 
 
 __all__ = [
@@ -611,6 +760,8 @@ __all__ = [
     "RequestRequirementsReworkWorkflowCommandRequestV1",
     "RequirementsReviewReceiptResponse",
     "SaveRequirementsReviewWorkflowCommandRequestV1",
+    "AnswerClarificationWorkflowCommandRequestV1",
+    "CancelWorkflowCommandRequestV1",
     "WorkflowEventPageResponse",
     "WorkflowRunReceiptResponse",
     "WorkflowRunResponse",

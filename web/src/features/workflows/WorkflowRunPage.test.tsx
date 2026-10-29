@@ -43,7 +43,7 @@ describe('WorkflowRunPage', () => {
           production_digest: 'a'.repeat(64), workspace_id: '10000000-0000-4000-8000-000000000001',
           environment_id: '20000000-0000-4000-8000-000000000001', work_item_id: '40000000-0000-4000-8000-000000000001',
           run_id: '30000000-0000-4000-8000-000000000001', state: 'candidate', upstream_artifact_ids: [],
-          predecessor_version: null, requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
+          predecessor_version: null, clarifications: [], requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
             category: 'functional', statement: 'Deliver by Friday', constraints: [], uncertainty: null,
             ambiguous_markers: [], missing_markers: [], state: 'candidate', review_state: 'needs_review',
             confidence: null, source_refs: [], evidence_refs: [], evidence_status: 'unverified',
@@ -107,7 +107,7 @@ describe('WorkflowRunPage', () => {
           production_digest: 'a'.repeat(64), workspace_id: '10000000-0000-4000-8000-000000000001',
           environment_id: '20000000-0000-4000-8000-000000000001', work_item_id: '40000000-0000-4000-8000-000000000001',
           run_id: '30000000-0000-4000-8000-000000000001', state: 'candidate', upstream_artifact_ids: [],
-          predecessor_version: null, requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
+          predecessor_version: null, clarifications: [], requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
             category: 'functional', statement: 'Deliver by Friday', constraints: [], uncertainty: null,
             ambiguous_markers: [], missing_markers: [], state: 'candidate', review_state: 'needs_review',
             confidence: null, source_refs: [], evidence_refs: [], evidence_status: 'unverified',
@@ -136,7 +136,7 @@ describe('WorkflowRunPage', () => {
           workflow_version: '1.0.0',
           run_version: 2,
           state: 'running',
-          allowed_commands: ['add_context'],
+          allowed_commands: ['add_context', 'cancel'],
           created_at: '2026-10-28T00:00:00Z',
         },
       });
@@ -161,6 +161,17 @@ describe('WorkflowRunPage', () => {
           command_type: 'add_context',
           expected_run_version: 2,
           payload: expect.objectContaining({ message: 'Срок запуска — 20 декабря' }),
+        }),
+      }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Отменить запуск' }));
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/runs/{run_id}/commands',
+      expect.objectContaining({
+        body: expect.objectContaining({
+          command_type: 'cancel',
+          expected_run_version: 2,
+          payload: { schema_version: 1 },
         }),
       }),
     );

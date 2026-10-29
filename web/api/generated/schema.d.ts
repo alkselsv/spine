@@ -1033,8 +1033,8 @@ export interface components {
              */
             command_schema_version: 1;
             /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
+             * Command Type
+             * @constant
              */
             command_type: "add_context";
             /**
@@ -1063,6 +1063,66 @@ export interface components {
          * @enum {string}
          */
         AnswerClaimKind: "factual" | "derived";
+        /** AnswerClarificationPayloadRequestV1 */
+        AnswerClarificationPayloadRequestV1: {
+            /** Answer */
+            answer: string;
+            /**
+             * Clarification Id
+             * Format: uuid
+             */
+            clarification_id: string;
+            /**
+             * Requirement Id
+             * Format: uuid
+             */
+            requirement_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /** AnswerClarificationWorkflowCommandRequestV1 */
+        AnswerClarificationWorkflowCommandRequestV1: {
+            /** Artifact Refs */
+            artifact_refs: components["schemas"]["WorkflowArtifactRefRequestV1"][];
+            /**
+             * Causation Id
+             * Format: uuid
+             */
+            causation_id: string;
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /**
+             * Command Schema Version
+             * @constant
+             */
+            command_schema_version: 1;
+            /**
+             * Command Type
+             * @constant
+             */
+            command_type: "answer_clarification";
+            /**
+             * Correlation Id
+             * Format: uuid
+             */
+            correlation_id: string;
+            /** Expected Run Version */
+            expected_run_version: number;
+            payload: components["schemas"]["AnswerClarificationPayloadRequestV1"];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
         /**
          * AnswerCompletenessPresentation
          * @description Stable codes and opaque version identities; never source membership/counts.
@@ -2162,6 +2222,60 @@ export interface components {
              */
             schema_version: 1;
         };
+        /** CancelWorkflowCommandRequestV1 */
+        CancelWorkflowCommandRequestV1: {
+            /**
+             * Artifact Refs
+             * @default []
+             */
+            artifact_refs: components["schemas"]["WorkflowArtifactRefRequestV1"][];
+            /**
+             * Causation Id
+             * Format: uuid
+             */
+            causation_id: string;
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /**
+             * Command Schema Version
+             * @constant
+             */
+            command_schema_version: 1;
+            /**
+             * Command Type
+             * @constant
+             */
+            command_type: "cancel";
+            /**
+             * Correlation Id
+             * Format: uuid
+             */
+            correlation_id: string;
+            /** Expected Run Version */
+            expected_run_version: number;
+            payload: components["schemas"]["CancelWorkflowCommandV1"];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /**
+         * CancelWorkflowCommandV1
+         * @description Content-free request to cancel the existing durable run.
+         */
+        CancelWorkflowCommandV1: {
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
         /**
          * CitationInspectionEvidence
          * @description Content released after all citation and current-authority checks pass.
@@ -2256,6 +2370,97 @@ export interface components {
          * @enum {string}
          */
         ClaimEvidenceRelationshipKind: "independent" | "corroborating" | "joint" | "derivation_input" | "contradiction";
+        /**
+         * Clarification
+         * @description A durable question tied to one run, requirement and artifact version.
+         */
+        Clarification: {
+            /**
+             * Affected Validation References
+             * @default []
+             */
+            affected_validation_references: string[];
+            answer?: components["schemas"]["ClarificationAnswer"] | null;
+            /**
+             * Asked At
+             * Format: date-time
+             */
+            asked_at: string;
+            asked_by: components["schemas"]["ActorRef"];
+            /**
+             * Asked Event Id
+             * Format: uuid
+             */
+            asked_event_id: string;
+            /**
+             * Clarification Id
+             * Format: uuid
+             */
+            clarification_id: string;
+            /**
+             * Correlation Id
+             * Format: uuid
+             */
+            correlation_id: string;
+            /**
+             * Originating Artifact Id
+             * Format: uuid
+             */
+            originating_artifact_id: string;
+            /** Originating Artifact Version */
+            originating_artifact_version: number;
+            /** Question */
+            question: string;
+            reason: components["schemas"]["ClarificationReason"];
+            /**
+             * Requirement Id
+             * Format: uuid
+             */
+            requirement_id: string;
+            /** Resulting Artifact Version */
+            resulting_artifact_version?: number | null;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Schema Version
+             * @default clarification:v1
+             * @constant
+             */
+            schema_version: "clarification:v1";
+        };
+        /**
+         * ClarificationAnswer
+         * @description One manager answer admitted as canonical workflow data.
+         */
+        ClarificationAnswer: {
+            /**
+             * Answered At
+             * Format: date-time
+             */
+            answered_at: string;
+            answered_by: components["schemas"]["ActorRef"];
+            /**
+             * Answered Event Id
+             * Format: uuid
+             */
+            answered_event_id: string;
+            /**
+             * Schema Version
+             * @default clarification-answer:v1
+             * @constant
+             */
+            schema_version: "clarification-answer:v1";
+            /** Text */
+            text: string;
+        };
+        /**
+         * ClarificationReason
+         * @enum {string}
+         */
+        ClarificationReason: "missing_information" | "ambiguous_information";
         /**
          * CommandStatus
          * @description Public lifecycle of a requested mutation.
@@ -2602,8 +2807,8 @@ export interface components {
              */
             command_schema_version: 1;
             /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
+             * Command Type
+             * @constant
              */
             command_type: "edit_requirement";
             /**
@@ -4475,8 +4680,8 @@ export interface components {
              */
             command_schema_version: 1;
             /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
+             * Command Type
+             * @constant
              */
             command_type: "request_rework";
             /**
@@ -4646,6 +4851,11 @@ export interface components {
             artifact_id: string;
             /** Artifact Version */
             artifact_version: number;
+            /**
+             * Clarifications
+             * @default []
+             */
+            clarifications: components["schemas"]["Clarification"][];
             /**
              * Environment Id
              * Format: uuid
@@ -4946,8 +5156,8 @@ export interface components {
              */
             command_schema_version: 1;
             /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
+             * Command Type
+             * @constant
              */
             command_type: "save_review";
             /**
@@ -5265,7 +5475,7 @@ export interface components {
         /** WorkflowRunResponse */
         WorkflowRunResponse: {
             /** Allowed Commands */
-            allowed_commands: ("add_context" | "edit_requirement" | "save_review" | "request_rework")[];
+            allowed_commands: ("add_context" | "edit_requirement" | "save_review" | "request_rework" | "answer_clarification" | "cancel")[];
             /**
              * Created At
              * Format: date-time
@@ -10114,7 +10324,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["AddContextWorkflowCommandRequestV1"] | components["schemas"]["EditRequirementWorkflowCommandRequestV1"] | components["schemas"]["SaveRequirementsReviewWorkflowCommandRequestV1"] | components["schemas"]["RequestRequirementsReworkWorkflowCommandRequestV1"];
+                "application/json": components["schemas"]["AddContextWorkflowCommandRequestV1"] | components["schemas"]["EditRequirementWorkflowCommandRequestV1"] | components["schemas"]["SaveRequirementsReviewWorkflowCommandRequestV1"] | components["schemas"]["RequestRequirementsReworkWorkflowCommandRequestV1"] | components["schemas"]["AnswerClarificationWorkflowCommandRequestV1"] | components["schemas"]["CancelWorkflowCommandRequestV1"];
             };
         };
         responses: {

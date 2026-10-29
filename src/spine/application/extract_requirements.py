@@ -47,7 +47,14 @@ from spine.domain.capabilities import (
     CapabilityDefinition,
 )
 from spine.domain.common import ActorRef, EnvironmentKind, SchemaRef, ValidatedDefinitionModel
-from spine.domain.workflows import RequirementState, RequirementsArtifact
+from spine.domain.workflows import (
+    Clarification,
+    ClarificationAnswer,
+    Requirement,
+    RequirementCategory,
+    RequirementState,
+    RequirementsArtifact,
+)
 
 
 EXTRACT_REQUIREMENTS_CAPABILITY_ID = uuid5(
@@ -513,6 +520,51 @@ async def deterministic_extract_requirements(
     )
 
 
+def revalidate_clarified_requirement(
+    *,
+    previous: RequirementsArtifact,
+    requirement: Requirement,
+    clarification: Clarification,
+    answer: ClarificationAnswer,
+) -> RequirementsExtractionOutput:
+    """Revalidate one affected extraction result through the #641 contract."""
+
+    if (
+        clarification.requirement_id != requirement.requirement_id
+        or clarification.run_id != previous.run_id
+        or clarification.originating_artifact_id != previous.artifact_id
+        or clarification.originating_artifact_version != previous.artifact_version
+    ):
+        raise ValueError("clarification does not match the extracted requirement")
+    resolution = answer.text.strip()
+    resolved = requirement.model_copy(
+        update={
+            "statement": (
+                resolution
+                if requirement.category is RequirementCategory.UNRESOLVED_INFORMATION
+                else requirement.statement
+            ),
+            "constraints": (
+                requirement.constraints
+                if requirement.category is RequirementCategory.UNRESOLVED_INFORMATION
+                else (*requirement.constraints, resolution)
+            ),
+            "missing_markers": (),
+            "ambiguous_markers": (),
+            "uncertainty": None,
+            "state": RequirementState.CANDIDATE,
+        }
+    )
+    return RequirementsExtractionOutput(
+        workspace_id=previous.workspace_id,
+        environment_id=previous.environment_id,
+        workflow_run_id=previous.run_id,
+        work_item_id=previous.work_item_id,
+        outcome=RequirementsExtractionOutcome.SUCCESS,
+        requirements=(resolved,),
+    )
+
+
 def register_deterministic_extract_requirements_handler(registry: Any) -> None:
     """Register the offline handler explicitly in a caller-owned registry."""
 
@@ -658,4 +710,5 @@ __all__ = [
     "extract_requirements_artifact_schema",
     "extract_requirements_capability",
     "register_deterministic_extract_requirements_handler",
+    "revalidate_clarified_requirement",
 ]

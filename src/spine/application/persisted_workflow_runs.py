@@ -17,6 +17,7 @@ from spine.application.persistence.workflow_runs import (
     validate_workflow_run_context,
 )
 from spine.domain.workflows import (
+    RequirementsArtifact,
     WorkflowCommandReceipt,
     WorkflowEventPage,
     WorkflowRunSnapshot,
@@ -55,7 +56,11 @@ class PersistedWorkflowRunAdmissionService:
             return workflow_run_snapshot(run) if run is not None else None
 
     async def dispatch(
-        self, *, context: TrustedPersistenceContext, command: WorkflowCommand
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        command: WorkflowCommand,
+        clarification_successor: RequirementsArtifact | None = None,
     ) -> WorkflowCommandReceipt | None:
         validate_workflow_command_context(context, command)
         async with self._uow_factory(context) as uow:
@@ -66,7 +71,13 @@ class PersistedWorkflowRunAdmissionService:
             )
             if run is None:
                 return None
-            receipt = await uow.workflow_runs.dispatch(command)
+            if clarification_successor is None:
+                receipt = await uow.workflow_runs.dispatch(command)
+            else:
+                receipt = await uow.workflow_runs.dispatch(
+                    command,
+                    clarification_successor=clarification_successor,
+                )
             await uow.commit()
         return receipt
 

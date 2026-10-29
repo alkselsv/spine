@@ -6888,7 +6888,10 @@ async def test_drive_lifecycle_decision_repository_persists_tenant_scoped_transi
 async def test_requirements_artifacts_replay_successor_and_isolate_workspaces(
     postgresql_adapter: PersistenceAdapter,
 ) -> None:
-    from spine.application.requirements_artifacts import PersistedRequirementsArtifactService
+    from spine.application.requirements_artifacts import (
+        PersistedRequirementsArtifactService,
+        RequirementsExtractionClarificationRevalidator,
+    )
     from spine.application.persistence.errors import IdempotencyConflictError
     from spine.application.persistence.errors import InvalidPersistenceContextError
     from spine.domain.workflows import Requirement, RequirementState
@@ -6919,7 +6922,10 @@ async def test_requirements_artifacts_replay_successor_and_isolate_workspaces(
         client_request=ClientRequestV1(message="Deliver by Friday"), trace_id=start_context.trace_id,
         correlation_id=start_context.trace_id, causation_id=start_id,
     ))
-    artifacts = PersistedRequirementsArtifactService(postgresql_adapter.uow_factory)
+    artifacts = PersistedRequirementsArtifactService(
+        postgresql_adapter.uow_factory,
+        clarification_revalidator=RequirementsExtractionClarificationRevalidator(),
+    )
     first = await artifacts.produce_first_candidate(context=start_context, run_id=receipt.run_id)
     replay = await artifacts.produce_first_candidate(context=start_context, run_id=receipt.run_id)
     assert first is not None and first == replay

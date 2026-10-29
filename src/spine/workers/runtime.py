@@ -88,6 +88,7 @@ from spine.infrastructure.persistence.projection_composition import (
 )
 from spine.infrastructure.workflows.run_start import (
     build_workflow_run_start_delivery_binding,
+    build_workflow_run_signal_delivery_binding,
     register_workflow_run_start_delivery_route,
 )
 from spine.memory.cognee.context_projection import CogneeContextProjection
@@ -251,6 +252,15 @@ class _LazyTemporalWorkflowClient:
 
     async def request_cancellation(self, **kwargs):
         return await (await self._resolved()).request_cancellation(**kwargs)
+
+    async def signal_clarification_requested(self, payload):
+        return await (await self._resolved_run()).signal_clarification_requested(payload)
+
+    async def signal_clarification_answered(self, payload):
+        return await (await self._resolved_run()).signal_clarification_answered(payload)
+
+    async def signal_run_cancelled(self, payload):
+        return await (await self._resolved_run()).signal_run_cancelled(payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1158,6 +1168,7 @@ def create_production_outbox_worker_runtime(
             build_ask_admission_delivery_binding(temporal_client),
             build_ask_cancellation_delivery_binding(temporal_client),
             build_workflow_run_start_delivery_binding(temporal_client),
+            build_workflow_run_signal_delivery_binding(temporal_client),
         ),
         audit_events=audit_events,
         diagnostic_events=diagnostic_events,

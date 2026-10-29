@@ -23,14 +23,21 @@ from spine.application.persistence.idempotency import (
 )
 from spine.application.persistence.outbox import OpaqueObjectReference
 from spine.application.persistence.workflow_runs import (
+    CLARIFICATION_ANSWERED_EVENT_TYPE,
+    CLARIFICATION_REQUESTED_EVENT_TYPE,
     COMMAND_WORKFLOW_OPERATION,
     COMMAND_WORKFLOW_RESULT_TYPE,
     COMMAND_WORKFLOW_SCHEMA_VERSION,
+    ClarificationAnsweredDispatchPayload,
+    ClarificationRequestedDispatchPayload,
     START_WORKFLOW_EVENT_SCHEMA_VERSION,
     START_WORKFLOW_EVENT_TYPE,
     START_WORKFLOW_OPERATION,
     START_WORKFLOW_RESULT_TYPE,
     START_WORKFLOW_SCHEMA_VERSION,
+    WORKFLOW_CANCELLED_EVENT_TYPE,
+    WORKFLOW_SIGNAL_EVENT_SCHEMA_VERSION,
+    WorkflowCancelledDispatchPayload,
     StartWorkflowDispatchPayload,
     WorkflowRunAdmissionRepository,
     validate_workflow_command_context,
@@ -41,6 +48,7 @@ from spine.domain.work_items import WorkItem, WorkItemStatus
 from spine.domain.workflows import (
     AcceptedSourceRevisionRef,
     ClientRequestV1,
+    RequirementsArtifact,
     WorkflowCommandReceipt,
     WorkflowEvent,
     WorkflowEventPage,
@@ -237,7 +245,12 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
             run_id=run_id,
         )
 
-    async def dispatch(self, command: WorkflowCommand) -> WorkflowCommandReceipt:
+    async def dispatch(
+        self,
+        command: WorkflowCommand,
+        *,
+        clarification_successor: RequirementsArtifact | None = None,
+    ) -> WorkflowCommandReceipt:
         """Persist one typed continuation with one optimistic logical effect."""
 
         self._uow._guard_active()
@@ -300,8 +313,50 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
             WorkflowRunState.CANCELLED,
         }:
             await self._uow._fail(ConstraintConflictError("Workflow transition is invalid."))
+        is_clarification_answer = command.command_type == "answer_clarification"
+        is_cancellation = command.command_type == "cancel"
+        next_clarification = None
+        if is_clarification_answer:
+            if run.state is not WorkflowRunState.WAITING or clarification_successor is None:
+                await self._uow._fail(
+                    ConstraintConflictError("Workflow clarification is unavailable.")
+                )
+            artifact_ref = command.artifact_refs[0]
+            if (
+                clarification_successor.workspace_id != command.workspace_id
+                or clarification_successor.environment_id != command.environment_id
+                or clarification_successor.run_id != command.run_id
+                or clarification_successor.artifact_id != artifact_ref.artifact_id
+                or clarification_successor.predecessor_version != artifact_ref.artifact_version
+                or clarification_successor.artifact_version != artifact_ref.artifact_version + 1
+            ):
+                await self._uow._fail(
+                    ConstraintConflictError("Workflow clarification successor is invalid.")
+                )
+            next_clarification = next(
+                (
+                    item
+                    for item in clarification_successor.clarifications
+                    if item.answer is None
+                ),
+                None,
+            )
 
-        resulting_version = run.run_version + 1
+        answered_version = run.run_version + 1
+        resulting_version = answered_version + (
+            1 if is_clarification_answer and next_clarification is not None else 0
+        )
+        resulting_state = (
+            WorkflowRunState.CANCELLED
+            if is_cancellation
+            else (
+                WorkflowRunState.WAITING
+                if next_clarification is not None
+                else WorkflowRunState.RUNNING
+            )
+            if is_clarification_answer
+            else run.state
+        )
         update_result = await self._uow._execute(
             update(workflow_runs)
             .where(
@@ -310,11 +365,32 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
                 workflow_runs.c.run_id == command.run_id,
                 workflow_runs.c.run_version == command.expected_run_version,
             )
-            .values(run_version=resulting_version)
+            .values(
+                run_version=resulting_version,
+                state=resulting_state.value,
+            )
         )
         if update_result.rowcount != 1:
             await self._uow._fail(OptimisticConflictError("Workflow run version is stale."))
         now = self._clock().astimezone(timezone.utc)
+        answered = None
+        if is_clarification_answer:
+            payload = command.payload
+            answered = next(
+                (
+                    item
+                    for item in clarification_successor.clarifications
+                    if item.clarification_id == payload.clarification_id
+                ),
+                None,
+            )
+            if answered is None or answered.answer is None:
+                await self._uow._fail(
+                    ConstraintConflictError("Workflow clarification successor is invalid.")
+                )
+            await self._uow.requirements_artifacts.persist_candidate(
+                clarification_successor
+            )
         await self._uow._execute(
             insert(workflow_command_receipts).values(
                 command_id=command.command_id,
@@ -328,7 +404,7 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
                 command_schema_version=command.command_schema_version,
                 expected_run_version=command.expected_run_version,
                 resulting_run_version=resulting_version,
-                run_state=run.state.value,
+                run_state=resulting_state.value,
                 actor=command.actor.model_dump(mode="json"),
                 command_payload=command.payload.model_dump(mode="json"),
                 artifact_refs=[item.model_dump(mode="json") for item in command.artifact_refs],
@@ -339,8 +415,12 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
                 created_at=now,
             )
         )
-        event_id = uuid5(
-            NAMESPACE_URL, f"spine.workflow.command-event:v1:{command.command_id}"
+        event_id = (
+            answered.answer.answered_event_id
+            if answered is not None and answered.answer is not None
+            else uuid5(
+                NAMESPACE_URL, f"spine.workflow.command-event:v1:{command.command_id}"
+            )
         )
         event_type, event_summary = {
             "add_context": ("workflow.context-added", "Additional context received."),
@@ -356,6 +436,14 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
                 "workflow.requirements-rework-requested",
                 "Requirements rework was requested.",
             ),
+            "answer_clarification": (
+                "workflow.clarification-answered",
+                "Clarification answered.",
+            ),
+            "cancel": (
+                "workflow.run-cancelled",
+                "Workflow run cancelled.",
+            ),
         }[command.command_type]
         await self._uow._execute(
             insert(workflow_run_events).values(
@@ -363,16 +451,77 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
                 workspace_id=command.workspace_id,
                 environment_id=command.environment_id,
                 run_id=command.run_id,
-                sequence=resulting_version,
+                sequence=answered_version,
                 event_type=event_type,
                 event_schema_version=1,
-                run_version=resulting_version,
+                run_version=answered_version,
                 summary=event_summary,
                 correlation_id=command.correlation_id,
                 causation_id=command.command_id,
                 occurred_at=now,
             )
         )
+        if is_clarification_answer and next_clarification is not None:
+            await self._uow._execute(
+                insert(workflow_run_events).values(
+                    event_id=next_clarification.asked_event_id,
+                    workspace_id=command.workspace_id,
+                    environment_id=command.environment_id,
+                    run_id=command.run_id,
+                    sequence=resulting_version,
+                    event_type="workflow.clarification-requested",
+                    event_schema_version=1,
+                    run_version=resulting_version,
+                    summary="Clarification requested.",
+                    correlation_id=next_clarification.correlation_id,
+                    causation_id=event_id,
+                    occurred_at=next_clarification.asked_at,
+                )
+            )
+        if is_clarification_answer:
+            signal_payload = ClarificationAnsweredDispatchPayload(
+                command_id=command.command_id,
+                run_id=command.run_id,
+                clarification_id=command.payload.clarification_id,
+                artifact_id=clarification_successor.artifact_id,
+                artifact_version=clarification_successor.artifact_version,
+                next_clarification_id=(
+                    next_clarification.clarification_id
+                    if next_clarification is not None
+                    else None
+                ),
+                workflow_version_id=run.workflow_version_id,
+            )
+            signal_event_type = CLARIFICATION_ANSWERED_EVENT_TYPE
+        elif is_cancellation:
+            signal_payload = WorkflowCancelledDispatchPayload(
+                command_id=command.command_id,
+                run_id=command.run_id,
+                workflow_version_id=run.workflow_version_id,
+            )
+            signal_event_type = WORKFLOW_CANCELLED_EVENT_TYPE
+        else:
+            signal_payload = None
+            signal_event_type = None
+        if signal_payload is not None and signal_event_type is not None:
+            intent = self._uow._outbox_events.build_intent(
+                event_id=event_id,
+                workspace_id=command.workspace_id,
+                environment_id=command.environment_id,
+                event_type=signal_event_type,
+                schema_version=WORKFLOW_SIGNAL_EVENT_SCHEMA_VERSION,
+                payload=signal_payload,
+                aggregate=OpaqueObjectReference(
+                    object_type="workflow_run",
+                    object_id=command.run_id,
+                    schema_version=1,
+                ),
+                producer_deduplication_id=f"workflow-signal:{command.command_id}",
+                trace_id=command.trace_id,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+            )
+            await self._uow.outbox.append(intent)
         await self._uow.idempotency.complete(
             claim,
             OpaqueResultReference(
@@ -386,9 +535,101 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
             work_item_id=run.work_item_id,
             run_id=run.run_id,
             workflow_version_id=run.workflow_version_id,
-            state=run.state,
+            state=resulting_state,
             run_version=resulting_version,
             admission="accepted",
+        )
+
+    async def wait_for_clarification(
+        self, artifact: RequirementsArtifact
+    ) -> WorkflowRun:
+        """Persist one replay-safe human wait for the current artifact version."""
+
+        self._uow._guard_active()
+        open_items = tuple(item for item in artifact.clarifications if item.answer is None)
+        if not open_items:
+            await self._uow._fail(
+                ConstraintConflictError("Workflow clarification is unavailable.")
+            )
+        run = await self._resolve_run(
+            workspace_id=artifact.workspace_id,
+            environment_id=artifact.environment_id,
+            run_id=artifact.run_id,
+        )
+        if run is None or run.work_item_id != artifact.work_item_id:
+            await self._uow._fail(
+                ConstraintConflictError("Workflow clarification is unavailable.")
+            )
+        if run.state is WorkflowRunState.WAITING:
+            return run
+        if run.state not in {WorkflowRunState.ADMITTED, WorkflowRunState.RUNNING}:
+            await self._uow._fail(
+                ConstraintConflictError("Workflow transition is invalid.")
+            )
+        resulting_version = run.run_version + 1
+        update_result = await self._uow._execute(
+            update(workflow_runs)
+            .where(
+                workflow_runs.c.workspace_id == artifact.workspace_id,
+                workflow_runs.c.environment_id == artifact.environment_id,
+                workflow_runs.c.run_id == artifact.run_id,
+                workflow_runs.c.run_version == run.run_version,
+            )
+            .values(
+                state=WorkflowRunState.WAITING.value,
+                run_version=resulting_version,
+            )
+        )
+        if update_result.rowcount != 1:
+            await self._uow._fail(
+                OptimisticConflictError("Workflow run version is stale.")
+            )
+        first = open_items[0]
+        await self._uow._execute(
+            insert(workflow_run_events).values(
+                event_id=first.asked_event_id,
+                workspace_id=artifact.workspace_id,
+                environment_id=artifact.environment_id,
+                run_id=artifact.run_id,
+                sequence=resulting_version,
+                event_type="workflow.clarification-requested",
+                event_schema_version=1,
+                run_version=resulting_version,
+                summary="Clarification requested.",
+                correlation_id=first.correlation_id,
+                causation_id=run.command_id,
+                occurred_at=first.asked_at,
+            )
+        )
+        intent = self._uow._outbox_events.build_intent(
+            event_id=first.asked_event_id,
+            workspace_id=artifact.workspace_id,
+            environment_id=artifact.environment_id,
+            event_type=CLARIFICATION_REQUESTED_EVENT_TYPE,
+            schema_version=WORKFLOW_SIGNAL_EVENT_SCHEMA_VERSION,
+            payload=ClarificationRequestedDispatchPayload(
+                run_id=artifact.run_id,
+                clarification_id=first.clarification_id,
+                artifact_id=artifact.artifact_id,
+                artifact_version=artifact.artifact_version,
+                workflow_version_id=run.workflow_version_id,
+            ),
+            aggregate=OpaqueObjectReference(
+                object_type="workflow_run",
+                object_id=artifact.run_id,
+                schema_version=1,
+            ),
+            producer_deduplication_id=f"workflow-clarification:{first.clarification_id}",
+            trace_id=run.trace_id,
+            correlation_id=first.correlation_id,
+            causation_id=run.command_id,
+        )
+        await self._uow.outbox.append(intent)
+        return run.model_copy(
+            update={
+                "state": WorkflowRunState.WAITING,
+                "run_version": resulting_version,
+            }
         )
 
     async def list_events(

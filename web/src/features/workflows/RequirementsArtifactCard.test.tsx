@@ -22,7 +22,7 @@ describe('RequirementsArtifactCard review controls', () => {
       production_digest: 'a'.repeat(64), workspace_id: '10000000-0000-4000-8000-000000000001',
       environment_id: '20000000-0000-4000-8000-000000000001', work_item_id: '40000000-0000-4000-8000-000000000001',
       run_id: '30000000-0000-4000-8000-000000000001', state: 'candidate', upstream_artifact_ids: [],
-      predecessor_version: null, requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
+      predecessor_version: null, clarifications: [], requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
         schema_version: 'requirement:v1', category: 'functional', statement: 'Friday', constraints: [], uncertainty: null,
         ambiguous_markers: [], missing_markers: [], state: 'candidate', review_state: 'needs_review', confidence: null,
         source_refs: [], evidence_refs: [], evidence_status: 'unverified', upstream_artifact_ids: [] }],
@@ -69,7 +69,7 @@ describe('RequirementsArtifactCard review controls', () => {
       production_digest: 'a'.repeat(64), workspace_id: '10000000-0000-4000-8000-000000000001',
       environment_id: '20000000-0000-4000-8000-000000000001', work_item_id: '40000000-0000-4000-8000-000000000001',
       run_id: '30000000-0000-4000-8000-000000000001', state: 'candidate', upstream_artifact_ids: [],
-      predecessor_version: 1, requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
+      predecessor_version: 1, clarifications: [], requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
         schema_version: 'requirement:v1', category: 'functional', statement: 'Friday', constraints: [], uncertainty: null,
         ambiguous_markers: [], missing_markers: [], state: 'candidate', review_state: 'needs_review', confidence: null,
         source_refs: [], evidence_refs: [], evidence_status: 'unverified', upstream_artifact_ids: [] }],
@@ -139,7 +139,7 @@ describe('RequirementsArtifactCard review controls', () => {
       production_digest: 'a'.repeat(64), workspace_id: '10000000-0000-4000-8000-000000000001',
       environment_id: '20000000-0000-4000-8000-000000000001', work_item_id: '40000000-0000-4000-8000-000000000001',
       run_id: '30000000-0000-4000-8000-000000000001', state: 'candidate', upstream_artifact_ids: [],
-      predecessor_version: null, requirements: [],
+      predecessor_version: null, clarifications: [], requirements: [],
     } as const;
     get.mockResolvedValue({ data: artifact });
     post.mockResolvedValue({ error: { code: 'spine.authorization.denied' } });
@@ -163,6 +163,61 @@ describe('RequirementsArtifactCard review controls', () => {
 });
 
 describe('RequirementsArtifactCard', () => {
+  it('answers_the_persisted_clarification_on_the_same_run_and_artifact_version', async () => {
+    const artifact = {
+      artifact_id: '60000000-0000-4000-8000-000000000001', artifact_version: 1,
+      schema_version: 'requirements:v1', production_identity: 'requirements-extraction-v1',
+      production_digest: 'a'.repeat(64), workspace_id: '10000000-0000-4000-8000-000000000001',
+      environment_id: '20000000-0000-4000-8000-000000000001', work_item_id: '40000000-0000-4000-8000-000000000001',
+      run_id: '30000000-0000-4000-8000-000000000001', state: 'partial', upstream_artifact_ids: [],
+      predecessor_version: null, requirements: [{
+        requirement_id: '70000000-0000-4000-8000-000000000001', schema_version: 'requirement:v1',
+        category: 'unresolved_information', statement: 'Delivery date is missing', constraints: [], uncertainty: 'Missing date',
+        ambiguous_markers: [], missing_markers: ['delivery_date'], state: 'partial', review_state: 'needs_review',
+        confidence: null, source_refs: [], evidence_refs: [], evidence_status: 'unverified', upstream_artifact_ids: [],
+      }],
+      clarifications: [{
+        schema_version: 'clarification:v1', clarification_id: '64300000-0000-4000-8000-000000000001',
+        run_id: '30000000-0000-4000-8000-000000000001', requirement_id: '70000000-0000-4000-8000-000000000001',
+        originating_artifact_id: '60000000-0000-4000-8000-000000000001', originating_artifact_version: 1,
+        question: 'Please provide the delivery deadline.', reason: 'missing_information',
+        asked_by: { kind: 'agent', id: '64300000-0000-4000-8000-000000000002' },
+        asked_event_id: '64300000-0000-4000-8000-000000000003', asked_at: '2026-10-29T09:00:00Z',
+        correlation_id: '64300000-0000-4000-8000-000000000004', answer: null,
+        resulting_artifact_version: null, affected_validation_references: [],
+      }],
+    };
+    get.mockResolvedValue({ data: artifact });
+    post.mockResolvedValue({ data: { run_id: artifact.run_id, run_version: 3 } });
+    const onAnswered = vi.fn().mockResolvedValue(undefined);
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <RequirementsArtifactCard
+        canAnswerClarification
+        client={{ GET: get, POST: post }}
+        onAnswered={onAnswered}
+        queryKey={['workspace', 'run']}
+        runId={artifact.run_id}
+        runVersion={2}
+      />
+    </QueryClientProvider>);
+
+    await userEvent.type(await screen.findByLabelText('Ответ менеджера'), 'December 20.');
+    await userEvent.click(screen.getByRole('button', { name: 'Ответить и продолжить' }));
+
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/runs/{run_id}/commands',
+      expect.objectContaining({ body: expect.objectContaining({
+        command_type: 'answer_clarification', expected_run_version: 2,
+        payload: expect.objectContaining({
+          clarification_id: '64300000-0000-4000-8000-000000000001',
+          answer: 'December 20.',
+        }),
+        artifact_refs: [expect.objectContaining({ artifact_version: 1 })],
+      }) }),
+    );
+    expect(onAnswered).toHaveBeenCalledOnce();
+  });
+
   it('restores_partial_and_unsupported_requirement_states_from_the_api', async () => {
     get.mockResolvedValue({ data: {
       artifact_id: '60000000-0000-4000-8000-000000000001', artifact_version: 2,
@@ -170,7 +225,7 @@ describe('RequirementsArtifactCard', () => {
       production_digest: 'a'.repeat(64), workspace_id: '10000000-0000-4000-8000-000000000001',
       environment_id: '20000000-0000-4000-8000-000000000001', work_item_id: '40000000-0000-4000-8000-000000000001',
       run_id: '30000000-0000-4000-8000-000000000001', state: 'partial', upstream_artifact_ids: [],
-      predecessor_version: 1, requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
+      predecessor_version: 1, clarifications: [], requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
         schema_version: 'requirement:v1', category: 'constraint', statement: 'The request does not specify a price',
         constraints: [], uncertainty: 'No price source was provided', ambiguous_markers: ['price_basis'],
         missing_markers: ['currency'], state: 'unsupported', review_state: 'needs_review',
@@ -196,7 +251,7 @@ describe('RequirementsArtifactCard', () => {
       production_digest: 'a'.repeat(64), workspace_id: '10000000-0000-4000-8000-000000000001',
       environment_id: '20000000-0000-4000-8000-000000000001', work_item_id: '40000000-0000-4000-8000-000000000001',
       run_id: '30000000-0000-4000-8000-000000000001', state: 'candidate', upstream_artifact_ids: [],
-      predecessor_version: 1, requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
+      predecessor_version: 1, clarifications: [], requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
         schema_version: 'requirement:v1', category: 'functional', statement: 'Friday',
         constraints: [], uncertainty: null, ambiguous_markers: [], missing_markers: [], state: 'candidate',
         review_state: 'needs_review', confidence: 0.9, source_refs: [{
@@ -250,7 +305,7 @@ describe('RequirementsArtifactCard', () => {
         schema_version: 'requirements:v1', production_identity: 'requirements-review-v1', production_digest: 'a'.repeat(64),
         workspace_id: '10000000-0000-4000-8000-000000000001', environment_id: '20000000-0000-4000-8000-000000000001',
         work_item_id: '40000000-0000-4000-8000-000000000001', run_id: '30000000-0000-4000-8000-000000000001', state: 'candidate',
-        upstream_artifact_ids: [], predecessor_version: null, requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
+        upstream_artifact_ids: [], predecessor_version: null, clarifications: [], requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
           schema_version: 'requirement:v1', category: 'functional', statement: 'Friday', constraints: [], uncertainty: null,
           ambiguous_markers: [], missing_markers: [], state: 'candidate', review_state: 'needs_review', confidence: null,
           source_refs: [{ source_object_id: '80000000-0000-0000-0000-000000000001', source_revision_id: '80000000-0000-0000-0000-000000000002', provenance_id: '80000000-0000-0000-0000-000000000003' }],

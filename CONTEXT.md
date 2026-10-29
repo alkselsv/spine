@@ -304,6 +304,18 @@ _Avoid_: Internal diagnostic, raw error, source count
 
 ### Workflow execution
 
+**Requirements Artifact**:
+An immutable, versioned candidate or reviewed set of requirements for one Work
+Item and Workflow Run, retaining exact evidence, human decisions and predecessor
+lineage.
+_Avoid_: Mutable requirements document, chat summary, current requirements row
+
+**Clarification**:
+A durable human question linked to one Workflow Run, Requirement and originating
+Requirements Artifact version; its typed answer identifies one immutable
+successor and the affected validation lineage.
+_Avoid_: Clarification Required, follow-up chat message, editable question
+
 **Workflow Command**:
 A typed, versioned business intention admitted against one Workflow Run with
 explicit tenant scope, actor authority, optimistic concurrency and idempotency.

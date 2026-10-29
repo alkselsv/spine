@@ -373,6 +373,103 @@
         "title": "AnswerClaimKind",
         "type": "string"
       },
+      "AnswerClarificationPayloadRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "answer": {
+            "maxLength": 32768,
+            "minLength": 1,
+            "title": "Answer",
+            "type": "string"
+          },
+          "clarification_id": {
+            "format": "uuid",
+            "title": "Clarification Id",
+            "type": "string"
+          },
+          "requirement_id": {
+            "format": "uuid",
+            "title": "Requirement Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "clarification_id",
+          "requirement_id",
+          "answer"
+        ],
+        "title": "AnswerClarificationPayloadRequestV1",
+        "type": "object"
+      },
+      "AnswerClarificationWorkflowCommandRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_refs": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowArtifactRefRequestV1"
+            },
+            "title": "Artifact Refs",
+            "type": "array"
+          },
+          "causation_id": {
+            "format": "uuid",
+            "title": "Causation Id",
+            "type": "string"
+          },
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "command_schema_version": {
+            "const": 1,
+            "title": "Command Schema Version",
+            "type": "integer"
+          },
+          "command_type": {
+            "const": "answer_clarification",
+            "title": "Command Type",
+            "type": "string"
+          },
+          "correlation_id": {
+            "format": "uuid",
+            "title": "Correlation Id",
+            "type": "string"
+          },
+          "expected_run_version": {
+            "minimum": 1.0,
+            "title": "Expected Run Version",
+            "type": "integer"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/AnswerClarificationPayloadRequestV1"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command_id",
+          "command_type",
+          "command_schema_version",
+          "expected_run_version",
+          "payload",
+          "artifact_refs",
+          "correlation_id",
+          "causation_id"
+        ],
+        "title": "AnswerClarificationWorkflowCommandRequestV1",
+        "type": "object"
+      },
       "AnswerCompletenessPresentation": {
         "additionalProperties": false,
         "description": "Stable codes and opaque version identities; never source membership/counts.",
@@ -2476,6 +2573,83 @@
         "title": "CancelAskRequest",
         "type": "object"
       },
+      "CancelWorkflowCommandRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_refs": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/WorkflowArtifactRefRequestV1"
+            },
+            "title": "Artifact Refs",
+            "type": "array"
+          },
+          "causation_id": {
+            "format": "uuid",
+            "title": "Causation Id",
+            "type": "string"
+          },
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "command_schema_version": {
+            "const": 1,
+            "title": "Command Schema Version",
+            "type": "integer"
+          },
+          "command_type": {
+            "const": "cancel",
+            "title": "Command Type",
+            "type": "string"
+          },
+          "correlation_id": {
+            "format": "uuid",
+            "title": "Correlation Id",
+            "type": "string"
+          },
+          "expected_run_version": {
+            "minimum": 1.0,
+            "title": "Expected Run Version",
+            "type": "integer"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/CancelWorkflowCommandV1"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command_id",
+          "command_type",
+          "command_schema_version",
+          "expected_run_version",
+          "payload",
+          "correlation_id",
+          "causation_id"
+        ],
+        "title": "CancelWorkflowCommandRequestV1",
+        "type": "object"
+      },
+      "CancelWorkflowCommandV1": {
+        "additionalProperties": false,
+        "description": "Content-free request to cancel the existing durable run.",
+        "properties": {
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "title": "CancelWorkflowCommandV1",
+        "type": "object"
+      },
       "CitationInspectionEvidence": {
         "additionalProperties": false,
         "description": "Content released after all citation and current-authority checks pass.",
@@ -2652,6 +2826,163 @@
           "contradiction"
         ],
         "title": "ClaimEvidenceRelationshipKind",
+        "type": "string"
+      },
+      "Clarification": {
+        "additionalProperties": false,
+        "description": "A durable question tied to one run, requirement and artifact version.",
+        "properties": {
+          "affected_validation_references": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Affected Validation References",
+            "type": "array"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClarificationAnswer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "asked_at": {
+            "format": "date-time",
+            "title": "Asked At",
+            "type": "string"
+          },
+          "asked_by": {
+            "$ref": "#/components/schemas/ActorRef"
+          },
+          "asked_event_id": {
+            "format": "uuid",
+            "title": "Asked Event Id",
+            "type": "string"
+          },
+          "clarification_id": {
+            "format": "uuid",
+            "title": "Clarification Id",
+            "type": "string"
+          },
+          "correlation_id": {
+            "format": "uuid",
+            "title": "Correlation Id",
+            "type": "string"
+          },
+          "originating_artifact_id": {
+            "format": "uuid",
+            "title": "Originating Artifact Id",
+            "type": "string"
+          },
+          "originating_artifact_version": {
+            "minimum": 1.0,
+            "title": "Originating Artifact Version",
+            "type": "integer"
+          },
+          "question": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/ClarificationReason"
+          },
+          "requirement_id": {
+            "format": "uuid",
+            "title": "Requirement Id",
+            "type": "string"
+          },
+          "resulting_artifact_version": {
+            "anyOf": [
+              {
+                "minimum": 2.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resulting Artifact Version"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "clarification:v1",
+            "default": "clarification:v1",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "clarification_id",
+          "run_id",
+          "requirement_id",
+          "originating_artifact_id",
+          "originating_artifact_version",
+          "question",
+          "reason",
+          "asked_by",
+          "asked_event_id",
+          "asked_at",
+          "correlation_id"
+        ],
+        "title": "Clarification",
+        "type": "object"
+      },
+      "ClarificationAnswer": {
+        "additionalProperties": false,
+        "description": "One manager answer admitted as canonical workflow data.",
+        "properties": {
+          "answered_at": {
+            "format": "date-time",
+            "title": "Answered At",
+            "type": "string"
+          },
+          "answered_by": {
+            "$ref": "#/components/schemas/ActorRef"
+          },
+          "answered_event_id": {
+            "format": "uuid",
+            "title": "Answered Event Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "clarification-answer:v1",
+            "default": "clarification-answer:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 32768,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "answered_by",
+          "answered_event_id",
+          "answered_at"
+        ],
+        "title": "ClarificationAnswer",
+        "type": "object"
+      },
+      "ClarificationReason": {
+        "enum": [
+          "missing_information",
+          "ambiguous_information"
+        ],
+        "title": "ClarificationReason",
         "type": "string"
       },
       "CommandStatus": {
@@ -8540,6 +8871,14 @@
             "title": "Artifact Version",
             "type": "integer"
           },
+          "clarifications": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Clarification"
+            },
+            "title": "Clarifications",
+            "type": "array"
+          },
           "environment_id": {
             "format": "uuid",
             "title": "Environment Id",
@@ -9934,7 +10273,9 @@
                 "add_context",
                 "edit_requirement",
                 "save_review",
-                "request_rework"
+                "request_rework",
+                "answer_clarification",
+                "cancel"
               ],
               "type": "string"
             },
@@ -17276,16 +17617,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "discriminator": {
-                  "mapping": {
-                    "add_context": "#/components/schemas/AddContextWorkflowCommandRequestV1",
-                    "edit_requirement": "#/components/schemas/EditRequirementWorkflowCommandRequestV1",
-                    "request_rework": "#/components/schemas/RequestRequirementsReworkWorkflowCommandRequestV1",
-                    "save_review": "#/components/schemas/SaveRequirementsReviewWorkflowCommandRequestV1"
-                  },
-                  "propertyName": "command_type"
-                },
-                "oneOf": [
+                "anyOf": [
                   {
                     "$ref": "#/components/schemas/AddContextWorkflowCommandRequestV1"
                   },
@@ -17297,6 +17629,12 @@
                   },
                   {
                     "$ref": "#/components/schemas/RequestRequirementsReworkWorkflowCommandRequestV1"
+                  },
+                  {
+                    "$ref": "#/components/schemas/AnswerClarificationWorkflowCommandRequestV1"
+                  },
+                  {
+                    "$ref": "#/components/schemas/CancelWorkflowCommandRequestV1"
                   }
                 ],
                 "title": "Body"
