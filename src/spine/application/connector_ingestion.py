@@ -15,6 +15,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from spine.application.admission import AdmissionDecisionService, AdmissionValidationEvidence
 from spine.application.connections.google import GoogleReadAdmission, GoogleReadCommand
+from spine.application.connections.provider import (
+    ProviderReadAdmission,
+    ProviderReadCommand,
+)
 from spine.application.document_ingestion import (
     PROJECTION_REQUEST_EVENT_TYPE,
     PROJECTION_REQUEST_SCHEMA_VERSION,
@@ -79,11 +83,27 @@ from spine.domain.sources import (
 )
 from spine.domain.sources.google import GoogleDriveFileKey, GoogleRegisterRowKey
 from spine.domain.connections.google import OpaqueGoogleReference
+from spine.domain.connections.provider import (
+    OpaqueProviderReference,
+    ProviderCapabilityKind,
+)
 from spine.infrastructure.object_storage.contracts import OriginalUploadCommandInput
 from spine.connectors.observations import (
     ConnectorCoverage,
     NormalizedConnectorObservation,
 )
+from spine.connectors.observations_v2 import (
+    ExternalIdentityAssurance,
+    LifecycleObservationRepresentation,
+    NormalizedExternalObservationV2,
+    ProviderFileKey,
+    ProviderTabularRecordKey,
+)
+from spine.connectors.google_observation_compatibility import (
+    google_v2_observation_to_v1,
+)
+
+ConnectorObservation = NormalizedConnectorObservation | NormalizedExternalObservationV2
 
 
 class ConnectorIngestionCommand(BaseModel):
@@ -129,7 +149,7 @@ class AuthorizedConnectorObservationReader(Protocol):
 
     async def read(
         self, command: ConnectorIngestionCommand, context: TrustedPersistenceContext
-    ) -> NormalizedConnectorObservation: ...
+    ) -> ConnectorObservation: ...
 
 
 class _ConnectorUploadService(Protocol):
@@ -184,9 +204,38 @@ class GoogleAuthorizedObservationReader:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderAuthorizedObservationReader:
+    """Adapt provider-neutral v2 read admission to canonical ingestion."""
+
+    admission: ProviderReadAdmission
+    connection_version_id: UUID
+    required_capabilities: tuple[ProviderCapabilityKind, ...]
+
+    async def read(
+        self, command: ConnectorIngestionCommand, context: TrustedPersistenceContext
+    ) -> NormalizedExternalObservationV2:
+        return await self.admission.read(
+            ProviderReadCommand(
+                workspace_id=command.workspace_id,
+                environment_id=command.environment_id,
+                connection_id=command.connection_id,
+                connection_version_id=self.connection_version_id,
+                resource_scope_reference=OpaqueProviderReference(
+                    value=command.resource_scope_reference
+                ),
+                authorization_generation=command.authorization_generation,
+                configuration_generation=command.configuration_generation,
+                required_capabilities=self.required_capabilities,
+                resource_object_reference=command.resource_object_reference,
+            ),
+            context,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ConnectorIngestionResult:
     command: ConnectorIngestionCommand
-    observation: NormalizedConnectorObservation
+    observation: ConnectorObservation
     run: IngestionRun
     item: IngestionRunSource
     source: SourceObject
@@ -219,6 +268,8 @@ class ConnectorIngestionOrchestrator:
     canonical_command_factory: ConnectorCanonicalAcceptanceCommandFactory
     outbox_events: OutboxEventRegistry
     audit_events: AuditEventRegistry
+    read_operation: PersistenceOperation
+    admission_reference_type: str
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
     service_name: str = "connector-ingestion"
 
@@ -231,7 +282,7 @@ class ConnectorIngestionOrchestrator:
 
     async def ingest(self, command: ConnectorIngestionCommand) -> ConnectorIngestionResult:
         read_context = self.read_context_factory(
-            PersistenceOperation("google_connection_read"),
+            self.read_operation,
             _id(command, "read"),
         )
         observation = await self.observation_reader.read(command, read_context)
@@ -240,7 +291,7 @@ class ConnectorIngestionOrchestrator:
     async def ingest_observation(
         self,
         command: ConnectorIngestionCommand,
-        observation: NormalizedConnectorObservation,
+        observation: ConnectorObservation,
     ) -> ConnectorIngestionResult:
         """Persist a pre-read observation through the canonical handoff.
 
@@ -249,6 +300,13 @@ class ConnectorIngestionOrchestrator:
         leave earlier rows accepted.
         """
         self._validate_observation(command, observation)
+        if (
+            isinstance(observation, NormalizedExternalObservationV2)
+            and isinstance(observation.representation, LifecycleObservationRepresentation)
+        ):
+            raise ValueError(
+                "Lifecycle-only observations cannot enter content ingestion."
+            )
 
         run, item, replay = await self._ensure_run(command, observation)
         upload = await self._upload(command, observation)
@@ -258,10 +316,7 @@ class ConnectorIngestionOrchestrator:
         canonical_context = self.context_factory(
             PersistenceOperation("canonical_acceptance"), _id(command, "canonical")
         )
-        is_lifecycle_source = isinstance(
-            observation.external_identity.provider_key,
-            (GoogleDriveFileKey, GoogleRegisterRowKey),
-        )
+        is_lifecycle_source = _has_stable_lifecycle_identity(observation)
         async with self.uow_factory(canonical_context) as uow:
             current = await uow.canonical.resolve_current(source.source_object_id)
             reappearance_predecessor = None
@@ -386,7 +441,7 @@ class ConnectorIngestionOrchestrator:
     async def _ensure_run(
         self,
         command: ConnectorIngestionCommand,
-        observation: NormalizedConnectorObservation,
+        observation: ConnectorObservation,
     ) -> tuple[IngestionRun, IngestionRunSource, bool]:
         now = self._now()
         request_digest = _observation_digest(command, observation)
@@ -441,7 +496,7 @@ class ConnectorIngestionOrchestrator:
     async def _upload(
         self,
         command: ConnectorIngestionCommand,
-        observation: NormalizedConnectorObservation,
+        observation: ConnectorObservation,
     ) -> OriginalUploadOutcome:
         digest = hashlib.sha256(observation.original_bytes).hexdigest()
         context = self.context_factory(
@@ -464,7 +519,7 @@ class ConnectorIngestionOrchestrator:
     def _build_observation(
         self,
         command: ConnectorIngestionCommand,
-        observation: NormalizedConnectorObservation,
+        observation: ConnectorObservation,
         run: IngestionRun,
         item: IngestionRunSource,
         upload: OriginalUploadOutcome,
@@ -617,7 +672,7 @@ class ConnectorIngestionOrchestrator:
         item: IngestionRunSource,
         revision: SourceRevision,
         provenance: SourceRevisionProvenance,
-        observation: NormalizedConnectorObservation,
+        observation: ConnectorObservation,
     ) -> AdmissionDecision:
         context = self.context_factory(
             PersistenceOperation("ingestion_admission"), _id(command, "admission")
@@ -649,7 +704,7 @@ class ConnectorIngestionOrchestrator:
                         else "complete_coverage",
                     ),
                     authority_reference=AdmissionReference(
-                        reference_type="google_read_admission",
+                        reference_type=self.admission_reference_type,
                         reference_id=observation.connection_id,
                         schema_version=1,
                     ),
@@ -665,7 +720,7 @@ class ConnectorIngestionOrchestrator:
         self,
         *,
         command: ConnectorIngestionCommand,
-        observation: NormalizedConnectorObservation,
+        observation: ConnectorObservation,
         run: IngestionRun,
         item: IngestionRunSource,
         source: SourceObject,
@@ -811,13 +866,13 @@ class ConnectorIngestionOrchestrator:
     @staticmethod
     def _validate_observation(
         command: ConnectorIngestionCommand,
-        observation: NormalizedConnectorObservation,
+        observation: ConnectorObservation,
     ) -> None:
         if (
             observation.workspace_id,
             observation.environment_id,
             observation.connection_id,
-            observation.resource_scope_reference,
+            _scope_reference_value(observation),
             observation.authorization_generation,
             observation.configuration_generation,
         ) != (
@@ -921,11 +976,17 @@ async def _bytes(value: bytes):
 
 
 def _observation_digest(
-    command: ConnectorIngestionCommand, observation: NormalizedConnectorObservation
+    command: ConnectorIngestionCommand, observation: ConnectorObservation
 ) -> str:
+    digest_observation = (
+        google_v2_observation_to_v1(observation)
+        if isinstance(observation, NormalizedExternalObservationV2)
+        and observation.provider_kind.value == "google"
+        else observation
+    )
     payload = {
         "command": command.model_dump(mode="json"),
-        "observation": observation.model_dump(mode="json"),
+        "observation": digest_observation.model_dump(mode="json"),
     }
     return hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
@@ -939,7 +1000,7 @@ def _key(command: ConnectorIngestionCommand, suffix: str) -> IdempotencyKey:
 
 def _event_key(
     command: ConnectorIngestionCommand,
-    observation: NormalizedConnectorObservation,
+    observation: ConnectorObservation,
     suffix: str,
 ) -> IdempotencyKey:
     value = "|".join(
@@ -960,10 +1021,30 @@ def _event_key(
 
 def _event_reference(
     command: ConnectorIngestionCommand,
-    observation: NormalizedConnectorObservation,
+    observation: ConnectorObservation,
     suffix: str,
 ) -> str:
     return f"connector-event:{_sha256(_event_key(command, observation, suffix).value)[:48]}"
+
+
+def _has_stable_lifecycle_identity(observation: ConnectorObservation) -> bool:
+    key = observation.external_identity.provider_key
+    if isinstance(observation, NormalizedConnectorObservation):
+        return isinstance(key, (GoogleDriveFileKey, GoogleRegisterRowKey))
+    return (
+        observation.external_identity.assurance
+        in {
+            ExternalIdentityAssurance.PROVIDER_STABLE,
+            ExternalIdentityAssurance.SCOPE_STABLE,
+        }
+        and isinstance(key, (ProviderFileKey, ProviderTabularRecordKey))
+    )
+
+
+def _scope_reference_value(observation: ConnectorObservation) -> UUID:
+    if isinstance(observation, NormalizedConnectorObservation):
+        return observation.resource_scope_reference
+    return observation.resource_scope_reference.value
 
 
 def _should_request_projection(result: object, revision: SourceRevision) -> bool:
@@ -1061,5 +1142,6 @@ __all__ = [
     "ConnectorIngestionResult",
     "ConnectorIngestionStatus",
     "GoogleAuthorizedObservationReader",
+    "ProviderAuthorizedObservationReader",
     "build_connector_canonical_acceptance_command",
 ]

@@ -13,6 +13,15 @@ from spine.application.connections.google import (
     GoogleReadAdmission,
     GoogleReadCommand,
 )
+from spine.application.connections.provider import (
+    ProviderCapabilityUnavailableError,
+    ProviderConnectionRepository,
+    ProviderObservationReader,
+    ProviderReadAdmission,
+    ProviderReadCommand,
+    ProviderReadDeniedError,
+    ProviderReadError,
+)
 
 __all__ = [
     "GoogleConnectionCommand",
@@ -26,4 +35,11 @@ __all__ = [
     "GoogleProviderReadError",
     "GoogleReadAdmission",
     "GoogleReadCommand",
+    "ProviderCapabilityUnavailableError",
+    "ProviderConnectionRepository",
+    "ProviderObservationReader",
+    "ProviderReadAdmission",
+    "ProviderReadCommand",
+    "ProviderReadDeniedError",
+    "ProviderReadError",
 ]

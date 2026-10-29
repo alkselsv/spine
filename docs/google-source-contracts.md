@@ -1,5 +1,22 @@
 # Google source identity and Sheets evidence contracts
 
+## Provider-neutral v2 compatibility
+
+Issue #662 keeps every Google v1 caller below intact and adds an explicit
+compatibility expansion into `provider-connection:v2` and
+`external-observation:v2`. The mapping preserves the Google Drive file key or
+Sheets spreadsheet/sheet/business-row key, the existing bounded
+`external_object_id`, revision-bearing bytes, locator evidence, scope and
+authorization/configuration generations. Canonical ingestion maps compatible
+Google v2 content into the existing ingestion shape, so v1 and v2 produce the
+same `SourceObject`, `SourceRevision`, provenance, processing receipt and
+projection outbox intent.
+
+The v2 capability manifest is fail-closed: `unsupported` and `unqualified`
+stable identity, incremental discovery or lifecycle evidence cannot be used as
+those guarantees. Binary, tabular, structured and lifecycle observations are
+distinct forms; lifecycle evidence never becomes an empty content revision.
+
 Issue #600 introduces additive offline contracts for the R2 Google readers. It
 does not add provider calls, credentials, cursor state, canonical ingestion or a
 Cognee path. Existing R1 source profiles and `locator:xlsx-cell:v1` retain their

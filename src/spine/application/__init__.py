@@ -126,6 +126,7 @@ __all__ = [
     "ConnectorIngestionResult",
     "ConnectorIngestionStatus",
     "GoogleAuthorizedObservationReader",
+    "ProviderAuthorizedObservationReader",
     "build_connector_canonical_acceptance_command",
     "DriveInitialSnapshotCommand",
     "DriveInitialSnapshotCoordinator",
@@ -217,6 +218,7 @@ def __getattr__(name: str) -> object:
             "ConnectorIngestionResult",
             "ConnectorIngestionStatus",
             "GoogleAuthorizedObservationReader",
+            "ProviderAuthorizedObservationReader",
             "build_connector_canonical_acceptance_command",
         }:
             module_name = "spine.application.connector_ingestion"

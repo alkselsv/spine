@@ -1,9 +1,4 @@
-"""Versioned, provider-neutral connector observations.
-
-The provider adapter produces this contract after read admission.  The
-application ingestion seam consumes it without importing a provider SDK or a
-memory backend.
-"""
+"""Google v1 normalized connector observation compatibility contract."""
 
 from __future__ import annotations
 
@@ -26,19 +21,12 @@ BoundedIdentifier = Annotated[
 
 
 class ConnectorCoverage(str, Enum):
-    """Coverage of the normalized provider observation."""
-
     COMPLETE = "complete"
     PARTIAL = "partial"
 
 
 class NormalizedConnectorObservation(DefinitionModel):
-    """One authorized external observation ready for canonical ingestion.
-
-    ``original_bytes`` are the exact normalized representation selected by the
-    connector.  The immutable storage reference is intentionally assigned by
-    the existing original-upload boundary, never accepted from the provider.
-    """
+    """One authorized Google v1 observation ready for canonical ingestion."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -82,30 +70,49 @@ class NormalizedConnectorObservation(DefinitionModel):
         ):
             if getattr(self, name).int == 0:
                 raise ValueError(f"{name} must be a non-zero UUID")
-        provider_key = self.external_identity.provider_key
-        if provider_key.connection_id != self.connection_id:
+        if self.external_identity.provider_key.connection_id != self.connection_id:
             raise ValueError("external identity connection does not match observation")
-        if (self.order_scheme is None) != (self.order_token is None):
-            raise ValueError("order scheme and token must be supplied together")
-        if (self.provider_version_before is None) != (
-            self.provider_version_after is None
-        ):
-            raise ValueError("provider version guard must contain both versions")
-        if (
-            self.provider_version_before is not None
-            and self.provider_version_before != self.provider_version_after
-        ):
-            raise ValueError("provider version guard must be stable")
-        for value in (self.received_at, self.observed_at):
-            if value.tzinfo is None or value.utcoffset() is None:
-                raise ValueError("observation timestamps must be timezone-aware")
-        if self.received_at < self.observed_at:
-            raise ValueError("received_at cannot precede observed_at")
+        validate_observation_provenance(
+            order_scheme=self.order_scheme,
+            order_token=self.order_token,
+            provider_version_before=self.provider_version_before,
+            provider_version_after=self.provider_version_after,
+            received_at=self.received_at,
+            observed_at=self.observed_at,
+        )
         return self
 
 
+def validate_observation_provenance(
+    *,
+    order_scheme: str | None,
+    order_token: str | None,
+    provider_version_before: str | None,
+    provider_version_after: str | None,
+    received_at: datetime,
+    observed_at: datetime,
+) -> None:
+    if (order_scheme is None) != (order_token is None):
+        raise ValueError("order scheme and token must be supplied together")
+    if (provider_version_before is None) != (provider_version_after is None):
+        raise ValueError("provider version guard must contain both versions")
+    if (
+        provider_version_before is not None
+        and provider_version_before != provider_version_after
+    ):
+        raise ValueError("provider version guard must be stable")
+    for value in (received_at, observed_at):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("observation timestamps must be timezone-aware")
+    if received_at < observed_at:
+        raise ValueError("received_at cannot precede observed_at")
+
+
 __all__ = [
+    "BoundedIdentifier",
     "CONNECTOR_OBSERVATION_SCHEMA",
     "ConnectorCoverage",
+    "DigestHex",
     "NormalizedConnectorObservation",
+    "validate_observation_provenance",
 ]
