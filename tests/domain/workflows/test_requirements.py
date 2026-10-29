@@ -4,7 +4,7 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from spine.domain.artifacts import ArtifactRef, PhysicalLineLocator
+from spine.domain.artifacts import ArtifactRef, PhysicalLineLocator, TimeRangeLocator
 from spine.domain.workflows import (
     AcceptedSourceRevisionRef,
     Clarification,
@@ -56,6 +56,63 @@ def test_requirement_preserves_exact_source_and_parsed_evidence_lineage() -> Non
     assert requirement.evidence_refs[0].locator.line_number == 4
     assert requirement.evidence_refs[0].relationship is RequirementEvidenceRelationship.SUPPORTS
     assert requirement.evidence_refs[0].validation is None
+
+
+def test_requirement_preserves_exact_transcript_time_range_lineage() -> None:
+    source_ref = AcceptedSourceRevisionRef(
+        source_object_id=UUID(int=10), source_revision_id=UUID(int=11), provenance_id=UUID(int=12)
+    )
+    locator = TimeRangeLocator(
+        source_object_id=source_ref.source_object_id,
+        source_revision_id=source_ref.source_revision_id,
+        source_revision_digest="a" * 64,
+        transcript_artifact_id=UUID(int=15),
+        transcript_artifact_digest="b" * 64,
+        transcript_artifact_schema_version="transcription-artifact:v1",
+        start_ms=1_250,
+        end_ms=2_750,
+        segment_ids=(UUID(int=14),),
+    )
+
+    evidence_ref = RequirementEvidenceRef(
+        source_ref=source_ref,
+        segment_id=UUID(int=14),
+        segment_digest="c" * 64,
+        locator_contract_version="time-range-locator:v1",
+        transcript_locator=locator,
+    )
+
+    assert evidence_ref.parsed_artifact_ref is None
+    assert evidence_ref.transcript_locator == locator
+    assert (evidence_ref.transcript_locator.start_ms, evidence_ref.transcript_locator.end_ms) == (
+        1_250, 2_750
+    )
+
+
+def test_requirement_rejects_transcript_locator_for_another_source_or_segment() -> None:
+    source_ref = AcceptedSourceRevisionRef(
+        source_object_id=UUID(int=10), source_revision_id=UUID(int=11), provenance_id=UUID(int=12)
+    )
+    locator = TimeRangeLocator(
+        source_object_id=UUID(int=20),
+        source_revision_id=source_ref.source_revision_id,
+        source_revision_digest="a" * 64,
+        transcript_artifact_id=UUID(int=15),
+        transcript_artifact_digest="b" * 64,
+        transcript_artifact_schema_version="transcription-artifact:v1",
+        start_ms=1_250,
+        end_ms=2_750,
+        segment_ids=(UUID(int=14),),
+    )
+
+    with pytest.raises(ValidationError, match="exact source segment"):
+        RequirementEvidenceRef(
+            source_ref=source_ref,
+            segment_id=UUID(int=14),
+            segment_digest="c" * 64,
+            locator_contract_version="time-range-locator:v1",
+            transcript_locator=locator,
+        )
 
 
 def test_valid_evidence_requires_current_authorization_lineage() -> None:

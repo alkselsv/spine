@@ -87,6 +87,7 @@ export function WorkflowRunPage() {
       onRefresh={() => Promise.all([runQuery.refetch(), eventsQuery.refetch()]).then(() => undefined)}
       run={runQuery.data}
       queryKey={queryKey('workflow-run')}
+      scope={scope}
     />
   );
 }
@@ -100,6 +101,7 @@ function WorkflowRunDetail({
   onRefresh,
   run,
   queryKey,
+  scope,
 }: {
   client: ReturnType<typeof createScopedApiClient>;
   events: WorkflowEventPage;
@@ -109,6 +111,7 @@ function WorkflowRunDetail({
   onRefresh: () => Promise<void>;
   run: WorkflowRun;
   queryKey: readonly unknown[];
+  scope: ReturnType<typeof useScope>['scope'];
 }) {
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -219,6 +222,7 @@ function WorkflowRunDetail({
         queryKey={queryKey}
         runId={run.run_id}
         runVersion={run.run_version}
+        scope={scope}
       />
       {eventsLoading ? <p role="status">Загружаем события…</p> : null}
       {eventsDegraded ? (

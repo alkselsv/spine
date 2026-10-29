@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI
 from pydantic import AnyHttpUrl, Field, SecretStr, model_validator
@@ -60,6 +60,12 @@ from spine.application.requirements_evidence import (
     PersistedRequirementsEvidenceResolver,
     RequirementsEvidenceValidationService,
 )
+from spine.application.transcript_inspection import TranscriptEvidenceInspector
+from spine.application.persistence.context import (
+    EnvironmentScope,
+    PersistenceOperation,
+    PersistencePurpose,
+)
 from spine.application.workflow_runs import (
     ConfiguredWorkflowVersionResolver,
     PinnedWorkflowVersion,
@@ -90,6 +96,7 @@ from spine.infrastructure.ingestion_composition import (
 )
 from spine.infrastructure.parsed_content_composition import (
     ProductionParsedContentAuthorizer,
+    ProductionTranscriptEvidenceAuthorization,
     UnitOfWorkParsedContentDecisionAudit,
 )
 from spine.infrastructure.ingestion_fault_injection import (
@@ -108,6 +115,10 @@ from spine.infrastructure.persistence.postgresql_authorization import (
     PostgreSQLQualificationAuthorityResolver,
 )
 from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
+from spine.infrastructure.persistence.transcription import PostgreSQLTranscriptionRepository
+from spine.infrastructure.persistence.transcript_publication import (
+    PostgreSQLTranscriptPublicationRepository,
+)
 from spine.infrastructure.qa_observation_capture import (
     CaptureAuthorizer,
     CaptureWorkload,
@@ -335,18 +346,52 @@ def create_production_app(
             clock=lambda: datetime.now(timezone.utc)
         ),
     )
+    parsed_content_authorizer = ProductionParsedContentAuthorizer(
+        uow_factory=persistence.uow_factory,
+        authority_resolver=PostgreSQLQualificationAuthorityResolver(sessions),
+    )
+    parsed_content_decision_audit = UnitOfWorkParsedContentDecisionAudit(
+        uow_factory=persistence.uow_factory,
+        audit_events=audit_registry,
+    )
     requirements_evidence_service = RequirementsEvidenceValidationService(
         resolver=PersistedRequirementsEvidenceResolver(
             uow_factory=persistence.uow_factory,
             parsed_artifacts=ingestion.parsed_artifacts,
         ),
-        authorizer=ProductionParsedContentAuthorizer(
+        authorizer=parsed_content_authorizer,
+        decision_audit=parsed_content_decision_audit,
+    )
+
+    def transcript_context_factory(workspace_id: UUID, environment_id: UUID):
+        return persistence_boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            ),
+            service_principal_id=resolved_api.qa_service_principal_id,
+            purpose=PersistencePurpose("knowledge_control"),
+            operation=PersistenceOperation("inspect_parsed_content"),
+            trace_id=uuid4(),
+        )
+
+    transcript_artifacts = PostgreSQLTranscriptionRepository(
+        session_factory=sessions,
+        context_factory=transcript_context_factory,
+        context_verifier=request_boundary,
+    )
+    transcript_publications = PostgreSQLTranscriptPublicationRepository(
+        session_factory=sessions,
+        artifact_repository=transcript_artifacts,
+        context_factory=transcript_context_factory,
+        context_verifier=request_boundary,
+    )
+    transcript_evidence_inspector = TranscriptEvidenceInspector(
+        publications=transcript_publications,
+        authorization=ProductionTranscriptEvidenceAuthorization(
             uow_factory=persistence.uow_factory,
-            authority_resolver=PostgreSQLQualificationAuthorityResolver(sessions),
-        ),
-        decision_audit=UnitOfWorkParsedContentDecisionAudit(
-            uow_factory=persistence.uow_factory,
-            audit_events=audit_registry,
+            authorizer=parsed_content_authorizer,
+            decision_audit=parsed_content_decision_audit,
         ),
     )
     application = create_app(
@@ -423,6 +468,7 @@ def create_production_app(
             persistence.uow_factory
         ),
         requirements_evidence_service=requirements_evidence_service,
+        transcript_evidence_inspector_service=transcript_evidence_inspector,
         provider_connection_service=provider_connections,
         provider_connection_cursor_secret=(
             resolved_api.cursor_secret.get_secret_value().encode("utf-8")

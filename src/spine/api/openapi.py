@@ -83,6 +83,9 @@ from spine.application.requirements_evidence import (
     RequirementsEvidenceInspectionResult,
     RequirementsEvidenceValidationService,
 )
+from spine.api.transcript_evidence import TranscriptEvidenceInspectorService
+from spine.application.transcript_inspection import TranscriptInspectionResult
+from spine.domain.artifacts import TimeRangeLocator
 from spine.application.connections.management import ProviderConnectionManager
 from spine.application.workflow_runs import (
     PinnedWorkflowVersion,
@@ -434,6 +437,15 @@ class _UnavailableParsedContentInspectionService:
         raise RuntimeError("The OpenAPI composition is not executable.")
 
 
+class _UnavailableTranscriptEvidenceInspectorService:
+    async def inspect(
+        self, *, context, requester, workspace_id: UUID, environment_id: UUID,
+        locator: TimeRangeLocator
+    ) -> TranscriptInspectionResult:
+        del context, requester, workspace_id, environment_id, locator
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+
 class _UnavailableProviderConnectionService:
     async def configure(self, *args, **kwargs):
         del args, kwargs
@@ -532,6 +544,10 @@ def create_openapi_app() -> FastAPI:
         requirements_evidence_service=cast(
             RequirementsEvidenceValidationService,
             _UnavailableRequirementsEvidenceService(),
+        ),
+        transcript_evidence_inspector_service=cast(
+            TranscriptEvidenceInspectorService,
+            _UnavailableTranscriptEvidenceInspectorService(),
         ),
         provider_connection_service=cast(
             ProviderConnectionManager,

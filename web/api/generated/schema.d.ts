@@ -823,6 +823,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/transcript-evidence/inspect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Transcript.Evidence.Inspect */
+        post: operations["transcript.evidence.inspect"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ask": {
         parameters: {
             query?: never;
@@ -2041,6 +2058,31 @@ export interface components {
         /** ApiResponseEnvelope[RequirementsEvidenceInspectionResponse] */
         ApiResponseEnvelope_RequirementsEvidenceInspectionResponse_: {
             data: components["schemas"]["RequirementsEvidenceInspectionResponse"];
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiResponseEnvelope[TranscriptInspectionResult] */
+        ApiResponseEnvelope_TranscriptInspectionResult_: {
+            data: components["schemas"]["TranscriptInspectionResult"];
             /**
              * Environment Id
              * Format: uuid
@@ -5000,17 +5042,17 @@ export interface components {
         RequirementCategory: "functional" | "non_functional" | "constraint" | "assumption" | "unresolved_information";
         /**
          * RequirementEvidenceRef
-         * @description An exact source revision and parsed evidence segment without source text.
+         * @description An exact source revision and parsed or time-based evidence segment.
          */
         RequirementEvidenceRef: {
             /** Locator */
-            locator: (components["schemas"]["PhysicalLineLocator"] | components["schemas"]["PageTextLocator"] | components["schemas"]["OoxmlTextLocator"] | components["schemas"]["XlsxCellLocator"]) | components["schemas"]["GoogleSheetCellLocator"];
+            locator?: (components["schemas"]["PhysicalLineLocator"] | components["schemas"]["PageTextLocator"] | components["schemas"]["OoxmlTextLocator"] | components["schemas"]["XlsxCellLocator"]) | components["schemas"]["GoogleSheetCellLocator"] | null;
             /**
              * Locator Contract Version
              * @default locator:v1
              */
             locator_contract_version: string;
-            parsed_artifact_ref: components["schemas"]["ArtifactRef"];
+            parsed_artifact_ref?: components["schemas"]["ArtifactRef"] | null;
             /** @default supports */
             relationship: components["schemas"]["RequirementEvidenceRelationship"];
             /** Segment Digest */
@@ -5021,6 +5063,7 @@ export interface components {
              */
             segment_id: string;
             source_ref: components["schemas"]["AcceptedSourceRevisionRef"];
+            transcript_locator?: components["schemas"]["TimeRangeLocator"] | null;
             validation?: components["schemas"]["RequirementEvidenceValidation"] | null;
         };
         /**
@@ -5558,6 +5601,53 @@ export interface components {
             target_id: string;
             target_kind: components["schemas"]["FeedbackTargetKind"];
         };
+        /**
+         * TimeRangeLocator
+         * @description A stable, half-open locator into one immutable transcript version.
+         */
+        TimeRangeLocator: {
+            /** End Ms */
+            end_ms: number;
+            /**
+             * Projection Version
+             * @default transcript-projection:v1
+             */
+            projection_version: string;
+            /**
+             * Schema Version
+             * @default time-range-locator:v1
+             * @constant
+             */
+            schema_version: "time-range-locator:v1";
+            /**
+             * Segment Ids
+             * @default []
+             */
+            segment_ids: string[];
+            /**
+             * Source Object Id
+             * Format: uuid
+             */
+            source_object_id: string;
+            /** Source Revision Digest */
+            source_revision_digest: string;
+            /**
+             * Source Revision Id
+             * Format: uuid
+             */
+            source_revision_id: string;
+            /** Start Ms */
+            start_ms: number;
+            /** Transcript Artifact Digest */
+            transcript_artifact_digest: string;
+            /**
+             * Transcript Artifact Id
+             * Format: uuid
+             */
+            transcript_artifact_id: string;
+            /** Transcript Artifact Schema Version */
+            transcript_artifact_schema_version: string;
+        };
         /** TombstoneDocumentRequest */
         TombstoneDocumentRequest: {
             /**
@@ -5571,6 +5661,60 @@ export interface components {
              */
             expected_current_revision_id: string;
         };
+        /** TranscriptEvidenceInspectionRequest */
+        TranscriptEvidenceInspectionRequest: {
+            locator: components["schemas"]["TimeRangeLocator"];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /**
+         * TranscriptInspectionResult
+         * @description Safe result; only current authorized results carry transcript text.
+         */
+        TranscriptInspectionResult: {
+            locator?: components["schemas"]["TimeRangeLocator"] | null;
+            /** Partial */
+            partial?: boolean | null;
+            /** Publication Id */
+            publication_id?: string | null;
+            /** Publication State */
+            publication_state?: string | null;
+            /** Recording Duration Ms */
+            recording_duration_ms?: number | null;
+            review_state?: components["schemas"]["TranscriptReviewState"] | null;
+            /**
+             * Schema Version
+             * @default transcript-inspection-result:v1
+             */
+            schema_version: string;
+            /** Source Object Id */
+            source_object_id?: string | null;
+            /** Source Revision Id */
+            source_revision_id?: string | null;
+            status: components["schemas"]["TranscriptInspectionStatus"];
+            /** Text */
+            text?: string | null;
+            /** Transcript Artifact Digest */
+            transcript_artifact_digest?: string | null;
+            /** Transcript Artifact Id */
+            transcript_artifact_id?: string | null;
+            /** Transcript Artifact Schema Version */
+            transcript_artifact_schema_version?: string | null;
+        };
+        /**
+         * TranscriptInspectionStatus
+         * @enum {string}
+         */
+        TranscriptInspectionStatus: "current" | "stale" | "superseded" | "review_required" | "partial" | "degraded" | "permission_denied";
+        /**
+         * TranscriptReviewState
+         * @enum {string}
+         */
+        TranscriptReviewState: "approved" | "not_required";
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -11106,6 +11250,114 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope_ProviderConnectionResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "transcript.evidence.inspect": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TranscriptEvidenceInspectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope_TranscriptInspectionResult_"];
                 };
             };
             /** @description Safe request error. */

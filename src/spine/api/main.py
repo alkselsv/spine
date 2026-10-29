@@ -40,6 +40,10 @@ from spine.api.feedback import install_feedback_routes
 from spine.api.qa_runs import install_qa_run_routes
 from spine.api.workflow_runs import install_workflow_run_routes
 from spine.api.requirements_artifacts import install_requirements_artifact_routes
+from spine.api.transcript_evidence import (
+    TranscriptEvidenceInspectorService,
+    install_transcript_evidence_routes,
+)
 from spine.api.provider_connections import install_provider_connection_routes
 from spine.api.qa_stream import (
     QAStreamDisclosureAuthorizer,
@@ -264,6 +268,7 @@ def create_app(
     requirements_artifact_service: PersistedRequirementsArtifactService | None = None,
     requirements_review_service: RequirementsReviewService | None = None,
     requirements_evidence_service: RequirementsEvidenceValidationService | None = None,
+    transcript_evidence_inspector_service: TranscriptEvidenceInspectorService | None = None,
     provider_connection_service: ProviderConnectionManager | None = None,
     provider_connection_cursor_secret: bytes | None = None,
     workflow_version_resolver: WorkflowVersionResolver | None = None,
@@ -569,6 +574,16 @@ def create_app(
             application,
             service=requirements_artifact_service,
             evidence_service=requirements_evidence_service,
+        )
+
+    if transcript_evidence_inspector_service is not None:
+        if type(authorization_runtime) is not ApiAuthorizationRuntime:
+            raise RuntimeError(
+                "Transcript evidence inspection requires an authorization runtime."
+            )
+        install_transcript_evidence_routes(
+            application,
+            service=transcript_evidence_inspector_service,
         )
     if provider_connection_service is not None:
         if type(authorization_runtime) is not ApiAuthorizationRuntime:
