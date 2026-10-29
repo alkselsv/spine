@@ -2482,3 +2482,19 @@ detectors без специальных обходов в platform core.
 - [LangChain overview](https://docs.langchain.com/oss/python/langchain/overview) — high-level agent loop и model/tool integrations поверх LangGraph.
 - [LangGraph overview](https://docs.langchain.com/oss/python/langgraph/overview) — stateful agent graph runtime, persistence и human-in-the-loop; в Spine допустим только внутри одного handler, без конкуренции с Temporal.
 - [Langfuse documentation](https://langfuse.com/docs) — LLM tracing, prompt management, datasets и evaluations.
+
+### Requirements evidence disclosure boundary
+
+The requirements artifact card uses a server-side evidence boundary for every
+protected disclosure. The boundary resolves the exact `SourceObject`,
+`SourceRevision`, provenance, parsed artifact, segment digest and format-specific
+locator through application ports, then reuses the current human-disclosure
+authorization for the request's workspace, environment, purpose and operation.
+An artifact or cached excerpt never grants permission to read source content.
+
+Only an exact current content revision with a matching locator and an audited
+allow decision can return text. Denied, cross-workspace, missing, stale,
+tombstoned, fabricated and degraded resolutions are content-free. The
+immutable candidate may retain validation status and decision lineage, but the
+boundary never rewrites source facts or substitutes a newer revision. ADR-0048
+defines this contract.

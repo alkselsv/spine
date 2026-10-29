@@ -10,6 +10,8 @@ from uuid import UUID, uuid5, NAMESPACE_URL
 from spine.application.persistence.context import EnvironmentScope, TrustedPersistenceContext
 from spine.application.persistence.errors import InvalidPersistenceContextError
 from spine.application.persistence.unit_of_work import UnitOfWorkFactory
+from spine.application.parsed_content_inspection import ParsedContentInspectionRequester
+from spine.application.requirements_evidence import RequirementsEvidenceValidationService
 from spine.domain.workflows import (
     Requirement,
     RequirementCategory,
@@ -41,8 +43,13 @@ class PersistedRequirementsArtifactService:
 
     _production_identity = "requirements-extraction-v1"
 
-    def __init__(self, uow_factory: UnitOfWorkFactory) -> None:
+    def __init__(
+        self,
+        uow_factory: UnitOfWorkFactory,
+        evidence_validation_service: RequirementsEvidenceValidationService | None = None,
+    ) -> None:
         self._uow_factory = uow_factory
+        self._evidence_validation_service = evidence_validation_service
 
     async def produce_first_candidate(
         self, *, context: TrustedPersistenceContext, run_id: UUID
@@ -73,6 +80,7 @@ class PersistedRequirementsArtifactService:
         run_id: UUID,
         extraction: RequirementsExtractionOutput,
         upstream_artifact_ids: tuple[UUID, ...] = (),
+        requester: ParsedContentInspectionRequester | None = None,
     ) -> RequirementsArtifact | None:
         """Persist one runtime extraction through the #640 version boundary.
 
@@ -134,6 +142,12 @@ class PersistedRequirementsArtifactService:
                 ),
                 upstream_artifact_ids=lineage,
             )
+            if self._evidence_validation_service is not None:
+                artifact = await self._evidence_validation_service.validate_artifact(
+                    context=context,
+                    requester=requester,
+                    artifact=artifact,
+                )
             persisted = await uow.requirements_artifacts.persist_candidate(artifact)
             await uow.commit()
             return persisted
