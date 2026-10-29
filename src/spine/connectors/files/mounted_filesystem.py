@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -41,10 +40,6 @@ MAX_CONFIGURED_FILE_BYTES = 256 * 1024 * 1024
 DEFAULT_READ_CHUNK_BYTES = 64 * 1024
 DEFAULT_READ_TIMEOUT_SECONDS = 10.0
 MAX_CONCURRENT_FILE_READS = 4
-_READ_EXECUTOR = ThreadPoolExecutor(
-    max_workers=MAX_CONCURRENT_FILE_READS,
-    thread_name_prefix="spine-mounted-filesystem",
-)
 _READ_SLOTS = BoundedSemaphore(MAX_CONCURRENT_FILE_READS)
 _EXTRACTION_PROFILE = "mounted-file-bytes:v1"
 _LOCATOR_CONTRACT = "mounted-file-path:v1"
@@ -200,15 +195,15 @@ async def _bounded_read(
 ) -> bytes:
     if not _READ_SLOTS.acquire(blocking=False):
         raise MountedFilesystemReadError()
-    loop = asyncio.get_running_loop()
     try:
-        read = loop.run_in_executor(
-            _READ_EXECUTOR,
-            _read_regular_file_and_release,
-            root,
-            relative_path,
-            max_file_bytes,
-            chunk_size,
+        read = asyncio.create_task(
+            asyncio.to_thread(
+                _read_regular_file_and_release,
+                root,
+                relative_path,
+                max_file_bytes,
+                chunk_size,
+            )
         )
     except BaseException:
         _READ_SLOTS.release()
