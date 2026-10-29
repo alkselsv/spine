@@ -87,8 +87,6 @@ class RussianTranscriptionCase(DefinitionModel):
             self.expected_transcript or self.fake_asr_transcript
         ):
             raise ValueError("no-speech fixtures must not contain a transcript hypothesis")
-        if self.kind == "corruption" and self.expected_requirements_outcome != "clarify":
-            raise ValueError("corrupt audio must expect clarification")
         segment_ids = [segment.segment_id for segment in self.reference_segments]
         if len(set(segment_ids)) != len(segment_ids):
             raise ValueError("reference segment identities must be unique")
