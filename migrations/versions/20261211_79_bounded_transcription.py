@@ -97,25 +97,25 @@ def upgrade() -> None:
     )
 
     op.drop_constraint(
-        "ck_transcription_jobs_state",
+        op.f("ck_transcription_jobs_state"),
         "transcription_jobs",
         schema=SCHEMA,
         type_="check",
     )
     op.drop_constraint(
-        "ck_transcription_jobs_terminal_shape",
+        op.f("ck_transcription_jobs_terminal_shape"),
         "transcription_jobs",
         schema=SCHEMA,
         type_="check",
     )
     op.create_check_constraint(
-        "ck_transcription_jobs_state",
+        op.f("ck_transcription_jobs_state"),
         "transcription_jobs",
         "state IN ('pending', 'completed', 'partial', 'failed', 'cancelled')",
         schema=SCHEMA,
     )
     op.create_check_constraint(
-        "ck_transcription_jobs_contract_version",
+        op.f("ck_transcription_jobs_contract_version"),
         "transcription_jobs",
         "(schema_version = 'transcription-job:v1' "
         "AND state <> 'partial' AND cancellation_requested_at IS NULL) OR "
@@ -125,7 +125,7 @@ def upgrade() -> None:
     failure_codes = _failure_codes()
     v1_failure_codes = _v1_failure_codes()
     op.create_check_constraint(
-        "ck_transcription_jobs_terminal_shape",
+        op.f("ck_transcription_jobs_terminal_shape"),
         "transcription_jobs",
         "(state = 'pending' AND artifact_id IS NULL AND terminal_code IS NULL "
         "AND retryable IS NULL AND completed_at IS NULL) OR "
@@ -142,7 +142,7 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
     op.create_check_constraint(
-        "ck_transcription_artifacts_bounded_shape",
+        op.f("ck_transcription_artifacts_bounded_shape"),
         "transcription_artifacts",
         "((schema_version = 'transcription-artifact:v1' "
         "AND media_inspection IS NULL AND decoder_reference IS NULL "
@@ -231,25 +231,25 @@ def downgrade() -> None:
         f"ON TABLE {SCHEMA}.transcription_jobs FROM {runtime}"
     )
     op.drop_constraint(
-        "ck_transcription_jobs_contract_version",
+        op.f("ck_transcription_jobs_contract_version"),
         "transcription_jobs",
         schema=SCHEMA,
         type_="check",
     )
     op.drop_constraint(
-        "ck_transcription_artifacts_bounded_shape",
+        op.f("ck_transcription_artifacts_bounded_shape"),
         "transcription_artifacts",
         schema=SCHEMA,
         type_="check",
     )
     op.drop_constraint(
-        "ck_transcription_jobs_terminal_shape",
+        op.f("ck_transcription_jobs_terminal_shape"),
         "transcription_jobs",
         schema=SCHEMA,
         type_="check",
     )
     op.drop_constraint(
-        "ck_transcription_jobs_state",
+        op.f("ck_transcription_jobs_state"),
         "transcription_jobs",
         schema=SCHEMA,
         type_="check",
@@ -267,13 +267,13 @@ def downgrade() -> None:
         "WHERE state = 'cancelled'"
     )
     op.create_check_constraint(
-        "ck_transcription_jobs_state",
+        op.f("ck_transcription_jobs_state"),
         "transcription_jobs",
         "state IN ('pending', 'completed', 'failed', 'cancelled')",
         schema=SCHEMA,
     )
     op.create_check_constraint(
-        "ck_transcription_jobs_terminal_shape",
+        op.f("ck_transcription_jobs_terminal_shape"),
         "transcription_jobs",
         "(state = 'pending' AND artifact_id IS NULL AND terminal_code IS NULL "
         "AND retryable IS NULL AND completed_at IS NULL) OR "
