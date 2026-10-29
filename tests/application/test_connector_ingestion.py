@@ -1470,7 +1470,9 @@ async def test_mounted_filesystem_observation_reaches_canonical_path_with_stable
     first = await orchestrator.ingest(command)
     replay = await orchestrator.ingest(command)
 
-    assert first.source.external_generation == "mounted-path:v1"
+    assert first.source.external_generation == (
+        f"mounted-path:v2:{connection_version_id.hex}"
+    )
     assert first.source.external_object_id == (
         first.observation.external_identity.external_object_id
     )

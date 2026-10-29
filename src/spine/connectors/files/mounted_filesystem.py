@@ -149,14 +149,21 @@ class MountedFilesystemObservationReader:
             raise MountedFilesystemReadError()
         content = stable_read.content
 
-        observed_at = self.clock()
-        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+        received_at = self.clock()
+        if received_at.tzinfo is None or received_at.utcoffset() is None:
             raise ValueError("mounted filesystem clock must return an aware datetime")
+        observed_at = stable_read.modified_at
         path_digest = hashlib.sha256(relative_path.encode("utf-8")).hexdigest()
-        identity_material = relative_path
+        external_generation = (
+            f"mounted-path:v2:{command.connection_version_id.hex}"
+        )
+        identity_material = (
+            f"{command.resource_scope_reference.value}:{relative_path}"
+        )
         if command.external_identity_occurrence is not None:
             identity_material = (
-                f"{relative_path}|occurrence:{command.external_identity_occurrence}"
+                f"{identity_material}|occurrence:"
+                f"{command.external_identity_occurrence}"
             )
         identity_digest = hashlib.sha256(identity_material.encode("utf-8")).hexdigest()
         content_digest = hashlib.sha256(content).hexdigest()
@@ -179,7 +186,7 @@ class MountedFilesystemObservationReader:
             source_kind="document",
             external_identity=ProviderExternalIdentity(
                 external_namespace="mounted_filesystem",
-                external_generation="mounted-path:v1",
+                external_generation=external_generation,
                 external_object_id=identity_digest,
                 provider_key=ProviderFileKey(
                     connection_id=command.connection_id,

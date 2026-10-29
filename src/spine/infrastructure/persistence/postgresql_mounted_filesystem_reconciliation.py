@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from uuid import UUID
@@ -14,6 +15,7 @@ from spine.application.mounted_filesystem_reconciliation import (
     MountedFilesystemReconciliationCommand,
     MountedFilesystemReconciliationRepository,
     MountedFilesystemReconciliationRun,
+    MountedFilesystemRemovalPolicy,
 )
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -23,7 +25,10 @@ from spine.application.persistence.context import (
 from spine.domain.sources import RevisionKind
 from spine.infrastructure.persistence.postgresql_mappings import (
     mounted_fs_reconciliation_runs,
+    mounted_fs_removal_policies,
 )
+
+from spine.application.connections.provider import ProviderReadDeniedError
 
 
 class PostgreSQLMountedFilesystemReconciliationRepository(
@@ -143,7 +148,8 @@ class PostgreSQLMountedFilesystemLifecycleSourceReader:
                         source.identity_mode.value != "connector"
                         or source.connection_id != command.connection_id
                         or source.external_namespace != "mounted_filesystem"
-                        or source.external_generation != "mounted-path:v1"
+                        or source.external_generation
+                        != f"mounted-path:v2:{command.connection_version_id.hex}"
                     ):
                         continue
                     head = await uow.canonical.resolve_current(source.source_object_id)
@@ -177,6 +183,14 @@ class PostgreSQLMountedFilesystemLifecycleSourceReader:
                         or external.resource_path is None
                     ):
                         continue
+                    expected_identity = hashlib.sha256(
+                        (
+                            f"{command.resource_scope_reference}:"
+                            f"{external.resource_path}"
+                        ).encode()
+                    ).hexdigest()
+                    if source.external_object_id != expected_identity:
+                        continue
                     results.append(
                         MountedFilesystemCanonicalSource(
                             provider_object_reference=external.resource_path,
@@ -191,6 +205,60 @@ class PostgreSQLMountedFilesystemLifecycleSourceReader:
                     break
             await uow.rollback()
         return tuple(results)
+
+
+class PostgreSQLMountedFilesystemRemovalPolicyAdmission:
+    """Revalidate an immutable removal approval against current control-plane state."""
+
+    def __init__(self, uow_factory: Callable[[TrustedPersistenceContext], object]) -> None:
+        self._uow_factory = uow_factory
+
+    async def admit(
+        self,
+        command: MountedFilesystemReconciliationCommand,
+        requested_policy: MountedFilesystemRemovalPolicy,
+        context: TrustedPersistenceContext,
+    ) -> MountedFilesystemRemovalPolicy:
+        scope = context.scope
+        if not isinstance(scope, EnvironmentScope) or (
+            scope.workspace_id,
+            scope.environment_id,
+        ) != (command.workspace_id, command.environment_id):
+            raise ProviderReadDeniedError()
+        async with self._uow_factory(context) as uow:
+            result = await uow._execute(  # type: ignore[attr-defined]
+                select(mounted_fs_removal_policies).where(
+                    mounted_fs_removal_policies.c.policy_version_id
+                    == requested_policy.policy_version_id,
+                    mounted_fs_removal_policies.c.workspace_id == command.workspace_id,
+                    mounted_fs_removal_policies.c.environment_id
+                    == command.environment_id,
+                    mounted_fs_removal_policies.c.connection_id
+                    == command.connection_id,
+                    mounted_fs_removal_policies.c.resource_scope_reference
+                    == command.resource_scope_reference,
+                    mounted_fs_removal_policies.c.revoked_at.is_(None),
+                )
+            )
+            row = result.mappings().one_or_none()
+            await uow.rollback()  # type: ignore[attr-defined]
+        if row is None:
+            raise ProviderReadDeniedError()
+        approved = MountedFilesystemRemovalPolicy(
+            policy_version_id=row["policy_version_id"],
+            approval_id=row["approval_id"],
+            workspace_id=row["workspace_id"],
+            environment_id=row["environment_id"],
+            connection_id=row["connection_id"],
+            resource_scope_reference=row["resource_scope_reference"],
+            authorize_complete_scope_absence=row[
+                "authorize_complete_scope_absence"
+            ],
+            approved_at=row["approved_at"],
+        )
+        if approved != requested_policy:
+            raise ProviderReadDeniedError()
+        return approved
 
 
 def _columns(run: MountedFilesystemReconciliationRun) -> dict[str, object]:
@@ -229,4 +297,5 @@ def _record(run: MountedFilesystemReconciliationRun) -> dict[str, object]:
 __all__ = [
     "PostgreSQLMountedFilesystemLifecycleSourceReader",
     "PostgreSQLMountedFilesystemReconciliationRepository",
+    "PostgreSQLMountedFilesystemRemovalPolicyAdmission",
 ]

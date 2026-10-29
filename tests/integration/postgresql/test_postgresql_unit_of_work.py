@@ -7518,6 +7518,74 @@ async def test_yandex_reconciliation_repository_persists_checkpoint_and_tenant_s
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_mounted_filesystem_reconciliation_repository_persists_and_isolates(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    from spine.application.mounted_filesystem_reconciliation import (
+        MountedFilesystemReconciliationRun,
+        MountedFilesystemReconciliationState,
+    )
+    from spine.infrastructure.persistence.postgresql_mounted_filesystem_reconciliation import (
+        PostgreSQLMountedFilesystemReconciliationRepository,
+    )
+
+    case = await prepare_canonical_case(postgresql_adapter, 67200)
+    assert postgresql_adapter.ingestion_context is not None
+    repository = PostgreSQLMountedFilesystemReconciliationRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=lambda operation, identity: postgresql_adapter.ingestion_context(
+            case.source.workspace_id,
+            case.source.environment_id,
+            operation.value,
+        ),
+    )
+    now = datetime(2026, 10, 30, 9, tzinfo=timezone.utc)
+    run = MountedFilesystemReconciliationRun(
+        run_id=synthetic_uuid(67210),
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        connection_id=synthetic_uuid(67211),
+        connection_version_id=synthetic_uuid(67212),
+        resource_scope_reference=synthetic_uuid(67213),
+        idempotency_key="issue672-postgresql-reconciliation",
+        removal_policy_version_id=synthetic_uuid(67214),
+        removal_policy_approval_id=synthetic_uuid(67215),
+        state=MountedFilesystemReconciliationState.RUNNING,
+        connection_available=True,
+        started_at=now,
+        updated_at=now,
+    )
+
+    assert await repository.save(run) == run
+    assert await repository.resolve(
+        run.run_id, run.workspace_id, run.environment_id
+    ) == run
+    complete = run.model_copy(
+        update={
+            "state": MountedFilesystemReconciliationState.COMPLETE,
+            "completed_at": now,
+        }
+    )
+    assert await repository.save(complete) == complete
+    assert await repository.resolve(
+        run.run_id, run.workspace_id, run.environment_id
+    ) == complete
+
+    other = await prepare_canonical_case(postgresql_adapter, 67220)
+    isolated = PostgreSQLMountedFilesystemReconciliationRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=lambda operation, identity: postgresql_adapter.ingestion_context(
+            other.source.workspace_id,
+            other.source.environment_id,
+            operation.value,
+        ),
+    )
+    assert await isolated.resolve(
+        run.run_id, other.source.workspace_id, other.source.environment_id
+    ) is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_requirements_artifacts_replay_successor_and_isolate_workspaces(
     postgresql_adapter: PersistenceAdapter,
 ) -> None:

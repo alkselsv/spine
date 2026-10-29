@@ -21,8 +21,14 @@ from spine.application.connections.provider import (
     ProviderReadError,
 )
 from spine.application.persistence.context import (
+    EnvironmentScope,
     PersistenceOperation,
     TrustedPersistenceContext,
+)
+from spine.application.source_lifecycle import (
+    SourceLifecycleCommand,
+    SourceLifecycleCoordinator,
+    SourceLifecycleKind,
 )
 from spine.domain.common import DefinitionModel
 from spine.domain.connections.provider import (
@@ -178,6 +184,7 @@ class MountedFilesystemReconciliationRun(DefinitionModel):
     resource_scope_reference: UUID
     idempotency_key: str
     removal_policy_version_id: UUID
+    removal_policy_approval_id: UUID
     state: MountedFilesystemReconciliationState
     connection_available: bool
     baseline_captured: bool = False
@@ -229,6 +236,7 @@ class InMemoryMountedFilesystemReconciliationRepository:
             current.resource_scope_reference,
             current.idempotency_key,
             current.removal_policy_version_id,
+            current.removal_policy_approval_id,
         ) != (
             run.workspace_id,
             run.environment_id,
@@ -237,6 +245,7 @@ class InMemoryMountedFilesystemReconciliationRepository:
             run.resource_scope_reference,
             run.idempotency_key,
             run.removal_policy_version_id,
+            run.removal_policy_approval_id,
         ):
             raise ValueError("mounted filesystem reconciliation replay conflicts")
         self.records[run.run_id] = run
@@ -371,6 +380,53 @@ class MountedFilesystemRemovalPort(Protocol):
     ) -> UUID: ...
 
 
+class MountedFilesystemTombstoneComposer(Protocol):
+    async def compose(
+        self,
+        *,
+        command: MountedFilesystemReconciliationCommand,
+        source: MountedFilesystemCanonicalSource,
+        policy: MountedFilesystemRemovalPolicy,
+        idempotency_key: str,
+        evidence_reference: str,
+    ) -> SourceLifecycleCommand: ...
+
+
+@dataclass(frozen=True, slots=True)
+class MountedFilesystemSourceLifecycleRemoval:
+    """Apply a verified absence through the canonical lifecycle boundary."""
+
+    composer: MountedFilesystemTombstoneComposer
+    lifecycle: SourceLifecycleCoordinator
+    policy: MountedFilesystemRemovalPolicy
+
+    async def confirm_absent(
+        self,
+        command: MountedFilesystemReconciliationCommand,
+        source: MountedFilesystemCanonicalSource,
+        *,
+        idempotency_key: str,
+        evidence_reference: str,
+        context: TrustedPersistenceContext,
+    ) -> UUID:
+        scope = context.scope
+        if not isinstance(scope, EnvironmentScope) or (
+            scope.workspace_id,
+            scope.environment_id,
+        ) != (command.workspace_id, command.environment_id):
+            raise ProviderReadDeniedError()
+        lifecycle_command = await self.composer.compose(
+            command=command,
+            source=source,
+            policy=self.policy,
+            idempotency_key=idempotency_key,
+            evidence_reference=evidence_reference,
+        )
+        _validate_tombstone_command(lifecycle_command, source, idempotency_key)
+        result = await self.lifecycle.apply(lifecycle_command)
+        return result.acceptance.revision.revision_id
+
+
 @dataclass(frozen=True, slots=True)
 class MountedFilesystemReconciliationCoordinator:
     repository: MountedFilesystemReconciliationRepository
@@ -417,6 +473,7 @@ class MountedFilesystemReconciliationCoordinator:
                     resource_scope_reference=command.resource_scope_reference,
                     idempotency_key=command.idempotency_key,
                     removal_policy_version_id=policy.policy_version_id,
+                    removal_policy_approval_id=policy.approval_id,
                     state=MountedFilesystemReconciliationState.RUNNING,
                     connection_available=True,
                     started_at=now,
@@ -584,7 +641,7 @@ class MountedFilesystemReconciliationCoordinator:
                 tombstone_id = await self.removals.confirm_absent(
                     command,
                     source,
-                    idempotency_key=f"mounted-absence:{item_evidence.evidence_id.hex}",
+                    idempotency_key=_removal_idempotency_key(command, policy, source),
                     evidence_reference=item_evidence.evidence_reference,
                     context=self.context_factory(
                         PersistenceOperation("mounted_filesystem_confirm_absent"),
@@ -741,6 +798,22 @@ def _item_command(
     )
 
 
+def _removal_idempotency_key(
+    command: MountedFilesystemReconciliationCommand,
+    policy: MountedFilesystemRemovalPolicy,
+    source: MountedFilesystemCanonicalSource,
+) -> str:
+    identity = hashlib.sha256(
+        (
+            f"{command.workspace_id}:{command.environment_id}:{command.connection_id}:"
+            f"{command.connection_version_id}:{command.resource_scope_reference}:"
+            f"{policy.policy_version_id}:{policy.approval_id}:"
+            f"{source.source_object_id}:{source.current_revision_id}"
+        ).encode("ascii")
+    ).hexdigest()
+    return f"mounted-absence:{identity}"
+
+
 def _evidence(
     run: MountedFilesystemReconciliationRun,
     state: MountedFilesystemLifecycleState,
@@ -793,6 +866,21 @@ def _deduplicate_evidence(
         if not any(item.evidence_id == value.evidence_id for item in result):
             result.append(value)
     return tuple(result)
+
+
+def _validate_tombstone_command(
+    command: SourceLifecycleCommand,
+    source: MountedFilesystemCanonicalSource,
+    idempotency_key: str,
+) -> None:
+    if command.kind is not SourceLifecycleKind.DELETION or (
+        command.source.source_object_id != source.source_object_id
+        or command.canonical_acceptance.expected_current_revision_id
+        != source.current_revision_id
+        or command.canonical_acceptance.idempotency_key.value != idempotency_key
+        or command.observation_idempotency_key.value != idempotency_key
+    ):
+        raise ValueError("mounted filesystem tombstone command changed evidence")
 
 
 __all__ = [name for name in globals() if name.startswith("MountedFilesystem")]

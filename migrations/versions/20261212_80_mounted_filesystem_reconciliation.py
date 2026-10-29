@@ -88,7 +88,51 @@ def upgrade() -> None:
         "'classification=tenant_operational_state; provider_content=forbidden; "
         "paths_are_stored_only_inside_tenant_scoped_replay_envelope'"
     )
+    op.create_table(
+        "mounted_fs_removal_policies",
+        sa.Column("policy_version_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("approval_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("workspace_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("environment_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("connection_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("resource_scope_reference", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column(
+            "authorize_complete_scope_absence", sa.Boolean(), nullable=False
+        ),
+        sa.Column("approved_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("revoked_at", sa.DateTime(timezone=True)),
+        sa.PrimaryKeyConstraint(
+            "policy_version_id", name="pk_mounted_fs_removal_policies"
+        ),
+        sa.UniqueConstraint(
+            "approval_id", name="uq_mounted_fs_removal_policies_approval"
+        ),
+        sa.ForeignKeyConstraint(
+            ["workspace_id", "environment_id"],
+            [f"{SCHEMA}.environments.workspace_id", f"{SCHEMA}.environments.id"],
+            name="fk_mounted_fs_removal_policies_environment",
+        ),
+        schema=SCHEMA,
+    )
+    policy_table = f"{SCHEMA}.mounted_fs_removal_policies"
+    op.execute(f"ALTER TABLE {policy_table} ENABLE ROW LEVEL SECURITY")
+    op.execute(f"ALTER TABLE {policy_table} FORCE ROW LEVEL SECURITY")
+    op.execute(
+        "CREATE POLICY pol_mounted_fs_removal_policies_tenant_isolation "
+        f"ON {policy_table} FOR ALL TO {runtime_role} "
+        "USING (workspace_id = nullif(current_setting('spine.workspace_id', true), '')::uuid "
+        "AND environment_id = nullif(current_setting('spine.environment_id', true), '')::uuid) "
+        "WITH CHECK (workspace_id = nullif(current_setting('spine.workspace_id', true), '')::uuid "
+        "AND environment_id = nullif(current_setting('spine.environment_id', true), '')::uuid)"
+    )
+    op.execute(
+        "CREATE POLICY pol_mounted_fs_removal_policies_migration_maintenance "
+        f"ON {policy_table} FOR ALL TO {migration_role} USING (true) WITH CHECK (true)"
+    )
+    op.execute(f"REVOKE ALL ON {policy_table} FROM {runtime_role}")
+    op.execute(f"GRANT SELECT ON {policy_table} TO {runtime_role}")
 
 
 def downgrade() -> None:
+    op.drop_table("mounted_fs_removal_policies", schema=SCHEMA)
     op.drop_table("mounted_fs_reconciliation_runs", schema=SCHEMA)

@@ -433,6 +433,26 @@ async def test_unapproved_removal_policy_is_denied_before_scan(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_independent_absence_generations_reuse_tombstone_key(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "mount"
+    root.mkdir()
+    source = _source("missing.md", "current")
+    removals = Removals()
+
+    await _service(root, sources=(source,), removals=removals).run(
+        _command("absence-1"), _policy()
+    )
+    await _service(root, sources=(source,), removals=removals).run(
+        _command("absence-2"), _policy()
+    )
+
+    assert len(removals.calls) == 2
+    assert removals.calls[0][2] == removals.calls[1][2]
+
+
+@pytest.mark.asyncio
 async def test_reappeared_path_uses_new_occurrence_without_claiming_continuity(
     tmp_path: Path,
 ) -> None:
