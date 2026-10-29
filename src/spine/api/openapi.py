@@ -79,6 +79,10 @@ from spine.application.persisted_workflow_runs import (
     PersistedWorkflowRunAdmissionService,
 )
 from spine.application.requirements_artifacts import PersistedRequirementsArtifactService
+from spine.application.requirements_evidence import (
+    RequirementsEvidenceInspectionResult,
+    RequirementsEvidenceValidationService,
+)
 from spine.application.workflow_runs import (
     PinnedWorkflowVersion,
     StartWorkflowCommand,
@@ -237,6 +241,11 @@ class _UnavailableRequirementsArtifactService:
         raise RuntimeError("The OpenAPI composition is not executable.")
 
     async def versions(self, **_kwargs):
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+
+class _UnavailableRequirementsEvidenceService:
+    async def inspect(self, **_kwargs) -> RequirementsEvidenceInspectionResult:
         raise RuntimeError("The OpenAPI composition is not executable.")
 
 
@@ -504,6 +513,10 @@ def create_openapi_app() -> FastAPI:
         workflow_run_cursor_secret=secrets.token_bytes(32),
         requirements_artifact_service=cast(
             PersistedRequirementsArtifactService, _UnavailableRequirementsArtifactService()
+        ),
+        requirements_evidence_service=cast(
+            RequirementsEvidenceValidationService,
+            _UnavailableRequirementsEvidenceService(),
         ),
     )
 

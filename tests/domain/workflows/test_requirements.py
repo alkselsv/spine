@@ -8,7 +8,9 @@ from spine.domain.workflows import (
     AcceptedSourceRevisionRef,
     Requirement,
     RequirementEvidenceRef,
+    RequirementEvidenceRelationship,
     RequirementEvidenceStatus,
+    RequirementEvidenceValidationStatus,
     RequirementState,
     RequirementsArtifact,
 )
@@ -47,6 +49,27 @@ def test_requirement_preserves_exact_source_and_parsed_evidence_lineage() -> Non
 
     assert requirement.evidence_refs == (evidence_ref,)
     assert requirement.evidence_refs[0].locator.line_number == 4
+    assert requirement.evidence_refs[0].relationship is RequirementEvidenceRelationship.SUPPORTS
+    assert requirement.evidence_refs[0].validation is None
+
+
+def test_valid_evidence_requires_current_authorization_lineage() -> None:
+    source_ref = AcceptedSourceRevisionRef(
+        source_object_id=UUID(int=10), source_revision_id=UUID(int=11), provenance_id=UUID(int=12)
+    )
+    with pytest.raises(ValidationError, match="authorization decision"):
+        RequirementEvidenceRef(
+            source_ref=source_ref,
+            parsed_artifact_ref=ArtifactRef(
+                id=UUID(int=13), schema_name="parsed-document", schema_version="parsed-document:v1"
+            ),
+            segment_id=UUID(int=14),
+            segment_digest="a" * 64,
+            locator=PhysicalLineLocator(
+                kind="physical_line", line_number=4, start_codepoint=0, end_codepoint=5
+            ),
+            validation={"status": "valid", "validation_reference": UUID(int=15)},
+        )
 
 
 def test_requirement_rejects_evidence_from_an_unreferenced_source_revision() -> None:

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import type { components } from '../../../api/generated/schema';
@@ -8,6 +9,7 @@ import styles from '../chat/SessionBrowserPage.module.css';
 
 type Client = Pick<ReturnType<typeof createScopedApiClient>, 'GET'>;
 type RequirementsArtifact = components['schemas']['RequirementsArtifact'];
+type RequirementEvidenceRef = components['schemas']['RequirementEvidenceRef'];
 
 export function RequirementsArtifactCard({
   client,
@@ -58,10 +60,83 @@ export function RequirementsArtifactCard({
               <p role="status">{requirement.state === 'unsupported' ? 'Не подтверждено источниками' : 'Не проверено'}</p>
             ) : null}
             {requirement.evidence_status === 'unverified' ? <p role="status">Источники не проверены</p> : null}
+            {requirement.evidence_refs.map((evidence) => (
+              <RequirementEvidenceInspector
+                key={`${requirement.requirement_id}-${evidence.segment_id}`}
+                client={client}
+                artifactId={artifact.artifact_id}
+                artifactVersion={artifact.artifact_version}
+                requirementId={requirement.requirement_id}
+                evidence={evidence}
+              />
+            ))}
           </li>
         ))}
       </ul>
     </section>
+  );
+}
+
+function RequirementEvidenceInspector({
+  client,
+  artifactId,
+  artifactVersion,
+  requirementId,
+  evidence,
+}: {
+  client: Client;
+  artifactId: string;
+  artifactVersion: number;
+  requirementId: string;
+  evidence: RequirementEvidenceRef;
+}) {
+  const [open, setOpen] = useState(false);
+  const query = useQuery({
+    ...apiQueryOptions({
+      load: async (signal) => {
+        const { data, error } = await client.GET(
+          '/api/v1/artifacts/{artifact_id}/requirements/{requirement_id}/evidence/{segment_id}',
+          {
+            params: {
+              path: {
+                artifact_id: artifactId,
+                requirement_id: requirementId,
+                segment_id: evidence.segment_id,
+              },
+              query: { artifact_version: artifactVersion },
+            },
+            signal,
+          },
+        );
+        if (error || !data) throw new Error('Evidence inspection is unavailable.');
+        return data;
+      },
+      queryKey: [
+        'requirements-evidence',
+        artifactId,
+        artifactVersion,
+        requirementId,
+        evidence.segment_id,
+      ],
+    }),
+    enabled: open,
+  });
+
+  const payload = query.data?.data;
+  return (
+    <div>
+      <button type="button" onClick={() => setOpen((value) => !value)}>
+        {open ? 'Скрыть evidence' : 'Открыть evidence'}
+      </button>
+      {open && query.isPending ? <p role="status">Загрузка evidence…</p> : null}
+      {open && query.error ? <ApiErrorPanel error={query.error} /> : null}
+      {open && payload?.status === 'available' && payload.evidence ? (
+        <p role="status">{payload.evidence.text}</p>
+      ) : null}
+      {open && payload && payload.status !== 'available' ? (
+        <p role="status">Evidence недоступна: {payload.status}</p>
+      ) : null}
+    </div>
   );
 }
 

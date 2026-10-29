@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -47,6 +48,54 @@ class RequirementEvidenceStatus(str, Enum):
     UNSUPPORTED = "unsupported"
 
 
+class RequirementEvidenceRelationship(str, Enum):
+    """The bounded relationship between a requirement and one evidence item."""
+
+    SUPPORTS = "supports"
+    CONTRADICTS = "contradicts"
+    CONTEXT = "context"
+
+
+class RequirementEvidenceValidationStatus(str, Enum):
+    """Disclosure-safe result of validating one exact evidence reference."""
+
+    UNVERIFIED = "unverified"
+    VALID = "valid"
+    DENIED = "denied"
+    STALE = "stale"
+    TOMBSTONED = "tombstoned"
+    MISSING = "missing"
+    LOCATOR_MISMATCH = "locator_mismatch"
+    FABRICATED = "fabricated"
+    DEGRADED = "degraded"
+
+
+class RequirementEvidenceValidation(DefinitionModel):
+    """Content-free validation lineage retained with a candidate artifact."""
+
+    schema_version: Literal["requirement-evidence-validation:v1"] = (
+        "requirement-evidence-validation:v1"
+    )
+    validation_reference: UUID
+    status: RequirementEvidenceValidationStatus = RequirementEvidenceValidationStatus.UNVERIFIED
+    authorization_decision_reference: UUID | None = None
+    validated_at: datetime | None = None
+
+    @field_validator("validation_reference", "authorization_decision_reference")
+    @classmethod
+    def reject_zero_validation_ids(cls, value: UUID | None) -> UUID | None:
+        if value is not None and value.int == 0:
+            raise ValueError("evidence validation identities must be non-zero")
+        return value
+
+    @field_validator("validated_at")
+    @classmethod
+    def require_aware_validation_time(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("evidence validation timestamps must be timezone-aware")
+        return value
+
+
 class RequirementEvidenceRef(DefinitionModel):
     """An exact source revision and parsed evidence segment without source text."""
 
@@ -54,7 +103,12 @@ class RequirementEvidenceRef(DefinitionModel):
     parsed_artifact_ref: ArtifactRef
     segment_id: UUID
     segment_digest: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    locator_contract_version: StrictStr = Field(
+        default="locator:v1", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    )
     locator: Locator | GoogleSheetCellLocator
+    relationship: RequirementEvidenceRelationship = RequirementEvidenceRelationship.SUPPORTS
+    validation: RequirementEvidenceValidation | None = None
 
     @field_validator("segment_id")
     @classmethod
@@ -77,6 +131,12 @@ class RequirementEvidenceRef(DefinitionModel):
             and self.locator.source_revision_id != self.source_ref.source_revision_id
         ):
             raise ValueError("Google Sheets locator must reference the same source revision")
+        if (
+            self.validation is not None
+            and self.validation.status is RequirementEvidenceValidationStatus.VALID
+            and self.validation.authorization_decision_reference is None
+        ):
+            raise ValueError("valid evidence requires an authorization decision reference")
         return self
 
 

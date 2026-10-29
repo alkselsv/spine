@@ -38,6 +38,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/artifacts/{artifact_id}/requirements/{requirement_id}/evidence/{segment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Artifacts.Requirements.Evidence.Inspect */
+        get: operations["artifacts.requirements.evidence.inspect"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/artifacts/{artifact_id}/versions": {
         parameters: {
             query?: never;
@@ -1794,6 +1811,31 @@ export interface components {
         /** ApiResponseEnvelope[QASessionResponse] */
         ApiResponseEnvelope_QASessionResponse_: {
             data: components["schemas"]["QASessionResponse"];
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiResponseEnvelope[RequirementsEvidenceInspectionResponse] */
+        ApiResponseEnvelope_RequirementsEvidenceInspectionResponse_: {
+            data: components["schemas"]["RequirementsEvidenceInspectionResponse"];
             /**
              * Environment Id
              * Format: uuid
@@ -4409,7 +4451,14 @@ export interface components {
         RequirementEvidenceRef: {
             /** Locator */
             locator: (components["schemas"]["PhysicalLineLocator"] | components["schemas"]["PageTextLocator"] | components["schemas"]["OoxmlTextLocator"] | components["schemas"]["XlsxCellLocator"]) | components["schemas"]["GoogleSheetCellLocator"];
+            /**
+             * Locator Contract Version
+             * @default locator:v1
+             */
+            locator_contract_version: string;
             parsed_artifact_ref: components["schemas"]["ArtifactRef"];
+            /** @default supports */
+            relationship: components["schemas"]["RequirementEvidenceRelationship"];
             /** Segment Digest */
             segment_digest: string;
             /**
@@ -4418,12 +4467,48 @@ export interface components {
              */
             segment_id: string;
             source_ref: components["schemas"]["AcceptedSourceRevisionRef"];
+            validation?: components["schemas"]["RequirementEvidenceValidation"] | null;
         };
+        /**
+         * RequirementEvidenceRelationship
+         * @description The bounded relationship between a requirement and one evidence item.
+         * @enum {string}
+         */
+        RequirementEvidenceRelationship: "supports" | "contradicts" | "context";
         /**
          * RequirementEvidenceStatus
          * @enum {string}
          */
         RequirementEvidenceStatus: "referenced" | "unverified" | "unsupported";
+        /**
+         * RequirementEvidenceValidation
+         * @description Content-free validation lineage retained with a candidate artifact.
+         */
+        RequirementEvidenceValidation: {
+            /** Authorization Decision Reference */
+            authorization_decision_reference?: string | null;
+            /**
+             * Schema Version
+             * @default requirement-evidence-validation:v1
+             * @constant
+             */
+            schema_version: "requirement-evidence-validation:v1";
+            /** @default unverified */
+            status: components["schemas"]["RequirementEvidenceValidationStatus"];
+            /** Validated At */
+            validated_at?: string | null;
+            /**
+             * Validation Reference
+             * Format: uuid
+             */
+            validation_reference: string;
+        };
+        /**
+         * RequirementEvidenceValidationStatus
+         * @description Disclosure-safe result of validating one exact evidence reference.
+         * @enum {string}
+         */
+        RequirementEvidenceValidationStatus: "unverified" | "valid" | "denied" | "stale" | "tombstoned" | "missing" | "locator_mismatch" | "fabricated" | "degraded";
         /**
          * RequirementReviewState
          * @enum {string}
@@ -4498,6 +4583,64 @@ export interface components {
              */
             schema_version: 1;
         };
+        /** RequirementsEvidenceInspectionEvidenceResponse */
+        RequirementsEvidenceInspectionEvidenceResponse: {
+            /**
+             * Authorization Decision Reference
+             * Format: uuid
+             */
+            authorization_decision_reference: string;
+            /** Locator */
+            locator: (components["schemas"]["PhysicalLineLocator"] | components["schemas"]["PageTextLocator"] | components["schemas"]["OoxmlTextLocator"] | components["schemas"]["XlsxCellLocator"]) | components["schemas"]["GoogleSheetCellLocator"];
+            /** Locator Contract Version */
+            locator_contract_version: string;
+            /**
+             * Schema Version
+             * @default requirements-evidence-inspection-evidence:v1
+             * @constant
+             */
+            schema_version: "requirements-evidence-inspection-evidence:v1";
+            /** Segment Digest */
+            segment_digest: string;
+            /**
+             * Segment Id
+             * Format: uuid
+             */
+            segment_id: string;
+            /**
+             * Source Object Id
+             * Format: uuid
+             */
+            source_object_id: string;
+            /**
+             * Source Revision Id
+             * Format: uuid
+             */
+            source_revision_id: string;
+            /** Text */
+            text: string;
+            /**
+             * Validation Reference
+             * Format: uuid
+             */
+            validation_reference: string;
+        };
+        /** RequirementsEvidenceInspectionResponse */
+        RequirementsEvidenceInspectionResponse: {
+            evidence?: components["schemas"]["RequirementsEvidenceInspectionEvidenceResponse"] | null;
+            /**
+             * Schema Version
+             * @default requirements-evidence-inspection-response:v1
+             * @constant
+             */
+            schema_version: "requirements-evidence-inspection-response:v1";
+            status: components["schemas"]["RequirementsEvidenceInspectionStatus"];
+        };
+        /**
+         * RequirementsEvidenceInspectionStatus
+         * @enum {string}
+         */
+        RequirementsEvidenceInspectionStatus: "available" | "denied" | "stale" | "tombstoned" | "missing" | "locator_mismatch" | "fabricated" | "degraded";
         /** RestoreQASessionRequest */
         RestoreQASessionRequest: {
             /** Expected Version */
@@ -5101,6 +5244,116 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RequirementsArtifact"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "artifacts.requirements.evidence.inspect": {
+        parameters: {
+            query?: {
+                artifact_version?: number | null;
+            };
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                artifact_id: string;
+                requirement_id: string;
+                segment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope_RequirementsEvidenceInspectionResponse_"];
                 };
             };
             /** @description Safe request error. */

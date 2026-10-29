@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import userEvent from '@testing-library/user-event';
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -37,5 +38,82 @@ describe('RequirementsArtifactCard', () => {
     expect(screen.getByText('Не подтверждено источниками')).toBeVisible();
     expect(screen.getByText(/Подтверждения: не подтверждено/)).toBeVisible();
     expect(get).toHaveBeenCalledWith('/api/v1/runs/{run_id}/requirements', expect.any(Object));
+  });
+
+  it('opens_the_authorized_evidence_inspector_without_falling_back_to_cached_text', async () => {
+    const artifact = {
+      artifact_id: '60000000-0000-4000-8000-000000000001', artifact_version: 2,
+      schema_version: 'requirements:v1', production_identity: 'requirements-review-v2',
+      production_digest: 'a'.repeat(64), workspace_id: '10000000-0000-4000-8000-000000000001',
+      environment_id: '20000000-0000-4000-8000-000000000001', work_item_id: '40000000-0000-4000-8000-000000000001',
+      run_id: '30000000-0000-4000-8000-000000000001', state: 'candidate', upstream_artifact_ids: [],
+      predecessor_version: 1, requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
+        schema_version: 'requirement:v1', category: 'functional', statement: 'Friday',
+        constraints: [], uncertainty: null, ambiguous_markers: [], missing_markers: [], state: 'candidate',
+        review_state: 'needs_review', confidence: 0.9, source_refs: [{
+          source_object_id: '80000000-0000-4000-8000-000000000001',
+          source_revision_id: '80000000-0000-4000-8000-000000000002',
+          provenance_id: '80000000-0000-4000-8000-000000000003',
+        }], evidence_refs: [{
+          source_ref: {
+            source_object_id: '80000000-0000-4000-8000-000000000001',
+            source_revision_id: '80000000-0000-4000-8000-000000000002',
+            provenance_id: '80000000-0000-4000-8000-000000000003',
+          },
+          parsed_artifact_ref: { id: '80000000-0000-4000-8000-000000000004', schema_name: 'parsed-document', schema_version: 'parsed-document:v1' },
+          segment_id: '80000000-0000-4000-8000-000000000005', segment_digest: 'b'.repeat(64),
+          locator: { kind: 'physical_line', line_number: 4, start_codepoint: 0, end_codepoint: 6 },
+          relationship: 'supports', validation: null,
+        }], evidence_status: 'unverified', upstream_artifact_ids: [] }],
+    };
+    get.mockImplementation(async (path: string) => path.includes('/evidence/')
+      ? { data: { data: {
+        schema_version: 'requirements-evidence-inspection-response:v1', status: 'available',
+        evidence: {
+          schema_version: 'requirements-evidence-inspection-evidence:v1',
+          source_object_id: '80000000-0000-4000-8000-000000000001',
+          source_revision_id: '80000000-0000-4000-8000-000000000002',
+          segment_id: '80000000-0000-4000-8000-000000000005', segment_digest: 'b'.repeat(64),
+          locator: { kind: 'physical_line', line_number: 4, start_codepoint: 0, end_codepoint: 6 },
+          text: 'current protected evidence', validation_reference: '80000000-0000-4000-8000-000000000006',
+          authorization_decision_reference: '80000000-0000-4000-8000-000000000007',
+        },
+      } } }
+      : { data: artifact });
+
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <RequirementsArtifactCard client={{ GET: get }} queryKey={['workspace', 'run']} runId={artifact.run_id} />
+    </QueryClientProvider>);
+
+    await userEvent.click(await screen.findByRole('button', { name: /evidence/ }));
+    expect(await screen.findByText('current protected evidence')).toBeVisible();
+    expect(get).toHaveBeenCalledWith(
+      '/api/v1/artifacts/{artifact_id}/requirements/{requirement_id}/evidence/{segment_id}',
+      expect.any(Object),
+    );
+  });
+
+  it.each(['denied', 'stale', 'degraded'] as const)('renders_%s_evidence_without_protected_text', async (status) => {
+    get.mockImplementation(async (path: string) => path.includes('/evidence/')
+      ? { data: { data: { schema_version: 'requirements-evidence-inspection-response:v1', status, evidence: null } } }
+      : { data: {
+        artifact_id: '60000000-0000-4000-8000-000000000001', artifact_version: 1,
+        schema_version: 'requirements:v1', production_identity: 'requirements-review-v1', production_digest: 'a'.repeat(64),
+        workspace_id: '10000000-0000-4000-8000-000000000001', environment_id: '20000000-0000-4000-8000-000000000001',
+        work_item_id: '40000000-0000-4000-8000-000000000001', run_id: '30000000-0000-4000-8000-000000000001', state: 'candidate',
+        upstream_artifact_ids: [], predecessor_version: null, requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
+          schema_version: 'requirement:v1', category: 'functional', statement: 'Friday', constraints: [], uncertainty: null,
+          ambiguous_markers: [], missing_markers: [], state: 'candidate', review_state: 'needs_review', confidence: null,
+          source_refs: [{ source_object_id: '80000000-0000-0000-0000-000000000001', source_revision_id: '80000000-0000-0000-0000-000000000002', provenance_id: '80000000-0000-0000-0000-000000000003' }],
+          evidence_refs: [{ source_ref: { source_object_id: '80000000-0000-0000-0000-000000000001', source_revision_id: '80000000-0000-0000-0000-000000000002', provenance_id: '80000000-0000-0000-0000-000000000003' }, parsed_artifact_ref: { id: '80000000-0000-0000-0000-000000000004', schema_name: 'parsed-document', schema_version: 'parsed-document:v1' }, segment_id: '80000000-0000-0000-0000-000000000005', segment_digest: 'b'.repeat(64), locator: { kind: 'physical_line', line_number: 1, start_codepoint: 0, end_codepoint: 6 }, relationship: 'supports', validation: null }], evidence_status: 'unverified', upstream_artifact_ids: [] }],
+      } });
+
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <RequirementsArtifactCard client={{ GET: get }} queryKey={['workspace', 'run']} runId="30000000-0000-4000-8000-000000000001" />
+    </QueryClientProvider>);
+
+    await userEvent.click(await screen.findByRole('button', { name: /evidence/ }));
+    expect(await screen.findByText(new RegExp(status))).toBeVisible();
+    expect(screen.queryByText('protected text')).toBeNull();
   });
 });

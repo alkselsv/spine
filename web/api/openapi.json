@@ -1691,6 +1691,43 @@
         "title": "ApiResponseEnvelope[QASessionResponse]",
         "type": "object"
       },
+      "ApiResponseEnvelope_RequirementsEvidenceInspectionResponse_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/RequirementsEvidenceInspectionResponse"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "trace_id",
+          "data"
+        ],
+        "title": "ApiResponseEnvelope[RequirementsEvidenceInspectionResponse]",
+        "type": "object"
+      },
       "ArtifactRef": {
         "additionalProperties": false,
         "properties": {
@@ -8134,8 +8171,18 @@
             ],
             "title": "Locator"
           },
+          "locator_contract_version": {
+            "default": "locator:v1",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Locator Contract Version",
+            "type": "string"
+          },
           "parsed_artifact_ref": {
             "$ref": "#/components/schemas/ArtifactRef"
+          },
+          "relationship": {
+            "$ref": "#/components/schemas/RequirementEvidenceRelationship",
+            "default": "supports"
           },
           "segment_digest": {
             "pattern": "^[0-9a-f]{64}$",
@@ -8149,6 +8196,16 @@
           },
           "source_ref": {
             "$ref": "#/components/schemas/AcceptedSourceRevisionRef"
+          },
+          "validation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RequirementEvidenceValidation"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -8161,6 +8218,16 @@
         "title": "RequirementEvidenceRef",
         "type": "object"
       },
+      "RequirementEvidenceRelationship": {
+        "description": "The bounded relationship between a requirement and one evidence item.",
+        "enum": [
+          "supports",
+          "contradicts",
+          "context"
+        ],
+        "title": "RequirementEvidenceRelationship",
+        "type": "string"
+      },
       "RequirementEvidenceStatus": {
         "enum": [
           "referenced",
@@ -8168,6 +8235,72 @@
           "unsupported"
         ],
         "title": "RequirementEvidenceStatus",
+        "type": "string"
+      },
+      "RequirementEvidenceValidation": {
+        "additionalProperties": false,
+        "description": "Content-free validation lineage retained with a candidate artifact.",
+        "properties": {
+          "authorization_decision_reference": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authorization Decision Reference"
+          },
+          "schema_version": {
+            "const": "requirement-evidence-validation:v1",
+            "default": "requirement-evidence-validation:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RequirementEvidenceValidationStatus",
+            "default": "unverified"
+          },
+          "validated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validated At"
+          },
+          "validation_reference": {
+            "format": "uuid",
+            "title": "Validation Reference",
+            "type": "string"
+          }
+        },
+        "required": [
+          "validation_reference"
+        ],
+        "title": "RequirementEvidenceValidation",
+        "type": "object"
+      },
+      "RequirementEvidenceValidationStatus": {
+        "description": "Disclosure-safe result of validating one exact evidence reference.",
+        "enum": [
+          "unverified",
+          "valid",
+          "denied",
+          "stale",
+          "tombstoned",
+          "missing",
+          "locator_mismatch",
+          "fabricated",
+          "degraded"
+        ],
+        "title": "RequirementEvidenceValidationStatus",
         "type": "string"
       },
       "RequirementReviewState": {
@@ -8309,6 +8442,147 @@
         ],
         "title": "RequirementsArtifactVersionsResponse",
         "type": "object"
+      },
+      "RequirementsEvidenceInspectionEvidenceResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "authorization_decision_reference": {
+            "format": "uuid",
+            "title": "Authorization Decision Reference",
+            "type": "string"
+          },
+          "locator": {
+            "anyOf": [
+              {
+                "discriminator": {
+                  "mapping": {
+                    "ooxml_text": "#/components/schemas/OoxmlTextLocator",
+                    "page_text": "#/components/schemas/PageTextLocator",
+                    "physical_line": "#/components/schemas/PhysicalLineLocator",
+                    "xlsx_cell": "#/components/schemas/XlsxCellLocator"
+                  },
+                  "propertyName": "kind"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/PhysicalLineLocator"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PageTextLocator"
+                  },
+                  {
+                    "$ref": "#/components/schemas/OoxmlTextLocator"
+                  },
+                  {
+                    "$ref": "#/components/schemas/XlsxCellLocator"
+                  }
+                ]
+              },
+              {
+                "$ref": "#/components/schemas/GoogleSheetCellLocator"
+              }
+            ],
+            "title": "Locator"
+          },
+          "locator_contract_version": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Locator Contract Version",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "requirements-evidence-inspection-evidence:v1",
+            "default": "requirements-evidence-inspection-evidence:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "segment_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Segment Digest",
+            "type": "string"
+          },
+          "segment_id": {
+            "format": "uuid",
+            "title": "Segment Id",
+            "type": "string"
+          },
+          "source_object_id": {
+            "format": "uuid",
+            "title": "Source Object Id",
+            "type": "string"
+          },
+          "source_revision_id": {
+            "format": "uuid",
+            "title": "Source Revision Id",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "validation_reference": {
+            "format": "uuid",
+            "title": "Validation Reference",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_object_id",
+          "source_revision_id",
+          "segment_id",
+          "segment_digest",
+          "locator_contract_version",
+          "locator",
+          "text",
+          "validation_reference",
+          "authorization_decision_reference"
+        ],
+        "title": "RequirementsEvidenceInspectionEvidenceResponse",
+        "type": "object"
+      },
+      "RequirementsEvidenceInspectionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RequirementsEvidenceInspectionEvidenceResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "schema_version": {
+            "const": "requirements-evidence-inspection-response:v1",
+            "default": "requirements-evidence-inspection-response:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RequirementsEvidenceInspectionStatus"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "RequirementsEvidenceInspectionResponse",
+        "type": "object"
+      },
+      "RequirementsEvidenceInspectionStatus": {
+        "enum": [
+          "available",
+          "denied",
+          "stale",
+          "tombstoned",
+          "missing",
+          "locator_mismatch",
+          "fabricated",
+          "degraded"
+        ],
+        "title": "RequirementsEvidenceInspectionStatus",
+        "type": "string"
       },
       "RestoreQASessionRequest": {
         "additionalProperties": false,
@@ -9686,6 +9960,186 @@
           }
         ],
         "summary": "Artifacts.Requirements.Read"
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/requirements/{requirement_id}/evidence/{segment_id}": {
+      "get": {
+        "operationId": "artifacts.requirements.evidence.inspect",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "requirement_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Requirement Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "segment_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Segment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "artifact_version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Artifact Version"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseEnvelope_RequirementsEvidenceInspectionResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Artifacts.Requirements.Evidence.Inspect"
       }
     },
     "/api/v1/artifacts/{artifact_id}/versions": {

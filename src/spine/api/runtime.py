@@ -51,6 +51,10 @@ from spine.application.persisted_workflow_runs import (
     PersistedWorkflowRunAdmissionService,
 )
 from spine.application.requirements_artifacts import PersistedRequirementsArtifactService
+from spine.application.requirements_evidence import (
+    PersistedRequirementsEvidenceResolver,
+    RequirementsEvidenceValidationService,
+)
 from spine.application.workflow_runs import (
     ConfiguredWorkflowVersionResolver,
     PinnedWorkflowVersion,
@@ -313,6 +317,20 @@ def create_production_app(
     qa_stream = AuthorizedQAStreamService(event_log=InMemoryQAEventLog())
     ask_admission = PersistedAskAdmissionService(persistence.uow_factory)
     qa_sessions = PostgreSQLQASessionService(persistence.uow_factory)
+    requirements_evidence_service = RequirementsEvidenceValidationService(
+        resolver=PersistedRequirementsEvidenceResolver(
+            uow_factory=persistence.uow_factory,
+            parsed_artifacts=ingestion.parsed_artifacts,
+        ),
+        authorizer=ProductionParsedContentAuthorizer(
+            uow_factory=persistence.uow_factory,
+            authority_resolver=PostgreSQLQualificationAuthorityResolver(sessions),
+        ),
+        decision_audit=UnitOfWorkParsedContentDecisionAudit(
+            uow_factory=persistence.uow_factory,
+            audit_events=audit_registry,
+        ),
+    )
     application = create_app(
         authorization_runtime=authorization,
         diagnostic_registry=diagnostic_registry,
@@ -379,8 +397,10 @@ def create_production_app(
             persistence.uow_factory
         ),
         requirements_artifact_service=PersistedRequirementsArtifactService(
-            persistence.uow_factory
+            persistence.uow_factory,
+            evidence_validation_service=requirements_evidence_service,
         ),
+        requirements_evidence_service=requirements_evidence_service,
         workflow_version_resolver=ConfiguredWorkflowVersionResolver(
             resolved_api.workflow_versions
         ),
