@@ -17,8 +17,23 @@ def test_google_live_qualification_is_run_through_sanitized_cli_harness() -> Non
 
     config_path = os.environ.get("SPINE_GOOGLE_LIVE_CONFIG")
     report_path = os.environ.get("SPINE_GOOGLE_LIVE_REPORT")
-    if not config_path or not report_path:
-        pytest.skip("approved live config and report paths are required")
+    composition = os.environ.get("SPINE_GOOGLE_LIVE_COMPOSITION")
+    if not config_path or not report_path or not composition:
+        pytest.skip(
+            "approved live config, report and composition references are required"
+        )
     from spine.scripts.google_live_qualification import main
 
-    assert main(["--config", config_path, "--report", report_path]) == 0
+    assert (
+        main(
+            [
+                "--config",
+                config_path,
+                "--report",
+                report_path,
+                "--composition",
+                composition,
+            ]
+        )
+        == 0
+    )
