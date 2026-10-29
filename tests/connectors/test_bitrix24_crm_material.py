@@ -145,16 +145,27 @@ async def test_crm_reader_rejects_unapproved_entity_and_never_calls_provider() -
 
 
 @pytest.mark.asyncio
-async def test_crm_reader_rejects_missing_scope_mismatched_file_and_cross_workspace() -> None:
+async def test_crm_reader_rejects_missing_scope_before_provider_access() -> None:
     service = FakeCrmService()
-    for command in (
-        _command(resource_scope_reference=OpaqueProviderReference(value=_id(99))),
-        _command(workspace_id=_id(44)),
-    ):
-        with pytest.raises(ValueError):
-            await _adapter(service).read(_connection(), command)
+    with pytest.raises(ValueError, match="resource scope"):
+        await _adapter(service).read(
+            _connection(),
+            _command(resource_scope_reference=OpaqueProviderReference(value=_id(99))),
+        )
     assert service.calls == []
 
+
+@pytest.mark.asyncio
+async def test_crm_reader_rejects_cross_workspace_before_provider_access() -> None:
+    service = FakeCrmService()
+    with pytest.raises(ValueError, match="trusted connection scope"):
+        await _adapter(service).read(_connection(), _command(workspace_id=_id(44)))
+    assert service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_crm_reader_rejects_mismatched_attachment_file() -> None:
+    service = FakeCrmService()
     with pytest.raises(Bitrix24CrmMaterialNotFoundError):
         await _adapter(service).read(_connection(), _command(disk_file_id="different-file"))
 
@@ -163,7 +174,8 @@ def test_crm_capability_is_conditional_and_does_not_enable_unrelated_management(
     capabilities = {
         capability.kind: capability
         for capability in bitrix24_crm_capability(
-            qualification_reference=OpaqueProviderReference(value=_id(10))
+            qualification_reference=OpaqueProviderReference(value=_id(10)),
+            approved_entity_types=("deal",),
         )
     }
     assert capabilities[ProviderCapabilityKind.CRM].status is ProviderCapabilityStatus.SUPPORTED

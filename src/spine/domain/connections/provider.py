@@ -12,6 +12,15 @@ from spine.domain.common import DefinitionModel
 from spine.domain.connections.google import GoogleConnection
 
 
+def _normalize_crm_entity_types(values: tuple[str, ...]) -> tuple[str, ...]:
+    normalized = tuple(value.strip().lower() for value in values)
+    if any(not value for value in normalized):
+        raise ValueError("approved CRM entity types must not be empty")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("approved CRM entity types must be unique")
+    return tuple(sorted(normalized))
+
+
 def _non_nil_uuid(value: UUID, info: ValidationInfo) -> UUID:
     if value.int == 0:
         raise ValueError(f"{info.field_name} must be a non-nil UUID")
@@ -161,12 +170,7 @@ class ProviderConnection(DefinitionModel):
     @field_validator("approved_crm_entity_types")
     @classmethod
     def _validate_crm_entity_types(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        normalized = tuple(value.strip().lower() for value in values)
-        if any(not value for value in normalized):
-            raise ValueError("approved CRM entity types must not be empty")
-        if len(set(normalized)) != len(normalized):
-            raise ValueError("approved CRM entity types must be unique")
-        return tuple(sorted(normalized))
+        return _normalize_crm_entity_types(values)
 
     @model_validator(mode="after")
     def _validate_version_history(self) -> "ProviderConnection":
@@ -233,12 +237,7 @@ class ProviderConnectionApproval(DefinitionModel):
     @field_validator("approved_crm_entity_types")
     @classmethod
     def _validate_crm_entity_types(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        normalized = tuple(value.strip().lower() for value in values)
-        if any(not value for value in normalized):
-            raise ValueError("approved CRM entity types must not be empty")
-        if len(set(normalized)) != len(normalized):
-            raise ValueError("approved CRM entity types must be unique")
-        return tuple(sorted(normalized))
+        return _normalize_crm_entity_types(values)
 
 
 def google_v1_connection_to_v2(

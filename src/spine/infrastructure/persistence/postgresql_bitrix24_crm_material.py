@@ -182,8 +182,20 @@ class PostgreSQLBitrix24CrmMaterialAssociationRepository:
                     index_elements=[bitrix24_crm_material_revocations.c.revocation_id]
                 )
             )
+            persisted_result = await uow._execute(
+                select(bitrix24_crm_material_revocations).where(
+                    bitrix24_crm_material_revocations.c.revocation_id
+                    == revocation.revocation_id
+                )
+            )
+            persisted_row = persisted_result.mappings().one_or_none()
+            if persisted_row is None:
+                raise ValueError("CRM material revocation was not persisted")
+            persisted = _revocation_from_row(persisted_row)
+            if persisted != revocation:
+                raise ValueError("CRM material revocation identity conflicts with persisted evidence")
             await uow.commit()
-            return Bitrix24CrmMaterialHandoff(claim=claim, revocation=revocation)
+            return Bitrix24CrmMaterialHandoff(claim=claim, revocation=persisted)
 
     async def resolve_handoff(self, claim_id: UUID) -> Bitrix24CrmMaterialHandoff | None:
         async with self._uow("bitrix24_crm_material_read", claim_id) as uow:

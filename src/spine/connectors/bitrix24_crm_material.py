@@ -5,12 +5,14 @@ from __future__ import annotations
 from datetime import datetime
 import hashlib
 import json
+from collections.abc import Callable
 from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import ConfigDict, Field, StrictInt, field_validator, model_validator
 
 from spine.domain.common import DefinitionModel
+from spine.domain.sources import Bitrix24CrmMaterialClaim
 from spine.domain.connections.provider import (
     OpaqueProviderReference,
     ProviderCapability,
@@ -233,7 +235,9 @@ class Bitrix24CrmMaterialObservation(DefinitionModel):
 
 
 def bitrix24_crm_capability(
-    *, qualification_reference: OpaqueProviderReference
+    *,
+    qualification_reference: OpaqueProviderReference,
+    approved_entity_types: tuple[str, ...],
 ) -> tuple[ProviderCapability, ...]:
     """Return the conditional CRM capability declaration.
 
@@ -242,6 +246,8 @@ def bitrix24_crm_capability(
     approved entity scope have been configured.
     """
 
+    if not approved_entity_types or any(not value.strip() for value in approved_entity_types):
+        raise ValueError("supported CRM capability requires an approved entity scope")
     return (
         ProviderCapability(
             kind=ProviderCapabilityKind.CRM,
@@ -253,10 +259,8 @@ def bitrix24_crm_capability(
 
 def bitrix24_crm_claim_from_observation(
     observation: Bitrix24CrmMaterialObservation,
-):
+) -> Bitrix24CrmMaterialClaim:
     """Map the untrusted connector result into the immutable domain claim."""
-
-    from spine.domain.sources import Bitrix24CrmMaterialClaim
 
     return Bitrix24CrmMaterialClaim(
         claim_id=uuid5(
@@ -291,7 +295,7 @@ class Bitrix24CrmMaterialAdapter:
         *,
         service: Bitrix24CrmMaterialService,
         profile: Bitrix24CrmMaterialReadProfile,
-        clock,
+        clock: Callable[[], datetime],
     ) -> None:
         self._service = service
         self._profile = profile

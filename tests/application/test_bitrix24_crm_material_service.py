@@ -65,20 +65,25 @@ class Repository:
         self.handoffs: dict[UUID, Bitrix24CrmMaterialHandoff] = {}
         self.target_valid = True
 
-    async def record_claim(self, claim):
+    async def record_claim(self, claim: Bitrix24CrmMaterialClaim) -> Bitrix24CrmMaterialClaim:
         existing = self.claims.setdefault(claim.claim_id, claim)
         if existing != claim:
             raise ValueError("claim identity conflict")
         return existing
 
-    async def resolve_claim(self, claim_id):
+    async def resolve_claim(self, claim_id: UUID) -> Bitrix24CrmMaterialClaim | None:
         return self.claims.get(claim_id)
 
-    async def validate_target(self, claim):
+    async def validate_target(self, claim: Bitrix24CrmMaterialClaim) -> None:
         if not self.target_valid:
             raise ValueError("target Disk revision is stale or inaccessible")
 
-    async def accept_claim(self, *, claim_id, acceptance):
+    async def accept_claim(
+        self,
+        *,
+        claim_id: UUID,
+        acceptance: Bitrix24CrmMaterialAcceptance,
+    ) -> Bitrix24CrmMaterialHandoff:
         claim = self.claims[claim_id]
         existing = self.handoffs.get(claim_id)
         handoff = Bitrix24CrmMaterialHandoff(claim=claim, acceptance=acceptance)
@@ -87,13 +92,20 @@ class Repository:
         self.handoffs[claim_id] = handoff
         return handoff
 
-    async def revoke_claim(self, revocation):
+    async def revoke_claim(
+        self, revocation: Bitrix24CrmMaterialRevocation
+    ) -> Bitrix24CrmMaterialHandoff:
         claim = self.claims[revocation.claim_id]
+        existing = self.handoffs.get(revocation.claim_id)
+        if existing is not None and existing.revocation is not None:
+            if existing.revocation != revocation:
+                raise ValueError("revocation identity conflict")
+            return existing
         handoff = Bitrix24CrmMaterialHandoff(claim=claim, revocation=revocation)
         self.handoffs[revocation.claim_id] = handoff
         return handoff
 
-    async def resolve_handoff(self, claim_id):
+    async def resolve_handoff(self, claim_id: UUID) -> Bitrix24CrmMaterialHandoff | None:
         return self.handoffs.get(claim_id)
 
 
@@ -136,17 +148,43 @@ async def test_relation_revocation_remains_visible_after_acceptance() -> None:
     await service.observe(claim)
     await service.accept(claim_id=claim.claim_id, acceptance=_acceptance())
 
-    revoked = await service.revoke(
-        Bitrix24CrmMaterialRevocation(
-            revocation_id=_id(12),
-            claim_id=claim.claim_id,
-            workspace_id=claim.workspace_id,
-            environment_id=claim.environment_id,
-            state=Bitrix24CrmMaterialState.RELATION_REVOKED,
-            reason="activity_attachment_removed",
-            observed_at=NOW,
-        )
+    revocation = Bitrix24CrmMaterialRevocation(
+        revocation_id=_id(12),
+        claim_id=claim.claim_id,
+        workspace_id=claim.workspace_id,
+        environment_id=claim.environment_id,
+        state=Bitrix24CrmMaterialState.RELATION_REVOKED,
+        reason="activity_attachment_removed",
+        observed_at=NOW,
     )
+    revoked = await service.revoke(revocation)
+    replay = await service.revoke(revocation)
 
     assert revoked.state is Bitrix24CrmMaterialState.RELATION_REVOKED
     assert revoked.claim == claim
+    assert replay == revoked
+
+
+@pytest.mark.asyncio
+async def test_two_workspaces_keep_claims_isolated() -> None:
+    repository = Repository()
+    service = Bitrix24CrmMaterialAssociationService(repository)
+    first = _claim()
+    second = first.model_copy(
+        update={
+            "claim_id": _id(101),
+            "workspace_id": _id(102),
+            "environment_id": _id(103),
+            "connection_id": _id(104),
+            "connection_version_id": _id(105),
+            "resource_scope_reference": _id(106),
+            "target_source_object_id": _id(107),
+            "target_source_revision_id": _id(108),
+        }
+    )
+
+    first_handoff = await service.observe(first)
+    second_handoff = await service.observe(second)
+
+    assert first_handoff.claim.workspace_id != second_handoff.claim.workspace_id
+    assert await service.observe(first) == first_handoff
