@@ -4090,7 +4090,7 @@ export interface components {
          * ProviderCapabilityKind
          * @enum {string}
          */
-        ProviderCapabilityKind: "enumeration" | "metadata_read" | "binary_read" | "tabular_read" | "structured_read" | "stable_identity" | "incremental_change_discovery" | "full_reconciliation" | "lifecycle_evidence" | "health_diagnostics";
+        ProviderCapabilityKind: "enumeration" | "metadata_read" | "binary_read" | "tabular_read" | "structured_read" | "stable_identity" | "incremental_change_discovery" | "full_reconciliation" | "lifecycle_evidence" | "health_diagnostics" | "crm";
         /** ProviderCapabilityResponse */
         ProviderCapabilityResponse: {
             kind: components["schemas"]["ProviderCapabilityKind"];
