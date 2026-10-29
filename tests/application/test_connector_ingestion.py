@@ -17,7 +17,7 @@ from spine.application.connector_ingestion import (
     build_connector_canonical_acceptance_command,
 )
 from spine.application.connections.google import GoogleReadCommand
-from spine.application.connections.provider import ProviderReadAdmission, ProviderReadCommand
+from spine.application.connections.provider import ProviderReadAdmission
 from spine.application.google_sheets_reconciliation import (
     ConnectorGoogleSheetsCanonicalIngestion,
     GoogleSheetsAdmittedPageReader,
@@ -70,6 +70,10 @@ from spine.connectors.yandex_disk import (
     YandexDiskResource,
     YandexDiskResourcePage,
     yandex_disk_capabilities,
+)
+from spine.connectors.files.mounted_filesystem import (
+    MountedFilesystemObservationReader,
+    MountedFilesystemRoot,
 )
 from spine.domain.ingestion import (
     IngestionItemState,
@@ -986,6 +990,98 @@ async def test_yandex_file_replay_keeps_one_immutable_revision_and_projection_ef
 
 async def _async_none() -> None:
     return None
+
+
+@pytest.mark.asyncio
+async def test_mounted_filesystem_observation_reaches_canonical_path_with_stable_replay(
+    tmp_path,
+):
+    root = tmp_path / "mounted"
+    (root / "guides").mkdir(parents=True)
+    (root / "guides" / "safety.md").write_text("Read-only source content.\n")
+    connection_version_id = _id("mounted-filesystem-connection-version")
+    scope_reference = OpaqueProviderReference(value=SCOPE)
+    connection = ProviderConnection(
+        connection_version_id=connection_version_id,
+        connection_id=CONNECTION,
+        approval_id=_id("mounted-filesystem-approval"),
+        version=1,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        service_principal_id=_id("service"),
+        provider_kind=ProviderKind.MOUNTED_FILESYSTEM,
+        credential_reference=OpaqueProviderReference(
+            value=_id("mounted-filesystem-credential-reference")
+        ),
+        grant_reference=OpaqueProviderReference(
+            value=_id("mounted-filesystem-grant-reference")
+        ),
+        approved_resource_scope_references=(scope_reference,),
+        authorization_generation=7,
+        configuration_generation=11,
+        status=ProviderConnectionStatus.ACTIVE,
+    )
+    qualification = OpaqueProviderReference(
+        value=_id("mounted-filesystem-read-qualification")
+    )
+    connection = connection.model_copy(
+        update={
+            "capabilities": (
+                ProviderCapability(
+                    kind=ProviderCapabilityKind.BINARY_READ,
+                    status=ProviderCapabilityStatus.SUPPORTED,
+                    qualification_reference=qualification,
+                ),
+            )
+        }
+    )
+    provider = MountedFilesystemObservationReader(
+        roots={
+            connection_version_id: MountedFilesystemRoot(
+                resource_scope_reference=scope_reference,
+                path=root,
+            )
+        },
+        clock=lambda: NOW,
+    )
+
+    class Repository:
+        @asynccontextmanager
+        async def admit_read(self, read_command, context):
+            del read_command, context
+            yield connection
+
+    observation_reader = ProviderAuthorizedObservationReader(
+        admission=ProviderReadAdmission(repository=Repository(), provider=provider),
+        connection_version_id=connection_version_id,
+        required_capabilities=(ProviderCapabilityKind.BINARY_READ,),
+    )
+    orchestrator, _, uploader, ingestion, uow = _orchestrator(
+        reader=observation_reader
+    )
+    command = _command("mounted-filesystem-ingestion").model_copy(
+        update={"resource_object_reference": "guides/safety.md"}
+    )
+
+    first = await orchestrator.ingest(command)
+    replay = await orchestrator.ingest(command)
+
+    assert first.source.external_generation == "mounted-path:v1"
+    assert first.source.external_object_id == (
+        first.observation.external_identity.external_object_id
+    )
+    assert replay.source == first.source
+    assert replay.revision == first.revision
+    assert replay.processing_receipt.processing_receipt_id == (
+        first.processing_receipt.processing_receipt_id
+    )
+    assert first.revision.original_sha256 == hashlib.sha256(
+        b"Read-only source content.\n"
+    ).hexdigest()
+    assert uow.accepted == 1
+    assert uploader.calls == 2
+    assert len(uow.events) == 1
+    assert ingestion.receipt == replay.processing_receipt
 
 
 @pytest.mark.asyncio
