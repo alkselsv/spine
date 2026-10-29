@@ -368,7 +368,7 @@ def workflow_run_snapshot(run: WorkflowRun) -> WorkflowRunSnapshot:
         ...,
     ] = ()
     if run.state.value not in {"completed", "failed", "cancelled"}:
-        allowed_commands = ("add_context", "cancel")
+        allowed_commands = ("add_context",)
         if run.workflow_key == "commercial.requirements":
             allowed_commands += (
                 "edit_requirement",
@@ -376,7 +376,7 @@ def workflow_run_snapshot(run: WorkflowRun) -> WorkflowRunSnapshot:
                 "request_rework",
             )
             if run.state.value == "waiting":
-                allowed_commands += ("answer_clarification",)
+                allowed_commands += ("answer_clarification", "cancel")
     return WorkflowRunSnapshot(
         run_id=run.run_id,
         work_item_id=run.work_item_id,

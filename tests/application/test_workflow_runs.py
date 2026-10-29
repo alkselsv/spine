@@ -249,6 +249,8 @@ def test_requirements_review_commands_are_only_advertised_for_requirements_runs(
         "edit_requirement",
         "save_review",
         "request_rework",
+        "answer_clarification",
+        "cancel",
     )
 
 
