@@ -295,6 +295,52 @@ async def test_drive_snapshot_and_changes_map_every_provider_page() -> None:
 
 
 @pytest.mark.asyncio
+async def test_drive_changes_exclude_unrelated_folder_items_from_read_authority() -> (
+    None
+):
+    resolver = RecordingCredentialResolver()
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={
+                    "newStartPageToken": "start-10",
+                    "changes": [
+                        {
+                            "changeId": "unrelated-change",
+                            "fileId": "unrelated-file",
+                            "removed": False,
+                            "file": {
+                                "id": "unrelated-file",
+                                "version": "1",
+                                "trashed": False,
+                                "parents": ["different-folder"],
+                            },
+                        }
+                    ],
+                },
+            ),
+        ]
+    )
+    service = _service(resolver, transport)
+
+    page = await service.list_changes(
+        _connection(), RESOURCE_SCOPE, "approved-change-token"
+    )
+
+    assert page.changes == ()
+    with pytest.raises(GoogleResourceScopeError):
+        await service.get_metadata_for_file(
+            _connection(), RESOURCE_SCOPE, "unrelated-file"
+        )
+    assert len(transport.requests) == 2
+
+
+@pytest.mark.asyncio
 async def test_drive_download_and_export_preserve_bytes_and_media_type() -> None:
     resolver = RecordingCredentialResolver()
     transport = RecordingTransport(
@@ -390,6 +436,62 @@ async def test_revoked_refresh_grant_maps_to_sanitized_authorization_outcome() -
     assert "desktop-refresh-token" not in str(raised.value)
     assert "invalid_grant" not in str(raised.value)
     assert len(transport.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reason", "error_type"),
+    (
+        ("invalid_client", GoogleProviderAuthorizationError),
+        ("invalid_scope", GoogleProviderPolicyError),
+        ("unsupported_grant_type", GoogleProviderContractError),
+    ),
+)
+async def test_nonretryable_oauth_failures_are_typed_without_retry(
+    reason, error_type
+) -> None:
+    transport = RecordingTransport(
+        [GoogleApiResponse(status_code=400, json_body={"error": reason})]
+    )
+
+    with pytest.raises(error_type):
+        await _service(RecordingCredentialResolver(), transport).get_metadata_for_file(
+            _connection(), RESOURCE_SCOPE, "file-1"
+        )
+
+    assert len(transport.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_transient_oauth_transport_failure_retries_with_sanitized_event() -> None:
+    observer = RecordingRetryObserver()
+    transport = RecordingTransport(
+        [
+            GoogleProviderReadError(),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={
+                    "id": "file-1",
+                    "name": "Recovered",
+                    "mimeType": "text/plain",
+                    "version": "2",
+                },
+            ),
+        ]
+    )
+
+    result = await _service(
+        RecordingCredentialResolver(), transport, retry_observer=observer
+    ).get_metadata_for_file(_connection(), RESOURCE_SCOPE, "file-1")
+
+    assert result.version == "2"
+    assert [(event.operation, event.reason) for event in observer.events] == [
+        ("oauth", "transient")
+    ]
 
 
 @pytest.mark.asyncio
@@ -842,6 +944,30 @@ async def test_credential_resolver_failure_is_sanitized_before_transport() -> No
             2,
         ),
         (
+            [
+                GoogleApiResponse(
+                    status_code=403,
+                    json_body={
+                        "error": {
+                            "status": "PERMISSION_DENIED",
+                            "errors": [{"reason": "rateLimitExceeded"}],
+                        }
+                    },
+                ),
+                GoogleApiResponse(
+                    status_code=403,
+                    json_body={
+                        "error": {
+                            "status": "PERMISSION_DENIED",
+                            "errors": [{"reason": "rateLimitExceeded"}],
+                        }
+                    },
+                ),
+            ],
+            GoogleProviderQuotaError,
+            2,
+        ),
+        (
             [GoogleApiResponse(status_code=400, json_body={"error": {}})],
             GoogleProviderContractError,
             1,
@@ -881,3 +1007,40 @@ async def test_provider_failures_are_typed_and_only_retryable_failures_retry(
         assert event.environment_id == _connection().environment_id
         assert event.connection_id == _connection().connection_id
         assert event.operation == "provider"
+        assert event.schema_version == "google-api-retry:v1"
+
+
+@pytest.mark.asyncio
+async def test_retry_observer_failure_does_not_change_provider_retry_outcome() -> None:
+    class FailingRetryObserver:
+        async def record_retry(self, event):
+            del event
+            raise RuntimeError("diagnostic sink unavailable")
+
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(status_code=503, json_body={"error": {}}),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={
+                    "id": "file-1",
+                    "name": "Recovered",
+                    "mimeType": "text/plain",
+                    "version": "2",
+                },
+            ),
+        ]
+    )
+
+    result = await _service(
+        RecordingCredentialResolver(),
+        transport,
+        retry_observer=FailingRetryObserver(),
+    ).get_metadata_for_file(_connection(), RESOURCE_SCOPE, "file-1")
+
+    assert result.version == "2"
+    assert len(transport.requests) == 3

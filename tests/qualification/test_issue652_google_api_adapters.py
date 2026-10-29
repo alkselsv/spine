@@ -15,6 +15,7 @@ SCENARIOS: dict[str, tuple[str, ...]] = {
     ),
     "drive_snapshot_changes_pagination": (
         "tests/connectors/test_google_api.py::test_drive_snapshot_and_changes_map_every_provider_page",
+        "tests/connectors/test_google_api.py::test_drive_changes_exclude_unrelated_folder_items_from_read_authority",
     ),
     "sheets_representations_metadata_pagination": (
         "tests/connectors/test_google_api.py::test_sheets_range_page_preserves_representations_metadata_and_pagination",

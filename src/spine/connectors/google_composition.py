@@ -14,6 +14,9 @@ from spine.application.diagnostics import (
     DiagnosticEventRegistry,
     DiagnosticSink,
 )
+from spine.application.google_sheets_reconciliation import (
+    GoogleSheetsAdmittedPageReader,
+)
 from spine.connectors.google_api import (
     GoogleApiEndpoints,
     GoogleApiRequestPolicy,
@@ -42,11 +45,10 @@ from spine.connectors.google_sheets import (
 class GoogleApiReaderComposition:
     """Concrete service wired only through the existing admitted reader seams."""
 
-    service: GoogleApiService
     drive_observation_reader: GoogleDriveObservationReader
     drive_snapshot_reader: GoogleDriveInitialSnapshotReader
     drive_incremental_reader: GoogleDriveIncrementalReader
-    sheets_reconciliation_admission: GoogleReadAdmission[GoogleSheetsProviderPage]
+    sheets_reconciliation_reader: GoogleSheetsAdmittedPageReader
 
 
 def compose_google_api_readers(
@@ -103,7 +105,6 @@ def compose_google_api_readers(
         )
     )
     return GoogleApiReaderComposition(
-        service=service,
         drive_observation_reader=GoogleDriveObservationReader(
             admission=drive_admission
         ),
@@ -116,7 +117,7 @@ def compose_google_api_readers(
             connection_repository=connection_repository,
             service=service,
         ),
-        sheets_reconciliation_admission=sheets_admission,
+        sheets_reconciliation_reader=GoogleSheetsAdmittedPageReader(sheets_admission),
     )
 
 

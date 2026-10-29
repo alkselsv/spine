@@ -468,6 +468,8 @@ class GoogleSheetsProviderAdapter(GoogleProvider[GoogleSheetsObservation]):
     def _select_rows(
         self, snapshot: GoogleSheetsSnapshot, connection_id: UUID
     ) -> list[tuple[GoogleSheetRowOriginal, GoogleSheetRowLocation]]:
+        if not snapshot.rows:
+            return []
         identities: dict[str, int] = {}
         candidates: list[tuple[GoogleSheetRowOriginal, GoogleSheetRowLocation]] = []
         configured = {column.column_key: column for column in self.profile.columns}
@@ -477,7 +479,11 @@ class GoogleSheetsProviderAdapter(GoogleProvider[GoogleSheetsObservation]):
                 missing = sorted(set(configured) - set(cells))[0]
                 raise GoogleSheetsUnsafeIdentityError(
                     "configured Sheets column is missing",
-                    code="missing_business_id" if missing == self.profile.business_id_column else "invalid_identity",
+                    code=(
+                        "missing_business_id"
+                        if missing == self.profile.business_id_column
+                        else "invalid_identity"
+                    ),
                 )
             for column in self.profile.columns:
                 if (

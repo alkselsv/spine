@@ -9,6 +9,9 @@ import pytest
 
 from spine.application.connections.google import GoogleConnectionDeniedError
 from spine.application.diagnostics import DiagnosticEventRegistry
+from spine.application.google_sheets_reconciliation import (
+    GoogleSheetsAdmittedPageReader,
+)
 from spine.application.persistence import (
     EnvironmentScope,
     PersistenceOperation,
@@ -108,6 +111,9 @@ async def test_production_composition_denies_before_credentials_and_transport() 
         sleep=lambda _delay: _completed_sleep(),
         drive_profile=DriveFileReadProfile(),
         sheet_profiles=(),
+    )
+    assert isinstance(
+        composition.sheets_reconciliation_reader, GoogleSheetsAdmittedPageReader
     )
     boundary = TrustedContextBoundary.for_testing(
         issuer_id=_id(90), secret=b"issue-652-composition-secret-0001"

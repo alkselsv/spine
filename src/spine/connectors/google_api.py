@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import re
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlsplit
 from uuid import UUID
 
@@ -249,11 +249,12 @@ class GoogleApiTransport(Protocol):
 class GoogleApiRetryEvent:
     """Sanitized tenant-scoped evidence for one bounded HTTP retry."""
 
+    schema_version: Literal["google-api-retry:v1"]
     workspace_id: UUID
     environment_id: UUID
     connection_id: UUID
-    operation: str
-    reason: str
+    operation: Literal["oauth", "provider"]
+    reason: Literal["quota", "reauthorize", "transient"]
     attempt: int
     max_attempts: int
 
@@ -558,10 +559,7 @@ class GoogleApiService:
         raw_changes = payload.get("changes", [])
         if not isinstance(raw_changes, list):
             raise GoogleProviderContractError("Google provider response is invalid.")
-        changes = tuple(_drive_change(item) for item in raw_changes)
-        self._discovered_files.setdefault(
-            self._scope_key(connection, scope), set()
-        ).update(change.file_id for change in changes if not change.removed)
+        changes = self._scoped_changes(connection, scope, raw_changes)
         return DriveChangePage(
             page_token=page_token,
             next_page_token=_optional_string(payload, "nextPageToken"),
@@ -571,6 +569,37 @@ class GoogleApiService:
             ),
             changes=changes,
         )
+
+    def _scoped_changes(
+        self,
+        connection: GoogleConnection,
+        scope: GoogleResourceScope,
+        raw_changes: list[Any],
+    ) -> tuple[DriveChange, ...]:
+        discovered = self._discovered_files.setdefault(
+            self._scope_key(connection, scope), set()
+        )
+        scoped: list[DriveChange] = []
+        for raw_change in raw_changes:
+            change = _drive_change(raw_change)
+            previously_in_scope = change.file_id in discovered
+            explicitly_allowed = change.file_id in scope.allowed_file_ids
+            in_folder = (
+                scope.folder_id is not None
+                and scope.folder_id in change.parent_ids
+                and not change.removed
+                and not change.trashed
+            )
+            in_drive = scope.drive_id is not None and not change.removed
+            currently_in_scope = explicitly_allowed or in_folder or in_drive
+            if not currently_in_scope and not previously_in_scope:
+                continue
+            if currently_in_scope:
+                discovered.add(change.file_id)
+            else:
+                discovered.discard(change.file_id)
+            scoped.append(change.model_copy(update={"in_scope": currently_in_scope}))
+        return tuple(scoped)
 
     async def get_provider_version(
         self,
@@ -851,45 +880,70 @@ class GoogleApiService:
         for attempt in range(self._policy.max_attempts):
             try:
                 response = await self._transport.request(request)
-            except (TimeoutError, asyncio.TimeoutError):
+            except (
+                TimeoutError,
+                asyncio.TimeoutError,
+                GoogleProviderReadError,
+            ):
                 response = None
             if response is not None and 200 <= response.status_code < 300:
                 return response
-            if response is not None and (
-                response.status_code in {400, 401}
-                and _provider_reason(response)
-                in {
+            if response is not None and response.status_code < 500:
+                reason = _provider_reason(response)
+                if response.status_code == 401 or reason in {
                     "invalid_grant",
                     "token_revoked",
                     "access_revoked",
                     "grant_revoked",
-                }
-            ):
-                raise GoogleProviderAuthorizationError()
+                    "invalid_client",
+                    "unauthorized_client",
+                }:
+                    raise GoogleProviderAuthorizationError()
+                if response.status_code == 403 or reason == "invalid_scope":
+                    raise GoogleProviderPolicyError()
+                if response.status_code != 429:
+                    raise GoogleProviderContractError(
+                        "Google OAuth request was rejected."
+                    )
             if attempt + 1 == self._policy.max_attempts:
+                if response is not None and response.status_code == 429:
+                    raise GoogleProviderQuotaError()
                 raise GoogleProviderReadError()
-            await self._record_retry(connection, "oauth", "transient", attempt)
+            reason = (
+                "quota"
+                if response is not None and response.status_code == 429
+                else "transient"
+            )
+            await self._record_retry(connection, "oauth", reason, attempt)
             await self._sleep(self._policy.backoff_seconds[attempt])
         raise AssertionError("bounded OAuth request must return or raise")
 
     async def _record_retry(
         self,
         connection: GoogleConnection,
-        operation: str,
-        reason: str,
+        operation: Literal["oauth", "provider"],
+        reason: Literal["quota", "reauthorize", "transient"],
         zero_based_attempt: int,
     ) -> None:
-        await self._retry_observer.record_retry(
-            GoogleApiRetryEvent(
-                workspace_id=connection.workspace_id,
-                environment_id=connection.environment_id,
-                connection_id=connection.connection_id,
-                operation=operation,
-                reason=reason,
-                attempt=zero_based_attempt + 1,
-                max_attempts=self._policy.max_attempts,
+        try:
+            await self._retry_observer.record_retry(
+                GoogleApiRetryEvent(
+                    schema_version="google-api-retry:v1",
+                    workspace_id=connection.workspace_id,
+                    environment_id=connection.environment_id,
+                    connection_id=connection.connection_id,
+                    operation=operation,
+                    reason=reason,
+                    attempt=zero_based_attempt + 1,
+                    max_attempts=self._policy.max_attempts,
+                )
             )
-        )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Low-level attempt diagnostics are best effort. Durable business retry
+            # outcomes remain owned by the canonical sync coordinator.
+            return
 
     async def _access_token(self, connection: GoogleConnection) -> str:
         now = self._clock()
@@ -1047,14 +1101,14 @@ def _provider_reason(response: GoogleApiResponse) -> str:
         return error.lower()
     if not isinstance(error, Mapping):
         return ""
-    status = error.get("status")
-    if isinstance(status, str):
-        return status.lower()
     errors = error.get("errors")
     if isinstance(errors, list) and errors and isinstance(errors[0], Mapping):
         reason = errors[0].get("reason")
         if isinstance(reason, str):
             return reason.lower()
+    status = error.get("status")
+    if isinstance(status, str):
+        return status.lower()
     return ""
 
 
