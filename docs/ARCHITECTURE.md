@@ -2537,3 +2537,11 @@ tombstoned, fabricated and degraded resolutions are content-free. The
 immutable candidate may retain validation status and decision lineage, but the
 boundary never rewrites source facts or substitutes a newer revision. ADR-0048
 defines this contract.
+
+### Governed transcript publication boundary
+
+Transcript publication is a separate tenant-scoped transition: `TimeRangeLocator`
+pins the exact audio `SourceRevision` and transcript artifact/version, an
+injected publication policy decides approval and partial-output eligibility, and
+Context Broker rechecks current source authorization, artifact status and
+projection state before disclosing timestamped segments. See ADR-0052.

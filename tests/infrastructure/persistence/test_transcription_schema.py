@@ -2,6 +2,7 @@ from pathlib import Path
 
 from spine.infrastructure.persistence.postgresql_mappings import (
     transcript_segments,
+    transcript_publications,
     transcription_artifacts,
     transcription_jobs,
 )
@@ -85,3 +86,39 @@ def test_chunk_checkpoint_migration_fences_updates_by_execution_lease() -> None:
     assert 'op.f("ck_transcription_jobs_chunk_checkpoint_shape")' in source
     assert "NEW.execution_lease_id IS DISTINCT FROM OLD.execution_lease_id" in source
     assert "GRANT UPDATE (chunk_checkpoint)" in source
+
+
+def test_transcript_publication_is_tenant_scoped_and_pins_projection_lineage() -> None:
+    assert [column.name for column in transcript_publications.primary_key.columns] == [
+        "workspace_id",
+        "environment_id",
+        "publication_id",
+    ]
+    assert "uq_transcript_publications_artifact" in {
+        constraint.name for constraint in transcript_publications.constraints
+    }
+    assert {
+        "source_revision_id",
+        "source_revision_digest",
+        "transcript_artifact_id",
+        "transcript_artifact_digest",
+        "segments",
+        "state",
+        "projection_state",
+    } <= {column.name for column in transcript_publications.columns}
+    assert any(
+        constraint.name == "fk_transcript_publications_source_revision"
+        for constraint in transcript_publications.foreign_key_constraints
+    )
+    assert any(
+        constraint.name == "fk_transcript_publications_artifact"
+        for constraint in transcript_publications.foreign_key_constraints
+    )
+
+    source = (
+        PROJECT_ROOT / "migrations/versions/20261212_80_transcript_publication.py"
+    ).read_text(encoding="utf-8")
+    assert 'revision = "20261212_80"' in source
+    assert 'down_revision = "20261211_79"' in source
+    assert 'op.f("ck_transcript_publications_state")' in source
+    assert 'op.f("ck_transcript_publications_projection_state")' in source

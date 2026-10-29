@@ -718,6 +718,68 @@ transcript_segments = Table(
     CheckConstraint("end_ms > start_ms", name=conv("ck_transcript_segments_bounds")),
 )
 
+transcript_publications = Table(
+    "transcript_publications",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("publication_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("publication_digest", String(64), nullable=False),
+    Column("predecessor_publication_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_digest", String(64), nullable=False),
+    Column("transcript_artifact_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("transcript_artifact_digest", String(64), nullable=False),
+    Column("transcript_artifact_schema_version", Text, nullable=False),
+    Column("policy_reference", Text, nullable=False),
+    Column("approval_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("projection_version", Text, nullable=False),
+    Column("projection_state", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("segments", JSONB, nullable=False),
+    Column("published_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id",
+        "environment_id",
+        "publication_id",
+        name="pk_transcript_publications",
+    ),
+    UniqueConstraint(
+        "workspace_id",
+        "environment_id",
+        "transcript_artifact_id",
+        name="uq_transcript_publications_artifact",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "source_object_id", "source_revision_id"],
+        [
+            "spine.source_revisions.workspace_id",
+            "spine.source_revisions.environment_id",
+            "spine.source_revisions.source_object_id",
+            "spine.source_revisions.revision_id",
+        ],
+        name="fk_transcript_publications_source_revision",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "transcript_artifact_id"],
+        [
+            "spine.transcription_artifacts.workspace_id",
+            "spine.transcription_artifacts.environment_id",
+            "spine.transcription_artifacts.artifact_id",
+        ],
+        name="fk_transcript_publications_artifact",
+    ),
+    CheckConstraint(
+        "state IN ('active', 'revoked', 'superseded', 'stale')",
+        name=conv("ck_transcript_publications_state"),
+    ),
+    CheckConstraint(
+        "projection_state IN ('current', 'stale')",
+        name=conv("ck_transcript_publications_projection_state"),
+    ),
+)
+
 ingestion_transitions = Table(
     "ingestion_transitions", metadata,
     Column("ingestion_transition_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("target_kind", Text, nullable=False), Column("ingestion_run_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("ingestion_run_source_id", PostgreSQLUUID(as_uuid=True)), Column("predecessor_transition_id", PostgreSQLUUID(as_uuid=True)), Column("state", Text, nullable=False), Column("attempt", Integer, nullable=False), Column("safe_metrics_schema", Text), Column("safe_metrics", JSONB), Column("actor_or_service", Text, nullable=False), Column("trace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("occurred_at", DateTime(timezone=True), nullable=False),
@@ -1681,6 +1743,7 @@ __all__ = [
     "transcription_jobs",
     "transcription_artifacts",
     "transcript_segments",
+    "transcript_publications",
     "process_only_operation_lineages",
     "admission_decisions",
     "current_access_policies",
