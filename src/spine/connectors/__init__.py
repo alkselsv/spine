@@ -62,10 +62,6 @@ from spine.connectors.google_api import (
     HttpxGoogleApiTransport,
     ReferenceGoogleCredentialResolver,
 )
-from spine.connectors.google_composition import (
-    GoogleApiReaderComposition,
-    compose_google_api_readers,
-)
 
 __all__ = [
     "CONNECTOR_OBSERVATION_SCHEMA",
@@ -124,6 +120,4 @@ __all__ = [
     "GoogleResourceScope",
     "HttpxGoogleApiTransport",
     "ReferenceGoogleCredentialResolver",
-    "GoogleApiReaderComposition",
-    "compose_google_api_readers",
 ]
