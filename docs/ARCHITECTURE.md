@@ -177,6 +177,15 @@ flowchart LR
 
 Состояние одного бизнес-объекта не должно одновременно независимо редактироваться в Postgres и Cognee. Сначала фиксируется каноническое изменение, затем outbox запускает обновление проекции.
 
+Обработка принятого аудио фиксируется отдельным tenant-scoped
+`TranscriptionJob` после отдельной текущей проверки processing authority; job
+pin-ит решение, точную `SourceRevision`, processing profile, STT adapter и model
+configuration. Его завершение атомарно добавляет неизменяемый
+`TranscriptionArtifact` с сегментами на исходной временной шкале. Такой job не
+создаёт `WorkItem`, `WorkflowRun` или Q&A Session и не публикует данные в Cognee;
+оригинал аудио, ASR-вывод и последующая бизнес-интерпретация остаются разными
+артефактами. См. ADR-0049.
+
 Первый разговорный запрос, запускающий работу, создаёт один tenant-scoped
 `WorkItem` и pinned `WorkflowRun`. PostgreSQL атомарно сохраняет их вместе с
 idempotency receipt и content-safe outbox intent; повторная доставка запускает

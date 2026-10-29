@@ -22,6 +22,18 @@ from .models import (
     resolve_locator,
     validate_artifact_lineage,
 )
+from .transcription import (
+    AdapterSignal,
+    AudioRecordingHandle,
+    SpeechToTextRequest,
+    SpeechToTextResult,
+    SpeechToTextSegment,
+    TranscriptSegment,
+    TranscriptionArtifact,
+    TranscriptionFailureCode,
+    TranscriptionJob,
+    TranscriptionJobState,
+)
 
 __all__ = [
     "Artifact",
@@ -44,4 +56,14 @@ __all__ = [
     "resolve_google_sheet_cell_locator",
     "resolve_locator",
     "validate_artifact_lineage",
+    "AdapterSignal",
+    "AudioRecordingHandle",
+    "SpeechToTextRequest",
+    "SpeechToTextResult",
+    "SpeechToTextSegment",
+    "TranscriptSegment",
+    "TranscriptionArtifact",
+    "TranscriptionFailureCode",
+    "TranscriptionJob",
+    "TranscriptionJobState",
 ]
