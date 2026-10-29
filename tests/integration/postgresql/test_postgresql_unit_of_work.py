@@ -1532,7 +1532,7 @@ async def pending_postgresql_transcription(
             ) if marker in request.node.name),
             "",
         ),
-        67000,
+        66850,
     )
     case = await prepare_canonical_case(postgresql_adapter, case_seed)
     assert case.revision.original_sha256 is not None
