@@ -83,7 +83,16 @@ class RequirementsWorkflowDefinition:
             or payload.artifact_version != self._artifact_version + 1
         ):
             raise ValueError("clarification answer does not match the durable wait")
-        self._state = RequirementsWorkflowExecutionState.RUNNING
+        self._state = (
+            RequirementsWorkflowExecutionState.WAITING
+            if payload.next_clarification_id is not None
+            else RequirementsWorkflowExecutionState.RUNNING
+        )
+        self._clarification_id = (
+            str(payload.next_clarification_id)
+            if payload.next_clarification_id is not None
+            else None
+        )
         self._artifact_version = payload.artifact_version
         self._last_command_id = str(payload.command_id)
 

@@ -315,6 +315,7 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
             await self._uow._fail(ConstraintConflictError("Workflow transition is invalid."))
         is_clarification_answer = command.command_type == "answer_clarification"
         is_cancellation = command.command_type == "cancel"
+        next_clarification = None
         if is_clarification_answer:
             if run.state is not WorkflowRunState.WAITING or clarification_successor is None:
                 await self._uow._fail(
@@ -332,12 +333,24 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
                 await self._uow._fail(
                     ConstraintConflictError("Workflow clarification successor is invalid.")
                 )
+            next_clarification = next(
+                (
+                    item
+                    for item in clarification_successor.clarifications
+                    if item.answer is None
+                ),
+                None,
+            )
 
         resulting_version = run.run_version + 1
         resulting_state = (
             WorkflowRunState.CANCELLED
             if is_cancellation
-            else WorkflowRunState.RUNNING
+            else (
+                WorkflowRunState.WAITING
+                if next_clarification is not None
+                else WorkflowRunState.RUNNING
+            )
             if is_clarification_answer
             else run.state
         )
@@ -452,6 +465,11 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
                 clarification_id=command.payload.clarification_id,
                 artifact_id=clarification_successor.artifact_id,
                 artifact_version=clarification_successor.artifact_version,
+                next_clarification_id=(
+                    next_clarification.clarification_id
+                    if next_clarification is not None
+                    else None
+                ),
                 workflow_version_id=run.workflow_version_id,
             )
             signal_event_type = CLARIFICATION_ANSWERED_EVENT_TYPE

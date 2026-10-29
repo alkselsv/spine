@@ -252,8 +252,19 @@ class PersistedRequirementsArtifactService:
                 "resulting_artifact_version": previous.artifact_version + 1,
             }
         )
+        resolution = command.payload.answer.strip()
         updated_requirement = affected.model_copy(
             update={
+                "statement": (
+                    resolution
+                    if affected.category is RequirementCategory.UNRESOLVED_INFORMATION
+                    else affected.statement
+                ),
+                "constraints": (
+                    affected.constraints
+                    if affected.category is RequirementCategory.UNRESOLVED_INFORMATION
+                    else (*affected.constraints, resolution)
+                ),
                 "missing_markers": (),
                 "ambiguous_markers": (),
                 "uncertainty": None,
@@ -319,6 +330,19 @@ class PersistedRequirementsArtifactService:
                 answered if item.clarification_id == answered.clarification_id else item
                 for item in clarifications
             )
+        next_clarification = _next_open_clarification(
+            artifact=successor.model_copy(
+                update={
+                    "requirements": requirements,
+                    "clarifications": clarifications,
+                }
+            ),
+            asked_at=answered.answer.answered_at,
+            correlation_id=command.correlation_id,
+            excluded_requirement_ids=(affected.requirement_id,),
+        )
+        if next_clarification is not None:
+            clarifications = (*clarifications, next_clarification)
         digest = _successor_digest(
             requirements=requirements,
             clarifications=clarifications,
@@ -480,9 +504,62 @@ def _with_open_clarifications(
                 correlation_id=run.correlation_id,
             )
         )
+        break
     if not clarifications:
         return artifact
     return artifact.model_copy(update={"clarifications": tuple(clarifications)})
+
+
+def _next_open_clarification(
+    *,
+    artifact: RequirementsArtifact,
+    asked_at: datetime,
+    correlation_id: UUID,
+    excluded_requirement_ids: tuple[UUID, ...] = (),
+) -> Clarification | None:
+    """Create the next sequential question against the exact successor version."""
+
+    question_actor = ActorRef(
+        kind=ActorKind.AGENT,
+        id=uuid5(NAMESPACE_URL, "spine:agent:extract-requirements:v1"),
+    )
+    for requirement in artifact.requirements:
+        if requirement.requirement_id in excluded_requirement_ids:
+            continue
+        if not requirement.missing_markers and not requirement.ambiguous_markers:
+            continue
+        reason = (
+            ClarificationReason.MISSING_INFORMATION
+            if requirement.missing_markers
+            else ClarificationReason.AMBIGUOUS_INFORMATION
+        )
+        clarification_id = uuid5(
+            NAMESPACE_URL,
+            (
+                "spine:clarification:v1:"
+                f"{artifact.artifact_id}:{artifact.artifact_version}:{requirement.requirement_id}"
+            ),
+        )
+        return Clarification(
+            clarification_id=clarification_id,
+            run_id=artifact.run_id,
+            requirement_id=requirement.requirement_id,
+            originating_artifact_id=artifact.artifact_id,
+            originating_artifact_version=artifact.artifact_version,
+            question=(
+                "Please provide the missing information required to continue."
+                if reason is ClarificationReason.MISSING_INFORMATION
+                else "Please resolve the ambiguous information required to continue."
+            ),
+            reason=reason,
+            asked_by=question_actor,
+            asked_event_id=uuid5(
+                NAMESPACE_URL, f"spine:clarification-asked:v1:{clarification_id}"
+            ),
+            asked_at=asked_at,
+            correlation_id=correlation_id,
+        )
+    return None
 
 
 async def _enter_clarification_wait(uow: object, artifact: RequirementsArtifact) -> None:

@@ -18,6 +18,7 @@ VERSION_ID = UUID("64300000-0000-4000-8000-000000000002")
 CLARIFICATION_ID = UUID("64300000-0000-4000-8000-000000000003")
 ARTIFACT_ID = UUID("64300000-0000-4000-8000-000000000004")
 COMMAND_ID = UUID("64300000-0000-4000-8000-000000000005")
+NEXT_CLARIFICATION_ID = UUID("64300000-0000-4000-8000-000000000006")
 
 
 def workflow_input() -> WorkflowRunStartInput:
@@ -127,3 +128,66 @@ async def test_temporal_cancellation_is_durable_while_waiting() -> None:
             result = await handle.result()
             assert result["state"] == "cancelled"
             assert result["clarification_id"] == str(CLARIFICATION_ID)
+
+
+@pytest.mark.asyncio
+async def test_temporal_wait_survives_worker_restart_and_sequences_questions() -> None:
+    task_queue = "requirements-restart-643"
+    async with await WorkflowEnvironment.start_time_skipping() as environment:
+        async with Worker(
+            environment.client,
+            task_queue=task_queue,
+            identity="requirements-643-restarted-worker",
+            max_cached_workflows=0,
+            workflows=[RequirementsWorkflowDefinition],
+        ):
+            handle = await environment.client.start_workflow(
+                RequirementsWorkflowDefinition.run,
+                workflow_input().model_dump(mode="json"),
+                id=f"{RUN_ID}-restart",
+                task_queue=task_queue,
+            )
+            await handle.signal(
+                RequirementsWorkflowDefinition.clarification_requested,
+                ClarificationRequestedDispatchPayload(
+                    run_id=RUN_ID,
+                    clarification_id=CLARIFICATION_ID,
+                    artifact_id=ARTIFACT_ID,
+                    artifact_version=1,
+                    workflow_version_id=VERSION_ID,
+                ).model_dump(mode="json"),
+            )
+            assert (await handle.query(RequirementsWorkflowDefinition.status))["state"] == "waiting"
+
+        async with Worker(
+            environment.client,
+            task_queue=task_queue,
+            identity="requirements-643-restarted-worker",
+            max_cached_workflows=0,
+            workflows=[RequirementsWorkflowDefinition],
+        ):
+            await handle.signal(
+                RequirementsWorkflowDefinition.clarification_answered,
+                ClarificationAnsweredDispatchPayload(
+                    command_id=COMMAND_ID,
+                    run_id=RUN_ID,
+                    clarification_id=CLARIFICATION_ID,
+                    artifact_id=ARTIFACT_ID,
+                    artifact_version=2,
+                    next_clarification_id=NEXT_CLARIFICATION_ID,
+                    workflow_version_id=VERSION_ID,
+                ).model_dump(mode="json"),
+            )
+            status = await handle.query(RequirementsWorkflowDefinition.status)
+            assert status["state"] == "waiting"
+            assert status["clarification_id"] == str(NEXT_CLARIFICATION_ID)
+            assert status["artifact_version"] == 2
+            await handle.signal(
+                RequirementsWorkflowDefinition.run_cancelled,
+                WorkflowCancelledDispatchPayload(
+                    command_id=UUID(int=8),
+                    run_id=RUN_ID,
+                    workflow_version_id=VERSION_ID,
+                ).model_dump(mode="json"),
+            )
+            assert (await handle.result())["state"] == "cancelled"

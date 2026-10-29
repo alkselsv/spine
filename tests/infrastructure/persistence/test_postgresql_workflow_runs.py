@@ -356,6 +356,51 @@ async def test_answer_clarification_resumes_same_run_and_persists_one_successor(
 
 
 @pytest.mark.asyncio
+async def test_answer_clarification_keeps_same_run_waiting_for_next_question() -> None:
+    _, successor = _clarification_artifacts()
+    next_requirement = Requirement(
+        requirement_id=UUID("64300000-0000-4000-8000-000000000020"),
+        category="constraint",
+        statement="Budget is ambiguous.",
+        ambiguous_markers=("budget",),
+        state=RequirementState.PARTIAL,
+    )
+    next_clarification = Clarification(
+        clarification_id=UUID("64300000-0000-4000-8000-000000000021"),
+        run_id=RUN_ID,
+        requirement_id=next_requirement.requirement_id,
+        originating_artifact_id=successor.artifact_id,
+        originating_artifact_version=2,
+        question="Please resolve the ambiguous information required to continue.",
+        reason="ambiguous_information",
+        asked_by=ActorRef(
+            kind=ActorKind.AGENT,
+            id=UUID("64300000-0000-4000-8000-000000000022"),
+        ),
+        asked_event_id=UUID("64300000-0000-4000-8000-000000000023"),
+        asked_at=NOW,
+        correlation_id=UUID("64300000-0000-4000-8000-000000000024"),
+    )
+    successor = successor.model_copy(
+        update={
+            "requirements": (*successor.requirements, next_requirement),
+            "clarifications": (*successor.clarifications, next_clarification),
+            "state": RequirementState.PARTIAL,
+        }
+    )
+    uow = FakeUow(operation="workflow.run.command")
+    uow.replay_row = _run_row(state="waiting", run_version=2)
+    repository = PostgreSQLWorkflowRunAdmissionRepository(uow, clock=lambda: NOW)
+
+    receipt = await repository.dispatch(
+        _answer_clarification(), clarification_successor=successor
+    )
+
+    assert receipt.state.value == "waiting"
+    assert uow.intents[-1].payload.next_clarification_id == next_clarification.clarification_id
+
+
+@pytest.mark.asyncio
 async def test_answer_clarification_replay_returns_receipt_without_second_successor() -> None:
     command = _answer_clarification()
     uow = FakeUow(operation="workflow.run.command")

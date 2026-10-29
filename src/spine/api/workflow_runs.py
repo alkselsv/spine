@@ -440,7 +440,6 @@ def install_workflow_run_routes(
                 causation_id=body.causation_id,
             )
             clarification_successor = None
-            artifact_stale = False
             if command.command_type == "answer_clarification":
                 if requirements_artifact_service is None:
                     return JSONResponse(
@@ -458,7 +457,35 @@ def install_workflow_run_routes(
                         )
                     )
                 except OptimisticConflictError:
-                    artifact_stale = True
+                    current = await service.get_run(
+                        context=persistence_context, run_id=run_id
+                    )
+                    if current is None:
+                        return JSONResponse(
+                            status_code=404, content={"code": "workflow.run_not_found"}
+                        )
+                    return JSONResponse(
+                        status_code=409,
+                        content={
+                            "code": "workflow.artifact_stale",
+                            "current": _response(current).model_dump(mode="json"),
+                        },
+                    )
+                except ConstraintConflictError:
+                    current = await service.get_run(
+                        context=persistence_context, run_id=run_id
+                    )
+                    if current is None:
+                        return JSONResponse(
+                            status_code=404, content={"code": "workflow.run_not_found"}
+                        )
+                    return JSONResponse(
+                        status_code=409,
+                        content={
+                            "code": "workflow.clarification_conflict",
+                            "current": _response(current).model_dump(mode="json"),
+                        },
+                    )
 
             if command.command_type in {"add_context", "cancel"}:
                 receipt = await service.dispatch(
@@ -511,7 +538,11 @@ def install_workflow_run_routes(
                 },
             )
         except ConstraintConflictError:
-            if not artifact_stale:
+            if command.command_type in {
+                "edit_requirement",
+                "save_review",
+                "request_rework",
+            }:
                 return JSONResponse(
                     status_code=409, content={"code": "workflow.run_terminal"}
                 )
@@ -521,7 +552,7 @@ def install_workflow_run_routes(
             return JSONResponse(
                 status_code=409,
                 content={
-                    "code": "workflow.artifact_stale",
+                    "code": "workflow.command_conflict",
                     "current": _response(current).model_dump(mode="json"),
                 },
             )

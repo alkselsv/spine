@@ -18,6 +18,10 @@ from spine.application.workflow_runs import (
     WorkflowCommand,
 )
 from spine.domain.common import ActorKind, ActorRef, ContextOrigin
+from spine.domain.capabilities.extract_requirements import (
+    RequirementsExtractionOutcome,
+    RequirementsExtractionOutput,
+)
 from spine.domain.workflows import ClientRequestV1, Requirement, RequirementState, WorkflowRun
 from spine.domain.workflows.runs import WorkflowRunState
 
@@ -244,6 +248,7 @@ async def test_clarification_answer_prepares_one_immutable_affected_successor() 
     assert successor.predecessor_version == 1
     assert successor.clarifications[0].answer is not None
     assert successor.clarifications[0].answer.text.startswith("The scope")
+    assert successor.requirements[0].statement == command.payload.answer
     assert successor.requirements[0].missing_markers == ()
     assert successor.requirements[0].ambiguous_markers == ()
 
@@ -257,3 +262,74 @@ async def test_clarification_answer_prepares_one_immutable_affected_successor() 
         await service.prepare_clarification_answer(
             context=_context(), command=conflicting
         )
+
+
+@pytest.mark.asyncio
+async def test_clarifications_are_admitted_sequentially_on_the_same_run() -> None:
+    artifacts = _Artifacts()
+    _, factory = _factory(artifacts)
+    service = PersistedRequirementsArtifactService(factory)
+    extraction = RequirementsExtractionOutput(
+        workspace_id=UUID(int=1),
+        environment_id=UUID(int=2),
+        workflow_run_id=UUID(int=3),
+        work_item_id=UUID(int=5),
+        outcome=RequirementsExtractionOutcome.PARTIAL,
+        requirements=(
+            Requirement(
+                requirement_id=UUID(int=31),
+                category="functional",
+                statement="Portal scope",
+                missing_markers=("scope",),
+                state=RequirementState.PARTIAL,
+            ),
+            Requirement(
+                requirement_id=UUID(int=32),
+                category="constraint",
+                statement="Delivery date",
+                ambiguous_markers=("date",),
+                state=RequirementState.PARTIAL,
+            ),
+        ),
+    )
+    first = await service.persist_extracted_candidate(
+        context=_context(), run_id=UUID(int=3), extraction=extraction
+    )
+    assert first is not None
+    assert len(first.clarifications) == 1
+    current = first.clarifications[0]
+    command = WorkflowCommand(
+        command_id=UUID(int=650),
+        idempotency_key="clarification-sequential",
+        run_id=first.run_id,
+        workspace_id=first.workspace_id,
+        environment_id=first.environment_id,
+        actor=ActorRef(kind=ActorKind.HUMAN, id=UUID(int=21)),
+        command_type="answer_clarification",
+        command_schema_version=1,
+        expected_run_version=2,
+        payload=AnswerClarificationCommandV1(
+            clarification_id=current.clarification_id,
+            requirement_id=current.requirement_id,
+            answer="The portal covers account management.",
+        ),
+        artifact_refs=(WorkflowArtifactRef(
+            artifact_id=first.artifact_id,
+            schema_name="requirements",
+            schema_version=first.schema_version,
+            artifact_version=first.artifact_version,
+        ),),
+        trace_id=UUID(int=20),
+        correlation_id=UUID(int=651),
+        causation_id=UUID(int=652),
+    )
+
+    successor = await service.prepare_clarification_answer(
+        context=_context(), command=command
+    )
+
+    open_items = tuple(item for item in successor.clarifications if item.answer is None)
+    assert len(open_items) == 1
+    assert open_items[0].requirement_id == UUID(int=32)
+    assert open_items[0].originating_artifact_version == 2
+    assert successor.requirements[0].constraints[-1] == command.payload.answer

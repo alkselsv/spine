@@ -136,7 +136,7 @@ describe('WorkflowRunPage', () => {
           workflow_version: '1.0.0',
           run_version: 2,
           state: 'running',
-          allowed_commands: ['add_context'],
+          allowed_commands: ['add_context', 'cancel'],
           created_at: '2026-10-28T00:00:00Z',
         },
       });
@@ -161,6 +161,17 @@ describe('WorkflowRunPage', () => {
           command_type: 'add_context',
           expected_run_version: 2,
           payload: expect.objectContaining({ message: 'Срок запуска — 20 декабря' }),
+        }),
+      }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Отменить запуск' }));
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/runs/{run_id}/commands',
+      expect.objectContaining({
+        body: expect.objectContaining({
+          command_type: 'cancel',
+          expected_run_version: 2,
+          payload: { schema_version: 1 },
         }),
       }),
     );

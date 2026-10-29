@@ -111,6 +111,8 @@ class FakeWorkflowRunService:
         next_state = (
             WorkflowRunState.RUNNING
             if command.command_type == "answer_clarification"
+            else WorkflowRunState.CANCELLED
+            if command.command_type == "cancel"
             else self.run.state
         )
         self.run = self.run.model_copy(update={
@@ -126,6 +128,8 @@ class FakeWorkflowRunService:
                 event_type=(
                     "workflow.clarification-answered"
                     if command.command_type == "answer_clarification"
+                    else "workflow.run-cancelled"
+                    if command.command_type == "cancel"
                     else "workflow.context-added"
                 ),
                 event_schema_version=1,
@@ -133,6 +137,8 @@ class FakeWorkflowRunService:
                 summary=(
                     "Clarification answered."
                     if command.command_type == "answer_clarification"
+                    else "Workflow run cancelled."
+                    if command.command_type == "cancel"
                     else "Additional context received."
                 ),
                 correlation_id=command.correlation_id,
@@ -348,6 +354,118 @@ async def test_answer_clarification_uses_typed_command_and_resumes_same_run() ->
     assert response.json()["run_version"] == 3
     assert candidates.command.payload.answer.endswith("December 20.")
     assert service.clarification_successor is candidates.successor
+
+
+async def test_stale_clarification_ref_returns_safe_conflict() -> None:
+    service = FakeWorkflowRunService()
+    service.run = service.run.model_copy(
+        update={"state": WorkflowRunState.WAITING, "run_version": 2}
+    )
+
+    class CandidateService:
+        async def prepare_clarification_answer(self, **kwargs):
+            del kwargs
+            raise OptimisticConflictError("protected stale artifact")
+
+    transport = httpx.ASGITransport(
+        app=_app(service, requirements_artifact_service=CandidateService())
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/v1/runs/{RUN_ID}/commands",
+            headers={**_headers(), "Idempotency-Key": "stale-clarification-643"},
+            json={
+                "command_id": "64300000-0000-4000-8000-000000000014",
+                "command_type": "answer_clarification",
+                "command_schema_version": 1,
+                "expected_run_version": 2,
+                "payload": {
+                    "clarification_id": "64300000-0000-4000-8000-000000000011",
+                    "requirement_id": "64300000-0000-4000-8000-000000000012",
+                    "answer": "Protected answer text",
+                },
+                "artifact_refs": [{
+                    "artifact_id": "64300000-0000-4000-8000-000000000013",
+                    "schema_name": "requirements",
+                    "schema_version": "requirements:v1",
+                    "artifact_version": 1,
+                }],
+                "correlation_id": str(RUN_ID),
+                "causation_id": str(COMMAND_ID),
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "workflow.artifact_stale"
+    assert "protected answer" not in response.text.lower()
+
+
+async def test_clarification_conflict_is_not_exposed_as_server_error() -> None:
+    service = FakeWorkflowRunService()
+
+    class CandidateService:
+        async def prepare_clarification_answer(self, **kwargs):
+            del kwargs
+            raise ConstraintConflictError("protected conflicting payload")
+
+    transport = httpx.ASGITransport(
+        app=_app(service, requirements_artifact_service=CandidateService())
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/v1/runs/{RUN_ID}/commands",
+            headers={**_headers(), "Idempotency-Key": "conflicting-clarification-643"},
+            json={
+                "command_id": "64300000-0000-4000-8000-000000000024",
+                "command_type": "answer_clarification",
+                "command_schema_version": 1,
+                "expected_run_version": 1,
+                "payload": {
+                    "clarification_id": "64300000-0000-4000-8000-000000000021",
+                    "requirement_id": "64300000-0000-4000-8000-000000000022",
+                    "answer": "Protected conflicting answer",
+                },
+                "artifact_refs": [{
+                    "artifact_id": "64300000-0000-4000-8000-000000000023",
+                    "schema_name": "requirements",
+                    "schema_version": "requirements:v1",
+                    "artifact_version": 1,
+                }],
+                "correlation_id": str(RUN_ID),
+                "causation_id": str(COMMAND_ID),
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "workflow.clarification_conflict"
+    assert "protected conflicting" not in response.text.lower()
+
+
+async def test_cancel_command_returns_terminal_receipt() -> None:
+    service = FakeWorkflowRunService()
+    service.run = service.run.model_copy(
+        update={"state": WorkflowRunState.WAITING, "run_version": 2}
+    )
+    transport = httpx.ASGITransport(app=_app(service))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/v1/runs/{RUN_ID}/commands",
+            headers={**_headers(), "Idempotency-Key": "cancel-643"},
+            json={
+                "command_id": "64300000-0000-4000-8000-000000000031",
+                "command_type": "cancel",
+                "command_schema_version": 1,
+                "expected_run_version": 2,
+                "payload": {"schema_version": 1},
+                "artifact_refs": [],
+                "correlation_id": str(RUN_ID),
+                "causation_id": str(COMMAND_ID),
+            },
+        )
+
+    assert response.status_code == 202
+    assert response.json()["state"] == "cancelled"
+    assert response.json()["run_id"] == str(RUN_ID)
 
 
 async def test_event_cursor_is_stable_and_bound_to_run_scope() -> None:

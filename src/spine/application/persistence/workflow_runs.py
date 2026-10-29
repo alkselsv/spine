@@ -85,14 +85,20 @@ class ClarificationAnsweredDispatchPayload(BaseModel):
     clarification_id: UUID
     artifact_id: UUID
     artifact_version: int = Field(ge=2, strict=True)
+    next_clarification_id: UUID | None = None
     workflow_version_id: UUID
 
     @field_validator(
-        "command_id", "run_id", "clarification_id", "artifact_id", "workflow_version_id"
+        "command_id",
+        "run_id",
+        "clarification_id",
+        "artifact_id",
+        "next_clarification_id",
+        "workflow_version_id",
     )
     @classmethod
-    def reject_zero_identity(cls, value: UUID) -> UUID:
-        if value.int == 0:
+    def reject_zero_identity(cls, value: UUID | None) -> UUID | None:
+        if value is not None and value.int == 0:
             raise ValueError("workflow clarification answer signal identities must be non-zero")
         return value
 
