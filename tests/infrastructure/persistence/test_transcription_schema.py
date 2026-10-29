@@ -116,9 +116,9 @@ def test_transcript_publication_is_tenant_scoped_and_pins_projection_lineage() -
     )
 
     source = (
-        PROJECT_ROOT / "migrations/versions/20261212_80_transcript_publication.py"
+        PROJECT_ROOT / "migrations/versions/20261213_81_transcript_publication.py"
     ).read_text(encoding="utf-8")
-    assert 'revision = "20261212_80"' in source
-    assert 'down_revision = "20261211_79"' in source
+    assert 'revision = "20261213_81"' in source
+    assert 'down_revision = "20261212_80"' in source
     assert 'op.f("ck_transcript_publications_state")' in source
     assert 'op.f("ck_transcript_publications_projection_state")' in source
