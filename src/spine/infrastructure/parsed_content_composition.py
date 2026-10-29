@@ -20,6 +20,7 @@ from spine.application.parsed_content_inspection import (
     ParsedContentDecisionAudit,
     ParsedContentInspectionRequester,
 )
+from spine.application.transcript_publication import TranscriptAuthorizationSnapshot
 from spine.application.persistence.context import (
     EnvironmentScope,
     TrustedPersistenceContext,
@@ -169,6 +170,84 @@ class UnitOfWorkParsedContentDecisionAudit(ParsedContentDecisionAudit):
             audit_reference = await uow.audit.append(event)
             await uow.commit()
         return audit_reference
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionTranscriptEvidenceAuthorization:
+    """Current human source authorization and revision state for transcript reads."""
+
+    uow_factory: UnitOfWorkFactory
+    authorizer: ProductionParsedContentAuthorizer
+    decision_audit: UnitOfWorkParsedContentDecisionAudit
+
+    async def recheck(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        requester: ParsedContentInspectionRequester,
+        workspace_id: UUID,
+        environment_id: UUID,
+        source_object_id: UUID,
+        source_revision_id: UUID,
+        source_revision_digest: str,
+        transcript_artifact_id: UUID,
+    ) -> TranscriptAuthorizationSnapshot:
+        del transcript_artifact_id
+        scope = context.scope
+        if not isinstance(scope, EnvironmentScope) or (
+            scope.workspace_id,
+            scope.environment_id,
+        ) != (workspace_id, environment_id):
+            return TranscriptAuthorizationSnapshot(
+                allowed=False,
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                source_object_id=source_object_id,
+                authorization_generation=requester.authorization_generation,
+                reason_code="scope_denied",
+            )
+        decision = await self.authorizer.decide_read_content(
+            context=context,
+            requester=requester,
+            source_object_id=source_object_id,
+            source_revision_id=source_revision_id,
+        )
+        await self.decision_audit.record_decision(
+            context=context,
+            decision=decision,
+            requested_source_revision_id=source_revision_id,
+        )
+        current_revision_id = None
+        current_revision_digest = None
+        if decision.allowed:
+            async with self.uow_factory(context) as uow:
+                head = await uow.canonical.resolve_current(source_object_id)
+                revision = (
+                    None
+                    if head is None
+                    else await uow.sources.resolve_revision(head.current_revision_id)
+                )
+                if revision is not None:
+                    current_revision_id = revision.revision_id
+                    current_revision_digest = revision.revision_digest
+        allowed = bool(
+            decision.allowed
+            and decision.workspace_id == workspace_id
+            and decision.environment_id == environment_id
+            and decision.source_object_ids == (source_object_id,)
+            and current_revision_id is not None
+            and current_revision_digest is not None
+        )
+        return TranscriptAuthorizationSnapshot(
+            allowed=allowed,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            source_object_id=source_object_id,
+            current_revision_id=current_revision_id,
+            current_revision_digest=current_revision_digest,
+            authorization_generation=requester.authorization_generation,
+            reason_code="allowed" if allowed else "authorization_denied",
+        )
 
 
 @dataclass(frozen=True, slots=True)

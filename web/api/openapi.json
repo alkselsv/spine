@@ -2022,6 +2022,43 @@
         "title": "ApiResponseEnvelope[RequirementsEvidenceInspectionResponse]",
         "type": "object"
       },
+      "ApiResponseEnvelope_TranscriptInspectionResult_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/TranscriptInspectionResult"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "trace_id",
+          "data"
+        ],
+        "title": "ApiResponseEnvelope[TranscriptInspectionResult]",
+        "type": "object"
+      },
       "ArtifactRef": {
         "additionalProperties": false,
         "properties": {
@@ -9092,7 +9129,7 @@
       },
       "RequirementEvidenceRef": {
         "additionalProperties": false,
-        "description": "An exact source revision and parsed evidence segment without source text.",
+        "description": "An exact source revision and parsed or time-based evidence segment.",
         "properties": {
           "locator": {
             "anyOf": [
@@ -9123,6 +9160,9 @@
               },
               {
                 "$ref": "#/components/schemas/GoogleSheetCellLocator"
+              },
+              {
+                "type": "null"
               }
             ],
             "title": "Locator"
@@ -9134,7 +9174,14 @@
             "type": "string"
           },
           "parsed_artifact_ref": {
-            "$ref": "#/components/schemas/ArtifactRef"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtifactRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "relationship": {
             "$ref": "#/components/schemas/RequirementEvidenceRelationship",
@@ -9153,6 +9200,16 @@
           "source_ref": {
             "$ref": "#/components/schemas/AcceptedSourceRevisionRef"
           },
+          "transcript_locator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimeRangeLocator"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "validation": {
             "anyOf": [
               {
@@ -9166,10 +9223,8 @@
         },
         "required": [
           "source_ref",
-          "parsed_artifact_ref",
           "segment_id",
-          "segment_digest",
-          "locator"
+          "segment_digest"
         ],
         "title": "RequirementEvidenceRef",
         "type": "object"
@@ -10384,6 +10439,89 @@
         "title": "SubmitFeedbackRequest",
         "type": "object"
       },
+      "TimeRangeLocator": {
+        "additionalProperties": false,
+        "description": "A stable, half-open locator into one immutable transcript version.",
+        "properties": {
+          "end_ms": {
+            "exclusiveMinimum": 0.0,
+            "title": "End Ms",
+            "type": "integer"
+          },
+          "projection_version": {
+            "default": "transcript-projection:v1",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Projection Version",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "time-range-locator:v1",
+            "default": "time-range-locator:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "segment_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Segment Ids",
+            "type": "array"
+          },
+          "source_object_id": {
+            "format": "uuid",
+            "title": "Source Object Id",
+            "type": "string"
+          },
+          "source_revision_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Revision Digest",
+            "type": "string"
+          },
+          "source_revision_id": {
+            "format": "uuid",
+            "title": "Source Revision Id",
+            "type": "string"
+          },
+          "start_ms": {
+            "minimum": 0.0,
+            "title": "Start Ms",
+            "type": "integer"
+          },
+          "transcript_artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Transcript Artifact Digest",
+            "type": "string"
+          },
+          "transcript_artifact_id": {
+            "format": "uuid",
+            "title": "Transcript Artifact Id",
+            "type": "string"
+          },
+          "transcript_artifact_schema_version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Transcript Artifact Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_object_id",
+          "source_revision_id",
+          "source_revision_digest",
+          "transcript_artifact_id",
+          "transcript_artifact_digest",
+          "transcript_artifact_schema_version",
+          "start_ms",
+          "end_ms"
+        ],
+        "title": "TimeRangeLocator",
+        "type": "object"
+      },
       "TombstoneDocumentRequest": {
         "additionalProperties": false,
         "properties": {
@@ -10409,6 +10547,200 @@
         ],
         "title": "TombstoneDocumentRequest",
         "type": "object"
+      },
+      "TranscriptEvidenceInspectionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "locator": {
+            "$ref": "#/components/schemas/TimeRangeLocator"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "locator"
+        ],
+        "title": "TranscriptEvidenceInspectionRequest",
+        "type": "object"
+      },
+      "TranscriptInspectionResult": {
+        "additionalProperties": false,
+        "description": "Safe result; only current authorized results carry transcript text.",
+        "properties": {
+          "locator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimeRangeLocator"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "partial": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partial"
+          },
+          "publication_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Id"
+          },
+          "publication_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication State"
+          },
+          "recording_duration_ms": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recording Duration Ms"
+          },
+          "review_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptReviewState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "schema_version": {
+            "default": "transcript-inspection-result:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_object_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Object Id"
+          },
+          "source_revision_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Revision Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TranscriptInspectionStatus"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "transcript_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transcript Artifact Digest"
+          },
+          "transcript_artifact_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transcript Artifact Id"
+          },
+          "transcript_artifact_schema_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transcript Artifact Schema Version"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "TranscriptInspectionResult",
+        "type": "object"
+      },
+      "TranscriptInspectionStatus": {
+        "enum": [
+          "current",
+          "stale",
+          "superseded",
+          "review_required",
+          "partial",
+          "degraded",
+          "permission_denied"
+        ],
+        "title": "TranscriptInspectionStatus",
+        "type": "string"
+      },
+      "TranscriptReviewState": {
+        "enum": [
+          "approved",
+          "not_required"
+        ],
+        "title": "TranscriptReviewState",
+        "type": "string"
       },
       "ValidationError": {
         "properties": {
@@ -18952,6 +19284,149 @@
           }
         ],
         "summary": "Source Connections.Inspect"
+      }
+    },
+    "/api/v1/transcript-evidence/inspect": {
+      "post": {
+        "operationId": "transcript.evidence.inspect",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranscriptEvidenceInspectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseEnvelope_TranscriptInspectionResult_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Transcript.Evidence.Inspect"
       }
     },
     "/ask": {

@@ -160,6 +160,8 @@ class RequirementsEvidenceValidationService:
     ) -> RequirementsEvidenceInspectionResult:
         """Authorize and return one exact segment, or a content-free safe status."""
 
+        if evidence.transcript_locator is not None:
+            return self._safe(RequirementsEvidenceInspectionStatus.DEGRADED)
         try:
             context.validate_shape()
             self._validate_requester(context, requester)
@@ -239,6 +241,10 @@ class RequirementsEvidenceValidationService:
             return requirement
         validated: list[RequirementEvidenceRef] = []
         for evidence in requirement.evidence_refs:
+            if evidence.transcript_locator is not None:
+                # Transcript references have their own Context Broker inspection path.
+                validated.append(evidence)
+                continue
             validation = await self._validate_reference(
                 context=context,
                 requester=requester,
@@ -246,7 +252,9 @@ class RequirementsEvidenceValidationService:
             )
             validated.append(evidence.model_copy(update={"validation": validation}))
         status = (
-            RequirementEvidenceStatus.REFERENCED
+            RequirementEvidenceStatus.UNVERIFIED
+            if any(item.transcript_locator is not None for item in validated)
+            else RequirementEvidenceStatus.REFERENCED
             if all(
                 item.validation is not None
                 and item.validation.status is RequirementEvidenceValidationStatus.VALID
@@ -358,6 +366,10 @@ class PersistedRequirementsEvidenceResolver:
         context: TrustedPersistenceContext,
         evidence: RequirementEvidenceRef,
     ) -> RequirementsEvidenceResolution:
+        if evidence.transcript_locator is not None or evidence.parsed_artifact_ref is None:
+            return RequirementsEvidenceResolution(
+                RequirementsEvidenceResolutionStatus.DEGRADED
+            )
         scope = context.scope
         if not isinstance(scope, EnvironmentScope):
             return RequirementsEvidenceResolution(RequirementsEvidenceResolutionStatus.DEGRADED)
