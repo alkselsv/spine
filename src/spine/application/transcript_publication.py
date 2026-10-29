@@ -79,6 +79,7 @@ class TranscriptPublicationDecision(DefinitionModel):
     policy_reference: VersionIdentifier
     reason_code: str = Field(min_length=1, max_length=64)
     approval_id: UUID | None = None
+    partial_allowed: bool = False
 
     @model_validator(mode="after")
     def validate_approval(self) -> "TranscriptPublicationDecision":
@@ -141,12 +142,14 @@ class ExplicitTranscriptPublicationPolicy:
                 policy_reference=self.policy_reference,
                 reason_code="approved",
                 approval_id=approval.approval_id,
+                partial_allowed=self.allow_partial,
             )
         return TranscriptPublicationDecision(
             allowed=True,
             policy_reference=self.policy_reference,
             reason_code="policy_allows",
             approval_id=None,
+            partial_allowed=self.allow_partial,
         )
 
 
@@ -184,8 +187,8 @@ class TranscriptPublicationRepository(TranscriptArtifactRepository, Protocol):
         *,
         publication_id: UUID,
         projection_version: VersionIdentifier,
-        workspace_id: UUID | None = None,
-        environment_id: UUID | None = None,
+        workspace_id: UUID,
+        environment_id: UUID,
     ) -> TranscriptPublication: ...
 
     async def rollback_projection(
@@ -193,8 +196,8 @@ class TranscriptPublicationRepository(TranscriptArtifactRepository, Protocol):
         *,
         publication_id: UUID,
         projection_version: VersionIdentifier,
-        workspace_id: UUID | None = None,
-        environment_id: UUID | None = None,
+        workspace_id: UUID,
+        environment_id: UUID,
     ) -> TranscriptPublication: ...
 
 
@@ -297,8 +300,8 @@ class InMemoryTranscriptPublicationRepository:
         *,
         publication_id: UUID,
         projection_version: VersionIdentifier,
-        workspace_id: UUID | None = None,
-        environment_id: UUID | None = None,
+        workspace_id: UUID,
+        environment_id: UUID,
     ) -> TranscriptPublication:
         current = await self._publication_by_id(
             publication_id,
@@ -319,15 +322,38 @@ class InMemoryTranscriptPublicationRepository:
         *,
         publication_id: UUID,
         projection_version: VersionIdentifier,
-        workspace_id: UUID | None = None,
-        environment_id: UUID | None = None,
+        workspace_id: UUID,
+        environment_id: UUID,
     ) -> TranscriptPublication:
-        return await self.rebuild_projection(
-            publication_id=publication_id,
-            projection_version=projection_version,
+        current = await self._publication_by_id(
+            publication_id,
             workspace_id=workspace_id,
             environment_id=environment_id,
         )
+        if current is None:
+            raise KeyError("transcript publication is unavailable")
+        async with self._lock:
+            target = next(
+                (
+                    publication
+                    for publication in reversed(self._history)
+                    if publication.workspace_id == workspace_id
+                    and publication.environment_id == environment_id
+                    and publication.transcript_artifact_id == current.transcript_artifact_id
+                    and publication.projection_version == projection_version
+                ),
+                None,
+            )
+            if target is None:
+                raise KeyError("transcript projection version is unavailable")
+            successor = target.successor_projection(
+                projection_version=projection_version,
+                predecessor_publication_id=current.publication_id,
+            )
+            key = (workspace_id, environment_id, current.transcript_artifact_id)
+            self._current[key] = successor
+            self._history.append(successor)
+            return successor
 
     async def _publication_by_id(
         self,
@@ -422,6 +448,7 @@ class TranscriptPublicationService:
             artifact=artifact,
             policy_reference=decision.policy_reference,
             approval_id=decision.approval_id,
+            partial_allowed=decision.partial_allowed,
             projection_version=self.projection_version,
             published_at=self.clock(),
         )
@@ -513,7 +540,10 @@ class TranscriptContextBroker:
         )
         if artifact is None or artifact.artifact_digest != publication.transcript_artifact_digest:
             return _unavailable("artifact_unavailable")
-        if artifact.outcome is TranscriptionArtifactOutcome.PARTIAL and not publication.segments:
+        if (
+            artifact.outcome is TranscriptionArtifactOutcome.PARTIAL
+            and not publication.partial_allowed
+        ):
             return _unavailable("partial_artifact_unavailable")
 
         segments = tuple(

@@ -268,10 +268,14 @@ async def test_projection_rebuild_and_rollback_keep_publication_history() -> Non
     rebuilt = await repository.rebuild_projection(
         publication_id=stale.publication_id,
         projection_version="transcript-projection:v2",
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
     )
     rolled_back = await repository.rollback_projection(
         publication_id=rebuilt.publication_id,
         projection_version="transcript-projection:v1",
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
     )
     broker = TranscriptContextBroker(repository=repository, authorization=authorization)
 

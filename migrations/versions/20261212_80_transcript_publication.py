@@ -39,6 +39,7 @@ def upgrade() -> None:
         sa.Column("transcript_artifact_schema_version", sa.Text(), nullable=False),
         sa.Column("policy_reference", sa.Text(), nullable=False),
         sa.Column("approval_id", uuid, nullable=True),
+        sa.Column("partial_allowed", sa.Boolean(), nullable=False),
         sa.Column("projection_version", sa.Text(), nullable=False),
         sa.Column("projection_state", sa.Text(), nullable=False),
         sa.Column("state", sa.Text(), nullable=False),

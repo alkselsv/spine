@@ -197,6 +197,7 @@ class TranscriptPublication(DefinitionModel):
     transcript_artifact_schema_version: VersionIdentifier
     policy_reference: VersionIdentifier
     approval_id: UUID | None = None
+    partial_allowed: bool = False
     projection_version: VersionIdentifier
     projection_state: TranscriptProjectionState = TranscriptProjectionState.CURRENT
     state: TranscriptPublicationState = TranscriptPublicationState.ACTIVE
@@ -251,6 +252,7 @@ class TranscriptPublication(DefinitionModel):
         artifact: TranscriptionArtifact,
         policy_reference: str,
         approval_id: UUID | None,
+        partial_allowed: bool = False,
         projection_version: str,
         published_at: datetime,
     ) -> "TranscriptPublication":
@@ -281,6 +283,7 @@ class TranscriptPublication(DefinitionModel):
             "transcript_artifact_schema_version": artifact.schema_version,
             "policy_reference": policy_reference,
             "approval_id": approval_id,
+            "partial_allowed": partial_allowed,
             "projection_version": projection_version,
             "projection_state": TranscriptProjectionState.CURRENT,
             "state": TranscriptPublicationState.ACTIVE,
@@ -322,7 +325,12 @@ class TranscriptPublication(DefinitionModel):
         )
         return type(self).model_validate(values)
 
-    def successor_projection(self, *, projection_version: str) -> "TranscriptPublication":
+    def successor_projection(
+        self,
+        *,
+        projection_version: str,
+        predecessor_publication_id: UUID | None = None,
+    ) -> "TranscriptPublication":
         """Create an active successor for a rebuild or rollback projection."""
 
         publication_id = uuid5(
@@ -332,7 +340,7 @@ class TranscriptPublication(DefinitionModel):
         values = self.model_dump(mode="python")
         values.update(
             publication_id=publication_id,
-            predecessor_publication_id=self.publication_id,
+            predecessor_publication_id=predecessor_publication_id or self.publication_id,
             projection_version=projection_version,
             projection_state=TranscriptProjectionState.CURRENT,
             state=TranscriptPublicationState.ACTIVE,

@@ -183,8 +183,8 @@ class PostgreSQLTranscriptPublicationRepository(TranscriptPublicationRepository)
         *,
         publication_id: UUID,
         projection_version: str,
-        workspace_id: UUID | None = None,
-        environment_id: UUID | None = None,
+        workspace_id: UUID,
+        environment_id: UUID,
     ) -> TranscriptPublication:
         return await self._replace_with_successor(
             publication_id=publication_id,
@@ -198,14 +198,15 @@ class PostgreSQLTranscriptPublicationRepository(TranscriptPublicationRepository)
         *,
         publication_id: UUID,
         projection_version: str,
-        workspace_id: UUID | None = None,
-        environment_id: UUID | None = None,
+        workspace_id: UUID,
+        environment_id: UUID,
     ) -> TranscriptPublication:
         return await self._replace_with_successor(
             publication_id=publication_id,
             projection_version=projection_version,
             workspace_id=workspace_id,
             environment_id=environment_id,
+            rollback=True,
         )
 
     async def _replace_with_successor(
@@ -213,13 +214,10 @@ class PostgreSQLTranscriptPublicationRepository(TranscriptPublicationRepository)
         *,
         publication_id: UUID,
         projection_version: str,
-        workspace_id: UUID | None,
-        environment_id: UUID | None,
+        workspace_id: UUID,
+        environment_id: UUID,
+        rollback: bool = False,
     ) -> TranscriptPublication:
-        if workspace_id is None or environment_id is None:
-            raise InvalidPersistenceContextError(
-                "workspace_id and environment_id are required for projection changes."
-            )
         async with self._session_factory() as session:
             async with session.begin():
                 await self._bind_scope(session, workspace_id, environment_id)
@@ -236,8 +234,29 @@ class PostgreSQLTranscriptPublicationRepository(TranscriptPublicationRepository)
                 if row is None:
                     raise KeyError("transcript publication is unavailable")
                 current = _publication_from_row(row)
-                successor = current.successor_projection(
-                    projection_version=projection_version
+                source = current
+                if rollback:
+                    source_row = (
+                        await session.execute(
+                            select(transcript_publications)
+                            .where(
+                                transcript_publications.c.workspace_id == workspace_id,
+                                transcript_publications.c.environment_id == environment_id,
+                                transcript_publications.c.transcript_artifact_id
+                                == current.transcript_artifact_id,
+                                transcript_publications.c.projection_version
+                                == projection_version,
+                            )
+                            .order_by(transcript_publications.c.published_at.desc())
+                            .limit(1)
+                        )
+                    ).mappings().one_or_none()
+                    if source_row is None:
+                        raise KeyError("transcript projection version is unavailable")
+                    source = _publication_from_row(source_row)
+                successor = source.successor_projection(
+                    projection_version=projection_version,
+                    predecessor_publication_id=current.publication_id,
                 )
                 changed = await session.execute(
                     update(transcript_publications)
@@ -314,6 +333,7 @@ def _publication_values(publication: TranscriptPublication) -> dict[str, Any]:
         "transcript_artifact_schema_version": publication.transcript_artifact_schema_version,
         "policy_reference": publication.policy_reference,
         "approval_id": publication.approval_id,
+        "partial_allowed": publication.partial_allowed,
         "projection_version": publication.projection_version,
         "projection_state": publication.projection_state.value,
         "state": publication.state.value,
@@ -339,6 +359,7 @@ def _publication_from_row(row: Any) -> TranscriptPublication:
             "transcript_artifact_schema_version": row["transcript_artifact_schema_version"],
             "policy_reference": row["policy_reference"],
             "approval_id": row["approval_id"],
+            "partial_allowed": row["partial_allowed"],
             "projection_version": row["projection_version"],
             "projection_state": row["projection_state"],
             "state": row["state"],

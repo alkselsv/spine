@@ -736,6 +736,7 @@ transcript_publications = Table(
     Column("transcript_artifact_schema_version", Text, nullable=False),
     Column("policy_reference", Text, nullable=False),
     Column("approval_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("partial_allowed", Boolean, nullable=False),
     Column("projection_version", Text, nullable=False),
     Column("projection_state", Text, nullable=False),
     Column("state", Text, nullable=False),
