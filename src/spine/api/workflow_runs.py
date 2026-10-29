@@ -23,8 +23,14 @@ from spine.api.schemas import (
     parse_idempotency_key_header,
 )
 from spine.application.persisted_workflow_runs import PersistedWorkflowRunAdmissionService
+from spine.application.requirements_review import (
+    RequirementsArtifactStaleError,
+    RequirementsReviewReceipt,
+    RequirementsReviewService,
+    RequirementsReviewUnavailableError,
+)
 from spine.application.requirements_artifacts import PersistedRequirementsArtifactService
-from spine.application.persistence.errors import OptimisticConflictError
+from spine.application.persistence.errors import ConstraintConflictError, OptimisticConflictError
 from spine.application.persistence.context import (
     EnvironmentScope,
     PersistenceOperation,
@@ -33,6 +39,9 @@ from spine.application.persistence.context import (
 )
 from spine.application.workflow_runs import (
     AddContextCommandV1,
+    EditRequirementCommandV1,
+    RequestRequirementsReworkCommandV1,
+    SaveRequirementsReviewCommandV1,
     StartWorkflowCommand,
     WorkflowArtifactRef,
     WorkflowCommand,
@@ -94,7 +103,9 @@ class WorkflowRunResponse(BaseModel):
     workflow_version: str
     run_version: int = Field(ge=1)
     state: str
-    allowed_commands: tuple[Literal["add_context"], ...]
+    allowed_commands: tuple[
+        Literal["add_context", "edit_requirement", "save_review", "request_rework"], ...
+    ]
     created_at: datetime
 
 
@@ -107,9 +118,103 @@ class AddContextWorkflowCommandRequestV1(BaseModel):
     command_schema_version: Literal[1]
     expected_run_version: int = Field(ge=1, strict=True)
     payload: AddContextCommandV1
-    artifact_refs: tuple[WorkflowArtifactRef, ...] = ()
+    artifact_refs: tuple["WorkflowArtifactRefRequestV1", ...] = ()
     correlation_id: UUID
     causation_id: UUID
+
+
+class WorkflowArtifactRefRequestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    artifact_id: UUID
+    schema_name: str = Field(min_length=1, max_length=255)
+    schema_version: str = Field(min_length=1, max_length=128)
+    artifact_version: int = Field(ge=1, strict=True)
+
+
+class EditRequirementPayloadRequestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    requirement_id: UUID
+    statement: str = Field(min_length=1, max_length=8_192)
+    reason: str = Field(min_length=1, max_length=2_000)
+
+
+class RequirementsReviewPayloadRequestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    reason: str = Field(min_length=1, max_length=2_000)
+
+
+class EditRequirementWorkflowCommandRequestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    command_id: UUID
+    command_type: Literal["edit_requirement"]
+    command_schema_version: Literal[1]
+    expected_run_version: int = Field(ge=1, strict=True)
+    payload: EditRequirementPayloadRequestV1
+    artifact_refs: tuple[WorkflowArtifactRefRequestV1, ...]
+    correlation_id: UUID
+    causation_id: UUID
+
+
+class SaveRequirementsReviewWorkflowCommandRequestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    command_id: UUID
+    command_type: Literal["save_review"]
+    command_schema_version: Literal[1]
+    expected_run_version: int = Field(ge=1, strict=True)
+    payload: RequirementsReviewPayloadRequestV1
+    artifact_refs: tuple[WorkflowArtifactRefRequestV1, ...]
+    correlation_id: UUID
+    causation_id: UUID
+
+
+class RequestRequirementsReworkWorkflowCommandRequestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    command_id: UUID
+    command_type: Literal["request_rework"]
+    command_schema_version: Literal[1]
+    expected_run_version: int = Field(ge=1, strict=True)
+    payload: RequirementsReviewPayloadRequestV1
+    artifact_refs: tuple[WorkflowArtifactRefRequestV1, ...]
+    correlation_id: UUID
+    causation_id: UUID
+
+
+WorkflowCommandRequestV1 = (
+    AddContextWorkflowCommandRequestV1
+    | EditRequirementWorkflowCommandRequestV1
+    | SaveRequirementsReviewWorkflowCommandRequestV1
+    | RequestRequirementsReworkWorkflowCommandRequestV1
+)
+
+
+class RequirementsReviewReceiptResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    command_id: UUID
+    work_item_id: UUID
+    run_id: UUID
+    workflow_version_id: UUID
+    state: str
+    run_version: int = Field(ge=1)
+    admission: Literal["accepted", "replayed"]
+    action: Literal["edit_requirement", "save_review", "request_rework"]
+    actor: ActorRef
+    reason: str
+    changed_requirement_id: UUID | None = None
+    base_artifact_ref: WorkflowArtifactRef
+    resulting_artifact_ref: WorkflowArtifactRef
 
 
 class WorkflowEventResponse(BaseModel):
@@ -144,6 +249,7 @@ def install_workflow_run_routes(
     cursor_secret: bytes,
     command_id_source=uuid4,
     requirements_artifact_service: PersistedRequirementsArtifactService | None = None,
+    requirements_review_service: RequirementsReviewService | None = None,
 ) -> None:
     """Register shared run admission and authorized read routes."""
 
@@ -246,7 +352,7 @@ def install_workflow_run_routes(
     async def command_endpoint(
         run_id: UUID,
         request: Request,
-        body: AddContextWorkflowCommandRequestV1 = Body(...),
+        body: WorkflowCommandRequestV1 = Body(..., discriminator="command_type"),
         request_context: AuthorizedRequestContext[object] = Depends(get_authorized_request_context),
         persistence_context: TrustedPersistenceContext = Depends(get_authorized_persistence_context),
     ) -> JSONResponse:
@@ -261,9 +367,7 @@ def install_workflow_run_routes(
             return JSONResponse(status_code=400, content={"code": "workflow.idempotency_key_invalid"})
         diagnostic = await get_diagnostic_context(request)
         try:
-            receipt = await service.dispatch(
-                context=persistence_context,
-                command=WorkflowCommand(
+            command = WorkflowCommand(
                 command_id=body.command_id,
                 idempotency_key=idempotency_key.value,
                 run_id=run_id,
@@ -273,13 +377,50 @@ def install_workflow_run_routes(
                 command_type=body.command_type,
                 command_schema_version=body.command_schema_version,
                 expected_run_version=body.expected_run_version,
-                payload=body.payload,
-                artifact_refs=body.artifact_refs,
+                payload=_application_payload(body),
+                artifact_refs=tuple(
+                    WorkflowArtifactRef.model_validate(item.model_dump())
+                    for item in body.artifact_refs
+                ),
                 trace_id=diagnostic.trace_id,
                 correlation_id=body.correlation_id,
                 causation_id=body.causation_id,
-                ),
             )
+            if body.command_type == "add_context":
+                receipt = await service.dispatch(
+                    context=persistence_context,
+                    command=command,
+                )
+            elif requirements_review_service is None:
+                return JSONResponse(
+                    status_code=503,
+                    content={"code": "requirements.review_unavailable"},
+                )
+            else:
+                review_receipt = await requirements_review_service.dispatch(
+                    context=persistence_context,
+                    command=command,
+                )
+                if review_receipt is None:
+                    return JSONResponse(
+                        status_code=404, content={"code": "workflow.run_not_found"}
+                    )
+                return JSONResponse(
+                    status_code=202,
+                    content=_review_response(review_receipt).model_dump(mode="json"),
+                )
+        except RequirementsArtifactStaleError as error:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "code": "requirements.artifact_stale",
+                    "current_artifact_ref": error.current_ref.model_dump(mode="json"),
+                },
+            )
+        except RequirementsReviewUnavailableError:
+            return JSONResponse(status_code=404, content={"code": "artifact.not_found"})
+        except ConstraintConflictError:
+            return JSONResponse(status_code=409, content={"code": "workflow.run_terminal"})
         except OptimisticConflictError:
             current = await service.get_run(context=persistence_context, run_id=run_id)
             if current is None:
@@ -388,7 +529,7 @@ def install_workflow_run_routes(
         route_id="workflow.runs.commands.create",
         policy=command_policy,
         methods=["POST"],
-        response_model=WorkflowRunReceiptResponse,
+        response_model=WorkflowRunReceiptResponse | RequirementsReviewReceiptResponse,
         status_code=202,
         openapi_extra={
             "parameters": [
@@ -433,9 +574,43 @@ def _event_response(event: WorkflowEvent) -> WorkflowEventResponse:
     return WorkflowEventResponse(**event.model_dump(mode="python"))
 
 
+def _review_response(receipt: RequirementsReviewReceipt) -> RequirementsReviewReceiptResponse:
+    command = receipt.command_receipt
+    return RequirementsReviewReceiptResponse(
+        command_id=command.command_id,
+        work_item_id=command.work_item_id,
+        run_id=command.run_id,
+        workflow_version_id=command.workflow_version_id,
+        state=command.state.value,
+        run_version=command.run_version,
+        admission=command.admission,
+        action=receipt.action,
+        actor=receipt.actor,
+        reason=receipt.reason,
+        changed_requirement_id=receipt.changed_requirement_id,
+        base_artifact_ref=receipt.base_artifact_ref,
+        resulting_artifact_ref=receipt.resulting_artifact_ref,
+    )
+
+
+def _application_payload(body: WorkflowCommandRequestV1):
+    data = body.payload.model_dump()
+    if body.command_type == "add_context":
+        return AddContextCommandV1.model_validate(data)
+    if body.command_type == "edit_requirement":
+        return EditRequirementCommandV1.model_validate(data)
+    if body.command_type == "save_review":
+        return SaveRequirementsReviewCommandV1.model_validate(data)
+    return RequestRequirementsReworkCommandV1.model_validate(data)
+
+
 __all__ = [
     "StartWorkflowRequestV1",
     "AddContextWorkflowCommandRequestV1",
+    "EditRequirementWorkflowCommandRequestV1",
+    "RequestRequirementsReworkWorkflowCommandRequestV1",
+    "RequirementsReviewReceiptResponse",
+    "SaveRequirementsReviewWorkflowCommandRequestV1",
     "WorkflowEventPageResponse",
     "WorkflowRunReceiptResponse",
     "WorkflowRunResponse",

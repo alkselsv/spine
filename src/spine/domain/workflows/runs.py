@@ -108,7 +108,13 @@ class WorkflowEvent(DefinitionModel):
     event_id: UUID
     run_id: UUID
     sequence: int = Field(ge=1)
-    event_type: Literal["workflow.run-started", "workflow.context-added"]
+    event_type: Literal[
+        "workflow.run-started",
+        "workflow.context-added",
+        "workflow.requirement-edited",
+        "workflow.requirements-reviewed",
+        "workflow.requirements-rework-requested",
+    ]
     event_schema_version: Literal[1] = 1
     run_version: int = Field(ge=1)
     summary: str = Field(min_length=1, max_length=255)
@@ -151,7 +157,9 @@ class WorkflowRunSnapshot(DefinitionModel):
     workflow_version: str
     state: WorkflowRunState
     run_version: int = Field(ge=1)
-    allowed_commands: tuple[Literal["add_context"], ...]
+    allowed_commands: tuple[
+        Literal["add_context", "edit_requirement", "save_review", "request_rework"], ...
+    ]
     created_at: datetime
 
 

@@ -978,6 +978,25 @@ export interface components {
             version: number;
         };
         /**
+         * ActorKind
+         * @enum {string}
+         */
+        ActorKind: "human" | "team" | "agent" | "service";
+        /**
+         * ActorRef
+         * @description A first-class assignee or initiator of work.
+         */
+        ActorRef: {
+            /** Display Name */
+            display_name?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            kind: components["schemas"]["ActorKind"];
+        };
+        /**
          * AddContextCommandV1
          * @description Protected conversational context added to one existing run.
          */
@@ -997,7 +1016,7 @@ export interface components {
              * Artifact Refs
              * @default []
              */
-            artifact_refs: components["schemas"]["WorkflowArtifactRef"][];
+            artifact_refs: components["schemas"]["WorkflowArtifactRefRequestV1"][];
             /**
              * Causation Id
              * Format: uuid
@@ -1014,8 +1033,8 @@ export interface components {
              */
             command_schema_version: 1;
             /**
-             * Command Type
-             * @constant
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
              */
             command_type: "add_context";
             /**
@@ -2544,6 +2563,63 @@ export interface components {
              * Format: uuid
              */
             source_object_id: string;
+        };
+        /** EditRequirementPayloadRequestV1 */
+        EditRequirementPayloadRequestV1: {
+            /** Reason */
+            reason: string;
+            /**
+             * Requirement Id
+             * Format: uuid
+             */
+            requirement_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Statement */
+            statement: string;
+        };
+        /** EditRequirementWorkflowCommandRequestV1 */
+        EditRequirementWorkflowCommandRequestV1: {
+            /** Artifact Refs */
+            artifact_refs: components["schemas"]["WorkflowArtifactRefRequestV1"][];
+            /**
+             * Causation Id
+             * Format: uuid
+             */
+            causation_id: string;
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /**
+             * Command Schema Version
+             * @constant
+             */
+            command_schema_version: 1;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            command_type: "edit_requirement";
+            /**
+             * Correlation Id
+             * Format: uuid
+             */
+            correlation_id: string;
+            /** Expected Run Version */
+            expected_run_version: number;
+            payload: components["schemas"]["EditRequirementPayloadRequestV1"];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
         };
         /**
          * EvidenceLocator
@@ -4379,6 +4455,45 @@ export interface components {
              */
             source_revision_id: string;
         };
+        /** RequestRequirementsReworkWorkflowCommandRequestV1 */
+        RequestRequirementsReworkWorkflowCommandRequestV1: {
+            /** Artifact Refs */
+            artifact_refs: components["schemas"]["WorkflowArtifactRefRequestV1"][];
+            /**
+             * Causation Id
+             * Format: uuid
+             */
+            causation_id: string;
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /**
+             * Command Schema Version
+             * @constant
+             */
+            command_schema_version: 1;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            command_type: "request_rework";
+            /**
+             * Correlation Id
+             * Format: uuid
+             */
+            correlation_id: string;
+            /** Expected Run Version */
+            expected_run_version: number;
+            payload: components["schemas"]["RequirementsReviewPayloadRequestV1"];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
         /**
          * Requirement
          * @description One traceable, unaccepted statement proposed by requirements extraction.
@@ -4518,7 +4633,7 @@ export interface components {
          * RequirementState
          * @enum {string}
          */
-        RequirementState: "candidate" | "partial" | "unsupported" | "unverified";
+        RequirementState: "candidate" | "partial" | "unsupported" | "unverified" | "human_reviewed" | "accepted";
         /**
          * RequirementsArtifact
          * @description Immutable, explicitly versioned requirements candidate for one run.
@@ -4641,6 +4756,67 @@ export interface components {
          * @enum {string}
          */
         RequirementsEvidenceInspectionStatus: "available" | "denied" | "stale" | "tombstoned" | "missing" | "locator_mismatch" | "fabricated" | "degraded";
+        /** RequirementsReviewPayloadRequestV1 */
+        RequirementsReviewPayloadRequestV1: {
+            /** Reason */
+            reason: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /** RequirementsReviewReceiptResponse */
+        RequirementsReviewReceiptResponse: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "edit_requirement" | "save_review" | "request_rework";
+            actor: components["schemas"]["ActorRef"];
+            /**
+             * Admission
+             * @enum {string}
+             */
+            admission: "accepted" | "replayed";
+            base_artifact_ref: components["schemas"]["WorkflowArtifactRef"];
+            /** Changed Requirement Id */
+            changed_requirement_id?: string | null;
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /** Reason */
+            reason: string;
+            resulting_artifact_ref: components["schemas"]["WorkflowArtifactRef"];
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Run Version */
+            run_version: number;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** State */
+            state: string;
+            /**
+             * Work Item Id
+             * Format: uuid
+             */
+            work_item_id: string;
+            /**
+             * Workflow Version Id
+             * Format: uuid
+             */
+            workflow_version_id: string;
+        };
         /** RestoreQASessionRequest */
         RestoreQASessionRequest: {
             /** Expected Version */
@@ -4749,6 +4925,45 @@ export interface components {
             source_revision_id: string;
             /** Superseded By Revision Id */
             superseded_by_revision_id?: string | null;
+        };
+        /** SaveRequirementsReviewWorkflowCommandRequestV1 */
+        SaveRequirementsReviewWorkflowCommandRequestV1: {
+            /** Artifact Refs */
+            artifact_refs: components["schemas"]["WorkflowArtifactRefRequestV1"][];
+            /**
+             * Causation Id
+             * Format: uuid
+             */
+            causation_id: string;
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /**
+             * Command Schema Version
+             * @constant
+             */
+            command_schema_version: 1;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            command_type: "save_review";
+            /**
+             * Correlation Id
+             * Format: uuid
+             */
+            correlation_id: string;
+            /** Expected Run Version */
+            expected_run_version: number;
+            payload: components["schemas"]["RequirementsReviewPayloadRequestV1"];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
         };
         /**
          * SecurityDomainMetadata
@@ -4942,6 +5157,20 @@ export interface components {
             /** Schema Version */
             schema_version: string;
         };
+        /** WorkflowArtifactRefRequestV1 */
+        WorkflowArtifactRefRequestV1: {
+            /**
+             * Artifact Id
+             * Format: uuid
+             */
+            artifact_id: string;
+            /** Artifact Version */
+            artifact_version: number;
+            /** Schema Name */
+            schema_name: string;
+            /** Schema Version */
+            schema_version: string;
+        };
         /** WorkflowEventPageResponse */
         WorkflowEventPageResponse: {
             /** Items */
@@ -5036,7 +5265,7 @@ export interface components {
         /** WorkflowRunResponse */
         WorkflowRunResponse: {
             /** Allowed Commands */
-            allowed_commands: "add_context"[];
+            allowed_commands: ("add_context" | "edit_requirement" | "save_review" | "request_rework")[];
             /**
              * Created At
              * Format: date-time
@@ -9885,7 +10114,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["AddContextWorkflowCommandRequestV1"];
+                "application/json": components["schemas"]["AddContextWorkflowCommandRequestV1"] | components["schemas"]["EditRequirementWorkflowCommandRequestV1"] | components["schemas"]["SaveRequirementsReviewWorkflowCommandRequestV1"] | components["schemas"]["RequestRequirementsReworkWorkflowCommandRequestV1"];
             };
         };
         responses: {
@@ -9895,7 +10124,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkflowRunReceiptResponse"];
+                    "application/json": components["schemas"]["WorkflowRunReceiptResponse"] | components["schemas"]["RequirementsReviewReceiptResponse"];
                 };
             };
             /** @description Safe request error. */

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal, Protocol
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, field_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from spine.domain.common import ActorRef, EnvironmentKind, SpineModel
 from spine.domain.workflows import (
@@ -71,6 +71,62 @@ class AddContextCommandV1(SpineModel):
         return value
 
 
+class EditRequirementCommandV1(SpineModel):
+    """A human edit of one stable requirement in an exact artifact version."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal[1] = 1
+    requirement_id: UUID
+    statement: str = Field(min_length=1, max_length=8_192)
+    reason: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("requirement_id")
+    @classmethod
+    def reject_zero_requirement_identity(cls, value: UUID) -> UUID:
+        if value.int == 0:
+            raise ValueError("requirement identity must be non-zero")
+        return value
+
+    @field_validator("statement", "reason")
+    @classmethod
+    def reject_blank_edit_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("requirement edit text must not be blank")
+        return value
+
+
+class SaveRequirementsReviewCommandV1(SpineModel):
+    """A human decision that the exact requirements version has been reviewed."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal[1] = 1
+    reason: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("reason")
+    @classmethod
+    def reject_blank_reason(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("requirements review reason must not be blank")
+        return value
+
+
+class RequestRequirementsReworkCommandV1(SpineModel):
+    """A typed request to return one exact requirements version for rework."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal[1] = 1
+    reason: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("reason")
+    @classmethod
+    def reject_blank_reason(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("requirements rework reason must not be blank")
+        return value
+
 class WorkflowArtifactRef(SpineModel):
     """An exact immutable artifact version consumed by a command."""
 
@@ -101,10 +157,17 @@ class WorkflowCommand(SpineModel):
     workspace_id: UUID
     environment_id: UUID
     actor: ActorRef
-    command_type: Literal["add_context"]
+    command_type: Literal[
+        "add_context", "edit_requirement", "save_review", "request_rework"
+    ]
     command_schema_version: Literal[1]
     expected_run_version: int = Field(ge=1, strict=True)
-    payload: AddContextCommandV1
+    payload: (
+        AddContextCommandV1
+        | EditRequirementCommandV1
+        | SaveRequirementsReviewCommandV1
+        | RequestRequirementsReworkCommandV1
+    )
     artifact_refs: tuple[WorkflowArtifactRef, ...] = ()
     trace_id: UUID
     correlation_id: UUID
@@ -126,6 +189,18 @@ class WorkflowCommand(SpineModel):
         if not value.strip():
             raise ValueError("workflow command idempotency key must not be blank")
         return value
+
+    @model_validator(mode="after")
+    def validate_payload_for_command_type(self) -> "WorkflowCommand":
+        expected = {
+            "add_context": AddContextCommandV1,
+            "edit_requirement": EditRequirementCommandV1,
+            "save_review": SaveRequirementsReviewCommandV1,
+            "request_rework": RequestRequirementsReworkCommandV1,
+        }[self.command_type]
+        if type(self.payload) is not expected:
+            raise ValueError("workflow command payload does not match command type")
+        return self
 
 class PinnedWorkflowVersion(SpineModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -226,11 +301,17 @@ class WorkflowRunAdmissionService:
 def workflow_run_snapshot(run: WorkflowRun) -> WorkflowRunSnapshot:
     """Project protected canonical state into the shared safe read model."""
 
-    allowed_commands: tuple[Literal["add_context"], ...] = (
-        ("add_context",)
-        if run.state.value not in {"completed", "failed", "cancelled"}
-        else ()
-    )
+    allowed_commands: tuple[
+        Literal["add_context", "edit_requirement", "save_review", "request_rework"], ...
+    ] = ()
+    if run.state.value not in {"completed", "failed", "cancelled"}:
+        allowed_commands = ("add_context",)
+        if run.workflow_key == "commercial.requirements":
+            allowed_commands += (
+                "edit_requirement",
+                "save_review",
+                "request_rework",
+            )
     return WorkflowRunSnapshot(
         run_id=run.run_id,
         work_item_id=run.work_item_id,
@@ -248,6 +329,9 @@ def workflow_run_snapshot(run: WorkflowRun) -> WorkflowRunSnapshot:
 
 __all__ = [
     "AddContextCommandV1",
+    "EditRequirementCommandV1",
+    "RequestRequirementsReworkCommandV1",
+    "SaveRequirementsReviewCommandV1",
     "StartWorkflowCommand",
     "WorkflowArtifactRef",
     "WorkflowCommand",

@@ -26,6 +26,8 @@ class RequirementState(str, Enum):
     PARTIAL = "partial"
     UNSUPPORTED = "unsupported"
     UNVERIFIED = "unverified"
+    HUMAN_REVIEWED = "human_reviewed"
+    ACCEPTED = "accepted"
 
 
 class RequirementReviewState(str, Enum):

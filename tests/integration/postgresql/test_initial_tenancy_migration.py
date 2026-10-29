@@ -5070,13 +5070,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261202_70_workflow_run_admission.py",
         "20261203_71_workflow_run_commands.py",
         "20261204_72_requirements_artifacts.py",
+        "20261205_73_requirements_review_commands.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261205_73_injected_failure.py").write_text(
+    (target / "versions" / "20261206_74_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261205_73'\n"
-        "down_revision = '20261204_72'\n"
+        "revision = '20261206_74'\n"
+        "down_revision = '20261205_73'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

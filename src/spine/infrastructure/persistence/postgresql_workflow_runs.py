@@ -342,6 +342,21 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
         event_id = uuid5(
             NAMESPACE_URL, f"spine.workflow.command-event:v1:{command.command_id}"
         )
+        event_type, event_summary = {
+            "add_context": ("workflow.context-added", "Additional context received."),
+            "edit_requirement": (
+                "workflow.requirement-edited",
+                "A requirement was edited by a human reviewer.",
+            ),
+            "save_review": (
+                "workflow.requirements-reviewed",
+                "Requirements review was saved.",
+            ),
+            "request_rework": (
+                "workflow.requirements-rework-requested",
+                "Requirements rework was requested.",
+            ),
+        }[command.command_type]
         await self._uow._execute(
             insert(workflow_run_events).values(
                 event_id=event_id,
@@ -349,10 +364,10 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
                 environment_id=command.environment_id,
                 run_id=command.run_id,
                 sequence=resulting_version,
-                event_type="workflow.context-added",
+                event_type=event_type,
                 event_schema_version=1,
                 run_version=resulting_version,
-                summary="Additional context received.",
+                summary=event_summary,
                 correlation_id=command.correlation_id,
                 causation_id=command.command_id,
                 occurred_at=now,

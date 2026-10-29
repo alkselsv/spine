@@ -13,9 +13,15 @@ from spine.application.workflow_runs import (
     WorkflowCommand,
     WorkflowVersionUnavailableError,
     WorkflowRunAdmissionService,
+    workflow_run_snapshot,
 )
 from spine.domain.common import ActorKind, ActorRef, EnvironmentKind
-from spine.domain.workflows import ClientRequestV1, WorkflowCommandReceipt, WorkflowRunState
+from spine.domain.workflows import (
+    ClientRequestV1,
+    WorkflowCommandReceipt,
+    WorkflowRun,
+    WorkflowRunState,
+)
 from spine.domain.workflows import WorkflowEvent, WorkflowEventPage
 
 
@@ -177,6 +183,37 @@ def test_start_command_rejects_blank_idempotency_and_work_item_keys() -> None:
         StartWorkflowCommand.model_validate(
             _command().model_dump() | {"idempotency_key": " "}
         )
+
+
+def test_requirements_review_commands_are_only_advertised_for_requirements_runs() -> None:
+    command = _command()
+    base = WorkflowRun(
+        run_id=UUID(int=90),
+        command_id=command.command_id,
+        work_item_id=UUID(int=91),
+        workspace_id=command.workspace_id,
+        environment_id=command.environment_id,
+        workflow_key="other.workflow",
+        workflow_version_id=command.workflow_version_id,
+        workflow_version=command.workflow_version,
+        state=WorkflowRunState.WAITING,
+        run_version=2,
+        started_by=command.actor,
+        client_request=command.client_request,
+        trace_id=command.trace_id,
+        correlation_id=command.correlation_id,
+        causation_id=command.causation_id,
+        created_at=datetime(2026, 10, 29, tzinfo=timezone.utc),
+    )
+
+    assert workflow_run_snapshot(base).allowed_commands == ("add_context",)
+    requirements = base.model_copy(update={"workflow_key": "commercial.requirements"})
+    assert workflow_run_snapshot(requirements).allowed_commands == (
+        "add_context",
+        "edit_requirement",
+        "save_review",
+        "request_rework",
+    )
 
 
 @pytest.mark.asyncio
