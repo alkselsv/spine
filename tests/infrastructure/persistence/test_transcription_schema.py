@@ -63,7 +63,7 @@ def test_transcription_tables_are_tenant_scoped_and_keep_source_job_lineage() ->
 def test_bounded_transcription_migration_finalizes_check_constraint_names() -> None:
     source = (
         PROJECT_ROOT
-        / "migrations/versions/20261210_78_bounded_transcription.py"
+        / "migrations/versions/20261211_79_bounded_transcription.py"
     ).read_text(encoding="utf-8")
 
     for constraint_name in (
