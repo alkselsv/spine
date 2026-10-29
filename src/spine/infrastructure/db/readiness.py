@@ -474,6 +474,15 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "requirements_artifact_versions": ExpectedTablePrivileges(
             True, True, True, False, False
         ),
+        "transcription_jobs": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "transcription_artifacts": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "transcript_segments": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
     }
     if set(tables) != set(expected):
         return False
