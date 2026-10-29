@@ -50,7 +50,10 @@ from spine.application.qa_run_history import PersistedQARunHistoryService
 from spine.application.persisted_workflow_runs import (
     PersistedWorkflowRunAdmissionService,
 )
-from spine.application.requirements_artifacts import PersistedRequirementsArtifactService
+from spine.application.requirements_artifacts import (
+    PersistedRequirementsArtifactService,
+    RequirementsExtractionClarificationRevalidator,
+)
 from spine.application.requirements_review import RequirementsReviewService
 from spine.application.requirements_evidence import (
     PersistedRequirementsEvidenceResolver,
@@ -400,6 +403,7 @@ def create_production_app(
         requirements_artifact_service=PersistedRequirementsArtifactService(
             persistence.uow_factory,
             evidence_validation_service=requirements_evidence_service,
+            clarification_revalidator=RequirementsExtractionClarificationRevalidator(),
         ),
         requirements_review_service=RequirementsReviewService(
             persistence.uow_factory

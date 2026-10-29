@@ -11,7 +11,10 @@ from spine.application.persistence.errors import (
     InvalidPersistenceContextError,
     OptimisticConflictError,
 )
-from spine.application.requirements_artifacts import PersistedRequirementsArtifactService
+from spine.application.requirements_artifacts import (
+    PersistedRequirementsArtifactService,
+    RequirementsExtractionClarificationRevalidator,
+)
 from spine.application.workflow_runs import (
     AnswerClarificationCommandV1,
     WorkflowArtifactRef,
@@ -132,7 +135,10 @@ class _Context:
 async def test_replaying_candidate_production_returns_same_immutable_artifact() -> None:
     artifacts = _Artifacts()
     uow, factory = _factory(artifacts)
-    service = PersistedRequirementsArtifactService(factory)
+    service = PersistedRequirementsArtifactService(
+        factory,
+        clarification_revalidator=RequirementsExtractionClarificationRevalidator(),
+    )
 
     first = await service.produce_first_candidate(context=_context(), run_id=UUID(int=3))
     replay = await service.produce_first_candidate(context=_context(), run_id=UUID(int=3))
@@ -149,7 +155,10 @@ async def test_replaying_candidate_production_returns_same_immutable_artifact() 
 async def test_candidate_production_rejects_run_outside_authorized_scope() -> None:
     artifacts = _Artifacts()
     _, factory = _factory(artifacts)
-    service = PersistedRequirementsArtifactService(factory)
+    service = PersistedRequirementsArtifactService(
+        factory,
+        clarification_revalidator=RequirementsExtractionClarificationRevalidator(),
+    )
 
     with pytest.raises(InvalidPersistenceContextError):
         await service.produce_first_candidate(context=_context(77, 78), run_id=UUID(int=3))
@@ -161,7 +170,10 @@ async def test_candidate_production_rejects_run_outside_authorized_scope() -> No
 async def test_successor_preserves_prior_version_and_records_lineage() -> None:
     artifacts = _Artifacts()
     uow, factory = _factory(artifacts)
-    service = PersistedRequirementsArtifactService(factory)
+    service = PersistedRequirementsArtifactService(
+        factory,
+        clarification_revalidator=RequirementsExtractionClarificationRevalidator(),
+    )
     first = await service.produce_first_candidate(context=_context(), run_id=UUID(int=3))
     assert first is not None
 
@@ -186,7 +198,10 @@ async def test_successor_preserves_prior_version_and_records_lineage() -> None:
 async def test_low_information_first_message_produces_partial_candidate() -> None:
     artifacts = _Artifacts()
     uow, factory = _factory(artifacts, _run("Help"))
-    service = PersistedRequirementsArtifactService(factory)
+    service = PersistedRequirementsArtifactService(
+        factory,
+        clarification_revalidator=RequirementsExtractionClarificationRevalidator(),
+    )
 
     artifact = await service.produce_first_candidate(context=_context(), run_id=UUID(int=3))
 
@@ -297,7 +312,10 @@ async def test_clarification_answer_prepares_one_immutable_affected_successor() 
 async def test_clarifications_are_admitted_sequentially_on_the_same_run() -> None:
     artifacts = _Artifacts()
     _, factory = _factory(artifacts)
-    service = PersistedRequirementsArtifactService(factory)
+    service = PersistedRequirementsArtifactService(
+        factory,
+        clarification_revalidator=RequirementsExtractionClarificationRevalidator(),
+    )
     extraction = RequirementsExtractionOutput(
         workspace_id=UUID(int=1),
         environment_id=UUID(int=2),

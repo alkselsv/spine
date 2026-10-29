@@ -18,6 +18,7 @@ from spine.application.persistence.unit_of_work import UnitOfWorkFactory
 from spine.application.parsed_content_inspection import ParsedContentInspectionRequester
 from spine.application.requirements_evidence import RequirementsEvidenceValidationService
 from spine.application.workflow_runs import AnswerClarificationCommandV1, WorkflowCommand
+from spine.application.extract_requirements import revalidate_clarified_requirement
 from spine.domain.workflows import (
     Clarification,
     ClarificationAnswer,
@@ -61,8 +62,8 @@ class RequirementsClarificationRevalidator(Protocol):
     ) -> RequirementsExtractionOutput: ...
 
 
-class DeterministicRequirementsClarificationRevalidator:
-    """Offline extraction revalidator used until the configured agent is composed here."""
+class RequirementsExtractionClarificationRevalidator:
+    """Adapter to the affected-result revalidation contract owned by #641."""
 
     async def revalidate(
         self,
@@ -72,33 +73,11 @@ class DeterministicRequirementsClarificationRevalidator:
         clarification: Clarification,
         answer: ClarificationAnswer,
     ) -> RequirementsExtractionOutput:
-        del clarification
-        resolution = answer.text.strip()
-        resolved = requirement.model_copy(
-            update={
-                "statement": (
-                    resolution
-                    if requirement.category is RequirementCategory.UNRESOLVED_INFORMATION
-                    else requirement.statement
-                ),
-                "constraints": (
-                    requirement.constraints
-                    if requirement.category is RequirementCategory.UNRESOLVED_INFORMATION
-                    else (*requirement.constraints, resolution)
-                ),
-                "missing_markers": (),
-                "ambiguous_markers": (),
-                "uncertainty": None,
-                "state": RequirementState.CANDIDATE,
-            }
-        )
-        return RequirementsExtractionOutput(
-            workspace_id=previous.workspace_id,
-            environment_id=previous.environment_id,
-            workflow_run_id=previous.run_id,
-            work_item_id=previous.work_item_id,
-            outcome=RequirementsExtractionOutcome.SUCCESS,
-            requirements=(resolved,),
+        return revalidate_clarified_requirement(
+            previous=previous,
+            requirement=requirement,
+            clarification=clarification,
+            answer=answer,
         )
 
 
@@ -111,15 +90,13 @@ class PersistedRequirementsArtifactService:
         self,
         uow_factory: UnitOfWorkFactory,
         evidence_validation_service: RequirementsEvidenceValidationService | None = None,
-        clarification_revalidator: RequirementsClarificationRevalidator | None = None,
+        *,
+        clarification_revalidator: RequirementsClarificationRevalidator,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self._uow_factory = uow_factory
         self._evidence_validation_service = evidence_validation_service
-        self._clarification_revalidator = (
-            clarification_revalidator
-            or DeterministicRequirementsClarificationRevalidator()
-        )
+        self._clarification_revalidator = clarification_revalidator
         self._clock = clock
 
     async def produce_first_candidate(
@@ -527,51 +504,14 @@ def _with_open_clarifications(
 ) -> RequirementsArtifact:
     """Attach stable, content-safe questions for unresolved candidate fields."""
 
-    clarifications: list[Clarification] = []
-    question_actor = ActorRef(
-        kind=ActorKind.AGENT,
-        id=uuid5(NAMESPACE_URL, "spine:agent:extract-requirements:v1"),
+    clarification = _next_open_clarification(
+        artifact=artifact,
+        asked_at=run.created_at,
+        correlation_id=run.correlation_id,
     )
-    for requirement in artifact.requirements:
-        if not requirement.missing_markers and not requirement.ambiguous_markers:
-            continue
-        reason = (
-            ClarificationReason.MISSING_INFORMATION
-            if requirement.missing_markers
-            else ClarificationReason.AMBIGUOUS_INFORMATION
-        )
-        clarification_id = uuid5(
-            NAMESPACE_URL,
-            (
-                "spine:clarification:v1:"
-                f"{artifact.artifact_id}:{artifact.artifact_version}:{requirement.requirement_id}"
-            ),
-        )
-        clarifications.append(
-            Clarification(
-                clarification_id=clarification_id,
-                run_id=artifact.run_id,
-                requirement_id=requirement.requirement_id,
-                originating_artifact_id=artifact.artifact_id,
-                originating_artifact_version=artifact.artifact_version,
-                question=(
-                    "Please provide the missing information required to continue."
-                    if reason is ClarificationReason.MISSING_INFORMATION
-                    else "Please resolve the ambiguous information required to continue."
-                ),
-                reason=reason,
-                asked_by=question_actor,
-                asked_event_id=uuid5(
-                    NAMESPACE_URL, f"spine:clarification-asked:v1:{clarification_id}"
-                ),
-                asked_at=run.created_at,
-                correlation_id=run.correlation_id,
-            )
-        )
-        break
-    if not clarifications:
+    if clarification is None:
         return artifact
-    return artifact.model_copy(update={"clarifications": tuple(clarifications)})
+    return artifact.model_copy(update={"clarifications": (clarification,)})
 
 
 def _next_open_clarification(
