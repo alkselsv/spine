@@ -132,6 +132,21 @@ Canonically accepted source changes after a Projection Snapshot's Canonical
 Boundary that are not represented in that snapshot.
 _Avoid_: Data loss, source timestamp lag, authorization cache
 
+**Transcription Job**:
+A durable, tenant-scoped processing record that pins one exact audio Source
+Revision and one processing, adapter and model configuration identity.
+_Avoid_: Workflow Run, proposal run, ASR request log
+
+**Transcription Artifact**:
+An immutable derived ASR output for one exact audio Source Revision, retaining
+its Transcription Job and timestamped segment lineage without business interpretation.
+_Avoid_: Mutable transcript, Parsed Document, meeting summary
+
+**Transcript Segment**:
+One text span on the original recording timeline with stable artifact-local
+identity and only optional signals actually supplied by the ASR adapter.
+_Avoid_: Document chunk, inferred requirement, speaker identity
+
 **Manifest Completeness**:
 The property that every source in a Projection Snapshot's declared boundary is
 accounted for as included, tombstoned or excluded with an auditable reason.

@@ -2789,7 +2789,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "JOIN pg_namespace AS source_namespace "
                         "ON source_namespace.oid = relation.relnamespace "
                         "WHERE source_namespace.nspname = 'spine' AND relation.relname IN "
-                        "('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'google_connection_versions', 'google_connection_approvals', "
+                            "('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', 'ingestion_runs', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -2829,7 +2829,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "column_default FROM information_schema.columns "
                         "WHERE table_schema = 'spine' "
                         "AND table_name NOT LIKE 'source_canonical%' "
-                        "AND table_name NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'google_connection_versions', 'google_connection_approvals', "
+                            "AND table_name NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -2862,7 +2862,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "SELECT indexname FROM pg_indexes "
                         "WHERE schemaname = 'spine' "
                         "AND indexname NOT LIKE 'pk_source_canonical%' "
-                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'google_connection_versions', 'google_connection_approvals', "
+                            "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -2894,7 +2894,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                     text(
                         "SELECT tablename FROM pg_tables WHERE schemaname = 'spine' "
                         "AND tablename NOT LIKE 'source_canonical%' "
-                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'google_connection_versions', 'google_connection_approvals', "
+                            "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -2926,7 +2926,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                     text(
                         "SELECT tableowner FROM pg_tables WHERE schemaname = 'spine' "
                         "AND tablename NOT LIKE 'source_canonical%' "
-                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'google_connection_versions', 'google_connection_approvals', "
+                            "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -3583,7 +3583,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "ON namespace.oid = relation.relnamespace "
                         "WHERE namespace.nspname = 'spine' "
                         "AND relation.relname IN "
-                        "('workspaces', 'environments', 'work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'idempotency_receipts', "
+                        "('workspaces', 'environments', 'work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'idempotency_receipts', "
                             "'context_profiles', 'context_bundles', "
                             "'answer_question_runs', 'answer_question_attempts', "
                             "'qa_session_versions', 'qa_message_versions', "
@@ -3662,6 +3662,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "workflow_command_receipts": (True, True),
         "workflow_run_events": (True, True),
         "requirements_artifact_versions": (True, True),
+        "transcription_jobs": (True, True),
+        "transcription_artifacts": (True, True),
+        "transcript_segments": (True, True),
             "context_profiles": (True, True),
             "context_bundles": (True, True),
             "answer_question_runs": (True, True),
@@ -5072,13 +5075,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261204_72_requirements_artifacts.py",
         "20261205_73_requirements_review_commands.py",
         "20261206_74_workflow_clarifications.py",
+        "20261207_75_transcription_artifacts.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261207_75_injected_failure.py").write_text(
+    (target / "versions" / "20261208_76_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261207_75'\n"
-        "down_revision = '20261206_74'\n"
+        "revision = '20261208_76'\n"
+        "down_revision = '20261207_75'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

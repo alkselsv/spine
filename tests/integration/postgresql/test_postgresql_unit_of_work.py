@@ -1289,6 +1289,379 @@ async def test_postgresql_parsed_artifacts_use_transaction_local_tenant_scope(
     assert isolated is None
 
 
+async def test_postgresql_transcription_replays_one_tenant_scoped_artifact(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    from hashlib import sha256
+
+    from spine.application.transcription import (
+        AudioProcessingAuthorization,
+        TranscribeAudioCommand,
+        TranscriptionService,
+    )
+    from spine.domain.artifacts.transcription import (
+        SpeechToTextResult,
+        SpeechToTextSegment,
+    )
+    from spine.domain.sources import RevisionMetadata
+    from spine.domain.sources.canonicalization import canonical_revision_metadata_digest
+    from spine.domain.sources.original_reference import ObjectReference
+    from spine.infrastructure.persistence.transcription import (
+        PostgreSQLTranscriptionRepository,
+    )
+
+    case = await prepare_canonical_case(postgresql_adapter, 66300)
+    content = b"synthetic-russian-audio"
+    content_digest = sha256(content).hexdigest()
+    revision_metadata = RevisionMetadata(
+        embedded_title="Synthetic Russian audio",
+        document_language="ru",
+    )
+    revision = content_revision(
+        revision_id=synthetic_uuid(66301),
+        source_object_id=case.source.source_object_id,
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        kind=case.revision.kind,
+        revision_schema_version=case.revision.revision_schema_version,
+        revision_metadata_schema=case.revision.revision_metadata_schema,
+        revision_metadata=revision_metadata,
+        revision_metadata_digest=canonical_revision_metadata_digest(revision_metadata),
+        original_reference=ObjectReference(
+            schema_version=1,
+            object_id=synthetic_uuid(66302),
+            storage_generation=synthetic_uuid(66303),
+            digest_algorithm="sha256",
+            digest_hex=content_digest,
+            byte_length=len(content),
+        ),
+        original_sha256=content_digest,
+        byte_length=len(content),
+        media_type="audio/wav",
+        observed_at=case.revision.observed_at,
+    )
+    provenance = source_contract_provenance(case.source, revision.revision_id, "audio-2")
+    async with postgresql_adapter.uow_factory(
+        postgresql_adapter.source_context(case.source.workspace_id, case.source.environment_id)
+    ) as uow:
+        await uow.sources.record_observation(
+            SourceObservationCommand.create(
+                source=case.source,
+                revision=revision,
+                provenance=provenance,
+                idempotency_key=IdempotencyKey("issue663-audio-source-revision"),
+            )
+        )
+        await uow.commit()
+
+    engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        pool_size=2,
+        max_overflow=0,
+        pool_pre_ping=True,
+        pool_reset_on_return="rollback",
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(66304),
+        secret=b"issue-663-transcription-context-secret-001",
+    )
+
+    def context(workspace_id: UUID, environment_id: UUID) -> TrustedPersistenceContext:
+        return boundary.worker(
+            scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id),
+            service_principal_id=synthetic_uuid(66305),
+            purpose=PersistencePurpose("transcription_repository"),
+            operation=PersistenceOperation("transcription_write"),
+            trace_id=synthetic_uuid(66306),
+        )
+
+    class FakeSpeechToText:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def transcribe(self, request):
+            self.calls += 1
+            return SpeechToTextResult(
+                adapter_reference=request.adapter_reference,
+                model_config_reference=request.model_config_reference,
+                detected_language="ru",
+                segments=(
+                    SpeechToTextSegment(start_ms=100, end_ms=900, text="Тест."),
+                ),
+            )
+
+    class FakeAuthorizer:
+        async def authorize(self, request):
+            return AudioProcessingAuthorization(
+                allowed=True,
+                decision_id=synthetic_uuid(66307),
+                policy_reference="synthetic-audio-processing:v1",
+                reason_code="allowed",
+            )
+
+    adapter = FakeSpeechToText()
+    repository = PostgreSQLTranscriptionRepository(
+        async_sessionmaker(engine, expire_on_commit=False, autoflush=False),
+        context_factory=context,
+        context_verifier=boundary,
+    )
+    command = TranscribeAudioCommand(
+        workspace_id=revision.workspace_id,
+        environment_id=revision.environment_id,
+        source_revision=revision,
+        recording_duration_ms=1000,
+        processing_profile_reference="transcription-short:v1",
+        adapter_reference="fake-stt:v1",
+        model_config_reference="fake-russian:v1",
+        language_hint="ru",
+        idempotency_key="issue663-transcription",
+    )
+    service = TranscriptionService(
+        repository=repository,
+        speech_to_text=adapter,
+        authorizer=FakeAuthorizer(),
+        clock=lambda: revision.observed_at,
+    )
+    try:
+        first = await service.transcribe(command)
+        replay = await service.transcribe(command)
+    finally:
+        await engine.dispose()
+
+    assert replay.replay is True
+    assert replay.job == first.job
+    assert replay.artifact == first.artifact
+    assert adapter.calls == 1
+
+
+@pytest_asyncio.fixture
+async def pending_postgresql_transcription(
+    request: pytest.FixtureRequest,
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+):
+    from spine.domain.artifacts.transcription import (
+        TranscriptionJob,
+        TranscriptionJobState,
+    )
+    from spine.infrastructure.persistence.transcription import (
+        PostgreSQLTranscriptionRepository,
+    )
+
+    case_seed = {
+        "expired_transcription": 66500,
+        "replaces_execution_lease": 66600,
+        "isolates_transcription": 66700,
+        "foreign_revision": 66800,
+        "forged_digest": 66900,
+    }.get(
+        next(
+            (marker for marker in (
+                "expired_transcription",
+                "replaces_execution_lease",
+                "isolates_transcription",
+                "foreign_revision",
+                "forged_digest",
+            ) if marker in request.node.name),
+            "",
+        ),
+        67000,
+    )
+    case = await prepare_canonical_case(postgresql_adapter, case_seed)
+    assert case.revision.original_sha256 is not None
+    engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        pool_pre_ping=True,
+        pool_reset_on_return="rollback",
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    session_factory = async_sessionmaker(
+        engine, expire_on_commit=False, autoflush=False
+    )
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(66501),
+        secret=b"issue-663-transcription-lease-secret-01",
+    )
+
+    def context(workspace_id: UUID, environment_id: UUID) -> TrustedPersistenceContext:
+        return boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            ),
+            service_principal_id=synthetic_uuid(66502),
+            purpose=PersistencePurpose("transcription_repository"),
+            operation=PersistenceOperation("transcription_write"),
+            trace_id=synthetic_uuid(66503),
+        )
+
+    repository = PostgreSQLTranscriptionRepository(
+        session_factory,
+        context_factory=context,
+        context_verifier=boundary,
+    )
+    now = case.revision.observed_at
+    job = TranscriptionJob(
+        job_id=synthetic_uuid(66504),
+        workspace_id=case.revision.workspace_id,
+        environment_id=case.revision.environment_id,
+        source_object_id=case.revision.source_object_id,
+        source_revision_id=case.revision.revision_id,
+        source_revision_digest=case.revision.revision_digest,
+        original_sha256=case.revision.original_sha256,
+        processing_profile_reference="transcription-short:v1",
+        adapter_reference="fake-stt:v1",
+        model_config_reference="fake-russian:v1",
+        authorization_decision_id=synthetic_uuid(66505),
+        authorization_policy_reference="synthetic-audio-processing:v1",
+        idempotency_key="issue663-pending-lease",
+        command_digest="d" * 64,
+        execution_lease_id=synthetic_uuid(66506),
+        execution_lease_expires_at=now + timedelta(minutes=5),
+        execution_attempt=1,
+        state=TranscriptionJobState.PENDING,
+        created_at=now,
+    )
+    await repository.admit(job, now=now)
+    try:
+        yield SimpleNamespace(
+            repository=repository,
+            session_factory=session_factory,
+            job=job,
+            now=now,
+        )
+    finally:
+        await engine.dispose()
+
+
+async def test_postgresql_isolates_transcription_job_reads_by_workspace(
+    pending_postgresql_transcription,
+) -> None:
+    scenario = pending_postgresql_transcription
+
+    isolated = await scenario.repository.get_job(
+        workspace_id=synthetic_uuid(66710),
+        environment_id=scenario.job.environment_id,
+        job_id=scenario.job.job_id,
+    )
+
+    assert isolated is None
+
+
+@pytest.mark.parametrize("lineage_attack", ["foreign_revision", "forged_digest"])
+async def test_postgresql_rejects_transcription_with_noncanonical_source_lineage(
+    pending_postgresql_transcription,
+    postgresql_adapter: PersistenceAdapter,
+    lineage_attack: str,
+) -> None:
+    scenario = pending_postgresql_transcription
+    if lineage_attack == "foreign_revision":
+        foreign = await prepare_canonical_case(postgresql_adapter, 67100)
+        candidate = scenario.job.model_copy(
+            update={
+                "source_object_id": foreign.revision.source_object_id,
+                "source_revision_id": foreign.revision.revision_id,
+            }
+        )
+    else:
+        candidate = scenario.job.model_copy(
+            update={"source_revision_digest": "f" * 64}
+        )
+
+    with pytest.raises(IntegrityError):
+        await scenario.repository.admit(candidate, now=scenario.now)
+
+
+async def test_postgresql_expired_transcription_reclaims_one_pending_job(
+    pending_postgresql_transcription,
+) -> None:
+    from spine.application.transcription import TranscriptionConflictError
+    from spine.domain.artifacts.transcription import TranscriptionJobState
+
+    scenario = pending_postgresql_transcription
+    reclaim_time = scenario.now + timedelta(minutes=6)
+    with pytest.raises(TranscriptionConflictError, match="lease has expired"):
+        await scenario.repository.finish(
+            job_id=scenario.job.job_id,
+            workspace_id=scenario.job.workspace_id,
+            environment_id=scenario.job.environment_id,
+            state=TranscriptionJobState.FAILED,
+            completed_at=reclaim_time,
+            artifact=None,
+            terminal_code="transient_unavailable",
+            retryable=True,
+            lease_id=scenario.job.execution_lease_id,
+        )
+
+    successor = scenario.job.reclaim(
+        lease_id=synthetic_uuid(66507),
+        lease_expires_at=reclaim_time + timedelta(minutes=5),
+        now=reclaim_time,
+    )
+    admission = await scenario.repository.admit(successor, now=reclaim_time)
+    terminal = await scenario.repository.finish(
+        job_id=successor.job_id,
+        workspace_id=successor.workspace_id,
+        environment_id=successor.environment_id,
+        state=TranscriptionJobState.FAILED,
+        completed_at=reclaim_time + timedelta(seconds=1),
+        artifact=None,
+        terminal_code="transient_unavailable",
+        retryable=True,
+        lease_id=successor.execution_lease_id,
+    )
+
+    assert admission.replay is True
+    assert admission.execution_owner is True
+    assert admission.job.execution_attempt == 2
+    assert terminal.state is TranscriptionJobState.FAILED
+
+
+async def test_postgresql_rejects_terminal_update_that_replaces_execution_lease(
+    pending_postgresql_transcription,
+) -> None:
+    scenario = pending_postgresql_transcription
+    async with scenario.session_factory() as session:
+        with pytest.raises(DBAPIError) as raised:
+            async with session.begin():
+                await session.execute(
+                    text(
+                        "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                        "set_config('spine.environment_id', :environment_id, true)"
+                    ),
+                    {
+                        "workspace_id": str(scenario.job.workspace_id),
+                        "environment_id": str(scenario.job.environment_id),
+                    },
+                )
+                await session.execute(
+                    text(
+                        "UPDATE spine.transcription_jobs SET "
+                        "state = 'failed', terminal_code = 'transient_unavailable', "
+                        "retryable = true, completed_at = :completed_at, "
+                        "execution_lease_id = :replacement_lease_id "
+                        "WHERE workspace_id = :workspace_id "
+                        "AND environment_id = :environment_id AND job_id = :job_id"
+                    ),
+                    {
+                        "completed_at": scenario.now + timedelta(seconds=1),
+                        "replacement_lease_id": synthetic_uuid(66508),
+                        "workspace_id": scenario.job.workspace_id,
+                        "environment_id": scenario.job.environment_id,
+                        "job_id": scenario.job.job_id,
+                    },
+                )
+
+    assert (
+        raised.value.orig.diag.constraint_name
+        == "ck_transcription_jobs_terminal_lease_immutable"
+    )
+
+
 async def test_postgresql_cognee_receipt_maps_after_physical_read(
     postgresql_adapter: PersistenceAdapter,
     postgresql_contract_database: PostgreSQLContractDatabase,
