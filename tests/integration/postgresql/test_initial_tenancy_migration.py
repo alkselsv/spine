@@ -2486,6 +2486,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "transcription_jobs": (True, True),
         "transcription_artifacts": (True, True),
         "transcript_segments": (True, True),
+        "transcript_publications": (True, True),
         "context_profiles": (True, True),
         "context_bundles": (True, True),
         "answer_question_runs": (True, True),
