@@ -807,7 +807,17 @@ mounted_fs_removal_policies = Table(
     Column("resource_scope_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("authorize_complete_scope_absence", Boolean, nullable=False),
     Column("approved_at", DateTime(timezone=True), nullable=False),
-    Column("revoked_at", DateTime(timezone=True)),
+)
+
+mounted_fs_removal_authorities = Table(
+    "mounted_fs_removal_authorities",
+    metadata,
+    Column("authority_event_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("policy_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("state", Text, nullable=False),
+    Column("recorded_at", DateTime(timezone=True), nullable=False),
 )
 
 google_sheets_sync_runs = Table(
@@ -1705,6 +1715,7 @@ __all__ = [
     "yandex_disk_reconciliation_runs",
     "mounted_fs_reconciliation_runs",
     "mounted_fs_removal_policies",
+    "mounted_fs_removal_authorities",
     "google_sheets_sync_runs",
     "google_sheets_identity_dispositions",
     "ingestion_warnings",

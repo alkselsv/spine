@@ -9,6 +9,9 @@ from spine.infrastructure.persistence.postgresql_mounted_filesystem_reconciliati
     PostgreSQLMountedFilesystemReconciliationRepository,
     PostgreSQLMountedFilesystemRemovalPolicyAdmission,
 )
+from spine.application.mounted_filesystem_reconciliation import (
+    MountedFilesystemSourceLifecycleRemoval,
+)
 from spine.workers.mounted_filesystem_reconciliation import (
     create_postgresql_mounted_filesystem_reconciliation_worker,
 )
@@ -34,7 +37,8 @@ def test_production_worker_composes_postgresql_and_authorized_adapters(
             )
         },
         ingestion=object(),
-        removals=object(),
+        tombstone_composer=object(),
+        source_lifecycle=object(),
         clock=lambda: datetime(2026, 10, 30, tzinfo=timezone.utc),
     )
 
@@ -49,4 +53,8 @@ def test_production_worker_composes_postgresql_and_authorized_adapters(
     assert isinstance(
         worker.coordinator.removal_policies,
         PostgreSQLMountedFilesystemRemovalPolicyAdmission,
+    )
+    assert isinstance(
+        worker.coordinator.removals,
+        MountedFilesystemSourceLifecycleRemoval,
     )

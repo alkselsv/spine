@@ -100,7 +100,6 @@ def upgrade() -> None:
             "authorize_complete_scope_absence", sa.Boolean(), nullable=False
         ),
         sa.Column("approved_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("revoked_at", sa.DateTime(timezone=True)),
         sa.PrimaryKeyConstraint(
             "policy_version_id", name="pk_mounted_fs_removal_policies"
         ),
@@ -131,8 +130,53 @@ def upgrade() -> None:
     )
     op.execute(f"REVOKE ALL ON {policy_table} FROM {runtime_role}")
     op.execute(f"GRANT SELECT ON {policy_table} TO {runtime_role}")
+    op.create_table(
+        "mounted_fs_removal_authorities",
+        sa.Column("authority_event_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("policy_version_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("workspace_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("environment_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("state", sa.String(length=16), nullable=False),
+        sa.Column("recorded_at", sa.DateTime(timezone=True), nullable=False),
+        sa.PrimaryKeyConstraint(
+            "authority_event_id", name="pk_mounted_fs_removal_authorities"
+        ),
+        sa.ForeignKeyConstraint(
+            ["policy_version_id"],
+            [f"{SCHEMA}.mounted_fs_removal_policies.policy_version_id"],
+            name="fk_mounted_fs_removal_authorities_policy",
+        ),
+        sa.ForeignKeyConstraint(
+            ["workspace_id", "environment_id"],
+            [f"{SCHEMA}.environments.workspace_id", f"{SCHEMA}.environments.id"],
+            name="fk_mounted_fs_removal_authorities_environment",
+        ),
+        sa.CheckConstraint(
+            "state IN ('active', 'revoked')",
+            name=op.f("ck_mounted_fs_removal_authorities_state"),
+        ),
+        schema=SCHEMA,
+    )
+    authority_table = f"{SCHEMA}.mounted_fs_removal_authorities"
+    op.execute(f"ALTER TABLE {authority_table} ENABLE ROW LEVEL SECURITY")
+    op.execute(f"ALTER TABLE {authority_table} FORCE ROW LEVEL SECURITY")
+    op.execute(
+        "CREATE POLICY pol_mounted_fs_removal_authorities_tenant_isolation "
+        f"ON {authority_table} FOR ALL TO {runtime_role} "
+        "USING (workspace_id = nullif(current_setting('spine.workspace_id', true), '')::uuid "
+        "AND environment_id = nullif(current_setting('spine.environment_id', true), '')::uuid) "
+        "WITH CHECK (workspace_id = nullif(current_setting('spine.workspace_id', true), '')::uuid "
+        "AND environment_id = nullif(current_setting('spine.environment_id', true), '')::uuid)"
+    )
+    op.execute(
+        "CREATE POLICY pol_mounted_fs_removal_authorities_migration_maintenance "
+        f"ON {authority_table} FOR ALL TO {migration_role} USING (true) WITH CHECK (true)"
+    )
+    op.execute(f"REVOKE ALL ON {authority_table} FROM {runtime_role}")
+    op.execute(f"GRANT SELECT ON {authority_table} TO {runtime_role}")
 
 
 def downgrade() -> None:
+    op.drop_table("mounted_fs_removal_authorities", schema=SCHEMA)
     op.drop_table("mounted_fs_removal_policies", schema=SCHEMA)
     op.drop_table("mounted_fs_reconciliation_runs", schema=SCHEMA)

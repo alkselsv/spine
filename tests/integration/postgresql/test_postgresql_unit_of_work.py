@@ -7586,6 +7586,121 @@ async def test_mounted_filesystem_reconciliation_repository_persists_and_isolate
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_mounted_filesystem_policy_admission_rechecks_append_only_authority(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    from spine.application.connections.provider import ProviderReadDeniedError
+    from spine.application.mounted_filesystem_reconciliation import (
+        MountedFilesystemReconciliationCommand,
+        MountedFilesystemRemovalPolicy,
+    )
+    from spine.infrastructure.persistence.postgresql_mounted_filesystem_reconciliation import (
+        PostgreSQLMountedFilesystemRemovalPolicyAdmission,
+    )
+
+    case = await prepare_canonical_case(postgresql_adapter, 67230)
+    assert postgresql_adapter.ingestion_context is not None
+    now = datetime(2026, 10, 30, 10, tzinfo=timezone.utc)
+    policy = MountedFilesystemRemovalPolicy(
+        policy_version_id=synthetic_uuid(67231),
+        approval_id=synthetic_uuid(67232),
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        connection_id=synthetic_uuid(67233),
+        resource_scope_reference=synthetic_uuid(67234),
+        authorize_complete_scope_absence=True,
+        approved_at=now,
+    )
+    command = MountedFilesystemReconciliationCommand(
+        workspace_id=policy.workspace_id,
+        environment_id=policy.environment_id,
+        connection_id=policy.connection_id,
+        connection_version_id=synthetic_uuid(67235),
+        resource_scope_reference=policy.resource_scope_reference,
+        authorization_generation=1,
+        configuration_generation=1,
+        access_policy_version_id=synthetic_uuid(67236),
+        idempotency_key="issue672-policy-admission",
+    )
+    engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO spine.mounted_fs_removal_policies "
+                "(policy_version_id, approval_id, workspace_id, environment_id, "
+                "connection_id, resource_scope_reference, "
+                "authorize_complete_scope_absence, approved_at) "
+                "VALUES (:policy, :approval, :workspace, :environment, :connection, "
+                ":scope, true, :approved_at)"
+            ),
+            {
+                "policy": policy.policy_version_id,
+                "approval": policy.approval_id,
+                "workspace": policy.workspace_id,
+                "environment": policy.environment_id,
+                "connection": policy.connection_id,
+                "scope": policy.resource_scope_reference,
+                "approved_at": policy.approved_at,
+            },
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO spine.mounted_fs_removal_authorities "
+                "(authority_event_id, policy_version_id, workspace_id, environment_id, "
+                "state, recorded_at) VALUES (:event, :policy, :workspace, "
+                ":environment, 'active', :recorded_at)"
+            ),
+            {
+                "event": synthetic_uuid(67237),
+                "policy": policy.policy_version_id,
+                "workspace": policy.workspace_id,
+                "environment": policy.environment_id,
+                "recorded_at": now,
+            },
+        )
+    await engine.dispose()
+
+    context = postgresql_adapter.ingestion_context(
+        policy.workspace_id,
+        policy.environment_id,
+        "mounted_filesystem_removal_policy_admission",
+    )
+    admission = PostgreSQLMountedFilesystemRemovalPolicyAdmission(
+        postgresql_adapter.uow_factory
+    )
+    assert await admission.admit(command, policy, context) == policy
+
+    engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO spine.mounted_fs_removal_authorities "
+                "(authority_event_id, policy_version_id, workspace_id, environment_id, "
+                "state, recorded_at) VALUES (:event, :policy, :workspace, "
+                ":environment, 'revoked', :recorded_at)"
+            ),
+            {
+                "event": synthetic_uuid(67238),
+                "policy": policy.policy_version_id,
+                "workspace": policy.workspace_id,
+                "environment": policy.environment_id,
+                "recorded_at": now + timedelta(seconds=1),
+            },
+        )
+    await engine.dispose()
+
+    with pytest.raises(ProviderReadDeniedError):
+        await admission.admit(command, policy, context)
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_requirements_artifacts_replay_successor_and_isolate_workspaces(
     postgresql_adapter: PersistenceAdapter,
 ) -> None:

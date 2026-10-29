@@ -13,6 +13,11 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from pydantic import ConfigDict, Field, model_validator
 
 from spine.application.connector_ingestion import ConnectorIngestionCommand
+from spine.application.document_lifecycle import (
+    ServerDocumentLifecycleComposer,
+    TombstoneDocumentCommand,
+)
+from spine.application.persistence.command_digest import digest_command
 from spine.application.connections.provider import (
     ProviderCapabilityUnavailableError,
     ProviderConnectionRepository,
@@ -374,6 +379,7 @@ class MountedFilesystemRemovalPort(Protocol):
         command: MountedFilesystemReconciliationCommand,
         source: MountedFilesystemCanonicalSource,
         *,
+        policy: MountedFilesystemRemovalPolicy,
         idempotency_key: str,
         evidence_reference: str,
         context: TrustedPersistenceContext,
@@ -389,6 +395,7 @@ class MountedFilesystemTombstoneComposer(Protocol):
         policy: MountedFilesystemRemovalPolicy,
         idempotency_key: str,
         evidence_reference: str,
+        context: TrustedPersistenceContext,
     ) -> SourceLifecycleCommand: ...
 
 
@@ -398,13 +405,13 @@ class MountedFilesystemSourceLifecycleRemoval:
 
     composer: MountedFilesystemTombstoneComposer
     lifecycle: SourceLifecycleCoordinator
-    policy: MountedFilesystemRemovalPolicy
 
     async def confirm_absent(
         self,
         command: MountedFilesystemReconciliationCommand,
         source: MountedFilesystemCanonicalSource,
         *,
+        policy: MountedFilesystemRemovalPolicy,
         idempotency_key: str,
         evidence_reference: str,
         context: TrustedPersistenceContext,
@@ -418,13 +425,55 @@ class MountedFilesystemSourceLifecycleRemoval:
         lifecycle_command = await self.composer.compose(
             command=command,
             source=source,
-            policy=self.policy,
+            policy=policy,
             idempotency_key=idempotency_key,
             evidence_reference=evidence_reference,
+            context=context,
         )
         _validate_tombstone_command(lifecycle_command, source, idempotency_key)
         result = await self.lifecycle.apply(lifecycle_command)
         return result.acceptance.revision.revision_id
+
+
+@dataclass(frozen=True, slots=True)
+class ServerMountedFilesystemTombstoneComposer:
+    """Adapt the canonical document lifecycle composer to mounted absences."""
+
+    lifecycle_composer: ServerDocumentLifecycleComposer
+    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
+
+    async def compose(
+        self,
+        *,
+        command: MountedFilesystemReconciliationCommand,
+        source: MountedFilesystemCanonicalSource,
+        policy: MountedFilesystemRemovalPolicy,
+        idempotency_key: str,
+        evidence_reference: str,
+        context: TrustedPersistenceContext,
+    ) -> SourceLifecycleCommand:
+        if not policy.authorize_complete_scope_absence:
+            raise ProviderReadDeniedError()
+        lifecycle = TombstoneDocumentCommand(
+            workspace_id=command.workspace_id,
+            environment_id=command.environment_id,
+            source_object_id=source.source_object_id,
+            expected_current_revision_id=source.current_revision_id,
+            idempotency_key=idempotency_key,
+            deletion_reason="provider_deleted",
+        )
+        operation_id = uuid5(
+            NAMESPACE_URL,
+            f"spine:mounted-filesystem:tombstone:{idempotency_key}:"
+            f"{policy.policy_version_id}:{policy.approval_id}:{evidence_reference}",
+        )
+        return await self.lifecycle_composer.compose_tombstone(
+            context=context,
+            command=lifecycle,
+            operation_id=operation_id,
+            command_digest=digest_command(lifecycle),
+            accepted_at=self.clock(),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -641,6 +690,7 @@ class MountedFilesystemReconciliationCoordinator:
                 tombstone_id = await self.removals.confirm_absent(
                     command,
                     source,
+                    policy=policy,
                     idempotency_key=_removal_idempotency_key(command, policy, source),
                     evidence_reference=item_evidence.evidence_reference,
                     context=self.context_factory(
@@ -878,7 +928,8 @@ def _validate_tombstone_command(
         or command.canonical_acceptance.expected_current_revision_id
         != source.current_revision_id
         or command.canonical_acceptance.idempotency_key.value != idempotency_key
-        or command.observation_idempotency_key.value != idempotency_key
+        or command.observation_idempotency_key.value
+        != f"{idempotency_key}:observation"
     ):
         raise ValueError("mounted filesystem tombstone command changed evidence")
 

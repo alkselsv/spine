@@ -189,10 +189,10 @@ class Removals:
         self.calls = []
 
     async def confirm_absent(
-        self, command, source, *, idempotency_key, evidence_reference, context
+        self, command, source, *, policy, idempotency_key, evidence_reference, context
     ):
         self.calls.append(
-            (command, source, idempotency_key, evidence_reference, context)
+            (command, source, idempotency_key, evidence_reference, context, policy)
         )
         return _id(f"tombstone:{source.source_object_id}")
 

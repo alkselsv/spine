@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import json
 import mimetypes
 import os
 from pathlib import Path, PurePosixPath
@@ -167,6 +168,16 @@ class MountedFilesystemObservationReader:
             )
         identity_digest = hashlib.sha256(identity_material.encode("utf-8")).hexdigest()
         content_digest = hashlib.sha256(content).hexdigest()
+        provider_payload: dict[str, str | None] = {
+            "resource_scope_reference": str(command.resource_scope_reference.value),
+            "connection_version_id": str(command.connection_version_id),
+            "identity_occurrence": command.external_identity_occurrence,
+        }
+        provider_payload_digest = hashlib.sha256(
+            json.dumps(
+                provider_payload, sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest()
         event_digest = hashlib.sha256(
             f"{identity_digest}:{content_digest}".encode("ascii")
         ).hexdigest()
@@ -204,6 +215,8 @@ class MountedFilesystemObservationReader:
                     provider_revision=stable_read.provider_revision,
                     resource_path=relative_path,
                     content_sha256=content_digest,
+                    provider_payload=provider_payload,
+                    provider_payload_digest=provider_payload_digest,
                     byte_length=len(content),
                     modified_at=stable_read.modified_at,
                 ),

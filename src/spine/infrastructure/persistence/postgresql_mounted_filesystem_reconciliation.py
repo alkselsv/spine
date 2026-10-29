@@ -26,9 +26,14 @@ from spine.domain.sources import RevisionKind
 from spine.infrastructure.persistence.postgresql_mappings import (
     mounted_fs_reconciliation_runs,
     mounted_fs_removal_policies,
+    mounted_fs_removal_authorities,
 )
 
 from spine.application.connections.provider import ProviderReadDeniedError
+
+
+class MountedFilesystemIdentityMigrationRequiredError(RuntimeError):
+    """A legacy path identity must be migrated before scoped reconciliation."""
 
 
 class PostgreSQLMountedFilesystemReconciliationRepository(
@@ -145,6 +150,15 @@ class PostgreSQLMountedFilesystemLifecycleSourceReader:
                     break
                 for source in page:
                     if (
+                        source.identity_mode.value == "connector"
+                        and source.connection_id == command.connection_id
+                        and source.external_namespace == "mounted_filesystem"
+                        and source.external_generation == "mounted-path:v1"
+                    ):
+                        raise MountedFilesystemIdentityMigrationRequiredError(
+                            "Legacy mounted filesystem identity requires migration."
+                        )
+                    if (
                         source.identity_mode.value != "connector"
                         or source.connection_id != command.connection_id
                         or source.external_namespace != "mounted_filesystem"
@@ -183,10 +197,25 @@ class PostgreSQLMountedFilesystemLifecycleSourceReader:
                         or external.resource_path is None
                     ):
                         continue
+                    payload = external.provider_payload
+                    if (
+                        payload is None
+                        or payload.get("resource_scope_reference")
+                        != str(command.resource_scope_reference)
+                        or payload.get("connection_version_id")
+                        != str(command.connection_version_id)
+                    ):
+                        continue
+                    occurrence = payload.get("identity_occurrence")
                     expected_identity = hashlib.sha256(
                         (
                             f"{command.resource_scope_reference}:"
                             f"{external.resource_path}"
+                            + (
+                                f"|occurrence:{occurrence}"
+                                if isinstance(occurrence, str)
+                                else ""
+                            )
                         ).encode()
                     ).hexdigest()
                     if source.external_object_id != expected_identity:
@@ -226,7 +255,7 @@ class PostgreSQLMountedFilesystemRemovalPolicyAdmission:
         ) != (command.workspace_id, command.environment_id):
             raise ProviderReadDeniedError()
         async with self._uow_factory(context) as uow:
-            result = await uow._execute(  # type: ignore[attr-defined]
+            policy_result = await uow._execute(  # type: ignore[attr-defined]
                 select(mounted_fs_removal_policies).where(
                     mounted_fs_removal_policies.c.policy_version_id
                     == requested_policy.policy_version_id,
@@ -237,12 +266,28 @@ class PostgreSQLMountedFilesystemRemovalPolicyAdmission:
                     == command.connection_id,
                     mounted_fs_removal_policies.c.resource_scope_reference
                     == command.resource_scope_reference,
-                    mounted_fs_removal_policies.c.revoked_at.is_(None),
                 )
             )
-            row = result.mappings().one_or_none()
+            authority_result = await uow._execute(  # type: ignore[attr-defined]
+                select(mounted_fs_removal_authorities)
+                .where(
+                    mounted_fs_removal_authorities.c.policy_version_id
+                    == requested_policy.policy_version_id,
+                    mounted_fs_removal_authorities.c.workspace_id
+                    == command.workspace_id,
+                    mounted_fs_removal_authorities.c.environment_id
+                    == command.environment_id,
+                )
+                .order_by(
+                    mounted_fs_removal_authorities.c.recorded_at.desc(),
+                    mounted_fs_removal_authorities.c.authority_event_id.desc(),
+                )
+                .limit(1)
+            )
+            row = policy_result.mappings().one_or_none()
+            authority = authority_result.mappings().one_or_none()
             await uow.rollback()  # type: ignore[attr-defined]
-        if row is None:
+        if row is None or authority is None or authority["state"] != "active":
             raise ProviderReadDeniedError()
         approved = MountedFilesystemRemovalPolicy(
             policy_version_id=row["policy_version_id"],
@@ -298,4 +343,5 @@ __all__ = [
     "PostgreSQLMountedFilesystemLifecycleSourceReader",
     "PostgreSQLMountedFilesystemReconciliationRepository",
     "PostgreSQLMountedFilesystemRemovalPolicyAdmission",
+    "MountedFilesystemIdentityMigrationRequiredError",
 ]
