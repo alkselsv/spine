@@ -175,6 +175,14 @@ flowchart LR
 | Langfuse/OTel backend | LLM traces, latency, tokens, costs, eval scores | Диагностическая телеметрия |
 | Redis, опционально | Cache, rate limiting, краткоживущий pub/sub | Никогда не источник истины |
 
+Provider Connection управляется отдельным provider-neutral control-plane
+контрактом. PostgreSQL хранит неизменяемые approval references отдельно от
+append-only версий подключения; конфигурирование может только сослаться на уже
+существующий approval и не создаёт Security/Data Owner authority. Health probe
+вызывается только после tenant-scoped admission, а публичная диагностика
+ограничена allowlisted кодами без credentials, provider names и content. См.
+ADR-0050.
+
 Состояние одного бизнес-объекта не должно одновременно независимо редактироваться в Postgres и Cognee. Сначала фиксируется каноническое изменение, затем outbox запускает обновление проекции.
 
 Обработка принятого аудио фиксируется отдельным tenant-scoped

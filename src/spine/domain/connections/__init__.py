@@ -12,7 +12,10 @@ from spine.domain.connections.provider import (
     ProviderCapabilityKind,
     ProviderCapabilityStatus,
     ProviderConnection,
+    ProviderConnectionApproval,
+    ProviderConnectionHealth,
     ProviderConnectionStatus,
+    ProviderDiagnosticCode,
     ProviderKind,
     google_v1_connection_to_v2,
 )
@@ -27,7 +30,10 @@ __all__ = [
     "ProviderCapabilityKind",
     "ProviderCapabilityStatus",
     "ProviderConnection",
+    "ProviderConnectionApproval",
+    "ProviderConnectionHealth",
     "ProviderConnectionStatus",
+    "ProviderDiagnosticCode",
     "ProviderKind",
     "google_v1_connection_to_v2",
 ]

@@ -102,6 +102,27 @@ export function createBrowserQualificationFetch(
     if (request.method === 'GET' && url.pathname === '/api/v1/health/ready') {
       return json({ service: 'spine', status: 'ready', code: 'local.ready' });
     }
+    if (request.method === 'GET' && url.pathname === '/api/v1/source-connections') {
+      return json(collection(scope, fixtureProviderConnections(scope)));
+    }
+    if (request.method === 'POST' && url.pathname === '/api/v1/source-connections') {
+      const body = await request.clone().json() as { approval_id?: string; connection_id?: string };
+      const item = {
+        ...fixtureProviderConnections(scope)[0],
+        approval_id: body.approval_id,
+        connection_id: body.connection_id,
+      };
+      return json({
+        schema_version: 1,
+        workspace_id: scope.workspaceId,
+        environment_id: scope.environmentId,
+        trace_id: TRACE_ID,
+        command_id: stableUuid(body.connection_id ?? 'connection', 90),
+        status: 'completed',
+        replay: false,
+        result: item,
+      }, 201);
+    }
     if (request.method === 'GET' && url.pathname === '/api/v1/documents') {
       return json(collection(scope, fixtureDocuments(scope)));
     }
@@ -232,6 +253,31 @@ function fixtureDocuments(scope: FixtureScope) {
         environment_id: scope.environmentId,
       };
     });
+}
+
+function fixtureProviderConnections(scope: FixtureScope) {
+  return [{
+    schema_version: 1,
+    connection_id: stableUuid(`${scope.workspaceId}:connection`, 1),
+    connection_version_id: stableUuid(`${scope.workspaceId}:connection-version`, 2),
+    approval_id: stableUuid(`${scope.workspaceId}:approval`, 3),
+    version: 1,
+    predecessor_version_id: null,
+    provider_kind: 'yandex_disk',
+    status: 'active',
+    authorization_generation: 2,
+    configuration_generation: 3,
+    approved_resource_scope_references: [stableUuid(`${scope.workspaceId}:scope`, 4)],
+    capabilities: [
+      { kind: 'binary_read', status: 'supported', qualification_reference: stableUuid('binary-read', 5) },
+      { kind: 'incremental_change_discovery', status: 'unsupported', qualification_reference: null },
+    ],
+    health: 'healthy',
+    diagnostic_codes: ['connection_ready'],
+    observed_at: '2026-10-29T17:00:00Z',
+    cursor_lag_seconds: 4,
+    last_successful_reconciliation_at: '2026-10-29T16:00:00Z',
+  }];
 }
 
 function fixtureSessions(scope: FixtureScope) {

@@ -309,6 +309,10 @@ def _status_for_structured_error(error: StructuredError) -> int:
         return 400
     if error.code == "spine.projection.invalid_request":
         return 400
+    if error.code == "spine.source_connections.invalid_request":
+        return 400
+    if error.code == "spine.source_connections.not_found":
+        return 404
     if error.retryability is Retryability.AFTER_DELAY:
         return 503
     return 500

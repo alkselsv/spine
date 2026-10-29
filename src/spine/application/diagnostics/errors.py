@@ -59,6 +59,10 @@ from spine.application.authorized_ask import (
 from spine.application.citation_inspector import CitationInspectionUnavailable
 from spine.application.qa_run_history import InvalidQARunRequest, QARunNotFound
 from spine.application.parsed_content_inspection import InvalidParsedContentRequest
+from spine.application.connection_errors import (
+    InvalidProviderConnectionRequest,
+    ProviderConnectionNotFoundError,
+)
 from spine.auth.errors import (
     AuthenticationUnavailableError,
     AuthorizationDeniedError,
@@ -121,6 +125,8 @@ _SAFE_MESSAGE_BY_CODE = MappingProxyType({
     "spine.qa_feedback.invalid_request": "The feedback request is invalid.",
     "spine.qa.unavailable": "The Q&A service is temporarily unavailable.",
     "spine.qa.ask.invalid_request": "The Q&A request is invalid.",
+    "spine.source_connections.invalid_request": "The source connection request is invalid.",
+    "spine.source_connections.not_found": "The source connection was not found.",
 })
 
 
@@ -355,6 +361,8 @@ def build_default_error_registry() -> StructuredErrorRegistry:
         (InvalidParsedContentRequest, "spine.knowledge.parsed_content.invalid_request", "The parsed content request is invalid.", Retryability.NEVER),
         (FeedbackTargetNotFound, "spine.qa_feedback.target_not_found", "The feedback target was not found.", Retryability.NEVER),
         (InvalidFeedbackRequest, "spine.qa_feedback.invalid_request", "The feedback request is invalid.", Retryability.NEVER),
+        (InvalidProviderConnectionRequest, "spine.source_connections.invalid_request", "The source connection request is invalid.", Retryability.NEVER),
+        (ProviderConnectionNotFoundError, "spine.source_connections.not_found", "The source connection was not found.", Retryability.NEVER),
     )
     for exception_type, code, safe_message, retryability in mappings:
         registry.register(exception_type, code, safe_message, retryability)

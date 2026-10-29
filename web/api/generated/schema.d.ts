@@ -788,6 +788,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/source-connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Source Connections.List */
+        get: operations["source_connections.list"];
+        put?: never;
+        /** Source Connections.Configure */
+        post: operations["source_connections.configure"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/source-connections/{connection_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Source Connections.Inspect */
+        get: operations["source_connections.inspect"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ask": {
         parameters: {
             query?: never;
@@ -1278,6 +1313,36 @@ export interface components {
              */
             workspace_id: string;
         };
+        /** ApiCollectionEnvelope[ProviderConnectionResponse] */
+        ApiCollectionEnvelope_ProviderConnectionResponse_: {
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /** Items */
+            items: components["schemas"]["ProviderConnectionResponse"][];
+            /** Limit */
+            limit: number;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
         /** ApiCollectionEnvelope[QAMessageResponse] */
         ApiCollectionEnvelope_QAMessageResponse_: {
             /**
@@ -1488,6 +1553,42 @@ export interface components {
              */
             replay: boolean;
             result?: components["schemas"]["ProjectionRecoveryResponse"] | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            status: components["schemas"]["CommandStatus"];
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiCommandResult[ProviderConnectionResponse] */
+        ApiCommandResult_ProviderConnectionResponse_: {
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Replay
+             * @default false
+             */
+            replay: boolean;
+            result?: components["schemas"]["ProviderConnectionResponse"] | null;
             /**
              * Schema Version
              * @default 1
@@ -1815,6 +1916,31 @@ export interface components {
         /** ApiResponseEnvelope[ProjectionSuccessorStatusResponse] */
         ApiResponseEnvelope_ProjectionSuccessorStatusResponse_: {
             data: components["schemas"]["ProjectionSuccessorStatusResponse"];
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiResponseEnvelope[ProviderConnectionResponse] */
+        ApiResponseEnvelope_ProviderConnectionResponse_: {
+            data: components["schemas"]["ProviderConnectionResponse"];
             /**
              * Environment Id
              * Format: uuid
@@ -3960,6 +4086,114 @@ export interface components {
              */
             status: "accepted" | "running" | "completed" | "failed" | "unavailable";
         };
+        /**
+         * ProviderCapabilityKind
+         * @enum {string}
+         */
+        ProviderCapabilityKind: "enumeration" | "metadata_read" | "binary_read" | "tabular_read" | "structured_read" | "stable_identity" | "incremental_change_discovery" | "full_reconciliation" | "lifecycle_evidence" | "health_diagnostics";
+        /** ProviderCapabilityResponse */
+        ProviderCapabilityResponse: {
+            kind: components["schemas"]["ProviderCapabilityKind"];
+            /** Qualification Reference */
+            qualification_reference?: string | null;
+            status: components["schemas"]["ProviderCapabilityStatus"];
+        };
+        /**
+         * ProviderCapabilityStatus
+         * @description Whether a capability is safe to use as a provider guarantee.
+         * @enum {string}
+         */
+        ProviderCapabilityStatus: "supported" | "unsupported" | "unqualified";
+        /** ProviderConnectionConfigurationBody */
+        ProviderConnectionConfigurationBody: {
+            /**
+             * Approval Id
+             * Format: uuid
+             */
+            approval_id: string;
+            /**
+             * Connection Id
+             * Format: uuid
+             */
+            connection_id: string;
+            /** Expected Predecessor Version Id */
+            expected_predecessor_version_id?: string | null;
+            /** Expected Version */
+            expected_version: number;
+        };
+        /**
+         * ProviderConnectionHealth
+         * @description Disclosure-safe operator health for one exact connection version.
+         * @enum {string}
+         */
+        ProviderConnectionHealth: "healthy" | "degraded" | "revoked" | "reconciliation_required";
+        /** ProviderConnectionResponse */
+        ProviderConnectionResponse: {
+            /**
+             * Approval Id
+             * Format: uuid
+             */
+            approval_id: string;
+            /** Approved Resource Scope References */
+            approved_resource_scope_references: string[];
+            /** Authorization Generation */
+            authorization_generation: number;
+            /** Capabilities */
+            capabilities: components["schemas"]["ProviderCapabilityResponse"][];
+            /** Configuration Generation */
+            configuration_generation: number;
+            /**
+             * Connection Id
+             * Format: uuid
+             */
+            connection_id: string;
+            /**
+             * Connection Version Id
+             * Format: uuid
+             */
+            connection_version_id: string;
+            /** Cursor Lag Seconds */
+            cursor_lag_seconds?: number | null;
+            /** Diagnostic Codes */
+            diagnostic_codes: components["schemas"]["ProviderDiagnosticCode"][];
+            health: components["schemas"]["ProviderConnectionHealth"];
+            /** Last Successful Reconciliation At */
+            last_successful_reconciliation_at?: string | null;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Predecessor Version Id */
+            predecessor_version_id: string | null;
+            provider_kind: components["schemas"]["ProviderKind"];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            status: components["schemas"]["ProviderConnectionStatus"];
+            /** Version */
+            version: number;
+        };
+        /**
+         * ProviderConnectionStatus
+         * @enum {string}
+         */
+        ProviderConnectionStatus: "active" | "suspended" | "revoked";
+        /**
+         * ProviderDiagnosticCode
+         * @description Allowlisted diagnostics that cannot carry provider-controlled text.
+         * @enum {string}
+         */
+        ProviderDiagnosticCode: "connection_ready" | "provider_degraded" | "authorization_revoked" | "reconciliation_required";
+        /**
+         * ProviderKind
+         * @description Provider families approved by the bounded R2 source specification.
+         * @enum {string}
+         */
+        ProviderKind: "google" | "yandex_disk" | "bitrix24" | "mounted_filesystem";
         /**
          * PublicAcceptanceStatus
          * @enum {string}
@@ -10550,6 +10784,328 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RequirementsArtifact"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "source_connections.list": {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiCollectionEnvelope_ProviderConnectionResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "source_connections.configure": {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderConnectionConfigurationBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiCommandResult_ProviderConnectionResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "source_connections.inspect": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope_ProviderConnectionResponse_"];
                 };
             };
             /** @description Safe request error. */

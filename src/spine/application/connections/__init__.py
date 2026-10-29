@@ -22,8 +22,26 @@ from spine.application.connections.provider import (
     ProviderReadDeniedError,
     ProviderReadError,
 )
+from spine.application.connections.management import (
+    InvalidProviderConnectionRequest,
+    ProviderConnectionConfigurationAdmission,
+    ProviderConnectionConfigurationRequest,
+    ProviderConnectionConfigurationResult,
+    ProviderConnectionInspection,
+    ProviderConnectionManager,
+    ProviderConnectionNotFoundError,
+    ProviderRuntimeObservation,
+)
 
 __all__ = [
+    "InvalidProviderConnectionRequest",
+    "ProviderConnectionConfigurationAdmission",
+    "ProviderConnectionConfigurationRequest",
+    "ProviderConnectionConfigurationResult",
+    "ProviderConnectionInspection",
+    "ProviderConnectionManager",
+    "ProviderConnectionNotFoundError",
+    "ProviderRuntimeObservation",
     "GoogleConnectionCommand",
     "GoogleConnectionDeniedError",
     "GoogleConnectionRepository",

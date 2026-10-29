@@ -235,8 +235,10 @@ target.
 - [ ] Google Sheets connector для реестра смет и Google Drive/file connector для материалов.
       `implemented: concrete governed Drive v3 / Sheets v4 REST and Desktop OAuth
       reference adapters with deterministic offline qualification (#652)`;
-      `not qualified: live Google and Shared Drive behavior`; product integration
-      remains open.
+      `implemented: provider-neutral connection configuration and safe operator
+      inspection through PostgreSQL, /api/v1 and product UI with fake-provider
+      qualification (#664)`; `not qualified: live Google and Shared Drive behavior`;
+      product integration remains open.
 - [ ] Связывание строки реестра, запроса, встречи, клиента и итоговой сметы.
 - [ ] Domain model: `ClientRequest`, `Requirement`, `ProposalDraft`, `Estimate`,
       `EstimateLine`, `Assumption`, `Exclusion`, `PricingBasis` и template version.

@@ -44,6 +44,24 @@ class ProviderConnectionStatus(str, Enum):
     REVOKED = "revoked"
 
 
+class ProviderConnectionHealth(str, Enum):
+    """Disclosure-safe operator health for one exact connection version."""
+
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    REVOKED = "revoked"
+    RECONCILIATION_REQUIRED = "reconciliation_required"
+
+
+class ProviderDiagnosticCode(str, Enum):
+    """Allowlisted diagnostics that cannot carry provider-controlled text."""
+
+    CONNECTION_READY = "connection_ready"
+    PROVIDER_DEGRADED = "provider_degraded"
+    AUTHORIZATION_REVOKED = "authorization_revoked"
+    RECONCILIATION_REQUIRED = "reconciliation_required"
+
+
 class ProviderCapabilityKind(str, Enum):
     ENUMERATION = "enumeration"
     METADATA_READ = "metadata_read"
@@ -160,6 +178,46 @@ class ProviderConnection(DefinitionModel):
         )
 
 
+class ProviderConnectionApproval(DefinitionModel):
+    """Server-owned approval that configuration may reference but cannot create."""
+
+    schema_version: Literal["provider-connection-approval:v2"] = (
+        "provider-connection-approval:v2"
+    )
+    approval_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    service_principal_id: UUID
+    provider_kind: ProviderKind
+    credential_reference: OpaqueProviderReference
+    grant_reference: OpaqueProviderReference
+    approved_resource_scope_references: tuple[OpaqueProviderReference, ...] = Field(
+        min_length=1
+    )
+    authorization_generation: int = Field(ge=1)
+    configuration_generation: int = Field(ge=1)
+    status: ProviderConnectionStatus
+
+    @field_validator(
+        "approval_id",
+        "workspace_id",
+        "environment_id",
+        "service_principal_id",
+    )
+    @classmethod
+    def _validate_ids(cls, value: UUID, info: ValidationInfo) -> UUID:
+        return _non_nil_uuid(value, info)
+
+    @field_validator("approved_resource_scope_references")
+    @classmethod
+    def _validate_resource_scopes(
+        cls, values: tuple[OpaqueProviderReference, ...]
+    ) -> tuple[OpaqueProviderReference, ...]:
+        if len({item.value for item in values}) != len(values):
+            raise ValueError("approved resource scope references must be unique")
+        return tuple(sorted(values, key=lambda item: item.value.int))
+
+
 def google_v1_connection_to_v2(
     connection: GoogleConnection,
     *,
@@ -198,7 +256,10 @@ __all__ = [
     "ProviderCapabilityKind",
     "ProviderCapabilityStatus",
     "ProviderConnection",
+    "ProviderConnectionApproval",
+    "ProviderConnectionHealth",
     "ProviderConnectionStatus",
+    "ProviderDiagnosticCode",
     "ProviderKind",
     "google_v1_connection_to_v2",
 ]
