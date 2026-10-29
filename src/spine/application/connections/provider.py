@@ -45,6 +45,7 @@ class ProviderReadCommand:
     resource_object_reference: str | None = None
     acting_subject_id: UUID | None = None
     external_identity_occurrence: str | None = None
+    expected_provider_revision: str | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -71,6 +72,10 @@ class ProviderReadCommand:
             1 <= len(self.external_identity_occurrence) <= 128
         ):
             raise ValueError("external_identity_occurrence is invalid")
+        if self.expected_provider_revision is not None and not (
+            1 <= len(self.expected_provider_revision) <= 128
+        ):
+            raise ValueError("expected_provider_revision is invalid")
 
 
 class ProviderConnectionRepository(Protocol):

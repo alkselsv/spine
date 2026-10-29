@@ -18,6 +18,7 @@ from spine.connectors.files.mounted_filesystem import (
     MountedFilesystemObservationReader,
     MountedFilesystemReadError,
     MountedFilesystemRoot,
+    MountedFilesystemTreeScanner,
 )
 from spine.domain.connections.provider import (
     OpaqueProviderReference,
@@ -105,6 +106,41 @@ async def test_allowed_file_read_returns_path_scoped_v2_observation(
     assert observation.origin_locator_digest is not None
     assert observation.representation.revision_evidence is not None
     assert observation.representation.revision_evidence.resource_path == "docs/guide.md"
+    assert (
+        observation.representation.revision_evidence.modified_at
+        == datetime.fromtimestamp(
+            (root / "docs" / "guide.md").stat().st_mtime_ns / 1_000_000_000,
+            tz=timezone.utc,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_scan_token_fences_the_exact_file_revision(tmp_path: Path) -> None:
+    root = tmp_path / "mount"
+    root.mkdir()
+    path = root / "guide.md"
+    path.write_text("before")
+    configured_root = MountedFilesystemRoot(
+        resource_scope_reference=OpaqueProviderReference(value=SCOPE), path=root
+    )
+    snapshot = await MountedFilesystemTreeScanner(
+        roots={CONNECTION_VERSION: configured_root}
+    ).scan(_connection(), OpaqueProviderReference(value=SCOPE))
+    expected = snapshot.items[0].read_token
+
+    accepted = await _reader(root).read(
+        _connection(),
+        replace(_command("guide.md"), expected_provider_revision=expected),
+    )
+    assert accepted.representation.revision_evidence.provider_revision == expected
+
+    path.write_text("after")
+    with pytest.raises(MountedFilesystemReadError):
+        await _reader(root).read(
+            _connection(),
+            replace(_command("guide.md"), expected_provider_revision=expected),
+        )
 
 
 @pytest.mark.asyncio

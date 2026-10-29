@@ -77,6 +77,13 @@ class MountedFilesystemRoot:
 
 
 @dataclass(frozen=True, slots=True)
+class _StableFileRead:
+    content: bytes
+    provider_revision: str
+    modified_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class MountedFilesystemObservationReader:
     """Provider reader for pre-mounted, read-only filesystem roots.
 
@@ -126,7 +133,7 @@ class MountedFilesystemObservationReader:
             raise MountedFilesystemReadError()
         relative_path = _validate_relative_path(command.resource_object_reference)
         try:
-            content = await _bounded_read(
+            stable_read = await _bounded_read(
                 root.path,
                 relative_path,
                 self.max_file_bytes,
@@ -135,6 +142,12 @@ class MountedFilesystemObservationReader:
             )
         except (OSError, ValueError, asyncio.TimeoutError) as error:
             raise MountedFilesystemReadError() from error
+        if (
+            command.expected_provider_revision is not None
+            and stable_read.provider_revision != command.expected_provider_revision
+        ):
+            raise MountedFilesystemReadError()
+        content = stable_read.content
 
         observed_at = self.clock()
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
@@ -181,11 +194,11 @@ class MountedFilesystemObservationReader:
                 extraction_profile=_EXTRACTION_PROFILE,
                 locator_contract_version=_LOCATOR_CONTRACT,
                 revision_evidence=ProviderFileRevisionEvidence(
-                    provider_revision=content_digest,
+                    provider_revision=stable_read.provider_revision,
                     resource_path=relative_path,
                     content_sha256=content_digest,
                     byte_length=len(content),
-                    modified_at=observed_at,
+                    modified_at=stable_read.modified_at,
                 ),
             ),
             coverage=ConnectorCoverage.COMPLETE,
@@ -252,7 +265,7 @@ async def _bounded_read(
     chunk_size: int,
     *,
     timeout: float,
-) -> bytes:
+) -> _StableFileRead:
     if not _READ_SLOTS.acquire(blocking=False):
         raise MountedFilesystemReadError()
     try:
@@ -276,7 +289,7 @@ def _read_regular_file_and_release(
     relative_path: str,
     max_file_bytes: int,
     chunk_size: int,
-) -> bytes:
+) -> _StableFileRead:
     try:
         return _read_regular_file(root, relative_path, max_file_bytes, chunk_size)
     finally:
@@ -300,7 +313,7 @@ def _read_regular_file(
     relative_path: str,
     max_file_bytes: int,
     chunk_size: int,
-) -> bytes:
+) -> _StableFileRead:
     """Open each component without following symlinks and verify a stable read."""
 
     if not getattr(os, "O_NOFOLLOW", 0) or not getattr(os, "O_DIRECTORY", 0):
@@ -371,7 +384,16 @@ def _read_regular_file(
         )
         if _stat_node_identity(verified_path) != _stat_node_identity(after):
             raise MountedFilesystemReadError()
-        return b"".join(chunks)
+        provider_revision = hashlib.sha256(
+            ":".join(str(part) for part in _stat_identity(after)).encode()
+        ).hexdigest()
+        return _StableFileRead(
+            content=b"".join(chunks),
+            provider_revision=provider_revision,
+            modified_at=datetime.fromtimestamp(
+                after.st_mtime_ns / 1_000_000_000, tz=timezone.utc
+            ),
+        )
     finally:
         if file_fd is not None:
             os.close(file_fd)

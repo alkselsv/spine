@@ -11,6 +11,7 @@ import pytest
 
 from spine.application.mounted_filesystem_reconciliation import (
     AuthorizedMountedFilesystemScanner,
+    InMemoryMountedFilesystemRemovalPolicyAdmission,
     InMemoryMountedFilesystemReconciliationRepository,
     MountedFilesystemCanonicalSource,
     MountedFilesystemLifecycleState,
@@ -19,6 +20,7 @@ from spine.application.mounted_filesystem_reconciliation import (
     MountedFilesystemReconciliationState,
     MountedFilesystemRemovalPolicy,
 )
+from spine.application.connections.provider import ProviderReadDeniedError
 from spine.connectors.files.mounted_filesystem import (
     MountedFilesystemReadError,
     MountedFilesystemRoot,
@@ -186,8 +188,12 @@ class Removals:
     def __init__(self):
         self.calls = []
 
-    async def confirm_absent(self, source, *, idempotency_key, evidence_reference):
-        self.calls.append((source, idempotency_key, evidence_reference))
+    async def confirm_absent(
+        self, command, source, *, idempotency_key, evidence_reference, context
+    ):
+        self.calls.append(
+            (command, source, idempotency_key, evidence_reference, context)
+        )
         return _id(f"tombstone:{source.source_object_id}")
 
 
@@ -209,6 +215,7 @@ def _service(root: Path, *, sources=(), ingestion=None, removals=None, attempts=
         ingestion=ingestion or Ingestion(root),
         sources=Sources(sources),
         removals=removals or Removals(),
+        removal_policies=InMemoryMountedFilesystemRemovalPolicyAdmission((_policy(),)),
         context_factory=lambda operation, identity: SimpleNamespace(
             operation=operation, trace_id=identity
         ),
@@ -366,6 +373,63 @@ async def test_recovery_and_repeated_scan_create_one_logical_effect_per_revision
     assert replay == recovered
     assert len(ingestion.logical_revisions) == 1
     assert len(ingestion.commands) == 1
+
+
+@pytest.mark.asyncio
+async def test_independent_unchanged_scan_generations_reuse_revision_identity(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "mount"
+    root.mkdir()
+    (root / "guide.md").write_text("stable")
+    ingestion = Ingestion(root)
+
+    first = await _service(root, ingestion=ingestion).run(
+        _command("generation-1"), _policy()
+    )
+    second = await _service(root, ingestion=ingestion).run(
+        _command("generation-2"), _policy()
+    )
+
+    assert first.state is MountedFilesystemReconciliationState.COMPLETE
+    assert second.state is MountedFilesystemReconciliationState.COMPLETE
+    assert len(ingestion.logical_revisions) == 1
+    assert ingestion.commands[0].idempotency_key == ingestion.commands[1].idempotency_key
+    assert (
+        ingestion.commands[0].expected_provider_revision
+        == ingestion.commands[1].expected_provider_revision
+    )
+
+
+@pytest.mark.asyncio
+async def test_replaced_file_is_a_new_scan_revision(tmp_path: Path) -> None:
+    root = tmp_path / "mount"
+    root.mkdir()
+    path = root / "guide.md"
+    path.write_text("before")
+    ingestion = Ingestion(root)
+
+    await _service(root, ingestion=ingestion).run(_command("before"), _policy())
+    path.unlink()
+    path.write_text("after")
+    await _service(root, ingestion=ingestion).run(_command("after"), _policy())
+
+    assert len(ingestion.logical_revisions) == 2
+    assert (
+        ingestion.commands[0].expected_provider_revision
+        != ingestion.commands[1].expected_provider_revision
+    )
+
+
+@pytest.mark.asyncio
+async def test_unapproved_removal_policy_is_denied_before_scan(tmp_path: Path) -> None:
+    root = tmp_path / "mount"
+    root.mkdir()
+    service = _service(root)
+    unapproved = _policy().model_copy(update={"approval_id": _id("unapproved")})
+
+    with pytest.raises(ProviderReadDeniedError):
+        await service.run(_command(), unapproved)
 
 
 @pytest.mark.asyncio

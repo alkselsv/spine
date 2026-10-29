@@ -779,6 +779,23 @@ yandex_disk_reconciliation_runs = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
+mounted_fs_reconciliation_runs = Table(
+    "mounted_fs_reconciliation_runs",
+    metadata,
+    Column("run_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("connection_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("connection_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("resource_scope_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("record_schema_version", Integer, nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
 google_sheets_sync_runs = Table(
     "google_sheets_sync_runs",
     metadata,
@@ -1672,6 +1689,7 @@ __all__ = [
     "drive_snapshot_runs",
     "drive_change_runs",
     "yandex_disk_reconciliation_runs",
+    "mounted_fs_reconciliation_runs",
     "google_sheets_sync_runs",
     "google_sheets_identity_dispositions",
     "ingestion_warnings",

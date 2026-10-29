@@ -251,6 +251,34 @@ class MountedFilesystemScanProvider(Protocol):
     ) -> MountedFilesystemScanSnapshot: ...
 
 
+class MountedFilesystemRemovalPolicyAdmission(Protocol):
+    async def admit(
+        self,
+        command: MountedFilesystemReconciliationCommand,
+        requested_policy: MountedFilesystemRemovalPolicy,
+        context: TrustedPersistenceContext,
+    ) -> MountedFilesystemRemovalPolicy: ...
+
+
+class InMemoryMountedFilesystemRemovalPolicyAdmission:
+    """Immutable approved-policy fake used by application and contract tests."""
+
+    def __init__(self, policies: tuple[MountedFilesystemRemovalPolicy, ...]) -> None:
+        self._policies = {policy.policy_version_id: policy for policy in policies}
+
+    async def admit(
+        self,
+        command: MountedFilesystemReconciliationCommand,
+        requested_policy: MountedFilesystemRemovalPolicy,
+        context: TrustedPersistenceContext,
+    ) -> MountedFilesystemRemovalPolicy:
+        del command, context
+        approved = self._policies.get(requested_policy.policy_version_id)
+        if approved != requested_policy:
+            raise ProviderReadDeniedError()
+        return approved
+
+
 class MountedFilesystemScanPort(Protocol):
     async def read_snapshot(
         self,
@@ -334,10 +362,12 @@ class MountedFilesystemSourceReader(Protocol):
 class MountedFilesystemRemovalPort(Protocol):
     async def confirm_absent(
         self,
+        command: MountedFilesystemReconciliationCommand,
         source: MountedFilesystemCanonicalSource,
         *,
         idempotency_key: str,
         evidence_reference: str,
+        context: TrustedPersistenceContext,
     ) -> UUID: ...
 
 
@@ -348,6 +378,7 @@ class MountedFilesystemReconciliationCoordinator:
     ingestion: MountedFilesystemIngestionPort
     sources: MountedFilesystemSourceReader
     removals: MountedFilesystemRemovalPort
+    removal_policies: MountedFilesystemRemovalPolicyAdmission
     context_factory: Callable[[PersistenceOperation, UUID], TrustedPersistenceContext]
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
     max_read_attempts: int = 2
@@ -361,6 +392,14 @@ class MountedFilesystemReconciliationCoordinator:
         command: MountedFilesystemReconciliationCommand,
         policy: MountedFilesystemRemovalPolicy,
     ) -> MountedFilesystemReconciliationRun:
+        policy = await self.removal_policies.admit(
+            command,
+            policy,
+            self.context_factory(
+                PersistenceOperation("mounted_filesystem_removal_policy_admission"),
+                uuid5(NAMESPACE_URL, f"{command.idempotency_key}:removal-policy"),
+            ),
+        )
         self._validate_policy(command, policy)
         run_id = _run_id(command, policy)
         run = await self.repository.resolve(
@@ -543,9 +582,14 @@ class MountedFilesystemReconciliationCoordinator:
             )
             if policy.authorize_complete_scope_absence:
                 tombstone_id = await self.removals.confirm_absent(
+                    command,
                     source,
                     idempotency_key=f"mounted-absence:{item_evidence.evidence_id.hex}",
                     evidence_reference=item_evidence.evidence_reference,
+                    context=self.context_factory(
+                        PersistenceOperation("mounted_filesystem_confirm_absent"),
+                        item_evidence.evidence_id,
+                    ),
                 )
                 item_evidence = item_evidence.model_copy(
                     update={
@@ -692,6 +736,7 @@ def _item_command(
         configuration_generation=command.configuration_generation,
         resource_object_reference=item.provider_object_reference,
         external_identity_occurrence=occurrence,
+        expected_provider_revision=item.read_token,
         access_policy_version_id=command.access_policy_version_id,
     )
 
