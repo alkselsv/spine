@@ -209,7 +209,31 @@ async def test_low_information_first_message_produces_partial_candidate() -> Non
 async def test_clarification_answer_prepares_one_immutable_affected_successor() -> None:
     artifacts = _Artifacts()
     _, factory = _factory(artifacts, _run("Help"))
-    service = PersistedRequirementsArtifactService(factory)
+    class Revalidator:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def revalidate(self, *, previous, requirement, clarification, answer):
+            self.calls.append((requirement.requirement_id, clarification.clarification_id, answer.text))
+            return RequirementsExtractionOutput(
+                workspace_id=previous.workspace_id,
+                environment_id=previous.environment_id,
+                workflow_run_id=previous.run_id,
+                work_item_id=previous.work_item_id,
+                outcome=RequirementsExtractionOutcome.SUCCESS,
+                requirements=(requirement.model_copy(update={
+                    "statement": answer.text,
+                    "missing_markers": (),
+                    "ambiguous_markers": (),
+                    "uncertainty": None,
+                    "state": RequirementState.CANDIDATE,
+                }),),
+            )
+
+    revalidator = Revalidator()
+    service = PersistedRequirementsArtifactService(
+        factory, clarification_revalidator=revalidator
+    )
     first = await service.produce_first_candidate(context=_context(), run_id=UUID(int=3))
     assert first is not None
     clarification = first.clarifications[0]
@@ -251,6 +275,11 @@ async def test_clarification_answer_prepares_one_immutable_affected_successor() 
     assert successor.requirements[0].statement == command.payload.answer
     assert successor.requirements[0].missing_markers == ()
     assert successor.requirements[0].ambiguous_markers == ()
+    assert revalidator.calls == [(
+        clarification.requirement_id,
+        clarification.clarification_id,
+        command.payload.answer,
+    )]
 
     await artifacts.persist_candidate(successor)
     conflicting = command.model_copy(update={
@@ -333,3 +362,31 @@ async def test_clarifications_are_admitted_sequentially_on_the_same_run() -> Non
     assert open_items[0].requirement_id == UUID(int=32)
     assert open_items[0].originating_artifact_version == 2
     assert successor.requirements[0].constraints[-1] == command.payload.answer
+
+    await artifacts.persist_candidate(successor)
+    next_item = open_items[0]
+    next_command = command.model_copy(update={
+        "command_id": UUID(int=653),
+        "idempotency_key": "clarification-sequential-next",
+        "expected_run_version": 4,
+        "payload": AnswerClarificationCommandV1(
+            clarification_id=next_item.clarification_id,
+            requirement_id=next_item.requirement_id,
+            answer="The delivery date is December 20.",
+        ),
+        "artifact_refs": (WorkflowArtifactRef(
+            artifact_id=successor.artifact_id,
+            schema_name="requirements",
+            schema_version=successor.schema_version,
+            artifact_version=successor.artifact_version,
+        ),),
+    })
+
+    final = await service.prepare_clarification_answer(
+        context=_context(), command=next_command
+    )
+
+    assert final.artifact_version == 3
+    assert all(item.answer is not None for item in final.clarifications)
+    assert final.clarifications[0].resulting_artifact_version == 2
+    assert final.clarifications[1].resulting_artifact_version == 3

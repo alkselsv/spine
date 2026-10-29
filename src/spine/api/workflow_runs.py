@@ -457,6 +457,27 @@ def install_workflow_run_routes(
                         )
                     )
                 except OptimisticConflictError:
+                    try:
+                        replay = await service.dispatch(
+                            context=persistence_context,
+                            command=command,
+                            clarification_successor=None,
+                        )
+                    except (ConstraintConflictError, OptimisticConflictError):
+                        replay = None
+                    if replay is not None:
+                        response = WorkflowRunReceiptResponse(
+                            command_id=replay.command_id,
+                            work_item_id=replay.work_item_id,
+                            run_id=replay.run_id,
+                            workflow_version_id=replay.workflow_version_id,
+                            state=replay.state.value,
+                            run_version=replay.run_version,
+                            admission=replay.admission,
+                        )
+                        return JSONResponse(
+                            status_code=202, content=response.model_dump(mode="json")
+                        )
                     current = await service.get_run(
                         context=persistence_context, run_id=run_id
                     )

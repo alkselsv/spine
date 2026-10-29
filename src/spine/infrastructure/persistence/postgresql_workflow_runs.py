@@ -342,7 +342,10 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
                 None,
             )
 
-        resulting_version = run.run_version + 1
+        answered_version = run.run_version + 1
+        resulting_version = answered_version + (
+            1 if is_clarification_answer and next_clarification is not None else 0
+        )
         resulting_state = (
             WorkflowRunState.CANCELLED
             if is_cancellation
@@ -448,16 +451,33 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
                 workspace_id=command.workspace_id,
                 environment_id=command.environment_id,
                 run_id=command.run_id,
-                sequence=resulting_version,
+                sequence=answered_version,
                 event_type=event_type,
                 event_schema_version=1,
-                run_version=resulting_version,
+                run_version=answered_version,
                 summary=event_summary,
                 correlation_id=command.correlation_id,
                 causation_id=command.command_id,
                 occurred_at=now,
             )
         )
+        if is_clarification_answer and next_clarification is not None:
+            await self._uow._execute(
+                insert(workflow_run_events).values(
+                    event_id=next_clarification.asked_event_id,
+                    workspace_id=command.workspace_id,
+                    environment_id=command.environment_id,
+                    run_id=command.run_id,
+                    sequence=resulting_version,
+                    event_type="workflow.clarification-requested",
+                    event_schema_version=1,
+                    run_version=resulting_version,
+                    summary="Clarification requested.",
+                    correlation_id=next_clarification.correlation_id,
+                    causation_id=event_id,
+                    occurred_at=next_clarification.asked_at,
+                )
+            )
         if is_clarification_answer:
             signal_payload = ClarificationAnsweredDispatchPayload(
                 command_id=command.command_id,

@@ -355,7 +355,10 @@ class RequirementsArtifact(DefinitionModel):
             or item.originating_artifact_version > self.artifact_version
             or (
                 item.answer is not None
-                and item.resulting_artifact_version != self.artifact_version
+                and (
+                    item.resulting_artifact_version is None
+                    or item.resulting_artifact_version > self.artifact_version
+                )
             )
             for item in self.clarifications
         ):

@@ -34,7 +34,7 @@ from spine.workflows.temporal.definitions import (
     AskAdmissionWorkflowDefinition,
     build_ask_admission_activity_bindings,
 )
-from spine.workflows.temporal.bootstrap import create_ask_admission_worker
+from spine.workflows.temporal.bootstrap import create_workflow_worker
 from spine.workflows.temporal.client import TemporalSdkWorkflowClient
 from tests.contracts.persistence.outbox_events import create_outbox_event_registry
 from tests.api.test_authorized_ask import (
@@ -254,7 +254,7 @@ async def test_temporal_worker_factory_executes_admitted_workflow() -> None:
         consumer = AskAdmissionDispatchConsumer(
             AskAdmissionWorkflowLauncher(temporal_client)
         )
-        async with create_ask_admission_worker(
+        async with create_workflow_worker(
             client=environment.client, task_queue=task_queue, activity=activity
         ):
             await consumer.consume(event, context)

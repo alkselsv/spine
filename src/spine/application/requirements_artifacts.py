@@ -48,6 +48,60 @@ class RequirementsArtifactRepository(Protocol):
                           run_id: UUID) -> RequirementsArtifact | None: ...
 
 
+class RequirementsClarificationRevalidator(Protocol):
+    """Re-run the affected #641 extraction result against one typed answer."""
+
+    async def revalidate(
+        self,
+        *,
+        previous: RequirementsArtifact,
+        requirement: Requirement,
+        clarification: Clarification,
+        answer: ClarificationAnswer,
+    ) -> RequirementsExtractionOutput: ...
+
+
+class DeterministicRequirementsClarificationRevalidator:
+    """Offline extraction revalidator used until the configured agent is composed here."""
+
+    async def revalidate(
+        self,
+        *,
+        previous: RequirementsArtifact,
+        requirement: Requirement,
+        clarification: Clarification,
+        answer: ClarificationAnswer,
+    ) -> RequirementsExtractionOutput:
+        del clarification
+        resolution = answer.text.strip()
+        resolved = requirement.model_copy(
+            update={
+                "statement": (
+                    resolution
+                    if requirement.category is RequirementCategory.UNRESOLVED_INFORMATION
+                    else requirement.statement
+                ),
+                "constraints": (
+                    requirement.constraints
+                    if requirement.category is RequirementCategory.UNRESOLVED_INFORMATION
+                    else (*requirement.constraints, resolution)
+                ),
+                "missing_markers": (),
+                "ambiguous_markers": (),
+                "uncertainty": None,
+                "state": RequirementState.CANDIDATE,
+            }
+        )
+        return RequirementsExtractionOutput(
+            workspace_id=previous.workspace_id,
+            environment_id=previous.environment_id,
+            workflow_run_id=previous.run_id,
+            work_item_id=previous.work_item_id,
+            outcome=RequirementsExtractionOutcome.SUCCESS,
+            requirements=(resolved,),
+        )
+
+
 class PersistedRequirementsArtifactService:
     """Create a deterministic synthetic first candidate and serve scoped readback."""
 
@@ -57,10 +111,15 @@ class PersistedRequirementsArtifactService:
         self,
         uow_factory: UnitOfWorkFactory,
         evidence_validation_service: RequirementsEvidenceValidationService | None = None,
+        clarification_revalidator: RequirementsClarificationRevalidator | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self._uow_factory = uow_factory
         self._evidence_validation_service = evidence_validation_service
+        self._clarification_revalidator = (
+            clarification_revalidator
+            or DeterministicRequirementsClarificationRevalidator()
+        )
         self._clock = clock
 
     async def produce_first_candidate(
@@ -252,25 +311,30 @@ class PersistedRequirementsArtifactService:
                 "resulting_artifact_version": previous.artifact_version + 1,
             }
         )
-        resolution = command.payload.answer.strip()
-        updated_requirement = affected.model_copy(
-            update={
-                "statement": (
-                    resolution
-                    if affected.category is RequirementCategory.UNRESOLVED_INFORMATION
-                    else affected.statement
-                ),
-                "constraints": (
-                    affected.constraints
-                    if affected.category is RequirementCategory.UNRESOLVED_INFORMATION
-                    else (*affected.constraints, resolution)
-                ),
-                "missing_markers": (),
-                "ambiguous_markers": (),
-                "uncertainty": None,
-                "state": RequirementState.CANDIDATE,
-            }
+        revalidated_extraction = await self._clarification_revalidator.revalidate(
+            previous=previous,
+            requirement=affected,
+            clarification=clarification,
+            answer=answered.answer,
         )
+        if (
+            revalidated_extraction.workspace_id != previous.workspace_id
+            or revalidated_extraction.environment_id != previous.environment_id
+            or revalidated_extraction.workflow_run_id != previous.run_id
+            or revalidated_extraction.work_item_id != previous.work_item_id
+            or revalidated_extraction.outcome
+            not in {
+                RequirementsExtractionOutcome.SUCCESS,
+                RequirementsExtractionOutcome.PARTIAL,
+            }
+            or len(revalidated_extraction.requirements) != 1
+            or revalidated_extraction.requirements[0].requirement_id
+            != affected.requirement_id
+        ):
+            raise ConstraintConflictError(
+                "Workflow clarification extraction revalidation is invalid."
+            )
+        updated_requirement = revalidated_extraction.requirements[0]
         requirements = tuple(
             updated_requirement if item.requirement_id == affected.requirement_id else item
             for item in previous.requirements

@@ -228,11 +228,11 @@ class DurableAskComposition:
         """Register this composition with its paired client and task queue."""
 
         from spine.workflows.temporal.client import TemporalSdkWorkflowClient
-        from spine.workflows.temporal.bootstrap import create_ask_admission_worker
+        from spine.workflows.temporal.bootstrap import create_workflow_worker
 
         if type(self.workflow_client) is not TemporalSdkWorkflowClient:
             raise RuntimeError("Temporal SDK worker requires the composed SDK client")
-        return create_ask_admission_worker(
+        return create_workflow_worker(
             client=self.workflow_client.sdk_client,
             task_queue=self.workflow_client.task_queue,
             activity=self.workflow_executor,

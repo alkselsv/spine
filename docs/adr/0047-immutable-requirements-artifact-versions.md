@@ -41,11 +41,14 @@ about a candidate and cannot itself establish acceptance.
    durable human wait; answering it is a shared `WorkflowCommand` against the
    originating artifact version, never a new WorkItem, WorkflowRun or Q&A
    Session.
-7. Answer admission appends one successor, revalidates only the affected
-   requirement evidence under current authority, and records content-free
-   wait/resume events and Temporal signals. Exact replay returns the original
-   receipt; stale run/artifact versions and mismatched clarification identity
-   fail without a second successor.
+7. Answer admission appends one successor, passes only the affected requirement
+   through the typed extraction-revalidation seam, then revalidates its evidence
+   under current authority. Questions are admitted sequentially: if unresolved
+   requirements remain, the same run records the next request and stays in its
+   durable wait. Content-free timeline events and Temporal signals preserve this
+   transition. Exact replay returns the original receipt; stale run/artifact
+   versions and mismatched clarification identity fail without a second
+   successor.
 
 ## Consequences
 

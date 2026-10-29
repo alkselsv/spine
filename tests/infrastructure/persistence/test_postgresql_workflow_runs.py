@@ -397,7 +397,18 @@ async def test_answer_clarification_keeps_same_run_waiting_for_next_question() -
     )
 
     assert receipt.state.value == "waiting"
+    assert receipt.run_version == 4
     assert uow.intents[-1].payload.next_clarification_id == next_clarification.clarification_id
+    event_types = [
+        statement.compile().params["event_type"]
+        for statement in uow.statements
+        if getattr(getattr(statement, "table", None), "name", None)
+        == "workflow_run_events"
+    ]
+    assert event_types == [
+        "workflow.clarification-answered",
+        "workflow.clarification-requested",
+    ]
 
 
 @pytest.mark.asyncio

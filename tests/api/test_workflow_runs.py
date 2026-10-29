@@ -357,7 +357,17 @@ async def test_answer_clarification_uses_typed_command_and_resumes_same_run() ->
 
 
 async def test_stale_clarification_ref_returns_safe_conflict() -> None:
-    service = FakeWorkflowRunService()
+    class StaleService(FakeWorkflowRunService):
+        async def dispatch(self, *, context, command, clarification_successor=None):
+            if clarification_successor is None:
+                raise ConstraintConflictError("not an exact replay")
+            return await super().dispatch(
+                context=context,
+                command=command,
+                clarification_successor=clarification_successor,
+            )
+
+    service = StaleService()
     service.run = service.run.model_copy(
         update={"state": WorkflowRunState.WAITING, "run_version": 2}
     )
@@ -398,6 +408,62 @@ async def test_stale_clarification_ref_returns_safe_conflict() -> None:
     assert response.status_code == 409
     assert response.json()["code"] == "workflow.artifact_stale"
     assert "protected answer" not in response.text.lower()
+
+
+async def test_exact_clarification_replay_returns_original_receipt() -> None:
+    class ReplayService(FakeWorkflowRunService):
+        async def dispatch(self, *, context, command, clarification_successor=None):
+            del context, clarification_successor
+            return WorkflowCommandReceipt(
+                command_id=command.command_id,
+                work_item_id=WORK_ITEM_ID,
+                run_id=RUN_ID,
+                workflow_version_id=VERSION_ID,
+                state=WorkflowRunState.RUNNING,
+                run_version=3,
+                admission="replayed",
+            )
+
+    class CandidateService:
+        async def prepare_clarification_answer(self, **kwargs):
+            del kwargs
+            raise OptimisticConflictError("the original artifact is no longer latest")
+
+    service = ReplayService()
+    service.run = service.run.model_copy(
+        update={"state": WorkflowRunState.RUNNING, "run_version": 3}
+    )
+    transport = httpx.ASGITransport(
+        app=_app(service, requirements_artifact_service=CandidateService())
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/v1/runs/{RUN_ID}/commands",
+            headers={**_headers(), "Idempotency-Key": "replay-clarification-643"},
+            json={
+                "command_id": "64300000-0000-4000-8000-000000000044",
+                "command_type": "answer_clarification",
+                "command_schema_version": 1,
+                "expected_run_version": 2,
+                "payload": {
+                    "clarification_id": "64300000-0000-4000-8000-000000000041",
+                    "requirement_id": "64300000-0000-4000-8000-000000000042",
+                    "answer": "The original exact answer.",
+                },
+                "artifact_refs": [{
+                    "artifact_id": "64300000-0000-4000-8000-000000000043",
+                    "schema_name": "requirements",
+                    "schema_version": "requirements:v1",
+                    "artifact_version": 1,
+                }],
+                "correlation_id": str(RUN_ID),
+                "causation_id": str(COMMAND_ID),
+            },
+        )
+
+    assert response.status_code == 202
+    assert response.json()["admission"] == "replayed"
+    assert response.json()["run_version"] == 3
 
 
 async def test_clarification_conflict_is_not_exposed_as_server_error() -> None:
