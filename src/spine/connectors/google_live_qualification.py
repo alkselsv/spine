@@ -31,6 +31,7 @@ from spine.connectors.google_api import (
     GoogleApiRequestPolicy,
     GoogleApiService,
     GoogleResourceScope,
+    google_api_configuration_fingerprint,
 )
 from spine.connectors.google_sheets import GoogleSheetsReadProfile
 from spine.domain.common import DefinitionModel
@@ -123,6 +124,15 @@ class GoogleLiveQualificationConfig(DefinitionModel):
             )
         return self
 
+    @property
+    def api_configuration_fingerprint(self) -> str:
+        return google_api_configuration_fingerprint(
+            endpoints=self.endpoints,
+            request_policy=self.request_policy,
+            resource_scopes=(self.resource_scope,),
+            sheet_profiles=tuple(target.profile for target in self.sheet_targets),
+        )
+
 
 class GoogleLiveQualificationReport(DefinitionModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -181,11 +191,17 @@ class GoogleLiveQualificationProvider:
     async def read(
         self, connection: GoogleConnection, command: GoogleReadCommand
     ) -> GoogleLiveProbeCounts:
-        if connection != self.config.connection or command != GoogleReadCommand(
-            connection_id=self.config.connection.connection_id,
-            resource_scope_reference=self.config.resource_scope.reference,
-            authorization_generation=self.config.connection.authorization_generation,
-            configuration_generation=self.config.connection.configuration_generation,
+        if (
+            self.service.configuration_fingerprint
+            != self.config.api_configuration_fingerprint
+            or connection != self.config.connection
+            or command
+            != GoogleReadCommand(
+                connection_id=self.config.connection.connection_id,
+                resource_scope_reference=self.config.resource_scope.reference,
+                authorization_generation=self.config.connection.authorization_generation,
+                configuration_generation=self.config.connection.configuration_generation,
+            )
         ):
             raise GoogleProviderContractError()
         metadata_reads = downloads = exports = 0

@@ -200,7 +200,9 @@ async def test_drive_metadata_resolves_opaque_credentials_and_maps_scoped_reques
     assert oauth_request.timeout_seconds == 7.5
     assert drive_request.url == "https://www.googleapis.test/drive/v3/files/file-1"
     assert drive_request.query == {
-        "fields": "id,name,mimeType,version,webViewLink,driveId,parents,modifiedTime",
+        "fields": (
+            "id,name,mimeType,version,webViewLink,driveId,parents,modifiedTime,trashed"
+        ),
         "supportsAllDrives": "false",
     }
     assert drive_request.headers == {"Authorization": "Bearer access-secret"}
@@ -333,11 +335,110 @@ async def test_drive_changes_exclude_unrelated_folder_items_from_read_authority(
     )
 
     assert page.changes == ()
+    assert page.incomplete_search is True
     with pytest.raises(GoogleResourceScopeError):
         await service.get_metadata_for_file(
             _connection(), RESOURCE_SCOPE, "unrelated-file"
         )
     assert len(transport.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_discovered_file_moved_out_of_folder_fails_current_membership_check() -> (
+    None
+):
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={
+                    "incompleteSearch": False,
+                    "files": [{"id": "file-2"}],
+                },
+            ),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={
+                    "id": "file-2",
+                    "name": "Moved",
+                    "mimeType": "text/plain",
+                    "version": "2",
+                    "parents": ["different-folder"],
+                    "trashed": False,
+                },
+            ),
+        ]
+    )
+    service = _service(RecordingCredentialResolver(), transport)
+    await service.list_page(_connection(), RESOURCE_SCOPE, None)
+
+    with pytest.raises(GoogleResourceScopeError):
+        await service.get_metadata_for_file(_connection(), RESOURCE_SCOPE, "file-2")
+    with pytest.raises(GoogleResourceScopeError):
+        await service.get_metadata_for_file(_connection(), RESOURCE_SCOPE, "file-2")
+
+    assert len(transport.requests) == 3
+
+
+@pytest.mark.asyncio
+async def test_folder_change_mapping_is_stable_after_worker_restart() -> None:
+    removed_change = {
+        "newStartPageToken": "start-11",
+        "changes": [
+            {
+                "changeId": "removed-change",
+                "fileId": "file-2",
+                "removed": True,
+            }
+        ],
+    }
+    cached_service = _service(
+        RecordingCredentialResolver(),
+        RecordingTransport(
+            [
+                GoogleApiResponse(
+                    status_code=200,
+                    json_body={"access_token": "token", "expires_in": 3600},
+                ),
+                GoogleApiResponse(
+                    status_code=200,
+                    json_body={
+                        "incompleteSearch": False,
+                        "files": [{"id": "file-2"}],
+                    },
+                ),
+                GoogleApiResponse(status_code=200, json_body=removed_change),
+            ]
+        ),
+    )
+    fresh_service = _service(
+        RecordingCredentialResolver(),
+        RecordingTransport(
+            [
+                GoogleApiResponse(
+                    status_code=200,
+                    json_body={"access_token": "token", "expires_in": 3600},
+                ),
+                GoogleApiResponse(status_code=200, json_body=removed_change),
+            ]
+        ),
+    )
+
+    await cached_service.list_page(_connection(), RESOURCE_SCOPE, None)
+    cached = await cached_service.list_changes(
+        _connection(), RESOURCE_SCOPE, "change-token"
+    )
+    fresh = await fresh_service.list_changes(
+        _connection(), RESOURCE_SCOPE, "change-token"
+    )
+
+    assert cached == fresh
+    assert fresh.changes == ()
+    assert fresh.incomplete_search is True
 
 
 @pytest.mark.asyncio
@@ -795,6 +896,29 @@ async def test_sheets_grid_start_outside_requested_page_fails_closed() -> None:
             "'Estimate Register'!A2:D5",
             None,
         )
+
+
+@pytest.mark.asyncio
+async def test_sheets_range_must_cover_every_configured_profile_column() -> None:
+    resolver = RecordingCredentialResolver()
+    transport = RecordingTransport([])
+
+    with pytest.raises(Exception, match="cover every configured column"):
+        await _service(
+            resolver,
+            transport,
+            sheet_profiles=(_sheet_profile(),),
+        ).get_spreadsheet_range_page(
+            _connection(),
+            RESOURCE_SCOPE,
+            "sheet-1",
+            123,
+            "'Estimate Register'!A2:A5",
+            None,
+        )
+
+    assert resolver.calls == []
+    assert transport.requests == []
 
 
 @pytest.mark.asyncio

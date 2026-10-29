@@ -57,6 +57,10 @@ async def _run(
         raise GoogleLiveQualificationRefused(
             "the approved live composition returned an invalid runner"
         )
+    if runner.config != config:
+        raise GoogleLiveQualificationRefused(
+            "the approved live composition does not match the requested manifest"
+        )
     report = await runner.run(environment_opt_in=environment_opt_in)
     write_google_live_report(report_path, report)
     return 0 if report.status == "passed" else 1

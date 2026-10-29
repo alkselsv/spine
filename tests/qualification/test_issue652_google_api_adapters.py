@@ -16,11 +16,14 @@ SCENARIOS: dict[str, tuple[str, ...]] = {
     "drive_snapshot_changes_pagination": (
         "tests/connectors/test_google_api.py::test_drive_snapshot_and_changes_map_every_provider_page",
         "tests/connectors/test_google_api.py::test_drive_changes_exclude_unrelated_folder_items_from_read_authority",
+        "tests/connectors/test_google_api.py::test_folder_change_mapping_is_stable_after_worker_restart",
+        "tests/connectors/test_google_api.py::test_discovered_file_moved_out_of_folder_fails_current_membership_check",
     ),
     "sheets_representations_metadata_pagination": (
         "tests/connectors/test_google_api.py::test_sheets_range_page_preserves_representations_metadata_and_pagination",
         "tests/connectors/test_google_api.py::test_sparse_sheets_page_uses_configured_range_for_continuation",
         "tests/connectors/test_google_api.py::test_sheets_grid_start_outside_requested_page_fails_closed",
+        "tests/connectors/test_google_api.py::test_sheets_range_must_cover_every_configured_profile_column",
         "tests/connectors/test_google_api.py::test_sheets_misscoped_response_fails_closed_without_returning_rows",
     ),
     "oauth_refresh_revocation_and_reauthorization": (
@@ -46,6 +49,7 @@ SCENARIOS: dict[str, tuple[str, ...]] = {
         "tests/qualification/test_google_live_harness.py::test_live_harness_writes_only_sanitized_versioned_evidence",
         "tests/qualification/test_google_live_harness.py::test_live_config_rejects_targets_that_do_not_equal_exact_allowlist",
         "tests/qualification/test_google_live_harness.py::test_live_harness_rejects_noncurrent_connection_before_provider_calls",
+        "tests/qualification/test_google_live_harness.py::test_live_harness_rejects_mismatched_effective_configuration",
     ),
 }
 

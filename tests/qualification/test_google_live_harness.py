@@ -113,8 +113,9 @@ class RecordingAdmission:
 
 
 class RecordingService:
-    def __init__(self) -> None:
+    def __init__(self, configuration_fingerprint: str) -> None:
         self.calls = []
+        self.configuration_fingerprint = configuration_fingerprint
 
     async def get_metadata_for_file(self, connection, scope, file_id):
         del connection, scope
@@ -212,7 +213,7 @@ async def test_live_harness_rejects_noncurrent_connection_before_provider_calls(
         }
     )
     repository = CurrentConnectionRepository(current)
-    service = RecordingService()
+    service = RecordingService(config.api_configuration_fingerprint)
     registry = DiagnosticEventRegistry.with_default_families()
     runner = compose_google_live_qualification_runner(
         config=config,
@@ -229,4 +230,27 @@ async def test_live_harness_rejects_noncurrent_connection_before_provider_calls(
     assert report.status == "failed"
     assert report.failure_code == "provider_contract_rejected"
     assert len(repository.commands) == 1
+    assert service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_live_harness_rejects_mismatched_effective_configuration() -> None:
+    config = _config(opt_in=True)
+    repository = CurrentConnectionRepository(config.connection)
+    service = RecordingService("different-effective-configuration")
+    registry = DiagnosticEventRegistry.with_default_families()
+    runner = compose_google_live_qualification_runner(
+        config=config,
+        service=service,  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        diagnostic_sink=RecordingDiagnosticSink(registry),
+        diagnostic_registry=registry,
+        clock=lambda: datetime(2026, 10, 29, tzinfo=timezone.utc),
+        context=object(),  # type: ignore[arg-type]
+    )
+
+    report = await runner.run(environment_opt_in=True)
+
+    assert report.status == "failed"
+    assert report.failure_code == "provider_contract_rejected"
     assert service.calls == []

@@ -12,6 +12,8 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import hashlib
+import json
 import re
 from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlsplit
@@ -310,6 +312,37 @@ class _AccessToken:
     expires_at: datetime
 
 
+def google_api_configuration_fingerprint(
+    *,
+    endpoints: GoogleApiEndpoints,
+    request_policy: GoogleApiRequestPolicy,
+    resource_scopes: tuple[GoogleResourceScope, ...],
+    sheet_profiles: tuple[GoogleSheetsReadProfile, ...],
+) -> str:
+    """Digest the complete non-secret effective provider configuration."""
+
+    scopes = sorted(
+        (scope.model_dump(mode="json") for scope in resource_scopes),
+        key=lambda item: str(item["reference"]),
+    )
+    profiles = sorted(
+        (profile.model_dump(mode="json") for profile in sheet_profiles),
+        key=lambda item: (str(item["spreadsheet_id"]), int(item["sheet_id"])),
+    )
+    encoded = json.dumps(
+        {
+            "schema": "google-api-configuration:v1",
+            "endpoints": endpoints.model_dump(mode="json"),
+            "request_policy": request_policy.model_dump(mode="json"),
+            "resource_scopes": scopes,
+            "sheet_profiles": profiles,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 class GoogleApiService:
     """Deep adapter satisfying the existing Drive and Sheets service ports."""
 
@@ -346,10 +379,20 @@ class GoogleApiService:
             (profile.spreadsheet_id, profile.sheet_id): profile
             for profile in sheet_profiles
         }
+        self._configuration_fingerprint = google_api_configuration_fingerprint(
+            endpoints=endpoints,
+            request_policy=request_policy,
+            resource_scopes=resource_scopes,
+            sheet_profiles=sheet_profiles,
+        )
         self._clock = clock
         self._sleep = sleep
         self._tokens: dict[tuple[object, ...], _AccessToken] = {}
         self._discovered_files: dict[tuple[object, ...], set[str]] = {}
+
+    @property
+    def configuration_fingerprint(self) -> str:
+        return self._configuration_fingerprint
 
     async def get_metadata(
         self,
@@ -379,7 +422,8 @@ class GoogleApiService:
             url=f"{self._endpoints.drive_base_url.rstrip('/')}/files/{quote(file_id, safe='')}",
             query={
                 "fields": (
-                    "id,name,mimeType,version,webViewLink,driveId,parents,modifiedTime"
+                    "id,name,mimeType,version,webViewLink,driveId,parents,"
+                    "modifiedTime,trashed"
                 ),
                 "supportsAllDrives": str(scope.supports_all_drives).lower(),
             },
@@ -390,6 +434,7 @@ class GoogleApiService:
             raise GoogleProviderContractError(
                 "Google Drive metadata response identity is invalid."
             )
+        self._validate_current_file_scope(connection, scope, file_id, payload)
         return DriveFileMetadata(
             file_id=_required_string(payload, "id"),
             name=_required_string(payload, "name"),
@@ -411,6 +456,7 @@ class GoogleApiService:
         del version  # The guarded reader verifies the provider version around this call.
         scope = self._scope(connection, resource_scope_reference)
         self._require_file(connection, scope, file_id)
+        await self._revalidate_current_file_scope(connection, scope, file_id)
         response = await self._authorized_request(
             connection,
             method="GET",
@@ -436,6 +482,7 @@ class GoogleApiService:
         del version
         scope = self._scope(connection, resource_scope_reference)
         self._require_file(connection, scope, file_id)
+        await self._revalidate_current_file_scope(connection, scope, file_id)
         response = await self._authorized_request(
             connection,
             method="GET",
@@ -559,30 +606,27 @@ class GoogleApiService:
         raw_changes = payload.get("changes", [])
         if not isinstance(raw_changes, list):
             raise GoogleProviderContractError("Google provider response is invalid.")
-        changes = self._scoped_changes(connection, scope, raw_changes)
+        changes, ambiguous_membership = self._scoped_changes(scope, raw_changes)
         return DriveChangePage(
             page_token=page_token,
             next_page_token=_optional_string(payload, "nextPageToken"),
             new_start_page_token=_optional_string(payload, "newStartPageToken"),
-            incomplete_search=_required_bool(
-                payload, "incompleteSearch", default=False
+            incomplete_search=(
+                _required_bool(payload, "incompleteSearch", default=False)
+                or ambiguous_membership
             ),
             changes=changes,
         )
 
     def _scoped_changes(
         self,
-        connection: GoogleConnection,
         scope: GoogleResourceScope,
         raw_changes: list[Any],
-    ) -> tuple[DriveChange, ...]:
-        discovered = self._discovered_files.setdefault(
-            self._scope_key(connection, scope), set()
-        )
+    ) -> tuple[tuple[DriveChange, ...], bool]:
         scoped: list[DriveChange] = []
+        ambiguous_membership = False
         for raw_change in raw_changes:
             change = _drive_change(raw_change)
-            previously_in_scope = change.file_id in discovered
             explicitly_allowed = change.file_id in scope.allowed_file_ids
             in_folder = (
                 scope.folder_id is not None
@@ -592,14 +636,12 @@ class GoogleApiService:
             )
             in_drive = scope.drive_id is not None and not change.removed
             currently_in_scope = explicitly_allowed or in_folder or in_drive
-            if not currently_in_scope and not previously_in_scope:
+            if not currently_in_scope:
+                if scope.folder_id is not None:
+                    ambiguous_membership = True
                 continue
-            if currently_in_scope:
-                discovered.add(change.file_id)
-            else:
-                discovered.discard(change.file_id)
-            scoped.append(change.model_copy(update={"in_scope": currently_in_scope}))
-        return tuple(scoped)
+            scoped.append(change.model_copy(update={"in_scope": True}))
+        return tuple(scoped), ambiguous_membership
 
     async def get_provider_version(
         self,
@@ -668,6 +710,7 @@ class GoogleApiService:
             page_token,
             page_size=self._policy.sheets_page_size,
         )
+        _require_profile_columns_in_range(profile, provider_range)
         version_before = await self.get_provider_version(
             connection, resource_scope_reference, spreadsheet_id
         )
@@ -744,6 +787,58 @@ class GoogleApiService:
             and file_id
             not in self._discovered_files.get(self._scope_key(connection, scope), set())
         ):
+            raise GoogleResourceScopeError(
+                "Google request is outside the approved Google resource scope."
+            )
+
+    async def _revalidate_current_file_scope(
+        self,
+        connection: GoogleConnection,
+        scope: GoogleResourceScope,
+        file_id: str,
+    ) -> None:
+        if file_id in scope.allowed_file_ids:
+            return
+        payload = self._json_success(
+            await self._authorized_request(
+                connection,
+                method="GET",
+                url=(
+                    f"{self._endpoints.drive_base_url.rstrip('/')}/files/"
+                    f"{quote(file_id, safe='')}"
+                ),
+                query={
+                    "fields": "id,driveId,parents,trashed",
+                    "supportsAllDrives": str(scope.supports_all_drives).lower(),
+                },
+                drive_not_found=True,
+            )
+        )
+        if payload.get("id") != file_id:
+            raise GoogleProviderContractError(
+                "Google Drive metadata response identity is invalid."
+            )
+        self._validate_current_file_scope(connection, scope, file_id, payload)
+
+    def _validate_current_file_scope(
+        self,
+        connection: GoogleConnection,
+        scope: GoogleResourceScope,
+        file_id: str,
+        payload: Mapping[str, Any],
+    ) -> None:
+        if file_id in scope.allowed_file_ids:
+            return
+        parents = _string_list(payload, "parents")
+        in_folder = scope.folder_id is not None and scope.folder_id in parents
+        in_drive = (
+            scope.drive_id is not None and payload.get("driveId") == scope.drive_id
+        )
+        trashed = _required_bool(payload, "trashed", default=False)
+        if trashed or not (in_folder or in_drive):
+            self._discovered_files.setdefault(
+                self._scope_key(connection, scope), set()
+            ).discard(file_id)
             raise GoogleResourceScopeError(
                 "Google request is outside the approved Google resource scope."
             )
@@ -1378,6 +1473,19 @@ def _a1_bounds(value: str) -> tuple[int, int, int, int]:
     )
 
 
+def _require_profile_columns_in_range(
+    profile: GoogleSheetsReadProfile, a1_range: str
+) -> None:
+    _, _, first_column, last_column = _a1_bounds(a1_range)
+    if any(
+        not first_column <= _column_index(column.coordinate) - 1 <= last_column
+        for column in profile.columns
+    ):
+        raise GoogleSheetsConfiguredScopeError(
+            "Sheets page range does not cover every configured column."
+        )
+
+
 def _column_name(index: int) -> str:
     result = ""
     value = index + 1
@@ -1418,4 +1526,5 @@ __all__ = [
     "GoogleResourceScopeError",
     "HttpxGoogleApiTransport",
     "ReferenceGoogleCredentialResolver",
+    "google_api_configuration_fingerprint",
 ]

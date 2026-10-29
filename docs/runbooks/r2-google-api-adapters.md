@@ -82,8 +82,12 @@ That factory resolves secrets through the approved store, supplies the trusted
 persistence context and current connection repository, and wires the provider
 through `compose_google_live_qualification_runner`. The admitted current
 connection must exactly equal the approved live manifest before any provider
-request. Missing/mismatched references, scope, generations, current version,
-opt-in or composition refuse the run before a provider request.
+request. The runner also verifies a SHA-256 fingerprint of the complete
+non-secret effective endpoints, OAuth scopes, request policy, resource scope and
+Sheets profiles, and the CLI requires the factory's manifest to equal the input
+manifest. Missing/mismatched references, scope, generations, current version,
+configuration fingerprint, opt-in or composition refuse the run before a
+provider request.
 
 Run only against the separately approved isolated synthetic Google resources:
 
