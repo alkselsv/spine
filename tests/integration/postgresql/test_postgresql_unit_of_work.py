@@ -7673,7 +7673,7 @@ async def test_mounted_filesystem_reconciliation_repository_persists_and_isolate
         PostgreSQLMountedFilesystemReconciliationRepository,
     )
 
-    case = await prepare_canonical_case(postgresql_adapter, 67200)
+    case = await prepare_canonical_case(postgresql_adapter, 69000)
     assert postgresql_adapter.ingestion_context is not None
     repository = PostgreSQLMountedFilesystemReconciliationRepository(
         uow_factory=postgresql_adapter.uow_factory,
@@ -7685,15 +7685,15 @@ async def test_mounted_filesystem_reconciliation_repository_persists_and_isolate
     )
     now = datetime(2026, 10, 30, 9, tzinfo=timezone.utc)
     run = MountedFilesystemReconciliationRun(
-        run_id=synthetic_uuid(67210),
+        run_id=synthetic_uuid(69010),
         workspace_id=case.source.workspace_id,
         environment_id=case.source.environment_id,
-        connection_id=synthetic_uuid(67211),
-        connection_version_id=synthetic_uuid(67212),
-        resource_scope_reference=synthetic_uuid(67213),
+        connection_id=synthetic_uuid(69011),
+        connection_version_id=synthetic_uuid(69012),
+        resource_scope_reference=synthetic_uuid(69013),
         idempotency_key="issue672-postgresql-reconciliation",
-        removal_policy_version_id=synthetic_uuid(67214),
-        removal_policy_approval_id=synthetic_uuid(67215),
+        removal_policy_version_id=synthetic_uuid(69014),
+        removal_policy_approval_id=synthetic_uuid(69015),
         state=MountedFilesystemReconciliationState.RUNNING,
         connection_available=True,
         started_at=now,
@@ -7715,7 +7715,7 @@ async def test_mounted_filesystem_reconciliation_repository_persists_and_isolate
         run.run_id, run.workspace_id, run.environment_id
     ) == complete
 
-    other = await prepare_canonical_case(postgresql_adapter, 67220)
+    other = await prepare_canonical_case(postgresql_adapter, 69020)
     isolated = PostgreSQLMountedFilesystemReconciliationRepository(
         uow_factory=postgresql_adapter.uow_factory,
         context_factory=lambda operation, identity: postgresql_adapter.ingestion_context(
@@ -7743,16 +7743,16 @@ async def test_mounted_filesystem_policy_admission_rechecks_append_only_authorit
         PostgreSQLMountedFilesystemRemovalPolicyAdmission,
     )
 
-    case = await prepare_canonical_case(postgresql_adapter, 67230)
+    case = await prepare_canonical_case(postgresql_adapter, 69030)
     assert postgresql_adapter.ingestion_context is not None
     now = datetime(2026, 10, 30, 10, tzinfo=timezone.utc)
     policy = MountedFilesystemRemovalPolicy(
-        policy_version_id=synthetic_uuid(67231),
-        approval_id=synthetic_uuid(67232),
+        policy_version_id=synthetic_uuid(69031),
+        approval_id=synthetic_uuid(69032),
         workspace_id=case.source.workspace_id,
         environment_id=case.source.environment_id,
-        connection_id=synthetic_uuid(67233),
-        resource_scope_reference=synthetic_uuid(67234),
+        connection_id=synthetic_uuid(69033),
+        resource_scope_reference=synthetic_uuid(69034),
         authorize_complete_scope_absence=True,
         approved_at=now,
     )
@@ -7760,11 +7760,11 @@ async def test_mounted_filesystem_policy_admission_rechecks_append_only_authorit
         workspace_id=policy.workspace_id,
         environment_id=policy.environment_id,
         connection_id=policy.connection_id,
-        connection_version_id=synthetic_uuid(67235),
+        connection_version_id=synthetic_uuid(69035),
         resource_scope_reference=policy.resource_scope_reference,
         authorization_generation=1,
         configuration_generation=1,
-        access_policy_version_id=synthetic_uuid(67236),
+        access_policy_version_id=synthetic_uuid(69036),
         idempotency_key="issue672-policy-admission",
     )
     engine = create_async_engine(
@@ -7799,7 +7799,7 @@ async def test_mounted_filesystem_policy_admission_rechecks_append_only_authorit
                 ":workspace, :environment, 'active', 1, :recorded_at)"
             ),
             {
-                "event": synthetic_uuid(67237),
+                "event": synthetic_uuid(69037),
                 "policy": policy.policy_version_id,
                 "workspace": policy.workspace_id,
                 "environment": policy.environment_id,
@@ -7831,7 +7831,7 @@ async def test_mounted_filesystem_policy_admission_rechecks_append_only_authorit
                 ":workspace, :environment, 'revoked', 2, :recorded_at)"
             ),
             {
-                "event": synthetic_uuid(67238),
+                "event": synthetic_uuid(69038),
                 "policy": policy.policy_version_id,
                 "workspace": policy.workspace_id,
                 "environment": policy.environment_id,
