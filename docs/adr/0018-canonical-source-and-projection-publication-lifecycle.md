@@ -46,6 +46,45 @@ activation is a PostgreSQL compare-and-swap transaction after required validatio
 Cognee aliases, caches and physical stores are derived state and never become an
 activation authority.
 
+## Provider absence and canonical deletion authority
+
+Provider enumeration is observation evidence, not deletion authority. For a
+Yandex Disk path-scoped source, canonical deletion requires both a confirmed
+complete scan and an immutable `YandexDiskRemovalPolicy` admitted for the exact
+workspace, environment, connection and resource scope. The provider-connection
+control plane owns these approval artifacts; PostgreSQL is their canonical store.
+The reconciliation replay envelope, the provider and Cognee are not policy
+authorities. This extends the provider approval separation in ADR-0050 to the
+stronger action of changing canonical source truth.
+
+A Data/Security Owner (or another explicitly delegated approver recorded by the
+control plane) may approve the policy. Connector workers and reconciliation
+agents may only consume it through the admission port and cannot create or widen
+their own deletion authority. Policies and approvals are append-only and
+versioned. Revocation or supersession records a new current-authority fact rather
+than editing the approved artifact. Admission revalidates current authority on
+every start or resume; a revoked approval fails closed. A run pins both
+`policy_version_id` and `approval_id` in its identity and durable state, so a
+retry cannot replace a non-deleting policy with a deleting one. A newly approved
+policy requires a distinct reconciliation run.
+
+Offset pagination alone is not deletion evidence. The qualified Yandex adapter
+must finish a bounded inventory pass, repeat the complete inventory, and confirm
+the same ordered digest over the full provider resource representations. The
+application additionally requires one consistent expected count, exact unique
+coverage and that confirmed scan generation before absence can be classified as
+removal. Incomplete pagination, reordering or substitution between passes,
+throttling exhaustion, outage, access loss, scope loss and authorization
+revocation remain non-deleting evidence. This conservative two-pass fence is
+sufficient for the current provider contract because any unconfirmed concurrent
+change rejects the generation; if Yandex exposes a stronger snapshot token, a
+successor adapter/policy version may require it without weakening this rule.
+
+Even with deletion authority, path equality, filename and checksum never prove
+object continuity. Rename/move is an observation at a new path plus separately
+authorized absence at the old path; reappearance after a tombstone creates a new
+path-scoped `SourceObject` and retains explicit non-equivalence lineage.
+
 A snapshot may activate with later canonical drift or typed per-source exclusions
 only when its boundary is internally complete, all sources are explicitly
 accounted for, applicable safety and approved quality gates pass, stale evidence
