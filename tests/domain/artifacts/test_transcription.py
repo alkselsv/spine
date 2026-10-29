@@ -12,6 +12,7 @@ from spine.domain.artifacts.transcription import (
     TranscriptionChunkReceipt,
     TranscriptionProcessingProfile,
     TranscriptionTimeRangeLocator,
+    audio_chunk_id,
 )
 
 
@@ -239,3 +240,49 @@ def test_time_range_locator_rejects_another_artifact_version() -> None:
 
     with pytest.raises(ValueError, match="lineage"):
         artifact.validate_time_range_locator(locator)
+
+
+def test_completed_bounded_artifact_rejects_incomplete_chunk_coverage() -> None:
+    boundary = AudioChunkBoundary(
+        ordinal=1, start_ms=0, end_ms=4000, overlap_before_ms=0
+    )
+
+    with pytest.raises(ValidationError, match="full recording chunk coverage"):
+        TranscriptionArtifact.create(
+            workspace_id=UUID(int=1),
+            environment_id=UUID(int=2),
+            source_object_id=UUID(int=3),
+            source_revision_id=UUID(int=4),
+            source_revision_digest="a" * 64,
+            original_sha256="b" * 64,
+            processing_job_id=UUID(int=5),
+            processing_profile_reference="bounded:v1",
+            adapter_reference="fake:v1",
+            model_config_reference="ru:v1",
+            recording_duration_ms=10_000,
+            language="ru",
+            media_inspection=AudioMediaInspection(
+                inspected_media_type="audio/wav",
+                container="wav",
+                codec="pcm_s16le",
+                byte_length=320_000,
+                duration_ms=10_000,
+                audio_stream_count=1,
+                silent=False,
+            ),
+            decoder_reference="synthetic-decoder:v1",
+            decoded_sha256="c" * 64,
+            reassembly_reference="first-chunk-wins:v1",
+            chunk_receipts=(
+                TranscriptionChunkReceipt(
+                    chunk_id=audio_chunk_id(
+                        decoded_sha256="c" * 64,
+                        decoder_reference="synthetic-decoder:v1",
+                        boundary=boundary,
+                    ),
+                    boundary=boundary,
+                    model_attempts=1,
+                ),
+            ),
+            segments=(SpeechToTextSegment(start_ms=100, end_ms=500, text="Да"),),
+        )

@@ -36,6 +36,7 @@ from .transcription import (
     TranscriptionJob,
     TranscriptionJobState,
     TranscriptionTimeRangeLocator,
+    audio_chunk_id,
 )
 
 __all__ = [
@@ -72,4 +73,5 @@ __all__ = [
     "TranscriptionJob",
     "TranscriptionJobState",
     "TranscriptionTimeRangeLocator",
+    "audio_chunk_id",
 ]

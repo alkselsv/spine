@@ -110,6 +110,11 @@ def upgrade() -> None:
         "transcription_jobs",
         "chunk_checkpoint IS NULL OR (schema_version = 'transcription-job:v2' "
         "AND jsonb_typeof(chunk_checkpoint) = 'object' "
+        "AND chunk_checkpoint->>'schema_version' = 'transcription-chunk-checkpoint:v1' "
+        "AND chunk_checkpoint->>'job_id' = job_id::text "
+        "AND chunk_checkpoint->>'source_revision_id' = source_revision_id::text "
+        "AND chunk_checkpoint->>'source_revision_digest' = source_revision_digest "
+        "AND chunk_checkpoint->>'processing_profile_reference' = processing_profile_reference "
         "AND jsonb_array_length(chunk_checkpoint->'chunk_receipts') > 0)",
         schema=SCHEMA,
     )

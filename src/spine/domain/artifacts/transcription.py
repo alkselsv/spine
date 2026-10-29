@@ -48,6 +48,22 @@ class AudioChunkBoundary(DefinitionModel):
         return self
 
 
+def audio_chunk_id(
+    *,
+    decoded_sha256: str,
+    decoder_reference: str,
+    boundary: AudioChunkBoundary,
+) -> UUID:
+    """Return the stable identity shared by requests, checkpoints and artifacts."""
+
+    return uuid5(
+        NAMESPACE_URL,
+        "spine:audio-chunk:v1:"
+        f"{decoded_sha256}:{decoder_reference}:"
+        f"{boundary.ordinal}:{boundary.start_ms}:{boundary.end_ms}",
+    )
+
+
 class TranscriptionProcessingProfile(DefinitionModel):
     """Versioned eligibility, resource and deterministic chunking policy."""
 
@@ -219,11 +235,10 @@ class AudioChunkHandle(DefinitionModel):
 
     @model_validator(mode="after")
     def validate_identity(self) -> "AudioChunkHandle":
-        expected = uuid5(
-            NAMESPACE_URL,
-            "spine:audio-chunk:v1:"
-            f"{self.decoded_sha256}:{self.decoder_reference}:"
-            f"{self.boundary.ordinal}:{self.boundary.start_ms}:{self.boundary.end_ms}",
+        expected = audio_chunk_id(
+            decoded_sha256=self.decoded_sha256,
+            decoder_reference=self.decoder_reference,
+            boundary=self.boundary,
         )
         if self.chunk_id != expected:
             raise ValueError("chunk id does not match decoder output and boundary")
@@ -241,11 +256,10 @@ class AudioChunkHandle(DefinitionModel):
         decoded_sha256: str,
     ) -> "AudioChunkHandle":
         return cls(
-            chunk_id=uuid5(
-                NAMESPACE_URL,
-                "spine:audio-chunk:v1:"
-                f"{decoded_sha256}:{decoder_reference}:"
-                f"{boundary.ordinal}:{boundary.start_ms}:{boundary.end_ms}",
+            chunk_id=audio_chunk_id(
+                decoded_sha256=decoded_sha256,
+                decoder_reference=decoder_reference,
+                boundary=boundary,
             ),
             boundary=boundary,
             decoder_reference=decoder_reference,
@@ -291,6 +305,32 @@ class TranscriptionChunkReceipt(DefinitionModel):
         return self
 
 
+def _has_contiguous_chunk_prefix(
+    receipts: tuple[TranscriptionChunkReceipt, ...],
+) -> bool:
+    if not receipts or receipts[0].boundary.start_ms != 0:
+        return False
+    boundaries = tuple(receipt.boundary for receipt in receipts)
+    return all(
+        current.start_ms == previous.end_ms - current.overlap_before_ms
+        for previous, current in zip(boundaries, boundaries[1:])
+    )
+
+
+def _segments_are_covered(
+    segments: tuple[SpeechToTextSegment | TranscriptSegment, ...],
+    receipts: tuple[TranscriptionChunkReceipt, ...],
+) -> bool:
+    return all(
+        any(
+            segment.start_ms >= receipt.boundary.start_ms
+            and segment.end_ms <= receipt.boundary.end_ms
+            for receipt in receipts
+        )
+        for segment in segments
+    )
+
+
 class TranscriptionChunkCheckpoint(DefinitionModel):
     """Durable cumulative output committed after one completed model window."""
 
@@ -319,16 +359,19 @@ class TranscriptionChunkCheckpoint(DefinitionModel):
             range(1, len(self.chunk_receipts) + 1)
         ):
             raise ValueError("checkpoint chunk receipts must be a contiguous prefix")
+        if not _has_contiguous_chunk_prefix(self.chunk_receipts):
+            raise ValueError("checkpoint chunk coverage must be a contiguous prefix")
         for receipt in self.chunk_receipts:
             boundary = receipt.boundary
-            expected_chunk_id = uuid5(
-                NAMESPACE_URL,
-                "spine:audio-chunk:v1:"
-                f"{self.decoded_sha256}:{self.decoder_reference}:"
-                f"{boundary.ordinal}:{boundary.start_ms}:{boundary.end_ms}",
+            expected_chunk_id = audio_chunk_id(
+                decoded_sha256=self.decoded_sha256,
+                decoder_reference=self.decoder_reference,
+                boundary=boundary,
             )
             if receipt.chunk_id != expected_chunk_id:
                 raise ValueError("checkpoint chunk receipt identity does not match lineage")
+        if not _segments_are_covered(self.segments, self.chunk_receipts):
+            raise ValueError("checkpoint segments must belong to completed chunks")
         return self
 
 
@@ -506,20 +549,25 @@ class TranscriptionArtifact(DefinitionModel):
                 raise ValueError("chunk receipt ordinals must be contiguous")
             for receipt in self.chunk_receipts:
                 boundary = receipt.boundary
-                expected_chunk_id = uuid5(
-                    NAMESPACE_URL,
-                    "spine:audio-chunk:v1:"
-                    f"{self.decoded_sha256}:{self.decoder_reference}:"
-                    f"{boundary.ordinal}:{boundary.start_ms}:{boundary.end_ms}",
+                expected_chunk_id = audio_chunk_id(
+                    decoded_sha256=self.decoded_sha256,
+                    decoder_reference=self.decoder_reference,
+                    boundary=boundary,
                 )
                 if receipt.chunk_id != expected_chunk_id:
                     raise ValueError("chunk receipt identity does not match provenance")
+            if self.chunk_receipts and not _has_contiguous_chunk_prefix(
+                self.chunk_receipts
+            ):
+                raise ValueError("chunk coverage must be a contiguous prefix")
+            if not _segments_are_covered(self.segments, self.chunk_receipts):
+                raise ValueError("segments must belong to completed chunks")
         if self.outcome is TranscriptionArtifactOutcome.COMPLETED:
             if self.failure is not None:
                 raise ValueError("completed artifact cannot contain failure provenance")
             if self.schema_version == "transcription-artifact:v2" and not self._has_full_chunk_coverage():
                 raise ValueError("completed artifact requires full recording chunk coverage")
-        elif self.failure is None or not self.chunk_receipts or not self.segments:
+        elif self.failure is None or not self.chunk_receipts:
             raise ValueError(
                 "partial artifact requires completed work and failure provenance"
             )
@@ -580,11 +628,9 @@ class TranscriptionArtifact(DefinitionModel):
         if not self.chunk_receipts:
             return False
         boundaries = tuple(receipt.boundary for receipt in self.chunk_receipts)
-        if boundaries[0].start_ms != 0 or boundaries[-1].end_ms != self.recording_duration_ms:
-            return False
-        return all(
-            current.start_ms == previous.end_ms - current.overlap_before_ms
-            for previous, current in zip(boundaries, boundaries[1:])
+        return (
+            _has_contiguous_chunk_prefix(self.chunk_receipts)
+            and boundaries[-1].end_ms == self.recording_duration_ms
         )
 
     def locate_time_range(self, *, start_ms: int, end_ms: int) -> TranscriptionTimeRangeLocator:
@@ -1045,6 +1091,7 @@ def _artifact_digest(
 
 __all__ = [
     "AdapterSignal",
+    "audio_chunk_id",
     "AudioChunkHandle",
     "AudioChunkBoundary",
     "AudioMediaInspection",

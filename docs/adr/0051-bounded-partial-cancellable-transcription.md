@@ -52,6 +52,14 @@ chunks completed or cancellation arrives during processing.
    checkpoint or finalize. Completed v2 artifacts require full original-timeline
    chunk coverage; incomplete coverage remains `partial`, never `completed` or
    a new `suspended` terminal state.
+8. The processing outcome and #660 governance outcome are separate axes.
+   `partial` is an immutable diagnostic processing result with exact completed
+   chunk coverage and is never publishable in the first slice. #660 `SUSPEND`
+   means current policy, authorization or source eligibility cannot permit an
+   operation; it fences processing/publication/retrieval and may later be
+   re-evaluated, but it is not persisted as a terminal `TranscriptionJob`
+   state. A processing job therefore remains completed, partial, failed or
+   cancelled while current use can independently be suspended or denied.
 
 ## Consequences
 

@@ -31,7 +31,6 @@ from spine.domain.artifacts.transcription import (
     TranscriptionJob,
     TranscriptionJobState,
     TranscriptionProcessingProfile,
-    TranscriptionTimeRangeLocator,
 )
 from spine.domain.sources import RevisionKind, SourceRevision
 from spine.domain.sources.original_reference import ObjectReference
@@ -145,100 +144,6 @@ class AudioProcessingAuthorizer(Protocol):
     async def authorize(
         self, request: AudioProcessingAuthorizationRequest
     ) -> AudioProcessingAuthorization: ...
-
-
-class AudioEvidenceAccessRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    workspace_id: UUID
-    environment_id: UUID
-    source_revision_id: UUID
-    artifact_id: UUID
-    start_ms: int = Field(ge=0)
-    end_ms: int = Field(gt=0)
-
-
-class AudioEvidenceAuthorizer(Protocol):
-    async def authorize(self, request: AudioEvidenceAccessRequest) -> bool: ...
-
-
-class AudioRevisionResolver(Protocol):
-    async def resolve_revision(
-        self, *, workspace_id: UUID, environment_id: UUID, revision_id: UUID
-    ) -> SourceRevision | None: ...
-
-
-class ResolvedAudioTimeRange(BaseModel):
-    """Authorized navigation target on the immutable original recording."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    locator: TranscriptionTimeRangeLocator
-    original_reference: ObjectReference
-    media_type: str
-    recording_duration_ms: int = Field(gt=0)
-
-
-class TranscriptionEvidenceResolver:
-    def __init__(
-        self,
-        *,
-        repository: "TranscriptionRepository",
-        revisions: AudioRevisionResolver,
-        authorizer: AudioEvidenceAuthorizer,
-    ) -> None:
-        self._repository = repository
-        self._revisions = revisions
-        self._authorizer = authorizer
-
-    async def resolve(
-        self, locator: TranscriptionTimeRangeLocator
-    ) -> ResolvedAudioTimeRange:
-        if not await self._authorizer.authorize(
-            AudioEvidenceAccessRequest(
-                workspace_id=locator.workspace_id,
-                environment_id=locator.environment_id,
-                source_revision_id=locator.source_revision_id,
-                artifact_id=locator.artifact_id,
-                start_ms=locator.start_ms,
-                end_ms=locator.end_ms,
-            )
-        ):
-            raise AudioProcessingDeniedError("audio evidence access is not authorized")
-        artifact = await self._repository.get_artifact(
-            workspace_id=locator.workspace_id,
-            environment_id=locator.environment_id,
-            artifact_id=locator.artifact_id,
-        )
-        if artifact is None:
-            raise TranscriptionConflictError("transcription artifact is unavailable")
-        try:
-            artifact.validate_time_range_locator(locator)
-        except ValueError as error:
-            raise TranscriptionConflictError(str(error)) from None
-        revision = await self._revisions.resolve_revision(
-            workspace_id=locator.workspace_id,
-            environment_id=locator.environment_id,
-            revision_id=locator.source_revision_id,
-        )
-        if (
-            revision is None
-            or revision.kind is not RevisionKind.CONTENT
-            or revision.source_object_id != locator.source_object_id
-            or revision.revision_digest != locator.source_revision_digest
-            or revision.original_sha256 != locator.original_sha256
-            or revision.original_reference is None
-            or revision.media_type is None
-        ):
-            raise TranscriptionConflictError(
-                "time-range locator source lineage is stale or mismatched"
-            )
-        return ResolvedAudioTimeRange(
-            locator=locator,
-            original_reference=revision.original_reference,
-            media_type=revision.media_type,
-            recording_duration_ms=artifact.recording_duration_ms,
-        )
 
 
 class TranscribeAudioCommand(BaseModel):
@@ -564,6 +469,7 @@ class InMemoryTranscriptionRepository:
                 job is None
                 or job.state is not TranscriptionJobState.PENDING
                 or job.execution_lease_id != lease_id
+                or checkpoint.updated_at >= job.execution_lease_expires_at
             ):
                 raise TranscriptionConflictError("transcription checkpoint lease is stale")
             current = self._checkpoints.get(key)
@@ -944,7 +850,7 @@ class TranscriptionService:
                     terminal_code = (
                         "retry_exhausted" if failure.retryable else failure.code.value
                     )
-                    if not segments:
+                    if not receipts:
                         raise SpeechToTextFailed(
                             code=terminal_code,
                             retryable=False,
@@ -1121,7 +1027,7 @@ class TranscriptionService:
         failed_chunk_ordinal: int | None,
         model_attempts: int,
     ) -> ChunkedTranscriptionOutcome:
-        if not segments:
+        if not receipts:
             raise SpeechToTextCancelled()
         return TranscriptionService._stopped_chunk_result(
             request=request,
@@ -1147,7 +1053,7 @@ class TranscriptionService:
         failed_chunk_ordinal: int,
         model_attempts: int,
     ) -> ChunkedTranscriptionOutcome:
-        if not segments:
+        if not receipts:
             raise SpeechToTextFailed(code="invalid_adapter_output", retryable=False)
         return TranscriptionService._stopped_chunk_result(
             request=request,
@@ -1198,8 +1104,6 @@ class TranscriptionService:
 
 
 __all__ = [
-    "AudioEvidenceAccessRequest",
-    "AudioEvidenceAuthorizer",
     "AudioProcessingAuthorization",
     "AudioProcessingAuthorizationRequest",
     "AudioProcessingAuthorizer",
@@ -1207,16 +1111,13 @@ __all__ = [
     "AudioPreparationPort",
     "AudioPreparationRequest",
     "AudioPreparationResult",
-    "AudioRevisionResolver",
     "InMemoryTranscriptionRepository",
     "SpeechToTextCancelled",
     "SpeechToTextFailed",
     "SpeechToTextPort",
-    "ResolvedAudioTimeRange",
     "TranscribeAudioCommand",
     "TranscriptionConflictError",
     "TranscriptionRepository",
     "TranscriptionResult",
-    "TranscriptionEvidenceResolver",
     "TranscriptionService",
 ]

@@ -347,6 +347,7 @@ class PostgreSQLTranscriptionRepository:
                     row is None
                     or row["state"] != TranscriptionJobState.PENDING.value
                     or row["execution_lease_id"] != lease_id
+                    or checkpoint.updated_at >= row["execution_lease_expires_at"]
                 ):
                     raise TranscriptionConflictError(
                         "transcription checkpoint lease is stale"
