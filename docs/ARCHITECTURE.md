@@ -2496,6 +2496,10 @@ detectors без специальных обходов в platform core.
 - [ADR-047](adr/0047-immutable-requirements-artifact-versions.md): PostgreSQL-canonical
   immutable, versioned requirements candidates with replay-safe production
   identity, predecessor lineage, workspace isolation and authorized readback.
+- [ADR-053](adr/0053-governed-bitrix24-crm-material-associations.md): conditional
+  Bitrix24 CRM capability, exact activity-to-Disk revision association,
+  fail-closed current-revision/access checks and visible revocation without
+  disclosure or pricing authority.
 - ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.

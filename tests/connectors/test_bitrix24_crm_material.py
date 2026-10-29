@@ -86,10 +86,22 @@ class FakeCrmService:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
 
-    async def authorize_read(self, connection, scope, **kwargs):
+    async def authorize_read(
+        self,
+        connection: ProviderConnection,
+        scope: OpaqueProviderReference,
+        **kwargs: object,
+    ) -> None:
+        del connection
         self.calls.append(("authorize", (scope, kwargs)))
 
-    async def get_activity(self, connection, scope, **kwargs):
+    async def get_activity(
+        self,
+        connection: ProviderConnection,
+        scope: OpaqueProviderReference,
+        **kwargs: object,
+    ) -> Bitrix24CrmActivity:
+        del connection
         self.calls.append(("activity", (scope, kwargs)))
         return Bitrix24CrmActivity(
             ID="501",
@@ -99,7 +111,13 @@ class FakeCrmService:
             ACTIVITY_REVISION="activity-v7",
         )
 
-    async def get_attachment(self, connection, scope, **kwargs):
+    async def get_attachment(
+        self,
+        connection: ProviderConnection,
+        scope: OpaqueProviderReference,
+        **kwargs: object,
+    ) -> Bitrix24CrmAttachment:
+        del connection
         self.calls.append(("attachment", (scope, kwargs)))
         return Bitrix24CrmAttachment(
             ID="attachment-1",
@@ -186,8 +204,13 @@ def test_crm_capability_is_conditional_and_does_not_enable_unrelated_management(
 async def test_crm_reader_translates_current_access_loss_without_disclosing_payload() -> None:
     service = FakeCrmService()
 
-    async def deny(*args, **kwargs):
-        del args, kwargs
+    async def deny(
+        connection: ProviderConnection,
+        scope: OpaqueProviderReference,
+        **kwargs: object,
+    ) -> None:
+        del connection, scope
+        del kwargs
         raise Bitrix24CrmMaterialPermissionLostError()
 
     service.authorize_read = deny
