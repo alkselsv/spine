@@ -36,6 +36,11 @@ retranscription ambiguous.
    recording handle and pinned configuration. Production provider selection,
    media decoding/chunking, publication and retrieval remain separate policy
    and adapter decisions.
+6. A `TranscriptionTimeRangeLocator` pins millisecond offsets to the exact
+   Source Revision identity and immutable transcription artifact identity and
+   digest. Resolution is tenant-authorized, revalidates both lineages and
+   returns an opaque navigation target on the original audio; it does not make
+   the transcript eligible for publication by itself.
 
 ## Consequences
 

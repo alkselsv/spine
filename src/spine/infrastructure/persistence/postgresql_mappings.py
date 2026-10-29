@@ -580,6 +580,7 @@ transcription_jobs = Table(
     Column("terminal_code", Text, nullable=True),
     Column("retryable", Boolean, nullable=True),
     Column("cancellation_requested_at", DateTime(timezone=True), nullable=True),
+    Column("chunk_checkpoint", JSONB(none_as_null=True), nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("completed_at", DateTime(timezone=True), nullable=True),
     PrimaryKeyConstraint(

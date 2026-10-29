@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import insert, select, text, update
+from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 
 from spine.application.persistence.context import (
@@ -23,6 +23,7 @@ from spine.domain.artifacts.transcription import (
     AudioMediaInspection,
     TranscriptSegment,
     TranscriptionArtifact,
+    TranscriptionChunkCheckpoint,
     TranscriptionChunkReceipt,
     TranscriptionFailureProvenance,
     TranscriptionJob,
@@ -297,6 +298,92 @@ class PostgreSQLTranscriptionRepository:
                 )
                 return updated
 
+    async def get_checkpoint(
+        self, *, workspace_id: UUID, environment_id: UUID, job_id: UUID
+    ) -> TranscriptionChunkCheckpoint | None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                await self._bind_scope(session, workspace_id, environment_id)
+                value = (
+                    await session.execute(
+                        select(transcription_jobs.c.chunk_checkpoint).where(
+                            transcription_jobs.c.workspace_id == workspace_id,
+                            transcription_jobs.c.environment_id == environment_id,
+                            transcription_jobs.c.job_id == job_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                return (
+                    TranscriptionChunkCheckpoint.model_validate(value)
+                    if value is not None
+                    else None
+                )
+
+    async def checkpoint_chunk(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        job_id: UUID,
+        lease_id: UUID,
+        expected_completed_chunks: int,
+        checkpoint: TranscriptionChunkCheckpoint,
+    ) -> TranscriptionChunkCheckpoint:
+        async with self._session_factory() as session:
+            async with session.begin():
+                await self._bind_scope(session, workspace_id, environment_id)
+                row = (
+                    await session.execute(
+                        select(
+                            *transcription_jobs.c,
+                            func.clock_timestamp().label("repository_now"),
+                        )
+                        .where(
+                            transcription_jobs.c.workspace_id == workspace_id,
+                            transcription_jobs.c.environment_id == environment_id,
+                            transcription_jobs.c.job_id == job_id,
+                        )
+                        .with_for_update()
+                    )
+                ).mappings().one_or_none()
+                if (
+                    row is None
+                    or row["state"] != TranscriptionJobState.PENDING.value
+                    or row["execution_lease_id"] != lease_id
+                    or row["repository_now"] >= row["execution_lease_expires_at"]
+                ):
+                    raise TranscriptionConflictError(
+                        "transcription checkpoint lease is stale"
+                    )
+                current = (
+                    TranscriptionChunkCheckpoint.model_validate(row["chunk_checkpoint"])
+                    if row["chunk_checkpoint"] is not None
+                    else None
+                )
+                completed = len(current.chunk_receipts) if current is not None else 0
+                if completed != expected_completed_chunks:
+                    if current == checkpoint:
+                        return current
+                    raise TranscriptionConflictError("transcription checkpoint is stale")
+                updated = await session.execute(
+                    update(transcription_jobs)
+                    .where(
+                        transcription_jobs.c.workspace_id == workspace_id,
+                        transcription_jobs.c.environment_id == environment_id,
+                        transcription_jobs.c.job_id == job_id,
+                        transcription_jobs.c.state == TranscriptionJobState.PENDING.value,
+                        transcription_jobs.c.execution_lease_id == lease_id,
+                    )
+                    .values(chunk_checkpoint=checkpoint.model_dump(mode="json"))
+                    .returning(transcription_jobs.c.chunk_checkpoint)
+                )
+                value = updated.scalar_one_or_none()
+                if value is None:
+                    raise TranscriptionConflictError(
+                        "transcription checkpoint lease is stale"
+                    )
+                return TranscriptionChunkCheckpoint.model_validate(value)
+
     async def _bind_scope(
         self, session: Any, workspace_id: UUID, environment_id: UUID
     ) -> None:
@@ -364,6 +451,7 @@ def _job_values(job: TranscriptionJob) -> dict[str, Any]:
         "terminal_code": job.terminal_code,
         "retryable": job.retryable,
         "cancellation_requested_at": job.cancellation_requested_at,
+        "chunk_checkpoint": None,
         "created_at": job.created_at,
         "completed_at": job.completed_at,
     }

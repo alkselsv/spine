@@ -15,6 +15,13 @@ from spine.application.transcription import (
     TranscriptionConflictError,
     TranscriptionService,
 )
+from spine.application.transcription_evidence import (
+    AudioEvidenceAccessDeniedError,
+    AudioEvidenceAccessRequest,
+    AudioEvidenceAuthorization,
+    TranscriptionEvidenceResolutionError,
+    TranscriptionEvidenceResolver,
+)
 from spine.domain.artifacts.transcription import (
     AdapterSignal,
     AudioMediaInspection,
@@ -220,7 +227,7 @@ class ChunkedSpeechToText:
 
 @pytest.mark.asyncio
 async def test_long_audio_is_inspected_chunked_and_reassembled_reproducibly() -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     preparation = FakeAudioPreparation()
     adapter = ChunkedSpeechToText()
     requested = command().model_copy(
@@ -255,6 +262,302 @@ async def test_long_audio_is_inspected_chunked_and_reassembled_reproducibly() ->
     assert [request.chunk.boundary.ordinal for request in adapter.requests] == [1, 2, 3]
     assert len({request.chunk.chunk_id for request in adapter.requests}) == 3
     assert preparation.active == set()
+
+
+@pytest.mark.asyncio
+async def test_expired_worker_resumes_after_durable_chunk_checkpoint() -> None:
+    class CrashesOnceOnSecondChunk(ChunkedSpeechToText):
+        def __init__(self) -> None:
+            super().__init__()
+            self.crashed = False
+
+        async def transcribe(self, request):
+            if request.chunk.boundary.ordinal == 2 and not self.crashed:
+                self.requests.append(request)
+                self.crashed = True
+                raise RuntimeError("synthetic worker loss")
+            return await super().transcribe(request)
+
+    current_time = [NOW]
+    repository = InMemoryTranscriptionRepository(clock=lambda: current_time[0])
+    adapter = CrashesOnceOnSecondChunk()
+    requested = command().model_copy(
+        update={
+            "schema_version": "transcribe-audio-command:v2",
+            "recording_duration_ms": 10_000,
+            "processing_profile_reference": "transcription-long:v1",
+            "processing_profile": bounded_profile(),
+            "idempotency_key": "resume-after-durable-chunk",
+        }
+    )
+    service = TranscriptionService(
+        repository=repository,
+        speech_to_text=adapter,
+        authorizer=FakeAuthorizer(),
+        media_preparation=FakeAudioPreparation(),
+        clock=lambda: current_time[0],
+    )
+
+    with pytest.raises(RuntimeError, match="worker loss"):
+        await service.transcribe(requested)
+    job_id = uuid5(
+        NAMESPACE_URL,
+        "spine:transcription-job:v2:"
+        f"{WORKSPACE}:{ENVIRONMENT}:{audio_revision().revision_id}:"
+        "transcription-long:v1:resume-after-durable-chunk",
+    )
+    first_attempt = await repository.get_job(
+        workspace_id=WORKSPACE, environment_id=ENVIRONMENT, job_id=job_id
+    )
+    checkpoint = await repository.get_checkpoint(
+        workspace_id=WORKSPACE, environment_id=ENVIRONMENT, job_id=job_id
+    )
+    assert checkpoint is not None
+    assert [item.boundary.ordinal for item in checkpoint.chunk_receipts] == [1]
+
+    current_time[0] = NOW + timedelta(minutes=6)
+    with pytest.raises(TranscriptionConflictError, match="lease is stale"):
+        await repository.checkpoint_chunk(
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+            job_id=job_id,
+            lease_id=first_attempt.execution_lease_id,
+            expected_completed_chunks=1,
+            checkpoint=checkpoint,
+        )
+    resumed = await service.transcribe(requested)
+
+    assert resumed.job.state is TranscriptionJobState.COMPLETED
+    assert resumed.job.execution_attempt == 2
+    assert [request.chunk.boundary.ordinal for request in adapter.requests] == [1, 2, 2, 3]
+    with pytest.raises(TranscriptionConflictError, match="lease is stale"):
+        await repository.checkpoint_chunk(
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+            job_id=job_id,
+            lease_id=first_attempt.execution_lease_id,
+            expected_completed_chunks=1,
+            checkpoint=checkpoint,
+        )
+
+
+@pytest.mark.asyncio
+async def test_authorized_time_range_resolves_to_exact_original_audio() -> None:
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
+    result = await TranscriptionService(
+        repository=repository,
+        speech_to_text=FakeSpeechToText(),
+        authorizer=FakeAuthorizer(),
+        clock=lambda: NOW,
+    ).transcribe(command())
+    locator = result.artifact.locate_time_range(start_ms=120, end_ms=700)
+
+    class Revisions:
+        async def resolve_revision(self, *, workspace_id, environment_id, revision_id):
+            revision = audio_revision()
+            if (
+                workspace_id == revision.workspace_id
+                and environment_id == revision.environment_id
+                and revision_id == revision.revision_id
+            ):
+                return revision
+            return None
+
+    class EvidenceAuthorizer:
+        def __init__(self) -> None:
+            self.requests: list[AudioEvidenceAccessRequest] = []
+
+        async def authorize(self, request):
+            self.requests.append(request)
+            return AudioEvidenceAuthorization(
+                allowed=True,
+                decision_id=UUID(int=7001),
+                policy_reference="synthetic-audio-evidence:v1",
+                reason_code="allowed",
+            )
+
+    authorizer = EvidenceAuthorizer()
+    resolved = await TranscriptionEvidenceResolver(
+        artifacts=repository,
+        revisions=Revisions(),
+        authorizer=authorizer,
+    ).resolve(locator)
+
+    assert resolved.original_reference == audio_revision().original_reference
+    assert (resolved.locator.start_ms, resolved.locator.end_ms) == (120, 700)
+    assert authorizer.requests[0].artifact_id == result.artifact.artifact_id
+
+
+@pytest.mark.asyncio
+async def test_time_range_resolution_rejects_mismatched_artifact_lineage() -> None:
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
+    result = await TranscriptionService(
+        repository=repository,
+        speech_to_text=FakeSpeechToText(),
+        authorizer=FakeAuthorizer(),
+        clock=lambda: NOW,
+    ).transcribe(command())
+    locator = result.artifact.locate_time_range(start_ms=120, end_ms=700).model_copy(
+        update={"artifact_digest": "0" * 64}
+    )
+
+    class Revisions:
+        async def resolve_revision(self, **kwargs):
+            return audio_revision()
+
+    class EvidenceAuthorizer:
+        async def authorize(self, request):
+            return AudioEvidenceAuthorization(
+                allowed=True,
+                decision_id=UUID(int=7002),
+                policy_reference="synthetic-audio-evidence:v1",
+                reason_code="allowed",
+            )
+
+    with pytest.raises(TranscriptionEvidenceResolutionError, match="lineage"):
+        await TranscriptionEvidenceResolver(
+            artifacts=repository,
+            revisions=Revisions(),
+            authorizer=EvidenceAuthorizer(),
+        ).resolve(locator)
+
+
+@pytest.mark.asyncio
+async def test_time_range_resolution_denies_before_reading_artifact() -> None:
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
+    result = await TranscriptionService(
+        repository=repository,
+        speech_to_text=FakeSpeechToText(),
+        authorizer=FakeAuthorizer(),
+        clock=lambda: NOW,
+    ).transcribe(command())
+
+    class Denied:
+        async def authorize(self, request):
+            return AudioEvidenceAuthorization(
+                allowed=False,
+                decision_id=UUID(int=7003),
+                policy_reference="synthetic-audio-evidence:v1",
+                reason_code="access_denied",
+            )
+
+    class Revisions:
+        async def resolve_revision(self, **kwargs):
+            raise AssertionError("denied resolution must not read source lineage")
+
+    with pytest.raises(AudioEvidenceAccessDeniedError, match="not authorized"):
+        await TranscriptionEvidenceResolver(
+            artifacts=repository,
+            revisions=Revisions(),
+            authorizer=Denied(),
+        ).resolve(result.artifact.locate_time_range(start_ms=120, end_ms=700))
+
+
+@pytest.mark.asyncio
+async def test_time_range_resolution_does_not_disclose_cross_workspace_artifact() -> None:
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
+    result = await TranscriptionService(
+        repository=repository,
+        speech_to_text=FakeSpeechToText(),
+        authorizer=FakeAuthorizer(),
+        clock=lambda: NOW,
+    ).transcribe(command())
+    foreign_locator = result.artifact.locate_time_range(
+        start_ms=120, end_ms=700
+    ).model_copy(update={"workspace_id": OTHER_WORKSPACE})
+
+    class Allowed:
+        async def authorize(self, request):
+            return AudioEvidenceAuthorization(
+                allowed=True,
+                decision_id=UUID(int=7004),
+                policy_reference="synthetic-audio-evidence:v1",
+                reason_code="allowed",
+            )
+
+    class Revisions:
+        async def resolve_revision(self, **kwargs):
+            raise AssertionError("missing scoped artifact must stop resolution")
+
+    with pytest.raises(TranscriptionEvidenceResolutionError, match="unavailable"):
+        await TranscriptionEvidenceResolver(
+            artifacts=repository,
+            revisions=Revisions(),
+            authorizer=Allowed(),
+        ).resolve(foreign_locator)
+
+
+@pytest.mark.asyncio
+async def test_time_range_resolution_rejects_missing_artifact() -> None:
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
+    result = await TranscriptionService(
+        repository=repository,
+        speech_to_text=FakeSpeechToText(),
+        authorizer=FakeAuthorizer(),
+        clock=lambda: NOW,
+    ).transcribe(command())
+    locator = result.artifact.locate_time_range(start_ms=120, end_ms=700).model_copy(
+        update={"artifact_id": UUID(int=7007)}
+    )
+
+    class Allowed:
+        async def authorize(self, request):
+            return AudioEvidenceAuthorization(
+                allowed=True,
+                decision_id=UUID(int=7008),
+                policy_reference="synthetic-audio-evidence:v1",
+                reason_code="allowed",
+            )
+
+    class Revisions:
+        async def resolve_revision(self, **kwargs):
+            raise AssertionError("missing artifact must stop resolution")
+
+    with pytest.raises(TranscriptionEvidenceResolutionError, match="unavailable"):
+        await TranscriptionEvidenceResolver(
+            artifacts=repository,
+            revisions=Revisions(),
+            authorizer=Allowed(),
+        ).resolve(locator)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_case", ["missing", "wrong_revision", "wrong_scope"])
+async def test_time_range_resolution_rejects_missing_or_stale_source_lineage(
+    source_case: str,
+) -> None:
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
+    result = await TranscriptionService(
+        repository=repository,
+        speech_to_text=FakeSpeechToText(),
+        authorizer=FakeAuthorizer(),
+        clock=lambda: NOW,
+    ).transcribe(command())
+    locator = result.artifact.locate_time_range(start_ms=120, end_ms=700)
+
+    class Allowed:
+        async def authorize(self, request):
+            return AudioEvidenceAuthorization(
+                allowed=True,
+                decision_id=UUID(int=7005),
+                policy_reference="synthetic-audio-evidence:v1",
+                reason_code="allowed",
+            )
+
+    class Revisions:
+        async def resolve_revision(self, **kwargs):
+            if source_case == "missing":
+                return None
+            if source_case == "wrong_revision":
+                return audio_revision().model_copy(update={"revision_id": UUID(int=7006)})
+            return audio_revision().model_copy(update={"workspace_id": OTHER_WORKSPACE})
+
+    with pytest.raises(TranscriptionEvidenceResolutionError, match="stale or mismatched"):
+        await TranscriptionEvidenceResolver(
+            artifacts=repository,
+            revisions=Revisions(),
+            authorizer=Allowed(),
+        ).resolve(locator)
 
 
 @pytest.mark.asyncio
@@ -308,7 +611,7 @@ async def test_transient_chunk_failure_retries_with_the_same_stable_identity() -
 
     preparation.prepare = short_prepare
     result = await TranscriptionService(
-        repository=InMemoryTranscriptionRepository(),
+        repository=InMemoryTranscriptionRepository(clock=lambda: NOW),
         speech_to_text=adapter,
         authorizer=FakeAuthorizer(),
         media_preparation=preparation,
@@ -342,7 +645,7 @@ async def test_retry_exhaustion_persists_exact_partial_artifact_and_replays_it()
                 ),
             )
 
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     adapter = SecondChunkFails()
     service = TranscriptionService(
         repository=repository,
@@ -377,6 +680,46 @@ async def test_retry_exhaustion_persists_exact_partial_artifact_and_replays_it()
 
 
 @pytest.mark.asyncio
+async def test_partial_artifact_preserves_completed_silent_chunk_receipt() -> None:
+    class SilentThenFails(ChunkedSpeechToText):
+        async def transcribe(self, request):
+            self.requests.append(request)
+            if request.chunk.boundary.ordinal == 2:
+                raise SpeechToTextFailed(
+                    code="permanent_model_error", retryable=False
+                )
+            return SpeechToTextResultV2(
+                adapter_reference=request.adapter_reference,
+                model_config_reference=request.model_config_reference,
+                detected_language="ru",
+                segments=(),
+            )
+
+    result = await TranscriptionService(
+        repository=InMemoryTranscriptionRepository(clock=lambda: NOW),
+        speech_to_text=SilentThenFails(),
+        authorizer=FakeAuthorizer(),
+        media_preparation=FakeAudioPreparation(),
+        clock=lambda: NOW,
+    ).transcribe(
+        command().model_copy(
+            update={
+                "schema_version": "transcribe-audio-command:v2",
+                "recording_duration_ms": 10_000,
+                "processing_profile_reference": "transcription-long:v1",
+                "processing_profile": bounded_profile(),
+                "idempotency_key": "partial-after-silent-completed-chunk",
+            }
+        )
+    )
+
+    assert result.job.state is TranscriptionJobState.PARTIAL
+    assert result.artifact.outcome is TranscriptionArtifactOutcome.PARTIAL
+    assert result.artifact.segments == ()
+    assert [receipt.boundary.ordinal for receipt in result.artifact.chunk_receipts] == [1]
+
+
+@pytest.mark.asyncio
 async def test_cancellation_after_completed_chunk_stops_subsequent_model_work() -> None:
     class PausingSpeechToText(ChunkedSpeechToText):
         def __init__(self) -> None:
@@ -399,7 +742,7 @@ async def test_cancellation_after_completed_chunk_stops_subsequent_model_work() 
                 ),
             )
 
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     adapter = PausingSpeechToText()
     preparation = FakeAudioPreparation()
     original_prepare = preparation.prepare
@@ -483,7 +826,7 @@ async def test_cancellation_accepted_during_finalization_wins_atomically() -> No
                 )
             return await super().finish(**kwargs)
 
-    repository = FinalizationRaceRepository()
+    repository = FinalizationRaceRepository(clock=lambda: NOW)
     result = await TranscriptionService(
         repository=repository,
         speech_to_text=ChunkedSpeechToText(),
@@ -527,7 +870,7 @@ async def test_invalid_later_chunk_preserves_completed_work_as_partial() -> None
             )
 
     result = await TranscriptionService(
-        repository=InMemoryTranscriptionRepository(),
+        repository=InMemoryTranscriptionRepository(clock=lambda: NOW),
         speech_to_text=InvalidSecondChunk(),
         authorizer=FakeAuthorizer(),
         media_preparation=FakeAudioPreparation(),
@@ -578,7 +921,7 @@ async def test_ineligible_inspected_media_stops_before_model_and_creates_no_arti
                 }
             )
 
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     preparation = IneligibleAudioPreparation()
     adapter = ChunkedSpeechToText()
     requested = command().model_copy(
@@ -623,7 +966,7 @@ async def test_no_speech_output_cannot_create_transcription_artifact() -> None:
                 segments=(),
             )
 
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     adapter = NoSpeech()
     requested = command().model_copy(
         update={
@@ -674,7 +1017,7 @@ async def test_malformed_or_decoded_oversized_media_cleans_up_without_model_work
                 return result.model_copy(update={"peak_memory_bytes": 4_000_001})
             return result.model_copy(update={"peak_working_bytes": 10_000_001})
 
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     preparation = FailingPreparation()
     adapter = ChunkedSpeechToText()
     requested = command().model_copy(
@@ -719,7 +1062,7 @@ async def test_decode_timeout_aborts_preparation_and_stops_before_model() -> Non
             self.aborted = True
             self.active.discard(request.recording.source_revision_id)
 
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     preparation = TimedOutPreparation()
     adapter = ChunkedSpeechToText()
     result = await TranscriptionService(
@@ -787,7 +1130,7 @@ async def test_noisy_synthetic_russian_fixture_preserves_adapter_uncertainty() -
 
     preparation.prepare = noisy_short_fixture
     result = await TranscriptionService(
-        repository=InMemoryTranscriptionRepository(),
+        repository=InMemoryTranscriptionRepository(clock=lambda: NOW),
         speech_to_text=NoisyRussianSpeech(),
         authorizer=FakeAuthorizer(),
         media_preparation=preparation,
@@ -812,7 +1155,7 @@ async def test_noisy_synthetic_russian_fixture_preserves_adapter_uncertainty() -
 
 @pytest.mark.asyncio
 async def test_accepted_audio_creates_pinned_immutable_transcription_artifact() -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     adapter = FakeSpeechToText()
     service = TranscriptionService(
         repository=repository,
@@ -851,7 +1194,7 @@ async def test_accepted_audio_creates_pinned_immutable_transcription_artifact() 
 async def test_exact_replay_returns_one_logical_job_and_artifact_without_second_model_call() -> (
     None
 ):
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     adapter = FakeSpeechToText()
     service = TranscriptionService(
         repository=repository,
@@ -888,7 +1231,7 @@ async def test_adapter_terminal_outcome_is_typed_and_creates_no_artifact(
     expected_state: TranscriptionJobState,
     expected_code: str,
 ) -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     adapter = FakeSpeechToText(failure=failure)
     service = TranscriptionService(
         repository=repository,
@@ -911,7 +1254,7 @@ async def test_adapter_terminal_outcome_is_typed_and_creates_no_artifact(
 
 @pytest.mark.asyncio
 async def test_repository_reads_are_isolated_between_workspaces() -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     service = TranscriptionService(
         repository=repository,
         speech_to_text=FakeSpeechToText(),
@@ -940,7 +1283,7 @@ async def test_repository_reads_are_isolated_between_workspaces() -> None:
 
 @pytest.mark.asyncio
 async def test_same_idempotency_key_is_independent_between_two_workspaces() -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     adapter = FakeSpeechToText()
     service = TranscriptionService(
         repository=repository,
@@ -961,7 +1304,7 @@ async def test_same_idempotency_key_is_independent_between_two_workspaces() -> N
 
 @pytest.mark.asyncio
 async def test_denied_processing_stops_before_job_or_model_disclosure() -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     adapter = FakeSpeechToText()
     authorizer = FakeAuthorizer(allowed=False)
     service = TranscriptionService(
@@ -995,7 +1338,7 @@ async def test_concurrent_exact_replay_has_one_execution_owner_and_one_model_cal
             await self.release.wait()
             return await super().transcribe(request)
 
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     adapter = BlockingSpeechToText()
     service = TranscriptionService(
         repository=repository,
@@ -1021,7 +1364,7 @@ async def test_concurrent_exact_replay_has_one_execution_owner_and_one_model_cal
 
 @pytest.mark.asyncio
 async def test_expired_pending_execution_is_reclaimed_after_worker_crash() -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     current_time = [NOW]
     crashed = TranscriptionService(
         repository=repository,
@@ -1106,7 +1449,7 @@ async def test_segment_outside_recording_becomes_typed_invalid_adapter_failure()
                 ),
             )
 
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     result = await TranscriptionService(
         repository=repository,
         speech_to_text=InvalidSpeechToText(),
@@ -1122,7 +1465,7 @@ async def test_segment_outside_recording_becomes_typed_invalid_adapter_failure()
 
 @pytest.mark.asyncio
 async def test_terminal_transition_revalidates_job_shape() -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     crashed = TranscriptionService(
         repository=repository,
         speech_to_text=FakeSpeechToText(failure=RuntimeError("worker crashed")),

@@ -39,6 +39,7 @@ def test_transcription_tables_are_tenant_scoped_and_keep_source_job_lineage() ->
         "execution_lease_id",
         "execution_lease_expires_at",
         "execution_attempt",
+        "chunk_checkpoint",
     } <= {
         column.name for column in transcription_jobs.columns
     }
@@ -73,3 +74,14 @@ def test_bounded_transcription_migration_finalizes_check_constraint_names() -> N
         "ck_transcription_artifacts_bounded_shape",
     ):
         assert f'op.f("{constraint_name}")' in source
+
+
+def test_chunk_checkpoint_migration_fences_updates_by_execution_lease() -> None:
+    source = (
+        PROJECT_ROOT
+        / "migrations/versions/20261212_80_transcription_chunk_checkpoints.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'op.f("ck_transcription_jobs_chunk_checkpoint_shape")' in source
+    assert "NEW.execution_lease_id IS DISTINCT FROM OLD.execution_lease_id" in source
+    assert "GRANT UPDATE (chunk_checkpoint)" in source
