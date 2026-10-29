@@ -1,8 +1,12 @@
+from pathlib import Path
+
 from spine.infrastructure.persistence.postgresql_mappings import (
     transcript_segments,
     transcription_artifacts,
     transcription_jobs,
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_transcription_tables_are_tenant_scoped_and_keep_source_job_lineage() -> None:
@@ -26,7 +30,10 @@ def test_transcription_tables_are_tenant_scoped_and_keep_source_job_lineage() ->
         "adapter_reference",
         "model_config_reference",
     } <= {column.name for column in transcription_artifacts.columns}
+    assert transcription_artifacts.c.media_inspection.type.none_as_null is True
+    assert transcription_artifacts.c.failure.type.none_as_null is True
     assert {
+        "schema_version",
         "authorization_decision_id",
         "authorization_policy_reference",
         "execution_lease_id",
@@ -51,3 +58,18 @@ def test_transcription_tables_are_tenant_scoped_and_keep_source_job_lineage() ->
         "source_object_id",
         "source_revision_id",
     ]
+
+
+def test_bounded_transcription_migration_finalizes_check_constraint_names() -> None:
+    source = (
+        PROJECT_ROOT
+        / "migrations/versions/20261211_79_bounded_transcription.py"
+    ).read_text(encoding="utf-8")
+
+    for constraint_name in (
+        "ck_transcription_jobs_state",
+        "ck_transcription_jobs_contract_version",
+        "ck_transcription_jobs_terminal_shape",
+        "ck_transcription_artifacts_bounded_shape",
+    ):
+        assert f'op.f("{constraint_name}")' in source
