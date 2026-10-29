@@ -208,7 +208,13 @@ configuration. Его завершение атомарно добавляет �
 `TranscriptionArtifact` с сегментами на исходной временной шкале. Такой job не
 создаёт `WorkItem`, `WorkflowRun` или Q&A Session и не публикует данные в Cognee;
 оригинал аудио, ASR-вывод и последующая бизнес-интерпретация остаются разными
-артефактами. См. ADR-0049.
+артефактами. Для длинных и некорректных записей versioned processing profile
+ограничивает независимо проверенные media type, codec, размер, длительность,
+decoded/working bytes, число chunks и model attempts. Детерминированные chunk
+receipts, decoder/reassembly identity и failure provenance входят в immutable
+completed или partial artifact; durable cancellation intent останавливает
+последующие model calls и завершается стабильным cancelled receipt. См.
+ADR-0049 и ADR-0051.
 
 Первый разговорный запрос, запускающий работу, создаёт один tenant-scoped
 `WorkItem` и pinned `WorkflowRun`. PostgreSQL атомарно сохраняет их вместе с

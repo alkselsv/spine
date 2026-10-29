@@ -5,6 +5,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 import pytest
 
 from spine.application.transcription import (
+    AudioPreparationResult,
     InMemoryTranscriptionRepository,
     AudioProcessingAuthorization,
     AudioProcessingDeniedError,
@@ -16,13 +17,16 @@ from spine.application.transcription import (
 )
 from spine.domain.artifacts.transcription import (
     AdapterSignal,
+    AudioMediaInspection,
     SpeechToTextResult,
+    SpeechToTextResultV2,
     SpeechToTextSegment,
+    TranscriptionProcessingProfile,
+    TranscriptionArtifactOutcome,
     TranscriptionJobState,
 )
 from spine.domain.sources import RevisionMetadata, content_revision
 from spine.domain.sources.original_reference import ObjectReference
-
 
 WORKSPACE = UUID("10000000-0000-0000-0000-000000000001")
 OTHER_WORKSPACE = UUID("10000000-0000-0000-0000-000000000002")
@@ -92,9 +96,7 @@ class FakeSpeechToText:
                     start_ms=120,
                     end_ms=2100,
                     text="Подготовьте коммерческое предложение.",
-                    signals=(
-                        AdapterSignal(name="fake_quality", value=0.91),
-                    ),
+                    signals=(AdapterSignal(name="fake_quality", value=0.91),),
                 ),
             ),
         )
@@ -113,6 +115,699 @@ class FakeAuthorizer:
             policy_reference="synthetic-audio-processing:v1",
             reason_code="allowed" if self.allowed else "processing_denied",
         )
+
+
+def bounded_profile() -> TranscriptionProcessingProfile:
+    return TranscriptionProcessingProfile(
+        profile_reference="transcription-long:v1",
+        supported_media_types=("audio/wav", "audio/mpeg"),
+        supported_codecs=("pcm_s16le", "mp3"),
+        maximum_source_bytes=2_000_000,
+        maximum_duration_ms=60_000,
+        maximum_decoded_bytes=8_000_000,
+        maximum_memory_bytes=4_000_000,
+        maximum_working_bytes=10_000_000,
+        maximum_decode_seconds=5.0,
+        chunk_duration_ms=4_000,
+        chunk_overlap_ms=1_000,
+        maximum_chunks=20,
+        maximum_model_attempts=2,
+        decoder_reference="fake-decoder:v1",
+        reassembly_reference="first-chunk-wins:v1",
+    )
+
+
+def test_bounded_command_requires_explicit_v2_contract() -> None:
+    payload = command().model_dump()
+    payload.update(
+        {
+            "processing_profile_reference": "transcription-long:v1",
+            "processing_profile": bounded_profile(),
+        }
+    )
+
+    with pytest.raises(ValueError, match="v1 transcription command"):
+        TranscribeAudioCommand.model_validate(payload)
+
+    payload["schema_version"] = "transcribe-audio-command:v2"
+    bounded = TranscribeAudioCommand.model_validate(payload)
+
+    assert bounded.schema_version == "transcribe-audio-command:v2"
+
+
+def test_legacy_command_keeps_v1_digest_after_v2_contract_is_added() -> None:
+    assert command().digest() == (
+        "9e5f20e626d2a2339642d78b7629a45eede09a34eb0c9d50400c85e4848e2c12"
+    )
+
+
+class FakeAudioPreparation:
+    def __init__(self) -> None:
+        self.active = set()
+
+    async def prepare(self, request):
+        result = AudioPreparationResult(
+            inspection=AudioMediaInspection(
+                inspected_media_type="audio/mpeg",
+                container="mp3",
+                codec="mp3",
+                byte_length=request.recording.original_reference.byte_length,
+                duration_ms=10_000,
+                audio_stream_count=1,
+                silent=False,
+            ),
+            decoder_reference="fake-decoder:v1",
+            decoded_reference=request.recording.original_reference.model_copy(
+                update={"object_id": UUID(int=801), "byte_length": 640_000}
+            ),
+            decoded_sha256=request.recording.original_sha256,
+            decoded_byte_length=640_000,
+            peak_memory_bytes=320_000,
+            peak_working_bytes=960_000,
+        )
+        self.active.add(result.decoded_reference.object_id)
+        return result
+
+    async def release(self, prepared):
+        self.active.discard(prepared.decoded_reference.object_id)
+
+    async def abort(self, request):
+        self.active.clear()
+
+
+class ChunkedSpeechToText:
+    def __init__(self) -> None:
+        self.requests = []
+
+    async def transcribe(self, request):
+        self.requests.append(request)
+        local_start = 100 if request.chunk.boundary.ordinal == 1 else 1_100
+        return SpeechToTextResultV2(
+            schema_version="speech-to-text-result:v2",
+            adapter_reference=request.adapter_reference,
+            model_config_reference=request.model_config_reference,
+            detected_language="ru",
+            timeline="chunk",
+            segments=(
+                SpeechToTextSegment(
+                    start_ms=local_start,
+                    end_ms=local_start + 400,
+                    text=f"Фрагмент {request.chunk.boundary.ordinal}",
+                ),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_long_audio_is_inspected_chunked_and_reassembled_reproducibly() -> None:
+    repository = InMemoryTranscriptionRepository()
+    preparation = FakeAudioPreparation()
+    adapter = ChunkedSpeechToText()
+    requested = command().model_copy(
+        update={
+            "schema_version": "transcribe-audio-command:v2",
+            "recording_duration_ms": 10_000,
+            "processing_profile_reference": "transcription-long:v1",
+            "processing_profile": bounded_profile(),
+            "idempotency_key": "transcribe-synthetic-russian-long-1",
+        }
+    )
+    service = TranscriptionService(
+        repository=repository,
+        speech_to_text=adapter,
+        authorizer=FakeAuthorizer(),
+        media_preparation=preparation,
+        clock=lambda: NOW,
+    )
+
+    result = await service.transcribe(requested)
+
+    assert result.job.state is TranscriptionJobState.COMPLETED
+    assert result.artifact is not None
+    assert result.artifact.media_inspection.inspected_media_type == "audio/mpeg"
+    assert result.artifact.decoder_reference == "fake-decoder:v1"
+    assert result.artifact.reassembly_reference == "first-chunk-wins:v1"
+    assert [(item.start_ms, item.end_ms) for item in result.artifact.segments] == [
+        (100, 500),
+        (4_100, 4_500),
+        (7_100, 7_500),
+    ]
+    assert [request.chunk.boundary.ordinal for request in adapter.requests] == [1, 2, 3]
+    assert len({request.chunk.chunk_id for request in adapter.requests}) == 3
+    assert preparation.active == set()
+
+
+@pytest.mark.asyncio
+async def test_transient_chunk_failure_retries_with_the_same_stable_identity() -> None:
+    class LostResponseSpeechToText(ChunkedSpeechToText):
+        def __init__(self) -> None:
+            super().__init__()
+            self.logical_effects = {}
+
+        async def transcribe(self, request):
+            self.requests.append(request)
+            result = self.logical_effects.setdefault(
+                request.chunk.chunk_id,
+                SpeechToTextResultV2(
+                    schema_version="speech-to-text-result:v2",
+                    adapter_reference=request.adapter_reference,
+                    model_config_reference=request.model_config_reference,
+                    detected_language="ru",
+                    timeline="chunk",
+                    segments=(
+                        SpeechToTextSegment(start_ms=100, end_ms=500, text="Ответ"),
+                    ),
+                ),
+            )
+            if len(self.requests) == 1:
+                raise SpeechToTextFailed(code="transient_unavailable", retryable=True)
+            return result
+
+    adapter = LostResponseSpeechToText()
+    requested = command().model_copy(
+        update={
+            "schema_version": "transcribe-audio-command:v2",
+            "recording_duration_ms": 1_000,
+            "processing_profile_reference": "transcription-long:v1",
+            "processing_profile": bounded_profile(),
+            "idempotency_key": "transcribe-lost-response",
+        }
+    )
+    preparation = FakeAudioPreparation()
+    original_prepare = preparation.prepare
+
+    async def short_prepare(request):
+        result = await original_prepare(request)
+        return result.model_copy(
+            update={
+                "inspection": result.inspection.model_copy(
+                    update={"duration_ms": 1_000}
+                )
+            }
+        )
+
+    preparation.prepare = short_prepare
+    result = await TranscriptionService(
+        repository=InMemoryTranscriptionRepository(),
+        speech_to_text=adapter,
+        authorizer=FakeAuthorizer(),
+        media_preparation=preparation,
+        clock=lambda: NOW,
+    ).transcribe(requested)
+
+    assert result.job.state is TranscriptionJobState.COMPLETED
+    assert result.artifact.chunk_receipts[0].model_attempts == 2
+    assert adapter.requests[0].chunk.chunk_id == adapter.requests[1].chunk.chunk_id
+    assert len(adapter.logical_effects) == 1
+    assert preparation.active == set()
+
+
+@pytest.mark.asyncio
+async def test_retry_exhaustion_persists_exact_partial_artifact_and_replays_it() -> (
+    None
+):
+    class SecondChunkFails(ChunkedSpeechToText):
+        async def transcribe(self, request):
+            self.requests.append(request)
+            if request.chunk.boundary.ordinal == 2:
+                raise SpeechToTextFailed(code="transient_unavailable", retryable=True)
+            return SpeechToTextResultV2(
+                schema_version="speech-to-text-result:v2",
+                adapter_reference=request.adapter_reference,
+                model_config_reference=request.model_config_reference,
+                detected_language="ru",
+                timeline="chunk",
+                segments=(
+                    SpeechToTextSegment(start_ms=100, end_ms=500, text="Готово"),
+                ),
+            )
+
+    repository = InMemoryTranscriptionRepository()
+    adapter = SecondChunkFails()
+    service = TranscriptionService(
+        repository=repository,
+        speech_to_text=adapter,
+        authorizer=FakeAuthorizer(),
+        media_preparation=FakeAudioPreparation(),
+        clock=lambda: NOW,
+    )
+    requested = command().model_copy(
+        update={
+            "schema_version": "transcribe-audio-command:v2",
+            "recording_duration_ms": 10_000,
+            "processing_profile_reference": "transcription-long:v1",
+            "processing_profile": bounded_profile(),
+            "idempotency_key": "transcribe-partial-retry-exhausted",
+        }
+    )
+
+    result = await service.transcribe(requested)
+    replay = await service.transcribe(requested)
+
+    assert result.job.state is TranscriptionJobState.PARTIAL
+    assert result.job.terminal_code == "retry_exhausted"
+    assert result.artifact.outcome is TranscriptionArtifactOutcome.PARTIAL
+    assert [item.boundary.ordinal for item in result.artifact.chunk_receipts] == [1]
+    assert result.artifact.failure.code == "retry_exhausted"
+    assert result.artifact.failure.cause_code == "transient_unavailable"
+    assert result.artifact.failure.failed_chunk_ordinal == 2
+    assert len(result.artifact.segments) == 1
+    assert replay.artifact == result.artifact
+    assert len(adapter.requests) == 3
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_completed_chunk_stops_subsequent_model_work() -> None:
+    class PausingSpeechToText(ChunkedSpeechToText):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def transcribe(self, request):
+            self.requests.append(request)
+            self.started.set()
+            await self.release.wait()
+            return SpeechToTextResultV2(
+                schema_version="speech-to-text-result:v2",
+                adapter_reference=request.adapter_reference,
+                model_config_reference=request.model_config_reference,
+                detected_language="ru",
+                timeline="chunk",
+                segments=(
+                    SpeechToTextSegment(start_ms=100, end_ms=500, text="Готово"),
+                ),
+            )
+
+    repository = InMemoryTranscriptionRepository()
+    adapter = PausingSpeechToText()
+    preparation = FakeAudioPreparation()
+    original_prepare = preparation.prepare
+
+    async def short_prepare(request):
+        result = await original_prepare(request)
+        return result.model_copy(
+            update={
+                "inspection": result.inspection.model_copy(
+                    update={"duration_ms": 1_000}
+                )
+            }
+        )
+
+    preparation.prepare = short_prepare
+    service = TranscriptionService(
+        repository=repository,
+        speech_to_text=adapter,
+        authorizer=FakeAuthorizer(),
+        media_preparation=preparation,
+        clock=lambda: NOW,
+    )
+    requested = command().model_copy(
+        update={
+            "schema_version": "transcribe-audio-command:v2",
+            "recording_duration_ms": 1_000,
+            "processing_profile_reference": "transcription-long:v1",
+            "processing_profile": bounded_profile(),
+            "idempotency_key": "transcribe-cancelled-after-first-chunk",
+        }
+    )
+
+    running = asyncio.create_task(service.transcribe(requested))
+    await adapter.started.wait()
+    job_id = uuid5(
+        NAMESPACE_URL,
+        "spine:transcription-job:v2:"
+        f"{WORKSPACE}:{ENVIRONMENT}:{audio_revision().revision_id}:"
+        "transcription-long:v1:transcribe-cancelled-after-first-chunk",
+    )
+    with pytest.raises(TranscriptionConflictError, match="unavailable"):
+        await service.cancel(
+            workspace_id=UUID(int=9991),
+            environment_id=ENVIRONMENT,
+            job_id=job_id,
+        )
+    with pytest.raises(TranscriptionConflictError, match="unavailable"):
+        await service.cancel(
+            workspace_id=WORKSPACE,
+            environment_id=UUID(int=9992),
+            job_id=job_id,
+        )
+    await service.cancel(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        job_id=job_id,
+    )
+    adapter.release.set()
+    cancelled = await running
+    replay = await service.transcribe(requested)
+
+    assert cancelled.job.state is TranscriptionJobState.CANCELLED
+    assert cancelled.job.cancellation_requested_at == NOW
+    assert cancelled.artifact.outcome is TranscriptionArtifactOutcome.PARTIAL
+    assert cancelled.artifact.failure.code == "cancelled"
+    assert len(adapter.requests) == 1
+    assert replay.job == cancelled.job
+    assert replay.artifact == cancelled.artifact
+
+
+@pytest.mark.asyncio
+async def test_cancellation_accepted_during_finalization_wins_atomically() -> None:
+    class FinalizationRaceRepository(InMemoryTranscriptionRepository):
+        async def finish(self, **kwargs):
+            if kwargs["state"] is TranscriptionJobState.COMPLETED:
+                await self.request_cancellation(
+                    workspace_id=kwargs["workspace_id"],
+                    environment_id=kwargs["environment_id"],
+                    job_id=kwargs["job_id"],
+                    requested_at=kwargs["completed_at"],
+                )
+            return await super().finish(**kwargs)
+
+    repository = FinalizationRaceRepository()
+    result = await TranscriptionService(
+        repository=repository,
+        speech_to_text=ChunkedSpeechToText(),
+        authorizer=FakeAuthorizer(),
+        media_preparation=FakeAudioPreparation(),
+        clock=lambda: NOW,
+    ).transcribe(
+        command().model_copy(
+            update={
+                "schema_version": "transcribe-audio-command:v2",
+                "processing_profile_reference": "transcription-long:v1",
+                "processing_profile": bounded_profile(),
+                "idempotency_key": "cancellation-wins-finalization-race",
+            }
+        )
+    )
+
+    assert result.job.state is TranscriptionJobState.CANCELLED
+    assert result.job.terminal_code == "cancelled"
+    assert result.artifact is None
+    assert await repository.count_artifacts() == 0
+
+
+@pytest.mark.asyncio
+async def test_invalid_later_chunk_preserves_completed_work_as_partial() -> None:
+    class InvalidSecondChunk(ChunkedSpeechToText):
+        async def transcribe(self, request):
+            self.requests.append(request)
+            result_type = (
+                SpeechToTextResult
+                if request.chunk.boundary.ordinal == 2
+                else SpeechToTextResultV2
+            )
+            return result_type(
+                adapter_reference=request.adapter_reference,
+                model_config_reference=request.model_config_reference,
+                detected_language="ru",
+                segments=(
+                    SpeechToTextSegment(start_ms=100, end_ms=500, text="Фрагмент"),
+                ),
+            )
+
+    result = await TranscriptionService(
+        repository=InMemoryTranscriptionRepository(),
+        speech_to_text=InvalidSecondChunk(),
+        authorizer=FakeAuthorizer(),
+        media_preparation=FakeAudioPreparation(),
+        clock=lambda: NOW,
+    ).transcribe(
+        command().model_copy(
+            update={
+                "schema_version": "transcribe-audio-command:v2",
+                "processing_profile_reference": "transcription-long:v1",
+                "processing_profile": bounded_profile(),
+                "idempotency_key": "invalid-second-chunk",
+            }
+        )
+    )
+
+    assert result.job.state is TranscriptionJobState.PARTIAL
+    assert result.job.terminal_code == "invalid_adapter_output"
+    assert result.artifact.outcome is TranscriptionArtifactOutcome.PARTIAL
+    assert [item.boundary.ordinal for item in result.artifact.chunk_receipts] == [1]
+    assert result.artifact.failure.failed_chunk_ordinal == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("inspection_overrides", "expected_code"),
+    [
+        ({"byte_length": 0, "duration_ms": 0}, "unsupported_media"),
+        ({"silent": True}, "unsupported_media"),
+        (
+            {"inspected_media_type": "audio/ogg", "container": "ogg", "codec": "opus"},
+            "unsupported_media",
+        ),
+        ({"byte_length": 2_000_001}, "resource_limit_exceeded"),
+        ({"duration_ms": 60_001}, "resource_limit_exceeded"),
+    ],
+)
+async def test_ineligible_inspected_media_stops_before_model_and_creates_no_artifact(
+    inspection_overrides: dict[str, object], expected_code: str
+) -> None:
+    class IneligibleAudioPreparation(FakeAudioPreparation):
+        async def prepare(self, request):
+            result = await super().prepare(request)
+            return result.model_copy(
+                update={
+                    "inspection": result.inspection.model_copy(
+                        update=inspection_overrides
+                    )
+                }
+            )
+
+    repository = InMemoryTranscriptionRepository()
+    preparation = IneligibleAudioPreparation()
+    adapter = ChunkedSpeechToText()
+    requested = command().model_copy(
+        update={
+            "schema_version": "transcribe-audio-command:v2",
+            "processing_profile_reference": "transcription-long:v1",
+            "processing_profile": bounded_profile(),
+            "idempotency_key": f"ineligible-{expected_code}-{len(str(inspection_overrides))}",
+        }
+    )
+
+    result = await TranscriptionService(
+        repository=repository,
+        speech_to_text=adapter,
+        authorizer=FakeAuthorizer(),
+        media_preparation=preparation,
+        clock=lambda: NOW,
+    ).transcribe(requested)
+
+    assert result.job.state is TranscriptionJobState.FAILED
+    assert result.job.terminal_code == expected_code
+    assert result.artifact is None
+    assert adapter.requests == []
+    assert await repository.count_artifacts() == 0
+    assert preparation.active == set()
+
+
+@pytest.mark.asyncio
+async def test_no_speech_output_cannot_create_transcription_artifact() -> None:
+    class NoSpeech:
+        def __init__(self) -> None:
+            self.requests = []
+
+        async def transcribe(self, request):
+            self.requests.append(request)
+            return SpeechToTextResultV2(
+                schema_version="speech-to-text-result:v2",
+                adapter_reference=request.adapter_reference,
+                model_config_reference=request.model_config_reference,
+                detected_language="ru",
+                timeline="chunk",
+                segments=(),
+            )
+
+    repository = InMemoryTranscriptionRepository()
+    adapter = NoSpeech()
+    requested = command().model_copy(
+        update={
+            "schema_version": "transcribe-audio-command:v2",
+            "processing_profile_reference": "transcription-long:v1",
+            "processing_profile": bounded_profile(),
+            "idempotency_key": "synthetic-silence-no-speech",
+        }
+    )
+
+    result = await TranscriptionService(
+        repository=repository,
+        speech_to_text=adapter,
+        authorizer=FakeAuthorizer(),
+        media_preparation=FakeAudioPreparation(),
+        clock=lambda: NOW,
+    ).transcribe(requested)
+
+    assert result.job.state is TranscriptionJobState.FAILED
+    assert result.job.terminal_code == "no_speech"
+    assert result.artifact is None
+    assert await repository.count_artifacts() == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_kind",
+    ["corrupt", "decoded_oversized", "memory_oversized", "working_oversized"],
+)
+async def test_malformed_or_decoded_oversized_media_cleans_up_without_model_work(
+    failure_kind: str,
+) -> None:
+    class FailingPreparation(FakeAudioPreparation):
+        async def prepare(self, request):
+            if failure_kind == "corrupt":
+                raise SpeechToTextFailed(code="corrupt_media", retryable=False)
+            result = await super().prepare(request)
+            if failure_kind == "decoded_oversized":
+                return result.model_copy(
+                    update={
+                        "decoded_reference": result.decoded_reference.model_copy(
+                            update={"byte_length": 8_000_001}
+                        ),
+                        "decoded_byte_length": 8_000_001,
+                    }
+                )
+            if failure_kind == "memory_oversized":
+                return result.model_copy(update={"peak_memory_bytes": 4_000_001})
+            return result.model_copy(update={"peak_working_bytes": 10_000_001})
+
+    repository = InMemoryTranscriptionRepository()
+    preparation = FailingPreparation()
+    adapter = ChunkedSpeechToText()
+    requested = command().model_copy(
+        update={
+            "schema_version": "transcribe-audio-command:v2",
+            "processing_profile_reference": "transcription-long:v1",
+            "processing_profile": bounded_profile(),
+            "idempotency_key": f"synthetic-{failure_kind}",
+        }
+    )
+
+    result = await TranscriptionService(
+        repository=repository,
+        speech_to_text=adapter,
+        authorizer=FakeAuthorizer(),
+        media_preparation=preparation,
+        clock=lambda: NOW,
+    ).transcribe(requested)
+
+    assert result.job.state is TranscriptionJobState.FAILED
+    assert result.job.terminal_code == (
+        "corrupt_media" if failure_kind == "corrupt" else "resource_limit_exceeded"
+    )
+    assert result.artifact is None
+    assert adapter.requests == []
+    assert preparation.active == set()
+
+
+@pytest.mark.asyncio
+async def test_decode_timeout_aborts_preparation_and_stops_before_model() -> None:
+    class TimedOutPreparation(FakeAudioPreparation):
+        def __init__(self) -> None:
+            super().__init__()
+            self.aborted = False
+
+        async def prepare(self, request):
+            self.active.add(request.recording.source_revision_id)
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        async def abort(self, request):
+            self.aborted = True
+            self.active.discard(request.recording.source_revision_id)
+
+    repository = InMemoryTranscriptionRepository()
+    preparation = TimedOutPreparation()
+    adapter = ChunkedSpeechToText()
+    result = await TranscriptionService(
+        repository=repository,
+        speech_to_text=adapter,
+        authorizer=FakeAuthorizer(),
+        media_preparation=preparation,
+        clock=lambda: NOW,
+    ).transcribe(
+        command().model_copy(
+            update={
+                "schema_version": "transcribe-audio-command:v2",
+                "processing_profile_reference": "transcription-long:v1",
+                "processing_profile": bounded_profile().model_copy(
+                    update={"maximum_decode_seconds": 0.01}
+                ),
+                "idempotency_key": "decode-timeout-cleanup",
+            }
+        )
+    )
+
+    assert result.job.state is TranscriptionJobState.FAILED
+    assert result.job.terminal_code == "resource_limit_exceeded"
+    assert result.artifact is None
+    assert preparation.aborted is True
+    assert preparation.active == set()
+    assert adapter.requests == []
+
+
+@pytest.mark.asyncio
+async def test_noisy_synthetic_russian_fixture_preserves_adapter_uncertainty() -> None:
+    class NoisyRussianSpeech:
+        async def transcribe(self, request):
+            return SpeechToTextResultV2(
+                schema_version="speech-to-text-result:v2",
+                adapter_reference=request.adapter_reference,
+                model_config_reference=request.model_config_reference,
+                detected_language="ru",
+                timeline="chunk",
+                segments=(
+                    SpeechToTextSegment(
+                        start_ms=100,
+                        end_ms=900,
+                        text="Нужен расчёт с уточнением.",
+                        signals=(
+                            AdapterSignal(name="background_noise", value=True),
+                            AdapterSignal(name="recognition_quality", value=0.42),
+                        ),
+                    ),
+                ),
+            )
+
+    preparation = FakeAudioPreparation()
+    original_prepare = preparation.prepare
+
+    async def noisy_short_fixture(request):
+        result = await original_prepare(request)
+        return result.model_copy(
+            update={
+                "inspection": result.inspection.model_copy(
+                    update={"duration_ms": 1_000}
+                )
+            }
+        )
+
+    preparation.prepare = noisy_short_fixture
+    result = await TranscriptionService(
+        repository=InMemoryTranscriptionRepository(),
+        speech_to_text=NoisyRussianSpeech(),
+        authorizer=FakeAuthorizer(),
+        media_preparation=preparation,
+        clock=lambda: NOW,
+    ).transcribe(
+        command().model_copy(
+            update={
+                "schema_version": "transcribe-audio-command:v2",
+                "processing_profile_reference": "transcription-long:v1",
+                "processing_profile": bounded_profile(),
+                "idempotency_key": "synthetic-russian-noise-fixture",
+            }
+        )
+    )
+
+    assert result.job.state is TranscriptionJobState.COMPLETED
+    assert result.artifact.segments[0].signals == (
+        AdapterSignal(name="background_noise", value=True),
+        AdapterSignal(name="recognition_quality", value=0.42),
+    )
 
 
 @pytest.mark.asyncio
@@ -146,11 +841,16 @@ async def test_accepted_audio_creates_pinned_immutable_transcription_artifact() 
     assert result.artifact.segments[0].signals == (
         AdapterSignal(name="fake_quality", value=0.91),
     )
-    assert adapter.requests[0].recording.original_reference == audio_revision().original_reference
+    assert (
+        adapter.requests[0].recording.original_reference
+        == audio_revision().original_reference
+    )
 
 
 @pytest.mark.asyncio
-async def test_exact_replay_returns_one_logical_job_and_artifact_without_second_model_call() -> None:
+async def test_exact_replay_returns_one_logical_job_and_artifact_without_second_model_call() -> (
+    None
+):
     repository = InMemoryTranscriptionRepository()
     adapter = FakeSpeechToText()
     service = TranscriptionService(
@@ -220,16 +920,22 @@ async def test_repository_reads_are_isolated_between_workspaces() -> None:
     )
     completed = await service.transcribe(command())
 
-    assert await repository.get_job(
+    assert (
+        await repository.get_job(
         workspace_id=OTHER_WORKSPACE,
         environment_id=ENVIRONMENT,
         job_id=completed.job.job_id,
-    ) is None
-    assert await repository.get_artifact(
+        )
+        is None
+    )
+    assert (
+        await repository.get_artifact(
         workspace_id=OTHER_WORKSPACE,
         environment_id=ENVIRONMENT,
         artifact_id=completed.artifact.artifact_id,
-    ) is None
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -275,7 +981,9 @@ async def test_denied_processing_stops_before_job_or_model_disclosure() -> None:
 
 
 @pytest.mark.asyncio
-async def test_concurrent_exact_replay_has_one_execution_owner_and_one_model_call() -> None:
+async def test_concurrent_exact_replay_has_one_execution_owner_and_one_model_call() -> (
+    None
+):
     class BlockingSpeechToText(FakeSpeechToText):
         def __init__(self) -> None:
             super().__init__()
@@ -383,7 +1091,9 @@ async def test_expired_pending_execution_is_reclaimed_after_worker_crash() -> No
 
 
 @pytest.mark.asyncio
-async def test_segment_outside_recording_becomes_typed_invalid_adapter_failure() -> None:
+async def test_segment_outside_recording_becomes_typed_invalid_adapter_failure() -> (
+    None
+):
     class InvalidSpeechToText(FakeSpeechToText):
         async def transcribe(self, request):
             self.requests.append(request)
@@ -391,7 +1101,9 @@ async def test_segment_outside_recording_becomes_typed_invalid_adapter_failure()
                 adapter_reference=request.adapter_reference,
                 model_config_reference=request.model_config_reference,
                 detected_language="ru",
-                segments=(SpeechToTextSegment(start_ms=2100, end_ms=2300, text="Поздно"),),
+                segments=(
+                    SpeechToTextSegment(start_ms=2100, end_ms=2300, text="Поздно"),
+                ),
             )
 
     repository = InMemoryTranscriptionRepository()
@@ -435,11 +1147,22 @@ async def test_terminal_transition_revalidates_job_shape() -> None:
     )
     assert pending is not None
 
-    with pytest.raises(ValueError, match="completed transcription requires its artifact"):
+    with pytest.raises(
+        ValueError, match="completed transcription requires its artifact"
+    ):
         pending.terminal(
             state=TranscriptionJobState.COMPLETED,
             completed_at=NOW,
             artifact=None,
             terminal_code="completed",
             retryable=None,
+        )
+
+    with pytest.raises(ValueError, match="failed transcription requires"):
+        pending.terminal(
+            state=TranscriptionJobState.FAILED,
+            completed_at=NOW,
+            artifact=None,
+            terminal_code="resource_limit_exceeded",
+            retryable=False,
         )

@@ -1570,6 +1570,7 @@ async def pending_postgresql_transcription(
     )
     now = case.revision.observed_at
     job = TranscriptionJob(
+        schema_version="transcription-job:v2",
         job_id=synthetic_uuid(66504),
         workspace_id=case.revision.workspace_id,
         environment_id=case.revision.environment_id,
@@ -1724,6 +1725,128 @@ async def test_postgresql_rejects_terminal_update_that_replaces_execution_lease(
         raised.value.orig.diag.constraint_name
         == "ck_transcription_jobs_terminal_lease_immutable"
     )
+
+
+async def test_postgresql_persists_cancellation_and_exact_partial_artifact(
+    pending_postgresql_transcription,
+) -> None:
+    from spine.application.transcription import TranscriptionConflictError
+    from spine.domain.artifacts.transcription import (
+        AudioChunkBoundary,
+        AudioMediaInspection,
+        SpeechToTextSegment,
+        TranscriptionArtifact,
+        TranscriptionArtifactOutcome,
+        TranscriptionChunkReceipt,
+        TranscriptionFailureProvenance,
+        TranscriptionJobState,
+    )
+
+    scenario = pending_postgresql_transcription
+    cancellation_time = scenario.now + timedelta(seconds=1)
+    with pytest.raises(TranscriptionConflictError, match="unavailable"):
+        await scenario.repository.request_cancellation(
+            workspace_id=synthetic_uuid(66710),
+            environment_id=scenario.job.environment_id,
+            job_id=scenario.job.job_id,
+            requested_at=cancellation_time,
+        )
+    with pytest.raises(TranscriptionConflictError, match="unavailable"):
+        await scenario.repository.request_cancellation(
+            workspace_id=scenario.job.workspace_id,
+            environment_id=synthetic_uuid(66711),
+            job_id=scenario.job.job_id,
+            requested_at=cancellation_time,
+        )
+    requested = await scenario.repository.request_cancellation(
+        workspace_id=scenario.job.workspace_id,
+        environment_id=scenario.job.environment_id,
+        job_id=scenario.job.job_id,
+        requested_at=cancellation_time,
+    )
+    replayed_request = await scenario.repository.request_cancellation(
+        workspace_id=scenario.job.workspace_id,
+        environment_id=scenario.job.environment_id,
+        job_id=scenario.job.job_id,
+        requested_at=cancellation_time + timedelta(seconds=1),
+    )
+    boundary = AudioChunkBoundary(
+        ordinal=1,
+        start_ms=0,
+        end_ms=1_000,
+        overlap_before_ms=0,
+    )
+    artifact = TranscriptionArtifact.create(
+        workspace_id=scenario.job.workspace_id,
+        environment_id=scenario.job.environment_id,
+        source_object_id=scenario.job.source_object_id,
+        source_revision_id=scenario.job.source_revision_id,
+        source_revision_digest=scenario.job.source_revision_digest,
+        original_sha256=scenario.job.original_sha256,
+        processing_job_id=scenario.job.job_id,
+        processing_profile_reference=scenario.job.processing_profile_reference,
+        adapter_reference=scenario.job.adapter_reference,
+        model_config_reference=scenario.job.model_config_reference,
+        recording_duration_ms=2_000,
+        language="ru",
+        media_inspection=AudioMediaInspection(
+            inspected_media_type="audio/wav",
+            container="wav",
+            codec="pcm_s16le",
+            byte_length=32_000,
+            duration_ms=2_000,
+            audio_stream_count=1,
+            silent=False,
+        ),
+        decoder_reference="fake-decoder:v1",
+        decoded_sha256="e" * 64,
+        reassembly_reference="first-chunk-wins:v1",
+        chunk_receipts=(
+            TranscriptionChunkReceipt(
+                chunk_id=synthetic_uuid(66509),
+                boundary=boundary,
+                model_attempts=1,
+            ),
+        ),
+        outcome=TranscriptionArtifactOutcome.PARTIAL,
+        failure=TranscriptionFailureProvenance(
+            code="cancelled",
+            failed_chunk_ordinal=2,
+            model_attempts=0,
+            retryable=False,
+        ),
+        segments=(
+            SpeechToTextSegment(
+                start_ms=100,
+                end_ms=900,
+                text="Готовый фрагмент",
+            ),
+        ),
+        created_at=cancellation_time,
+    )
+
+    terminal = await scenario.repository.finish(
+        job_id=scenario.job.job_id,
+        workspace_id=scenario.job.workspace_id,
+        environment_id=scenario.job.environment_id,
+        state=TranscriptionJobState.CANCELLED,
+        completed_at=cancellation_time + timedelta(seconds=1),
+        artifact=artifact,
+        terminal_code="cancelled",
+        retryable=False,
+        lease_id=scenario.job.execution_lease_id,
+    )
+    stored = await scenario.repository.get_artifact(
+        workspace_id=scenario.job.workspace_id,
+        environment_id=scenario.job.environment_id,
+        artifact_id=artifact.artifact_id,
+    )
+
+    assert requested.cancellation_requested_at == cancellation_time
+    assert replayed_request.cancellation_requested_at == cancellation_time
+    assert terminal.state is TranscriptionJobState.CANCELLED
+    assert terminal.artifact_id == artifact.artifact_id
+    assert stored == artifact
 
 
 async def test_postgresql_cognee_receipt_maps_after_physical_read(
