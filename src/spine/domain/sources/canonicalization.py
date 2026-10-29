@@ -94,7 +94,7 @@ def assert_revision_digest(revision: SourceRevision) -> None:
         raise RevisionDigestMismatchError("Revision digest does not match revision data.")
 
 
-def _metadata_payload(metadata: RevisionMetadata | None) -> dict[str, str | None]:
+def _metadata_payload(metadata: RevisionMetadata | None) -> dict[str, Any]:
     if metadata is None:
         return {"document_language": None, "embedded_title": None}
     payload: dict[str, str | None] = {
@@ -103,6 +103,10 @@ def _metadata_payload(metadata: RevisionMetadata | None) -> dict[str, str | None
     }
     if metadata.representation_profile is not None:
         payload["representation_profile"] = metadata.representation_profile
+    if metadata.external_file_revision is not None:
+        payload["external_file_revision"] = metadata.external_file_revision.model_dump(
+            mode="json"
+        )
     return payload
 
 

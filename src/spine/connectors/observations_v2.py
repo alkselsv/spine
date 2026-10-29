@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+import hashlib
 from typing import Literal
 from uuid import UUID
 
@@ -113,6 +114,28 @@ class ProviderExternalIdentity(DefinitionModel):
     assurance_evidence_reference: VersionIdentifier
 
 
+class ProviderFileRevisionEvidence(DefinitionModel):
+    """Exact provider file metadata retained with one binary observation."""
+
+    schema_version: Literal["provider-file-revision-evidence:v2"] = (
+        "provider-file-revision-evidence:v2"
+    )
+    provider_revision: str = Field(min_length=1, max_length=128)
+    provider_resource_id: str | None = Field(default=None, min_length=1, max_length=1024)
+    resource_name: str | None = Field(default=None, min_length=1, max_length=1024)
+    resource_path: str | None = Field(default=None, min_length=1, max_length=2048)
+    content_md5: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    content_sha256: DigestHex | None = None
+    byte_length: StrictInt = Field(ge=0)
+    modified_at: datetime
+
+    @model_validator(mode="after")
+    def validate_modified_at(self) -> "ProviderFileRevisionEvidence":
+        if self.modified_at.tzinfo is None or self.modified_at.utcoffset() is None:
+            raise ValueError("provider file modified_at must be timezone-aware")
+        return self
+
+
 class _ContentObservationRepresentation(DefinitionModel):
     original_bytes: StrictBytes
     media_type: str = Field(min_length=1, max_length=255)
@@ -123,6 +146,28 @@ class _ContentObservationRepresentation(DefinitionModel):
 class BinaryObservationRepresentation(_ContentObservationRepresentation):
     kind: Literal["binary"] = "binary"
     schema_version: Literal["binary-observation:v2"] = "binary-observation:v2"
+    revision_evidence: ProviderFileRevisionEvidence | None = None
+
+    @model_validator(mode="after")
+    def validate_revision_evidence(self) -> "BinaryObservationRepresentation":
+        evidence = self.revision_evidence
+        if evidence is None:
+            return self
+        if evidence.byte_length != len(self.original_bytes):
+            raise ValueError("provider revision byte length does not match original bytes")
+        if (
+            evidence.content_sha256 is not None
+            and hashlib.sha256(self.original_bytes).hexdigest()
+            != evidence.content_sha256
+        ):
+            raise ValueError("provider revision sha256 does not match original bytes")
+        if (
+            evidence.content_md5 is not None
+            and hashlib.md5(self.original_bytes, usedforsecurity=False).hexdigest()
+            != evidence.content_md5
+        ):
+            raise ValueError("provider revision md5 does not match original bytes")
+        return self
 
 
 class TabularObservationRepresentation(_ContentObservationRepresentation):
@@ -262,6 +307,7 @@ __all__ = [
     "NormalizedExternalObservationV2",
     "ProviderExternalIdentity",
     "ProviderFileKey",
+    "ProviderFileRevisionEvidence",
     "ProviderLifecycleState",
     "ProviderObservationDiscovery",
     "ProviderStructuredObjectKey",

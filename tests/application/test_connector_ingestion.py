@@ -17,7 +17,7 @@ from spine.application.connector_ingestion import (
     build_connector_canonical_acceptance_command,
 )
 from spine.application.connections.google import GoogleReadCommand
-from spine.application.connections.provider import ProviderReadAdmission
+from spine.application.connections.provider import ProviderReadAdmission, ProviderReadCommand
 from spine.application.google_sheets_reconciliation import (
     ConnectorGoogleSheetsCanonicalIngestion,
     GoogleSheetsAdmittedPageReader,
@@ -63,6 +63,14 @@ from spine.connectors.google_sheets import (
     GoogleSheetsRowData,
     GoogleSheetsSnapshot,
 )
+from spine.connectors.yandex_disk import (
+    YandexDiskFileContent,
+    YandexDiskProviderAdapter,
+    YandexDiskReadProfile,
+    YandexDiskResource,
+    YandexDiskResourcePage,
+    yandex_disk_capabilities,
+)
 from spine.domain.ingestion import (
     IngestionItemState,
     IngestionRunState,
@@ -77,7 +85,7 @@ from spine.domain.sources.google import (
     GoogleSheetNumberFormat,
     google_source_identity,
 )
-from spine.domain.sources import RevisionKind
+from spine.domain.sources import ExternalFileRevisionMetadata, RevisionKind
 from spine.domain.connections.google import OpaqueGoogleReference
 from spine.domain.connections.provider import (
     OpaqueProviderReference,
@@ -105,6 +113,10 @@ from spine.infrastructure.object_storage.contracts import (
     WriteReceipt,
 )
 from spine.application.storage import OriginalUploadOutcome
+from tests.yandex_disk_contract import (
+    YANDEX_SOURCE_OBJECT_ID,
+    YANDEX_SOURCE_REVISION_ID,
+)
 
 
 NOW = datetime(2026, 10, 26, 12, tzinfo=timezone.utc)
@@ -797,6 +809,183 @@ async def test_google_v1_and_provider_v2_produce_equivalent_canonical_outcomes(
     )
     assert provider_v2.origin_locator_value == legacy.origin_locator_value
     assert provider_v2.external_identity.assurance is expected_assurance
+
+
+@pytest.mark.asyncio
+async def test_yandex_file_replay_keeps_one_immutable_revision_and_projection_effect():
+    content = b"%PDF governed Yandex proposal evidence"
+    metadata = YandexDiskResource(
+        name="brief.pdf",
+        path="disk:/approved/brief.pdf",
+        type="file",
+        mime_type="application/pdf",
+        size=len(content),
+        md5=hashlib.md5(content).hexdigest(),  # noqa: S324 - provider evidence
+        sha256=hashlib.sha256(content).hexdigest(),
+        revision="1700000000000000",
+        modified=NOW,
+        resource_id="1573541:synthetic",
+    )
+
+    class Service:
+        async def list_resources(self, connection, scope, *, offset, limit):
+            del connection, scope
+            assert (offset, limit) == (0, 100)
+            return YandexDiskResourcePage(
+                _embedded={
+                    "path": "disk:/approved",
+                    "items": [metadata],
+                    "limit": 100,
+                    "offset": 0,
+                    "total": 1,
+                }
+            )
+
+        async def download(self, connection, scope, *, path, revision, max_bytes):
+            del connection, scope
+            assert (path, revision) == (metadata.path, metadata.revision)
+            assert max_bytes == 32 * 1024 * 1024
+            return YandexDiskFileContent(
+                content=content, media_type="application/pdf"
+            )
+
+        async def get_resource(self, connection, scope, *, path):
+            del connection, scope
+            assert path == metadata.path
+            return metadata
+
+    qualification = OpaqueProviderReference(value=_id("yandex-qualification"))
+    connection = ProviderConnection(
+        connection_version_id=_id("yandex-connection-version"),
+        connection_id=CONNECTION,
+        approval_id=_id("yandex-approval"),
+        version=1,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        service_principal_id=_id("service"),
+        provider_kind=ProviderKind.YANDEX_DISK,
+        credential_reference=OpaqueProviderReference(value=_id("yandex-client")),
+        grant_reference=OpaqueProviderReference(value=_id("yandex-oauth-grant")),
+        approved_resource_scope_references=(OpaqueProviderReference(value=SCOPE),),
+        authorization_generation=7,
+        configuration_generation=11,
+        status=ProviderConnectionStatus.ACTIVE,
+        capabilities=yandex_disk_capabilities(
+            qualification_reference=qualification
+        ),
+    )
+    provider = YandexDiskProviderAdapter(
+        service=Service(),
+        profile=YandexDiskReadProfile(),
+        clock=lambda: NOW,
+        sleep=lambda _: _async_none(),
+    )
+    orchestrator, _, uploader, ingestion, uow = _orchestrator()
+
+    class Repository:
+        @asynccontextmanager
+        async def admit_read(self, command, context):
+            assert context.operation == PersistenceOperation("provider_connection_read")
+            assert command.resource_object_reference == metadata.path
+            yield connection
+
+    admitted = replace(
+        orchestrator,
+        observation_reader=ProviderAuthorizedObservationReader(
+            admission=ProviderReadAdmission(
+                repository=Repository(),
+                provider=provider,
+            ),
+            connection_version_id=connection.connection_version_id,
+            required_capabilities=(
+                ProviderCapabilityKind.ENUMERATION,
+                ProviderCapabilityKind.METADATA_READ,
+                ProviderCapabilityKind.BINARY_READ,
+            ),
+        ),
+        read_operation=PersistenceOperation("provider_connection_read"),
+        admission_reference_type="provider_read_admission",
+    )
+    command = _command("yandex-replay").model_copy(
+        update={"resource_object_reference": metadata.path}
+    )
+    first = await admitted.ingest(command)
+    replay = await admitted.ingest(command)
+    observation = first.observation
+
+    assert first.revision == replay.revision
+    assert first.source.source_object_id == YANDEX_SOURCE_OBJECT_ID
+    assert first.revision.revision_id == YANDEX_SOURCE_REVISION_ID
+    assert first.revision.original_sha256 == hashlib.sha256(content).hexdigest()
+    assert first.revision.byte_length == len(content)
+    assert first.revision.media_type == "application/pdf"
+    external = first.revision.revision_metadata.external_file_revision
+    assert external is not None
+    assert external.provider_kind == "yandex_disk"
+    assert external.provider_revision == metadata.revision
+    assert external.provider_resource_id == metadata.resource_id
+    assert external.resource_name == metadata.name
+    assert external.resource_path == metadata.path
+    assert external.identity_assurance == "path_scoped"
+    assert first.provenance.origin_locator_schema == "locator:yandex-disk-path:v1"
+    assert replay.replay is True
+    assert uploader.calls == 2
+    assert uow.accepted == 1
+    assert len(uow.events) == 1
+    assert uow.events[0].event_type == "ingestion.projection.requested"
+    assert ingestion.observation.revision == first.revision
+    assert not hasattr(first.source, "proposal_eligible")
+    assert not hasattr(first.source, "pricing_basis")
+
+    changed_evidence = observation.representation.revision_evidence.model_copy(
+        update={
+            "provider_revision": "1700000000000001",
+            "modified_at": NOW + timedelta(seconds=1),
+        }
+    )
+    changed_observation = observation.model_copy(
+        update={
+            "event_identity": "yandex-disk:revision-two",
+            "event_digest": "b" * 64,
+            "provider_version_before": "1700000000000001",
+            "provider_version_after": "1700000000000001",
+            "representation": observation.representation.model_copy(
+                update={"revision_evidence": changed_evidence}
+            ),
+        }
+    )
+    successor = await orchestrator.ingest_observation(
+        _command("yandex-revision-two").model_copy(
+            update={
+                "command_identity": "connector.yandex-revision-two",
+                "expected_current_revision_id": first.revision.revision_id,
+            }
+        ),
+        changed_observation,
+    )
+
+    assert successor.source == first.source
+    assert successor.revision.original_sha256 == first.revision.original_sha256
+    assert successor.revision.revision_id != first.revision.revision_id
+    assert successor.revision.revision_metadata.external_file_revision == (
+        ExternalFileRevisionMetadata(
+            provider_kind="yandex_disk",
+            provider_revision="1700000000000001",
+            provider_resource_id=metadata.resource_id,
+            resource_name=metadata.name,
+            resource_path=metadata.path,
+            content_md5=metadata.md5,
+            content_sha256=metadata.sha256,
+            byte_length=metadata.size,
+            modified_at=NOW + timedelta(seconds=1),
+            identity_assurance="path_scoped",
+            assurance_evidence_reference="yandex-disk-path:v1",
+        )
+    )
+
+
+async def _async_none() -> None:
+    return None
 
 
 @pytest.mark.asyncio

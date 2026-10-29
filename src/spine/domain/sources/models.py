@@ -64,6 +64,31 @@ class RevisionKind(str, Enum):
     TOMBSTONE = "tombstone"
 
 
+class ExternalFileRevisionMetadata(DefinitionModel):
+    """Provider revision and identity evidence retained by canonical history."""
+
+    schema_version: Literal["external-file-revision-metadata:v1"] = (
+        "external-file-revision-metadata:v1"
+    )
+    provider_kind: BoundedIdentifier
+    provider_revision: str = Field(min_length=1, max_length=128)
+    provider_resource_id: str | None = Field(default=None, min_length=1, max_length=1024)
+    resource_name: str | None = Field(default=None, min_length=1, max_length=1024)
+    resource_path: str | None = Field(default=None, min_length=1, max_length=2048)
+    content_md5: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    content_sha256: DigestHex | None = None
+    byte_length: int = Field(ge=0)
+    modified_at: datetime
+    identity_assurance: BoundedIdentifier
+    assurance_evidence_reference: BoundedIdentifier
+
+    @model_validator(mode="after")
+    def validate_modified_at(self) -> "ExternalFileRevisionMetadata":
+        if self.modified_at.tzinfo is None or self.modified_at.utcoffset() is None:
+            raise ValueError("external revision modified_at must be timezone-aware")
+        return self
+
+
 class RevisionMetadata(DefinitionModel):
     """Revision-bearing metadata shared by uploads and connector observations."""
 
@@ -71,6 +96,7 @@ class RevisionMetadata(DefinitionModel):
     embedded_title: str | None = None
     document_language: str | None = None
     representation_profile: BoundedIdentifier | None = None
+    external_file_revision: ExternalFileRevisionMetadata | None = None
 
     @model_validator(mode="after")
     def validate_values(self) -> "RevisionMetadata":
@@ -352,6 +378,10 @@ def canonical_revision_metadata_digest(metadata: RevisionMetadata) -> str:
     }
     if metadata.representation_profile is not None:
         payload["representation_profile"] = metadata.representation_profile
+    if metadata.external_file_revision is not None:
+        payload["external_file_revision"] = metadata.external_file_revision.model_dump(
+            mode="json"
+        )
     canonical = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
 
