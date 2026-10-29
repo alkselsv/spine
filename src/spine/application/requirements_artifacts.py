@@ -16,6 +16,10 @@ from spine.domain.workflows import (
     RequirementState,
     WorkflowRun,
 )
+from spine.domain.capabilities.extract_requirements import (
+    RequirementsExtractionOutcome,
+    RequirementsExtractionOutput,
+)
 from spine.domain.workflows.requirements import RequirementsArtifact
 
 
@@ -58,6 +62,78 @@ class PersistedRequirementsArtifactService:
             ):
                 raise InvalidPersistenceContextError("Workflow run scope is invalid.")
             artifact = _deterministic_candidate(run)
+            persisted = await uow.requirements_artifacts.persist_candidate(artifact)
+            await uow.commit()
+            return persisted
+
+    async def persist_extracted_candidate(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        run_id: UUID,
+        extraction: RequirementsExtractionOutput,
+        upstream_artifact_ids: tuple[UUID, ...] = (),
+    ) -> RequirementsArtifact | None:
+        """Persist one runtime extraction through the #640 version boundary.
+
+        Success and partial results become the first immutable candidate version.
+        Abstentions and typed failures deliberately do not manufacture an
+        artifact; their runtime result remains the workflow's failure/awaiting
+        state.  Replay and conflict behavior stays owned by the existing
+        ``RequirementsArtifactRepository``.
+        """
+
+        if not isinstance(context.scope, EnvironmentScope):
+            raise InvalidPersistenceContextError("Requirements artifact scope is invalid.")
+        if type(extraction) is not RequirementsExtractionOutput:
+            raise ValueError("requirements extraction output is invalid")
+        if extraction.outcome not in {
+            RequirementsExtractionOutcome.SUCCESS,
+            RequirementsExtractionOutcome.PARTIAL,
+        }:
+            return None
+        async with self._uow_factory(context) as uow:
+            run = await uow.workflow_runs.get_run(
+                workspace_id=context.scope.workspace_id,
+                environment_id=context.scope.environment_id,
+                run_id=run_id,
+            )
+            if run is None:
+                return None
+            if (
+                run.workspace_id != context.scope.workspace_id
+                or run.environment_id != context.scope.environment_id
+                or extraction.workspace_id != run.workspace_id
+                or extraction.environment_id != run.environment_id
+                or extraction.workflow_run_id != run.run_id
+                or extraction.work_item_id != run.work_item_id
+            ):
+                raise InvalidPersistenceContextError("Requirements extraction scope is invalid.")
+            lineage = tuple(dict.fromkeys(upstream_artifact_ids))
+            content = {
+                "extraction": extraction.model_dump(mode="json"),
+                "upstream_artifact_ids": [str(item) for item in lineage],
+            }
+            digest = sha256(
+                json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            artifact = RequirementsArtifact(
+                artifact_id=uuid5(NAMESPACE_URL, f"spine:requirements:{run.run_id}"),
+                artifact_version=1,
+                production_identity=self._production_identity,
+                production_digest=digest,
+                workspace_id=run.workspace_id,
+                environment_id=run.environment_id,
+                work_item_id=run.work_item_id,
+                run_id=run.run_id,
+                requirements=extraction.requirements,
+                state=(
+                    RequirementState.PARTIAL
+                    if extraction.outcome is RequirementsExtractionOutcome.PARTIAL
+                    else RequirementState.CANDIDATE
+                ),
+                upstream_artifact_ids=lineage,
+            )
             persisted = await uow.requirements_artifacts.persist_candidate(artifact)
             await uow.commit()
             return persisted
