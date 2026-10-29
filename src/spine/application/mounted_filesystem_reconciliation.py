@@ -30,6 +30,10 @@ from spine.application.persistence.context import (
     PersistenceOperation,
     TrustedPersistenceContext,
 )
+from spine.application.persistence.errors import (
+    ConstraintConflictError,
+    OptimisticConflictError,
+)
 from spine.application.source_lifecycle import (
     SourceLifecycleCommand,
     SourceLifecycleCoordinator,
@@ -99,6 +103,7 @@ class MountedFilesystemCanonicalSource(DefinitionModel):
     source_object_id: UUID
     current_revision_id: UUID
     current_revision_kind: RevisionKind
+    identity_occurrence: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class MountedFilesystemAcceptedItem(DefinitionModel):
@@ -382,6 +387,7 @@ class MountedFilesystemRemovalPort(Protocol):
         policy: MountedFilesystemRemovalPolicy,
         idempotency_key: str,
         evidence_reference: str,
+        observed_at: datetime,
         context: TrustedPersistenceContext,
     ) -> UUID: ...
 
@@ -395,6 +401,7 @@ class MountedFilesystemTombstoneComposer(Protocol):
         policy: MountedFilesystemRemovalPolicy,
         idempotency_key: str,
         evidence_reference: str,
+        observed_at: datetime,
         context: TrustedPersistenceContext,
     ) -> SourceLifecycleCommand: ...
 
@@ -414,6 +421,7 @@ class MountedFilesystemSourceLifecycleRemoval:
         policy: MountedFilesystemRemovalPolicy,
         idempotency_key: str,
         evidence_reference: str,
+        observed_at: datetime,
         context: TrustedPersistenceContext,
     ) -> UUID:
         scope = context.scope
@@ -422,17 +430,62 @@ class MountedFilesystemSourceLifecycleRemoval:
             scope.environment_id,
         ) != (command.workspace_id, command.environment_id):
             raise ProviderReadDeniedError()
-        lifecycle_command = await self.composer.compose(
-            command=command,
-            source=source,
+        existing = await self._resolve_existing_tombstone(
+            source,
             policy=policy,
             idempotency_key=idempotency_key,
-            evidence_reference=evidence_reference,
             context=context,
         )
-        _validate_tombstone_command(lifecycle_command, source, idempotency_key)
-        result = await self.lifecycle.apply(lifecycle_command)
+        if existing is not None:
+            return existing
+        try:
+            lifecycle_command = await self.composer.compose(
+                command=command,
+                source=source,
+                policy=policy,
+                idempotency_key=idempotency_key,
+                evidence_reference=evidence_reference,
+                observed_at=observed_at,
+                context=context,
+            )
+            _validate_tombstone_command(lifecycle_command, source, idempotency_key)
+            result = await self.lifecycle.apply(lifecycle_command)
+        except (ConstraintConflictError, OptimisticConflictError):
+            existing = await self._resolve_existing_tombstone(
+                source,
+                policy=policy,
+                idempotency_key=idempotency_key,
+                context=context,
+            )
+            if existing is None:
+                raise
+            return existing
         return result.acceptance.revision.revision_id
+
+    async def _resolve_existing_tombstone(
+        self,
+        source: MountedFilesystemCanonicalSource,
+        *,
+        policy: MountedFilesystemRemovalPolicy,
+        idempotency_key: str,
+        context: TrustedPersistenceContext,
+    ) -> UUID | None:
+        expected_revision_id = _tombstone_revision_id(
+            idempotency_key, policy=policy
+        )
+        async with self.lifecycle.uow_factory(context) as uow:
+            current = await uow.canonical.resolve_current(source.source_object_id)
+            revision = await uow.sources.resolve_revision(expected_revision_id)
+            await uow.rollback()
+        if (
+            current is None
+            or revision is None
+            or current.current_revision_id != expected_revision_id
+            or revision.source_object_id != source.source_object_id
+            or revision.kind is not RevisionKind.TOMBSTONE
+        ):
+            return None
+        return expected_revision_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -449,6 +502,7 @@ class ServerMountedFilesystemTombstoneComposer:
         policy: MountedFilesystemRemovalPolicy,
         idempotency_key: str,
         evidence_reference: str,
+        observed_at: datetime,
         context: TrustedPersistenceContext,
     ) -> SourceLifecycleCommand:
         if not policy.authorize_complete_scope_absence:
@@ -461,11 +515,7 @@ class ServerMountedFilesystemTombstoneComposer:
             idempotency_key=idempotency_key,
             deletion_reason="provider_deleted",
         )
-        operation_id = uuid5(
-            NAMESPACE_URL,
-            f"spine:mounted-filesystem:tombstone:{idempotency_key}:"
-            f"{policy.policy_version_id}:{policy.approval_id}",
-        )
+        operation_id = _tombstone_operation_id(idempotency_key, policy=policy)
         del evidence_reference
         return await self.lifecycle_composer.compose_tombstone(
             context=context,
@@ -476,7 +526,7 @@ class ServerMountedFilesystemTombstoneComposer:
                 operation_schema_version=1,
                 payload=lifecycle.model_dump(mode="json"),
             ),
-            accepted_at=policy.approved_at,
+            accepted_at=observed_at,
         )
 
 
@@ -572,12 +622,13 @@ class MountedFilesystemReconciliationCoordinator:
             )
             if record is None:
                 prior = baseline_by_path.get(item.provider_object_reference)
-                occurrence = (
-                    run_id.hex
-                    if prior is not None
-                    and prior.current_revision_kind is RevisionKind.TOMBSTONE
-                    else None
-                )
+                occurrence = None
+                if prior is not None:
+                    occurrence = (
+                        run_id.hex
+                        if prior.current_revision_kind is RevisionKind.TOMBSTONE
+                        else prior.identity_occurrence
+                    )
                 for _ in range(self.max_read_attempts):
                     try:
                         result = await self.ingestion.ingest(
@@ -697,6 +748,7 @@ class MountedFilesystemReconciliationCoordinator:
                     policy=policy,
                     idempotency_key=_removal_idempotency_key(command, policy, source),
                     evidence_reference=item_evidence.evidence_reference,
+                    observed_at=item_evidence.observed_at,
                     context=self.context_factory(
                         PersistenceOperation("mounted_filesystem_confirm_absent"),
                         item_evidence.evidence_id,
@@ -866,6 +918,26 @@ def _removal_idempotency_key(
         ).encode("ascii")
     ).hexdigest()
     return f"mounted-absence:{identity}"
+
+
+def _tombstone_operation_id(
+    idempotency_key: str, *, policy: MountedFilesystemRemovalPolicy
+) -> UUID:
+    return uuid5(
+        NAMESPACE_URL,
+        f"spine:mounted-filesystem:tombstone:{idempotency_key}:"
+        f"{policy.policy_version_id}:{policy.approval_id}",
+    )
+
+
+def _tombstone_revision_id(
+    idempotency_key: str, *, policy: MountedFilesystemRemovalPolicy
+) -> UUID:
+    operation_id = _tombstone_operation_id(idempotency_key, policy=policy)
+    return uuid5(
+        NAMESPACE_URL,
+        f"spine:document-lifecycle:tombstone:{operation_id}",
+    )
 
 
 def _evidence(

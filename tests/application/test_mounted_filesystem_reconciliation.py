@@ -19,8 +19,10 @@ from spine.application.mounted_filesystem_reconciliation import (
     MountedFilesystemReconciliationCoordinator,
     MountedFilesystemReconciliationState,
     MountedFilesystemRemovalPolicy,
+    MountedFilesystemSourceLifecycleRemoval,
     ServerMountedFilesystemTombstoneComposer,
 )
+from spine.application.persistence.context import EnvironmentScope
 from spine.application.connections.provider import ProviderReadDeniedError
 from spine.connectors.files.mounted_filesystem import (
     MountedFilesystemReadError,
@@ -190,10 +192,26 @@ class Removals:
         self.calls = []
 
     async def confirm_absent(
-        self, command, source, *, policy, idempotency_key, evidence_reference, context
+        self,
+        command,
+        source,
+        *,
+        policy,
+        idempotency_key,
+        evidence_reference,
+        observed_at,
+        context,
     ):
         self.calls.append(
-            (command, source, idempotency_key, evidence_reference, context, policy)
+            (
+                command,
+                source,
+                idempotency_key,
+                evidence_reference,
+                observed_at,
+                context,
+                policy,
+            )
         )
         return _id(f"tombstone:{source.source_object_id}")
 
@@ -471,6 +489,7 @@ async def test_server_tombstone_composition_is_stable_across_scan_evidence() -> 
         "source": source,
         "policy": _policy(),
         "idempotency_key": "mounted-absence:" + "a" * 64,
+        "observed_at": NOW,
         "context": SimpleNamespace(),
     }
 
@@ -485,6 +504,81 @@ async def test_server_tombstone_composition_is_stable_across_scan_evidence() -> 
     assert lifecycle.calls[0]["command"] == lifecycle.calls[1]["command"]
     assert lifecycle.calls[0]["command_digest"] == lifecycle.calls[1]["command_digest"]
     assert lifecycle.calls[0]["accepted_at"] == lifecycle.calls[1]["accepted_at"]
+
+
+@pytest.mark.asyncio
+async def test_source_lifecycle_removal_replays_existing_stable_tombstone() -> None:
+    source = _source("missing.md", "current")
+    policy = _policy()
+    key = "mounted-absence:" + "b" * 64
+    operation_id = uuid5(
+        NAMESPACE_URL,
+        f"spine:mounted-filesystem:tombstone:{key}:"
+        f"{policy.policy_version_id}:{policy.approval_id}",
+    )
+    revision_id = uuid5(
+        NAMESPACE_URL, f"spine:document-lifecycle:tombstone:{operation_id}"
+    )
+
+    class Canonical:
+        async def resolve_current(self, source_id):
+            return SimpleNamespace(current_revision_id=revision_id)
+
+    class SourceRepository:
+        async def resolve_revision(self, candidate):
+            return SimpleNamespace(
+                revision_id=revision_id,
+                source_object_id=source.source_object_id,
+                kind=RevisionKind.TOMBSTONE,
+            )
+
+    class UnitOfWork:
+        canonical = Canonical()
+        sources = SourceRepository()
+
+        async def rollback(self):
+            return None
+
+    @asynccontextmanager
+    async def uow_factory(context):
+        yield UnitOfWork()
+
+    class Composer:
+        async def compose(self, **kwargs):
+            raise AssertionError("existing tombstone must replay before composition")
+
+    lifecycle = SimpleNamespace(uow_factory=uow_factory)
+    removal = MountedFilesystemSourceLifecycleRemoval(Composer(), lifecycle)
+    result = await removal.confirm_absent(
+        _command(),
+        source,
+        policy=policy,
+        idempotency_key=key,
+        evidence_reference="mounted-reconciliation:replay",
+        observed_at=NOW,
+        context=SimpleNamespace(
+            scope=EnvironmentScope(workspace_id=WORKSPACE, environment_id=ENVIRONMENT)
+        ),
+    )
+
+    assert result == revision_id
+
+
+@pytest.mark.asyncio
+async def test_active_reappearance_occurrence_is_reused_by_next_scan(tmp_path: Path) -> None:
+    root = tmp_path / "mount"
+    root.mkdir()
+    (root / "returned.md").write_text("returned")
+    occurrence = "a" * 32
+    prior = _source("returned.md", "active")
+    prior = prior.model_copy(update={"identity_occurrence": occurrence})
+    ingestion = Ingestion(root)
+
+    await _service(root, sources=(prior,), ingestion=ingestion).run(
+        _command("reappearance-replay"), _policy()
+    )
+
+    assert ingestion.commands[0].external_identity_occurrence == occurrence
 
 
 @pytest.mark.asyncio

@@ -226,6 +226,9 @@ class PostgreSQLMountedFilesystemLifecycleSourceReader:
                             source_object_id=source.source_object_id,
                             current_revision_id=current.revision_id,
                             current_revision_kind=current.kind,
+                            identity_occurrence=(
+                                occurrence if isinstance(occurrence, str) else None
+                            ),
                         )
                     )
                 last = page[-1]
