@@ -279,8 +279,7 @@ class PostgreSQLMountedFilesystemRemovalPolicyAdmission:
                     == command.environment_id,
                 )
                 .order_by(
-                    mounted_fs_removal_authorities.c.recorded_at.desc(),
-                    mounted_fs_removal_authorities.c.authority_event_id.desc(),
+                    mounted_fs_removal_authorities.c.authority_generation.desc(),
                 )
                 .limit(1)
             )

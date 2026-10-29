@@ -817,6 +817,7 @@ mounted_fs_removal_authorities = Table(
     Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("state", Text, nullable=False),
+    Column("authority_generation", Integer, nullable=False),
     Column("recorded_at", DateTime(timezone=True), nullable=False),
 )
 

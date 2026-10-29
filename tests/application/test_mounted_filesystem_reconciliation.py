@@ -19,6 +19,7 @@ from spine.application.mounted_filesystem_reconciliation import (
     MountedFilesystemReconciliationCoordinator,
     MountedFilesystemReconciliationState,
     MountedFilesystemRemovalPolicy,
+    ServerMountedFilesystemTombstoneComposer,
 )
 from spine.application.connections.provider import ProviderReadDeniedError
 from spine.connectors.files.mounted_filesystem import (
@@ -450,6 +451,40 @@ async def test_independent_absence_generations_reuse_tombstone_key(
 
     assert len(removals.calls) == 2
     assert removals.calls[0][2] == removals.calls[1][2]
+
+
+@pytest.mark.asyncio
+async def test_server_tombstone_composition_is_stable_across_scan_evidence() -> None:
+    class LifecycleComposer:
+        def __init__(self):
+            self.calls = []
+
+        async def compose_tombstone(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(operation_id=kwargs["operation_id"])
+
+    lifecycle = LifecycleComposer()
+    composer = ServerMountedFilesystemTombstoneComposer(lifecycle)
+    source = _source("missing.md", "current")
+    kwargs = {
+        "command": _command(),
+        "source": source,
+        "policy": _policy(),
+        "idempotency_key": "mounted-absence:" + "a" * 64,
+        "context": SimpleNamespace(),
+    }
+
+    first = await composer.compose(
+        **kwargs, evidence_reference="mounted-reconciliation:first"
+    )
+    second = await composer.compose(
+        **kwargs, evidence_reference="mounted-reconciliation:second"
+    )
+
+    assert first.operation_id == second.operation_id
+    assert lifecycle.calls[0]["command"] == lifecycle.calls[1]["command"]
+    assert lifecycle.calls[0]["command_digest"] == lifecycle.calls[1]["command_digest"]
+    assert lifecycle.calls[0]["accepted_at"] == lifecycle.calls[1]["accepted_at"]
 
 
 @pytest.mark.asyncio

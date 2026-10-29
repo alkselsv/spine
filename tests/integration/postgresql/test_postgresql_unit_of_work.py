@@ -7651,8 +7651,8 @@ async def test_mounted_filesystem_policy_admission_rechecks_append_only_authorit
             text(
                 "INSERT INTO spine.mounted_fs_removal_authorities "
                 "(authority_event_id, policy_version_id, workspace_id, environment_id, "
-                "state, recorded_at) VALUES (:event, :policy, :workspace, "
-                ":environment, 'active', :recorded_at)"
+                "state, authority_generation, recorded_at) VALUES (:event, :policy, "
+                ":workspace, :environment, 'active', 1, :recorded_at)"
             ),
             {
                 "event": synthetic_uuid(67237),
@@ -7683,15 +7683,15 @@ async def test_mounted_filesystem_policy_admission_rechecks_append_only_authorit
             text(
                 "INSERT INTO spine.mounted_fs_removal_authorities "
                 "(authority_event_id, policy_version_id, workspace_id, environment_id, "
-                "state, recorded_at) VALUES (:event, :policy, :workspace, "
-                ":environment, 'revoked', :recorded_at)"
+                "state, authority_generation, recorded_at) VALUES (:event, :policy, "
+                ":workspace, :environment, 'revoked', 2, :recorded_at)"
             ),
             {
                 "event": synthetic_uuid(67238),
                 "policy": policy.policy_version_id,
                 "workspace": policy.workspace_id,
                 "environment": policy.environment_id,
-                "recorded_at": now + timedelta(seconds=1),
+                "recorded_at": now,
             },
         )
     await engine.dispose()

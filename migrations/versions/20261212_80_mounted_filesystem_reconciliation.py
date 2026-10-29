@@ -137,6 +137,7 @@ def upgrade() -> None:
         sa.Column("workspace_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("environment_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("state", sa.String(length=16), nullable=False),
+        sa.Column("authority_generation", sa.Integer(), nullable=False),
         sa.Column("recorded_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint(
             "authority_event_id", name="pk_mounted_fs_removal_authorities"
@@ -151,9 +152,18 @@ def upgrade() -> None:
             [f"{SCHEMA}.environments.workspace_id", f"{SCHEMA}.environments.id"],
             name="fk_mounted_fs_removal_authorities_environment",
         ),
+        sa.UniqueConstraint(
+            "policy_version_id",
+            "authority_generation",
+            name="uq_mounted_fs_removal_authorities_generation",
+        ),
         sa.CheckConstraint(
             "state IN ('active', 'revoked')",
             name=op.f("ck_mounted_fs_removal_authorities_state"),
+        ),
+        sa.CheckConstraint(
+            "authority_generation > 0",
+            name=op.f("ck_mounted_fs_removal_authorities_generation"),
         ),
         schema=SCHEMA,
     )

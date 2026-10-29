@@ -9,6 +9,7 @@ from typing import Mapping
 from uuid import UUID
 
 from spine.application.connections.provider import ProviderConnectionRepository
+from spine.application.document_lifecycle import ServerDocumentLifecycleComposer
 from spine.application.mounted_filesystem_reconciliation import (
     AuthorizedMountedFilesystemScanner,
     MountedFilesystemIngestionPort,
@@ -17,7 +18,7 @@ from spine.application.mounted_filesystem_reconciliation import (
     MountedFilesystemReconciliationRun,
     MountedFilesystemRemovalPolicy,
     MountedFilesystemSourceLifecycleRemoval,
-    MountedFilesystemTombstoneComposer,
+    ServerMountedFilesystemTombstoneComposer,
 )
 from spine.application.persistence.context import (
     PersistenceOperation,
@@ -58,7 +59,7 @@ def create_postgresql_mounted_filesystem_reconciliation_worker(
     connection_repository: ProviderConnectionRepository,
     roots: Mapping[UUID, MountedFilesystemRoot],
     ingestion: MountedFilesystemIngestionPort,
-    tombstone_composer: MountedFilesystemTombstoneComposer,
+    document_lifecycle_composer: ServerDocumentLifecycleComposer,
     source_lifecycle: SourceLifecycleCoordinator,
     clock: Callable[[], datetime],
     max_read_attempts: int = 2,
@@ -78,7 +79,9 @@ def create_postgresql_mounted_filesystem_reconciliation_worker(
         ingestion=ingestion,
         sources=PostgreSQLMountedFilesystemLifecycleSourceReader(uow_factory),
         removals=MountedFilesystemSourceLifecycleRemoval(
-            composer=tombstone_composer,
+            composer=ServerMountedFilesystemTombstoneComposer(
+                lifecycle_composer=document_lifecycle_composer,
+            ),
             lifecycle=source_lifecycle,
         ),
         removal_policies=PostgreSQLMountedFilesystemRemovalPolicyAdmission(

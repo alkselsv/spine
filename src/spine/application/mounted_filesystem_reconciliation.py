@@ -440,7 +440,6 @@ class ServerMountedFilesystemTombstoneComposer:
     """Adapt the canonical document lifecycle composer to mounted absences."""
 
     lifecycle_composer: ServerDocumentLifecycleComposer
-    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 
     async def compose(
         self,
@@ -465,14 +464,19 @@ class ServerMountedFilesystemTombstoneComposer:
         operation_id = uuid5(
             NAMESPACE_URL,
             f"spine:mounted-filesystem:tombstone:{idempotency_key}:"
-            f"{policy.policy_version_id}:{policy.approval_id}:{evidence_reference}",
+            f"{policy.policy_version_id}:{policy.approval_id}",
         )
+        del evidence_reference
         return await self.lifecycle_composer.compose_tombstone(
             context=context,
             command=lifecycle,
             operation_id=operation_id,
-            command_digest=digest_command(lifecycle),
-            accepted_at=self.clock(),
+            command_digest=digest_command(
+                operation=PersistenceOperation("mounted_filesystem_confirm_absent"),
+                operation_schema_version=1,
+                payload=lifecycle.model_dump(mode="json"),
+            ),
+            accepted_at=policy.approved_at,
         )
 
 
