@@ -431,6 +431,7 @@ class MountedFilesystemSourceLifecycleRemoval:
         ) != (command.workspace_id, command.environment_id):
             raise ProviderReadDeniedError()
         existing = await self._resolve_existing_tombstone(
+            command,
             source,
             policy=policy,
             idempotency_key=idempotency_key,
@@ -452,6 +453,7 @@ class MountedFilesystemSourceLifecycleRemoval:
             result = await self.lifecycle.apply(lifecycle_command)
         except (ConstraintConflictError, OptimisticConflictError):
             existing = await self._resolve_existing_tombstone(
+                command,
                 source,
                 policy=policy,
                 idempotency_key=idempotency_key,
@@ -464,6 +466,7 @@ class MountedFilesystemSourceLifecycleRemoval:
 
     async def _resolve_existing_tombstone(
         self,
+        command: MountedFilesystemReconciliationCommand,
         source: MountedFilesystemCanonicalSource,
         *,
         policy: MountedFilesystemRemovalPolicy,
@@ -473,16 +476,63 @@ class MountedFilesystemSourceLifecycleRemoval:
         expected_revision_id = _tombstone_revision_id(
             idempotency_key, policy=policy
         )
+        operation_id = _tombstone_operation_id(idempotency_key, policy=policy)
+        expected_provenance_id = uuid5(
+            NAMESPACE_URL, f"spine:document-lifecycle:provenance:{operation_id}"
+        )
+        lifecycle = _tombstone_document_command(command, source, idempotency_key)
+        expected_digest = digest_command(
+            operation=PersistenceOperation("mounted_filesystem_confirm_absent"),
+            operation_schema_version=1,
+            payload=lifecycle.model_dump(mode="json"),
+        ).value
         async with self.lifecycle.uow_factory(context) as uow:
             current = await uow.canonical.resolve_current(source.source_object_id)
             revision = await uow.sources.resolve_revision(expected_revision_id)
+            acceptance = await uow.canonical.resolve_acceptance(operation_id)
+            provenances = await uow.sources.list_provenance(expected_revision_id)
             await uow.rollback()
+        provenance = next(
+            (
+                item
+                for item in provenances
+                if item.provenance_id == expected_provenance_id
+            ),
+            None,
+        )
         if (
             current is None
             or revision is None
+            or acceptance is None
+            or provenance is None
             or current.current_revision_id != expected_revision_id
+            or current.acceptance_id != operation_id
+            or (current.workspace_id, current.environment_id)
+            != (command.workspace_id, command.environment_id)
             or revision.source_object_id != source.source_object_id
+            or (revision.workspace_id, revision.environment_id)
+            != (command.workspace_id, command.environment_id)
             or revision.kind is not RevisionKind.TOMBSTONE
+            or revision.deletion_reason != "provider_deleted"
+            or revision.deletion_provenance != "document-lifecycle"
+            or acceptance.canonical_acceptance_id != operation_id
+            or acceptance.source_object_id != source.source_object_id
+            or acceptance.source_revision_id != expected_revision_id
+            or acceptance.predecessor_revision_id != source.current_revision_id
+            or (acceptance.workspace_id, acceptance.environment_id)
+            != (command.workspace_id, command.environment_id)
+            or acceptance.provenance_id != expected_provenance_id
+            or provenance.source_object_id != source.source_object_id
+            or provenance.revision_id != expected_revision_id
+            or (provenance.workspace_id, provenance.environment_id)
+            != (command.workspace_id, command.environment_id)
+            or provenance.producer_kind != "lifecycle"
+            or provenance.producer_reference != "document-lifecycle"
+            or provenance.observer_service != "document-lifecycle"
+            or provenance.event_digest != expected_digest
+            or provenance.received_at != revision.observed_at
+            or provenance.observed_at != revision.observed_at
+            or acceptance.accepted_at != revision.observed_at
         ):
             return None
         return expected_revision_id
@@ -507,14 +557,7 @@ class ServerMountedFilesystemTombstoneComposer:
     ) -> SourceLifecycleCommand:
         if not policy.authorize_complete_scope_absence:
             raise ProviderReadDeniedError()
-        lifecycle = TombstoneDocumentCommand(
-            workspace_id=command.workspace_id,
-            environment_id=command.environment_id,
-            source_object_id=source.source_object_id,
-            expected_current_revision_id=source.current_revision_id,
-            idempotency_key=idempotency_key,
-            deletion_reason="provider_deleted",
-        )
+        lifecycle = _tombstone_document_command(command, source, idempotency_key)
         operation_id = _tombstone_operation_id(idempotency_key, policy=policy)
         del evidence_reference
         return await self.lifecycle_composer.compose_tombstone(
@@ -927,6 +970,21 @@ def _tombstone_operation_id(
         NAMESPACE_URL,
         f"spine:mounted-filesystem:tombstone:{idempotency_key}:"
         f"{policy.policy_version_id}:{policy.approval_id}",
+    )
+
+
+def _tombstone_document_command(
+    command: MountedFilesystemReconciliationCommand,
+    source: MountedFilesystemCanonicalSource,
+    idempotency_key: str,
+) -> TombstoneDocumentCommand:
+    return TombstoneDocumentCommand(
+        workspace_id=command.workspace_id,
+        environment_id=command.environment_id,
+        source_object_id=source.source_object_id,
+        expected_current_revision_id=source.current_revision_id,
+        idempotency_key=idempotency_key,
+        deletion_reason="provider_deleted",
     )
 
 

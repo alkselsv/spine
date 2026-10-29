@@ -22,8 +22,12 @@ from spine.application.mounted_filesystem_reconciliation import (
     MountedFilesystemSourceLifecycleRemoval,
     ServerMountedFilesystemTombstoneComposer,
 )
-from spine.application.persistence.context import EnvironmentScope
 from spine.application.connections.provider import ProviderReadDeniedError
+from spine.application.document_lifecycle import TombstoneDocumentCommand
+from spine.application.persistence.command_digest import digest_command
+from spine.application.persistence.context import EnvironmentScope, PersistenceOperation
+from spine.application.persistence.errors import OptimisticConflictError
+from spine.application.source_lifecycle import SourceLifecycleKind
 from spine.connectors.files.mounted_filesystem import (
     MountedFilesystemReadError,
     MountedFilesystemRoot,
@@ -519,17 +523,81 @@ async def test_source_lifecycle_removal_replays_existing_stable_tombstone() -> N
     revision_id = uuid5(
         NAMESPACE_URL, f"spine:document-lifecycle:tombstone:{operation_id}"
     )
+    provenance_id = uuid5(
+        NAMESPACE_URL, f"spine:document-lifecycle:provenance:{operation_id}"
+    )
+    lifecycle_command = TombstoneDocumentCommand(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        source_object_id=source.source_object_id,
+        expected_current_revision_id=source.current_revision_id,
+        idempotency_key=key,
+        deletion_reason="provider_deleted",
+    )
+    event_digest = digest_command(
+        operation=PersistenceOperation("mounted_filesystem_confirm_absent"),
+        operation_schema_version=1,
+        payload=lifecycle_command.model_dump(mode="json"),
+    ).value
+    state = {"active": True, "corrupt": False}
 
     class Canonical:
         async def resolve_current(self, source_id):
-            return SimpleNamespace(current_revision_id=revision_id)
+            if not state["active"]:
+                return None
+            return SimpleNamespace(
+                current_revision_id=revision_id,
+                acceptance_id=operation_id,
+                workspace_id=WORKSPACE,
+                environment_id=ENVIRONMENT,
+            )
+
+        async def resolve_acceptance(self, candidate):
+            if not state["active"]:
+                return None
+            return SimpleNamespace(
+                canonical_acceptance_id=operation_id,
+                source_object_id=source.source_object_id,
+                source_revision_id=revision_id,
+                predecessor_revision_id=source.current_revision_id,
+                workspace_id=WORKSPACE,
+                environment_id=ENVIRONMENT,
+                provenance_id=provenance_id,
+                accepted_at=NOW,
+            )
 
     class SourceRepository:
         async def resolve_revision(self, candidate):
+            if not state["active"]:
+                return None
             return SimpleNamespace(
                 revision_id=revision_id,
                 source_object_id=source.source_object_id,
+                workspace_id=WORKSPACE,
+                environment_id=ENVIRONMENT,
                 kind=RevisionKind.TOMBSTONE,
+                deletion_reason="provider_deleted",
+                deletion_provenance="document-lifecycle",
+                observed_at=NOW,
+            )
+
+        async def list_provenance(self, candidate):
+            if not state["active"]:
+                return ()
+            return (
+                SimpleNamespace(
+                    provenance_id=provenance_id,
+                    source_object_id=source.source_object_id,
+                    revision_id=revision_id,
+                    workspace_id=WORKSPACE,
+                    environment_id=ENVIRONMENT,
+                    producer_kind="lifecycle",
+                    producer_reference="document-lifecycle",
+                    observer_service="document-lifecycle",
+                    event_digest=("c" * 64 if state["corrupt"] else event_digest),
+                    received_at=NOW,
+                    observed_at=NOW,
+                ),
             )
 
     class UnitOfWork:
@@ -544,11 +612,32 @@ async def test_source_lifecycle_removal_replays_existing_stable_tombstone() -> N
         yield UnitOfWork()
 
     class Composer:
-        async def compose(self, **kwargs):
-            raise AssertionError("existing tombstone must replay before composition")
+        calls = 0
 
-    lifecycle = SimpleNamespace(uow_factory=uow_factory)
-    removal = MountedFilesystemSourceLifecycleRemoval(Composer(), lifecycle)
+        async def compose(self, **kwargs):
+            self.calls += 1
+            return SimpleNamespace(
+                kind=SourceLifecycleKind.DELETION,
+                source=SimpleNamespace(source_object_id=source.source_object_id),
+                canonical_acceptance=SimpleNamespace(
+                    expected_current_revision_id=source.current_revision_id,
+                    idempotency_key=SimpleNamespace(value=key),
+                ),
+                observation_idempotency_key=SimpleNamespace(
+                    value=f"{key}:observation"
+                ),
+            )
+
+    class Lifecycle:
+        def __init__(self):
+            self.uow_factory = uow_factory
+
+        async def apply(self, command):
+            state["active"] = True
+            raise OptimisticConflictError("concurrent tombstone won")
+
+    composer = Composer()
+    removal = MountedFilesystemSourceLifecycleRemoval(composer, Lifecycle())
     result = await removal.confirm_absent(
         _command(),
         source,
@@ -562,6 +651,39 @@ async def test_source_lifecycle_removal_replays_existing_stable_tombstone() -> N
     )
 
     assert result == revision_id
+    assert composer.calls == 0
+
+    state["active"] = False
+    concurrent_result = await removal.confirm_absent(
+        _command(),
+        source,
+        policy=policy,
+        idempotency_key=key,
+        evidence_reference="mounted-reconciliation:concurrent",
+        observed_at=NOW,
+        context=SimpleNamespace(
+            scope=EnvironmentScope(workspace_id=WORKSPACE, environment_id=ENVIRONMENT)
+        ),
+    )
+
+    assert concurrent_result == revision_id
+    assert composer.calls == 1
+
+    state.update(active=False, corrupt=True)
+    with pytest.raises(OptimisticConflictError):
+        await removal.confirm_absent(
+            _command(),
+            source,
+            policy=policy,
+            idempotency_key=key,
+            evidence_reference="mounted-reconciliation:conflicting",
+            observed_at=NOW,
+            context=SimpleNamespace(
+                scope=EnvironmentScope(
+                    workspace_id=WORKSPACE, environment_id=ENVIRONMENT
+                )
+            ),
+        )
 
 
 @pytest.mark.asyncio
