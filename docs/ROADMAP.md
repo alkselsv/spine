@@ -240,6 +240,8 @@ target.
       qualification (#664)`;
       `implemented: bounded provider-neutral Yandex Disk file reader with
       deterministic offline qualification (#665)`;
+      `implemented: bounded provider-neutral Bitrix24 Disk file reader with
+      deterministic offline qualification (#666)`;
       `not qualified: live Google and Shared Drive behavior`; product integration
       remains open.
 - [ ] Связывание строки реестра, запроса, встречи, клиента и итоговой сметы.

@@ -43,6 +43,7 @@ class ProviderReadCommand:
     configuration_generation: int
     required_capabilities: tuple[ProviderCapabilityKind, ...] = ()
     resource_object_reference: str | None = None
+    acting_subject_id: UUID | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -63,6 +64,8 @@ class ProviderReadCommand:
             1 <= len(self.resource_object_reference) <= 1024
         ):
             raise ValueError("resource_object_reference is invalid")
+        if self.acting_subject_id is not None and self.acting_subject_id.int == 0:
+            raise ValueError("acting_subject_id must be a non-nil UUID")
 
 
 class ProviderConnectionRepository(Protocol):

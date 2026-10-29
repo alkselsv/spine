@@ -71,6 +71,14 @@ from spine.connectors.yandex_disk import (
     YandexDiskResourcePage,
     yandex_disk_capabilities,
 )
+from spine.connectors.bitrix24_disk import (
+    Bitrix24DiskFile,
+    Bitrix24DiskFileContent,
+    Bitrix24DiskFilePage,
+    Bitrix24DiskProviderAdapter,
+    Bitrix24DiskReadProfile,
+    bitrix24_disk_capabilities,
+)
 from spine.domain.ingestion import (
     IngestionItemState,
     IngestionRunState,
@@ -982,6 +990,145 @@ async def test_yandex_file_replay_keeps_one_immutable_revision_and_projection_ef
             assurance_evidence_reference="yandex-disk-path:v1",
         )
     )
+
+
+@pytest.mark.asyncio
+async def test_bitrix24_disk_file_replay_reaches_shared_canonical_revision_path():
+    content = b"%PDF governed Bitrix24 proposal evidence"
+    metadata = Bitrix24DiskFile(
+        ID="9043",
+        NAME="brief.pdf",
+        TYPE="file",
+        STORAGE_ID="1357",
+        PARENT_ID="8907",
+        GLOBAL_CONTENT_VERSION="42",
+        FILE_ID="32718",
+        SIZE=len(content),
+        CREATE_TIME=NOW,
+        UPDATE_TIME=NOW,
+        DOWNLOAD_URL="https://example.test/download?auth=SIGNED-SECRET",
+    )
+
+    class Service:
+        async def authorize_read(
+            self, connection, scope, *, file_id, acting_principal_id
+        ):
+            del connection, scope, acting_principal_id
+            assert file_id == metadata.id
+
+        async def list_children(
+            self, connection, scope, *, start, page_size, acting_principal_id
+        ):
+            del connection, scope, acting_principal_id
+            assert (start, page_size) == (0, 50)
+            return Bitrix24DiskFilePage(result=(metadata,), total=1)
+
+        async def get_file(self, connection, scope, *, file_id, acting_principal_id):
+            del connection, scope, acting_principal_id
+            assert file_id == metadata.id
+            return metadata
+
+        async def download(
+            self,
+            connection,
+            scope,
+            *,
+            file_id,
+            download_url,
+            max_bytes,
+            acting_principal_id,
+        ):
+            del connection, scope, acting_principal_id
+            assert file_id == metadata.id
+            assert download_url == metadata.download_url
+            assert max_bytes == 32 * 1024 * 1024
+            return Bitrix24DiskFileContent(content=content, media_type="application/pdf")
+
+    qualification = OpaqueProviderReference(value=_id("bitrix24-qualification"))
+    connection = ProviderConnection(
+        connection_version_id=_id("bitrix24-connection-version"),
+        connection_id=CONNECTION,
+        approval_id=_id("bitrix24-approval"),
+        version=1,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        service_principal_id=_id("service"),
+        provider_kind=ProviderKind.BITRIX24,
+        credential_reference=OpaqueProviderReference(value=_id("bitrix24-client")),
+        grant_reference=OpaqueProviderReference(value=_id("bitrix24-grant")),
+        approved_resource_scope_references=(OpaqueProviderReference(value=SCOPE),),
+        authorization_generation=7,
+        configuration_generation=11,
+        status=ProviderConnectionStatus.ACTIVE,
+        capabilities=bitrix24_disk_capabilities(
+            qualification_reference=qualification
+        ),
+    )
+    provider = Bitrix24DiskProviderAdapter(
+        service=Service(),
+        profile=Bitrix24DiskReadProfile(),
+        clock=lambda: NOW,
+        sleep=lambda _: _async_none(),
+    )
+    orchestrator, _, uploader, ingestion, uow = _orchestrator()
+
+    class Repository:
+        @asynccontextmanager
+        async def admit_read(self, command, context):
+            assert context.operation == PersistenceOperation("provider_connection_read")
+            assert command.resource_object_reference == metadata.id
+            yield connection
+
+    admitted = replace(
+        orchestrator,
+        observation_reader=ProviderAuthorizedObservationReader(
+            admission=ProviderReadAdmission(
+                repository=Repository(),
+                provider=provider,
+            ),
+            connection_version_id=connection.connection_version_id,
+            required_capabilities=(
+                ProviderCapabilityKind.ENUMERATION,
+                ProviderCapabilityKind.METADATA_READ,
+                ProviderCapabilityKind.BINARY_READ,
+                ProviderCapabilityKind.STABLE_IDENTITY,
+            ),
+        ),
+        read_operation=PersistenceOperation("provider_connection_read"),
+        admission_reference_type="provider_read_admission",
+    )
+    command = _command("bitrix24-replay").model_copy(
+        update={"resource_object_reference": metadata.id}
+    )
+    first = await admitted.ingest(command)
+    replay = await admitted.ingest(command)
+
+    assert first.revision == replay.revision
+    assert first.revision.original_sha256 == hashlib.sha256(content).hexdigest()
+    assert first.revision.revision_metadata.external_file_revision == (
+        ExternalFileRevisionMetadata(
+            provider_kind="bitrix24",
+            provider_revision="42",
+            provider_resource_id="9043",
+            resource_name="brief.pdf",
+            resource_path=None,
+            content_md5=None,
+            content_sha256=hashlib.sha256(content).hexdigest(),
+            provider_payload_digest=first.observation.representation.revision_evidence.provider_payload_digest,
+            provider_payload=first.observation.representation.revision_evidence.provider_payload,
+            byte_length=len(content),
+            modified_at=NOW,
+            identity_assurance="provider_stable",
+            assurance_evidence_reference="bitrix24-disk-object:v1",
+        )
+    )
+    assert replay.replay is True
+    assert uploader.calls == 2
+    assert uow.accepted == 1
+    assert len(uow.events) == 1
+    assert uow.events[0].event_type == "ingestion.projection.requested"
+    assert ingestion.observation.revision == first.revision
+    assert "SIGNED-SECRET" not in first.revision.model_dump_json()
 
 
 async def _async_none() -> None:

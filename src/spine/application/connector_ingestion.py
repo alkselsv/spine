@@ -230,6 +230,7 @@ class ProviderAuthorizedObservationReader:
                 configuration_generation=command.configuration_generation,
                 required_capabilities=self.required_capabilities,
                 resource_object_reference=command.resource_object_reference,
+                acting_subject_id=getattr(context, "acting_subject_id", None),
             ),
             context,
         )
@@ -998,6 +999,8 @@ def _revision_metadata(observation: ConnectorObservation) -> RevisionMetadata:
             resource_path=evidence.resource_path,
             content_md5=evidence.content_md5,
             content_sha256=evidence.content_sha256,
+            provider_payload_digest=evidence.provider_payload_digest,
+            provider_payload=evidence.provider_payload,
             byte_length=evidence.byte_length,
             modified_at=evidence.modified_at,
             identity_assurance=observation.external_identity.assurance.value,
