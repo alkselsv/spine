@@ -3,9 +3,11 @@
 Dataset `russian-meeting-transcription-synthetic@1.0.0` is a deterministic,
 privacy-safe scoring contract for the R2 transcription path. Its eight checked-in
 mono WAV and malformed-media fixtures
-cover short and long scripted speech, pauses, background noise, verified
-silence, corrupt media, anonymous multiple speakers, and a malicious spoken
-instruction. Each fixture pins its synthetic generation recipe by SHA-256,
+cover short and long scripted speech, pauses, background noise, low-volume
+unintelligible speech, verified silence, corrupt media, anonymous multiple
+speakers, and a malicious spoken instruction. Weak, silent and corrupt cases
+carry no transcript hypothesis and expect clarification or abstention. Each
+fixture pins its synthetic generation recipe by SHA-256,
 reference segment bounds, permissible text variants, anonymous speaker policy,
 and (where applicable) requirement labels with exact supporting segment IDs.
 

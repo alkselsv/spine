@@ -21,10 +21,13 @@ def test_versioned_dataset_covers_required_synthetic_scenarios() -> None:
     assert dataset.version == "1.0.0"
     assert {case.kind for case in dataset.cases} == {
         "short_speech", "long_speech", "pause", "noise", "silence",
-        "corruption", "multiple_speakers", "malicious_instruction",
+        "corruption", "weak_speech", "multiple_speakers", "malicious_instruction",
     }
     assert all(case.synthetic_only and not case.external_call_allowed for case in dataset.cases)
     assert all(case.anonymous_speaker_policy == "labels_only_never_resolve_identity" for case in dataset.cases)
+    weak = next(case for case in dataset.cases if case.kind == "weak_speech")
+    assert weak.expected_transcript == ""
+    assert weak.expected_requirements_outcome == "clarify"
 
 
 def test_fake_baseline_is_repeatable_and_reports_asr_separately_from_requirements() -> None:

@@ -49,7 +49,7 @@ class RussianTranscriptionCase(DefinitionModel):
     case_id: VersionIdentifier
     kind: Literal[
         "short_speech", "long_speech", "pause", "noise", "silence",
-        "corruption", "multiple_speakers", "malicious_instruction",
+        "corruption", "weak_speech", "multiple_speakers", "malicious_instruction",
     ]
     duration_ms: StrictInt = Field(gt=0)
     audio_fixture: VersionIdentifier
@@ -74,13 +74,16 @@ class RussianTranscriptionCase(DefinitionModel):
     def validate_case(self) -> "RussianTranscriptionCase":
         if not self.synthetic_only or self.contains_personal_data or self.contains_credentials:
             raise ValueError("fixtures must be synthetic and contain no private data")
-        if self.kind in {"silence", "corruption"} and self.reference_segments:
-            raise ValueError("silence and corrupt fixtures must not claim speech segments")
-        if self.kind not in {"silence", "corruption"} and not self.reference_segments:
+        no_reference_kinds = {"silence", "corruption", "weak_speech"}
+        if self.kind in no_reference_kinds and self.reference_segments:
+            raise ValueError("weak, silent and corrupt fixtures must not claim transcript segments")
+        if self.kind not in no_reference_kinds and not self.reference_segments:
             raise ValueError("speech fixture requires reference transcript lineage")
         if self.kind == "silence" and (self.expected_transcript or self.expected_requirements_outcome != "abstain"):
             raise ValueError("silence must expect empty transcription and abstention")
-        if self.kind in {"silence", "corruption"} and (
+        if self.kind in {"corruption", "weak_speech"} and self.expected_requirements_outcome != "clarify":
+            raise ValueError("weak or undecodable speech must expect clarification")
+        if self.kind in no_reference_kinds and (
             self.expected_transcript or self.fake_asr_transcript
         ):
             raise ValueError("no-speech fixtures must not contain a transcript hypothesis")
@@ -150,7 +153,7 @@ class RussianTranscriptionDataset(DefinitionModel):
         if len(set(ids)) != len(ids):
             raise ValueError("dataset case identities must be unique")
         required = {"short_speech", "long_speech", "pause", "noise", "silence",
-                    "corruption", "multiple_speakers", "malicious_instruction"}
+                    "corruption", "weak_speech", "multiple_speakers", "malicious_instruction"}
         if not required.issubset({case.kind for case in self.cases}):
             raise ValueError("dataset does not cover every required audio scenario")
         fixtures = [case.audio_fixture for case in self.cases]

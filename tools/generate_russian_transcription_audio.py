@@ -67,8 +67,15 @@ def generate(*, manifest: Path, data_root: Path, denis_model: Path, dmitri_model
             if case["kind"] == "corruption":
                 payload = b"RIFF\x08\x00\x00\x00WAVEfmt "
                 fixture_path.write_bytes(payload)
-            elif case["kind"] == "silence":
+            elif case["kind"] in {"silence", "weak_speech"}:
                 samples = array("h", [0]) * round(case["duration_ms"] * SAMPLE_RATE / 1000)
+                if case["kind"] == "weak_speech":
+                    generated = _synthesize(
+                        "Не могу разобрать фразу", *models["speaker-a"],
+                        scratch / "weak-speech.wav",
+                    )
+                    count = min(len(generated), len(samples))
+                    samples[:count] = array("h", (sample // 64 for sample in generated[:count]))
                 payload = _write_wav(fixture_path, samples)
             else:
                 samples = array("h", [0]) * round(case["duration_ms"] * SAMPLE_RATE / 1000)
