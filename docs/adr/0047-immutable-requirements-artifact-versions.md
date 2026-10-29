@@ -31,8 +31,11 @@ about a candidate and cannot itself establish acceptance.
    authorization. Foreign or missing artifacts have the same not-found shape.
    The conversational card renders the stored artifact, not a browser-local
    extraction result.
-5. The first candidate uses deterministic synthetic extraction until a later
-   ticket connects an implementation through the Agent Runtime contract.
+5. The first candidate is produced by the proposal-specific
+   `extract_requirements` capability through the existing Agent Runtime when
+   that workflow composition is enabled. The pre-runtime deterministic
+   producer remains as a compatibility fallback for the current start API and
+   uses the same immutable artifact/version boundary.
 
 ## Consequences
 

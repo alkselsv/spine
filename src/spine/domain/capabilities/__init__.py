@@ -140,6 +140,19 @@ from spine.domain.capabilities.evaluate_answer import (
     evaluate_answer_candidate,
 )
 from spine.domain.capabilities.models import CapabilityDefinition
+from spine.domain.capabilities.extract_requirements import (
+    EXTRACT_REQUIREMENTS_INPUT_SCHEMA,
+    EXTRACT_REQUIREMENTS_OUTPUT_SCHEMA,
+    ExtractRequirementsInput,
+    ExtractRequirementsOutcome,
+    ExtractRequirementsResult,
+    RequirementsClarification,
+    RequirementsExecutionConfiguration,
+    RequirementsExtractionOutcome,
+    RequirementsExtractionOutput,
+    RequirementsExtractionReason,
+    RequirementsExtractionReasonCode,
+)
 from spine.domain.capabilities.semantic_support import (
     SEMANTIC_SUPPORT_ASSESSMENT_SCHEMA,
     SEMANTIC_SUPPORT_POLICY_SCHEMA,
@@ -222,6 +235,17 @@ __all__ = [
     "AnswerQuestionUsage",
     "AttemptProjectionBoundary",
     "CapabilityDefinition",
+    "EXTRACT_REQUIREMENTS_INPUT_SCHEMA",
+    "EXTRACT_REQUIREMENTS_OUTPUT_SCHEMA",
+    "ExtractRequirementsInput",
+    "ExtractRequirementsOutcome",
+    "ExtractRequirementsResult",
+    "RequirementsClarification",
+    "RequirementsExecutionConfiguration",
+    "RequirementsExtractionOutcome",
+    "RequirementsExtractionOutput",
+    "RequirementsExtractionReason",
+    "RequirementsExtractionReasonCode",
     "Citation",
     "CitationValidationReasonCode",
     "CitationValidationStatus",
