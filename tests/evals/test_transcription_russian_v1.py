@@ -1,6 +1,8 @@
 """Contract and repeatability tests for the synthetic Russian transcription eval."""
 
 from copy import deepcopy
+from pathlib import Path
+import shutil
 
 import pytest
 from pydantic import ValidationError
@@ -9,6 +11,7 @@ from spine.evals.transcription_russian_v1 import (
     RussianTranscriptionDataset,
     load_russian_transcription_v1_dataset,
     run_russian_transcription_v1,
+    validate_russian_audio_fixtures,
 )
 
 
@@ -32,13 +35,16 @@ def test_fake_baseline_is_repeatable_and_reports_asr_separately_from_requirement
     assert first.dataset_sha256
     assert first.model_version == "synthetic-fake-asr:v1"
     assert first.config_version == "ru-meeting-fake-config:v1"
-    assert set(first.asr) == {"wer", "cer", "exact_transcript_rate"}
+    assert set(first.asr) == {
+        "wer", "cer", "exact_transcript_rate", "no_speech_hallucination_rate"
+    }
     assert set(first.requirements) == {
         "precision", "recall", "f1", "evidence_precision", "evidence_recall", "outcome_accuracy"
     }
     assert first.asr["wer"].value > 0
     assert first.requirements["evidence_precision"].value == 1
     assert first.requirements["evidence_recall"].value < 1
+    assert first.asr["no_speech_hallucination_rate"].value == 0
 
 
 def test_dataset_rejects_fabricated_evidence_and_invalid_time_ranges() -> None:
@@ -69,3 +75,18 @@ def test_dataset_rejects_private_fixture_markers_and_actionable_attack_evidence(
     attack["requirement_labels"][0]["evidence_segment_ids"] = ["seg-attack"]
     with pytest.raises(ValidationError, match="cannot support requirements"):
         RussianTranscriptionDataset.model_validate(raw)
+
+
+def test_fixture_validation_rejects_missing_or_modified_audio(tmp_path: Path) -> None:
+    dataset = load_russian_transcription_v1_dataset()
+    case = dataset.cases[0]
+    audio_root = Path(__file__).parents[2] / "src/spine/evals/data"
+    shutil.copytree(audio_root / "audio", tmp_path / "audio")
+    target = tmp_path / case.audio_fixture_path
+    validate_russian_audio_fixtures(dataset=dataset, asset_root=tmp_path)
+
+    target.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="digest mismatch"):
+        validate_russian_audio_fixtures(
+            dataset=load_russian_transcription_v1_dataset(), asset_root=tmp_path
+        )

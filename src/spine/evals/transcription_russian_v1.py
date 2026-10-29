@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from functools import lru_cache
 import hashlib
+from itertools import product
 import json
 from pathlib import Path
+from pathlib import PurePosixPath
 import re
 from typing import Literal
+import wave
 
 from pydantic import Field, StrictBool, StrictInt, model_validator
 
@@ -50,6 +53,7 @@ class RussianTranscriptionCase(DefinitionModel):
     ]
     duration_ms: StrictInt = Field(gt=0)
     audio_fixture: VersionIdentifier
+    audio_fixture_path: str = Field(pattern=r"^audio/[a-z0-9-]+\.wav$")
     audio_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     synthetic_recipe: str = Field(min_length=1, max_length=256)
     synthetic_only: StrictBool
@@ -85,8 +89,9 @@ class RussianTranscriptionCase(DefinitionModel):
         if " ".join(segment.reference_text for segment in self.reference_segments) != self.expected_transcript:
             raise ValueError("reference transcript must match the ordered segment text")
         ids = set(segment_ids)
-        if self.audio_sha256 != hashlib.sha256(self.synthetic_recipe.encode("utf-8")).hexdigest():
-            raise ValueError("audio fixture digest does not match its pinned synthetic recipe")
+        fixture_path = PurePosixPath(self.audio_fixture_path)
+        if fixture_path.is_absolute() or ".." in fixture_path.parts:
+            raise ValueError("audio fixture path must remain within the dataset")
         for label in self.requirement_labels:
             if not set(label.evidence_segment_ids).issubset(ids):
                 raise ValueError("requirement evidence references a fabricated segment")
@@ -130,6 +135,7 @@ class RussianTranscriptionDataset(DefinitionModel):
     requirements_metric_version: VersionIdentifier
     fake_model_version: VersionIdentifier
     fake_config_version: VersionIdentifier
+    audio_sample_rate_hz: StrictInt = Field(gt=0)
     cases: tuple[RussianTranscriptionCase, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -144,6 +150,9 @@ class RussianTranscriptionDataset(DefinitionModel):
         fixtures = [case.audio_fixture for case in self.cases]
         if len(set(fixtures)) != len(fixtures):
             raise ValueError("audio fixture identities must be unique")
+        fixture_paths = [case.audio_fixture_path for case in self.cases]
+        if len(set(fixture_paths)) != len(fixture_paths):
+            raise ValueError("audio fixture paths must be unique")
         return self
 
 
@@ -175,7 +184,40 @@ _TOKEN = re.compile(r"[\w-]+", flags=re.UNICODE)
 @lru_cache(maxsize=1)
 def load_russian_transcription_v1_dataset() -> RussianTranscriptionDataset:
     path = Path(__file__).with_name("data") / "russian_transcription_v1.json"
-    return RussianTranscriptionDataset.model_validate_json(path.read_text(encoding="utf-8"))
+    dataset = RussianTranscriptionDataset.model_validate_json(path.read_text(encoding="utf-8"))
+    validate_russian_audio_fixtures(dataset, path.parent)
+    return dataset
+
+
+def validate_russian_audio_fixtures(
+    dataset: RussianTranscriptionDataset, asset_root: Path
+) -> None:
+    """Reject missing, changed or incorrectly timed checked-in audio assets."""
+    for case in dataset.cases:
+        path = asset_root.joinpath(*PurePosixPath(case.audio_fixture_path).parts)
+        payload = path.read_bytes()
+        if hashlib.sha256(payload).hexdigest() != case.audio_sha256:
+            raise ValueError(f"audio fixture digest mismatch: {case.audio_fixture}")
+        try:
+            with wave.open(str(path), "rb") as audio:
+                if (
+                    audio.getnchannels() != 1
+                    or audio.getsampwidth() != 2
+                    or audio.getframerate() != dataset.audio_sample_rate_hz
+                ):
+                    raise ValueError(f"audio fixture format mismatch: {case.audio_fixture}")
+                duration_ms = round(audio.getnframes() * 1000 / audio.getframerate())
+                frames = audio.readframes(audio.getnframes())
+        except (wave.Error, EOFError):
+            if case.kind != "corruption":
+                raise ValueError(f"audio fixture is unreadable: {case.audio_fixture}") from None
+            continue
+        if case.kind == "corruption":
+            raise ValueError("corrupt-media fixture must not be a valid WAV")
+        if duration_ms != case.duration_ms:
+            raise ValueError(f"audio fixture duration mismatch: {case.audio_fixture}")
+        if (case.kind == "silence") != (not any(frames)):
+            raise ValueError(f"audio fixture silence classification mismatch: {case.audio_fixture}")
 
 
 def canonical_russian_transcription_dataset_json(
@@ -191,23 +233,36 @@ def run_russian_transcription_v1(
     """Run deterministic fake ASR and extraction baselines without external calls."""
     loaded = dataset or load_russian_transcription_v1_dataset()
     wer_errors = wer_words = cer_errors = cer_chars = 0
-    exact = abstention_correct = 0
+    no_speech_cases = no_speech_hallucinations = 0
+    exact = outcomes_correct = 0
     gold_requirements = predicted_requirements = true_requirements = 0
     evidence_predicted = evidence_gold = evidence_valid = 0
     for case in loaded.cases:
-        reference_variants = (case.expected_transcript, *(" ".join(
-            segment.permissible_variants[0] if segment.permissible_variants else segment.reference_text
-            for segment in case.reference_segments
-        ),))
         hypothesis = _normalize(case.fake_asr_transcript)
-        reference = min((_normalize(item) for item in reference_variants), key=lambda item: _edit_distance(item, hypothesis))
-        ref_words, hyp_words = reference.split(), hypothesis.split()
-        wer_errors += _edit_distance(ref_words, hyp_words)
-        wer_words += len(ref_words)
-        cer_errors += _edit_distance(list(reference), list(hypothesis))
-        cer_chars += len(reference)
+        if not case.expected_transcript:
+            no_speech_cases += 1
+            no_speech_hallucinations += int(bool(hypothesis))
+            reference = ""
+        else:
+            segment_alternatives = [
+                (segment.reference_text, *segment.permissible_variants)
+                for segment in case.reference_segments
+            ]
+            reference_variants = {
+                case.expected_transcript,
+                *(" ".join(parts) for parts in product(*segment_alternatives)),
+            }
+            reference = min(
+                (_normalize(item) for item in reference_variants),
+                key=lambda item: _edit_distance(item, hypothesis),
+            )
+            ref_words, hyp_words = reference.split(), hypothesis.split()
+            wer_errors += _edit_distance(ref_words, hyp_words)
+            wer_words += len(ref_words)
+            cer_errors += _edit_distance(list(reference), list(hypothesis))
+            cer_chars += len(reference)
         exact += int(reference == hypothesis)
-        abstention_correct += int(case.expected_requirements_outcome == case.fake_requirements_outcome)
+        outcomes_correct += int(case.expected_requirements_outcome == case.fake_requirements_outcome)
         gold = {item.requirement_id: set(item.evidence_segment_ids) for item in case.requirement_labels}
         pred = {item.requirement_id: set(item.evidence_segment_ids) for item in case.fake_requirements}
         gold_requirements += len(gold)
@@ -234,6 +289,7 @@ def run_russian_transcription_v1(
             "wer": _metric(wer_errors, wer_words),
             "cer": _metric(cer_errors, cer_chars),
             "exact_transcript_rate": _metric(exact, len(loaded.cases)),
+            "no_speech_hallucination_rate": _metric(no_speech_hallucinations, no_speech_cases),
         },
         requirements={
             "precision": MetricValue(value=req_precision, numerator=true_requirements, denominator=predicted_requirements),
@@ -241,7 +297,7 @@ def run_russian_transcription_v1(
             "f1": MetricValue(value=req_f1, numerator=2 * true_requirements, denominator=predicted_requirements + gold_requirements),
             "evidence_precision": _metric(evidence_valid, evidence_predicted),
             "evidence_recall": _metric(evidence_valid, evidence_gold),
-            "outcome_accuracy": _metric(abstention_correct, len(loaded.cases)),
+            "outcome_accuracy": _metric(outcomes_correct, len(loaded.cases)),
         },
     )
 
