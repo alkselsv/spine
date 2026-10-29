@@ -29,6 +29,7 @@ from spine.application.diagnostics import (
 )
 from spine.application.ask_admission import PersistedAskAdmissionService
 from spine.application.answer_question_attempts import PersistedAnswerQuestionAttemptService
+from spine.application.connections.management import ProviderConnectionManager
 from spine.application.persistence.delivery import OutboxDeliveryRouteRegistry
 from spine.application.production_qa_deployment import (
     ProductionQAADeploymentProfile,
@@ -94,6 +95,10 @@ from spine.infrastructure.parsed_content_composition import (
 from spine.infrastructure.ingestion_fault_injection import (
     IngestionFaultController,
     IngestionFaultInjectionSettings,
+)
+from spine.infrastructure.connections import (
+    FakeProviderConnectionObserver,
+    PostgreSQLProviderConnectionManagementRepository,
 )
 from spine.infrastructure.operational_correlation import (
     PostgreSQLOperationalCorrelationReader,
@@ -321,6 +326,15 @@ def create_production_app(
     qa_stream = AuthorizedQAStreamService(event_log=InMemoryQAEventLog())
     ask_admission = PersistedAskAdmissionService(persistence.uow_factory)
     qa_sessions = PostgreSQLQASessionService(persistence.uow_factory)
+    provider_connections = ProviderConnectionManager(
+        repository=PostgreSQLProviderConnectionManagementRepository(
+            session_factory=sessions,
+            context_verifier=request_boundary,
+        ),
+        provider=FakeProviderConnectionObserver(
+            clock=lambda: datetime.now(timezone.utc)
+        ),
+    )
     requirements_evidence_service = RequirementsEvidenceValidationService(
         resolver=PersistedRequirementsEvidenceResolver(
             uow_factory=persistence.uow_factory,
@@ -409,6 +423,10 @@ def create_production_app(
             persistence.uow_factory
         ),
         requirements_evidence_service=requirements_evidence_service,
+        provider_connection_service=provider_connections,
+        provider_connection_cursor_secret=(
+            resolved_api.cursor_secret.get_secret_value().encode("utf-8")
+        ),
         workflow_version_resolver=ConfiguredWorkflowVersionResolver(
             resolved_api.workflow_versions
         ),

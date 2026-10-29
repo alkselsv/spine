@@ -22,6 +22,12 @@ from spine.application.connections.google import (
     GoogleReadCommand,
     GoogleProviderQuotaError,
 )
+from spine.application.connections.management import (
+    ProviderConnectionConfigurationRequest,
+    ProviderConnectionManager,
+    ProviderConnectionNotFoundError,
+    ProviderRuntimeObservation,
+)
 from spine.application.google_sheets_reconciliation import (
     GoogleSheetsReconciliationCommand,
     GoogleSheetsReconciliationCoordinator,
@@ -38,9 +44,24 @@ from spine.domain.connections.google import (
     GoogleConnectionStatus,
     OpaqueGoogleReference,
 )
+from spine.domain.connections.provider import (
+    OpaqueProviderReference,
+    ProviderCapability,
+    ProviderCapabilityKind,
+    ProviderCapabilityStatus,
+    ProviderConnectionApproval,
+    ProviderConnectionHealth,
+    ProviderConnectionStatus,
+    ProviderDiagnosticCode,
+    ProviderKind,
+)
 from spine.infrastructure.connections.postgresql_google import (
     PostgreSQLGoogleConnectionRepository,
     google_connection_approvals,
+)
+from spine.infrastructure.connections.postgresql_provider_management import (
+    PostgreSQLProviderConnectionManagementRepository,
+    provider_connection_approvals,
 )
 from spine.infrastructure.persistence.postgresql_google_sheets_sync import (
     PostgreSQLGoogleSheetsSyncRepository,
@@ -68,6 +89,10 @@ from tests.contracts.connections.google_connection_repository_contract import (
     assert_google_connection_idempotency_conflict_contract,
     assert_google_connection_registration_replay_contract,
     assert_google_connection_successor_contract,
+)
+from tests.contracts.connections.provider_connection_management_contract import (
+    ProviderConnectionManagementScenario,
+    assert_provider_connection_management_contract,
 )
 
 pytestmark = [pytest.mark.postgresql, pytest.mark.asyncio(loop_scope="session")]
@@ -705,3 +730,161 @@ async def test_postgresql_rls_hides_other_workspace(
         )
     assert count == 0
     assert approval_count == 0
+
+
+async def test_provider_neutral_management_persists_replay_and_isolates_workspace(
+    google_database: GoogleDatabase,
+) -> None:
+    approval = ProviderConnectionApproval(
+        approval_id=_id(9901),
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        service_principal_id=SERVICE_PRINCIPAL_ID,
+        provider_kind=ProviderKind.YANDEX_DISK,
+        credential_reference=OpaqueProviderReference(value=_id(9902)),
+        grant_reference=OpaqueProviderReference(value=_id(9903)),
+        approved_resource_scope_references=(OpaqueProviderReference(value=_id(9904)),),
+        authorization_generation=2,
+        configuration_generation=3,
+        status=ProviderConnectionStatus.ACTIVE,
+    )
+    async with google_database.migration_engine.begin() as connection:
+        await connection.execute(
+            insert(provider_connection_approvals).values(
+                approval_id=approval.approval_id,
+                workspace_id=approval.workspace_id,
+                environment_id=approval.environment_id,
+                service_principal_id=approval.service_principal_id,
+                provider_kind=approval.provider_kind.value,
+                credential_reference=approval.credential_reference.value,
+                grant_reference=approval.grant_reference.value,
+                approved_resource_scope_references=[
+                    item.value for item in approval.approved_resource_scope_references
+                ],
+                authorization_generation=approval.authorization_generation,
+                configuration_generation=approval.configuration_generation,
+                status=approval.status.value,
+                recorded_at=OCCURRED_AT,
+            )
+        )
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=_id(9910), secret=b"provider-neutral-postgresql-management"
+    )
+    repository = PostgreSQLProviderConnectionManagementRepository(
+        session_factory=async_sessionmaker(
+            google_database.runtime_engine, expire_on_commit=False
+        ),
+        context_verifier=boundary,
+    )
+    observation = ProviderRuntimeObservation(
+        capabilities=(ProviderCapability(
+            kind=ProviderCapabilityKind.BINARY_READ,
+            status=ProviderCapabilityStatus.SUPPORTED,
+            qualification_reference=OpaqueProviderReference(value=_id(9905)),
+        ),),
+        health=ProviderConnectionHealth.HEALTHY,
+        diagnostic_codes=(ProviderDiagnosticCode.CONNECTION_READY,),
+        observed_at=OCCURRED_AT,
+    )
+
+    class ProviderFake:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.fail_next = False
+
+        def fail_once(self) -> None:
+            self.fail_next = True
+
+        async def inspect_approved(self, approved):
+            assert approved == approval
+            self.calls += 1
+            if self.fail_next:
+                self.fail_next = False
+                raise RuntimeError("synthetic provider interruption")
+            return observation
+
+        async def inspect_connection(self, configured):
+            del configured
+            self.calls += 1
+            return observation
+
+    provider = ProviderFake()
+    manager = ProviderConnectionManager(repository=repository, provider=provider)
+    context = boundary.interactive(
+        scope=EnvironmentScope(
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+        ),
+        acting_subject_id=_id(9911),
+        purpose=PersistencePurpose("source_connection_control"),
+        operation=PersistenceOperation("provider_connection_configure"),
+        trace_id=_id(9912),
+    )
+    request = ProviderConnectionConfigurationRequest(
+        approval_id=approval.approval_id,
+        connection_id=_id(9920),
+        expected_version=0,
+        expected_predecessor_version_id=None,
+        idempotency_key="provider-neutral-postgresql-1",
+        occurred_at=OCCURRED_AT,
+    )
+
+    preview = ProviderConnectionManager.build_result(
+        request=request,
+        approval=approval,
+        observation=observation,
+        context=context,
+        replay=False,
+    )
+    created = await assert_provider_connection_management_contract(
+        ProviderConnectionManagementScenario(
+            manager=manager,
+            context=context,
+            initial=request,
+            conflicting_replay=ProviderConnectionConfigurationRequest(
+                approval_id=approval.approval_id,
+                connection_id=_id(9921),
+                expected_version=0,
+                expected_predecessor_version_id=None,
+                idempotency_key=request.idempotency_key,
+                occurred_at=OCCURRED_AT,
+            ),
+            stalled_successor=ProviderConnectionConfigurationRequest(
+                approval_id=approval.approval_id,
+                connection_id=request.connection_id,
+                expected_version=1,
+                expected_predecessor_version_id=(
+                    preview.inspection.connection.connection_version_id
+                ),
+                idempotency_key="provider-neutral-postgresql-stalled-generation",
+                occurred_at=OCCURRED_AT,
+            ),
+            provider_call_count=lambda: provider.calls,
+            fail_next_provider_call=provider.fail_once,
+        )
+    )
+
+    assert await repository.list_current(context) == (created.inspection,)
+    async with google_database.migration_engine.connect() as connection:
+        audit_count = await connection.scalar(
+            text(
+                "SELECT count(*) FROM spine.audit_events "
+                "WHERE audit_event_id = :audit_event_id"
+            ),
+            {"audit_event_id": created.audit.audit_event_id},
+        )
+    assert audit_count == 1
+
+    foreign_context = boundary.interactive(
+        scope=EnvironmentScope(
+            workspace_id=OTHER_WORKSPACE_ID,
+            environment_id=OTHER_ENVIRONMENT_ID,
+        ),
+        acting_subject_id=_id(9913),
+        purpose=PersistencePurpose("source_connection_control"),
+        operation=PersistenceOperation("provider_connection_configure"),
+        trace_id=_id(9914),
+    )
+    with pytest.raises(ProviderConnectionNotFoundError):
+        await manager.configure(request, foreign_context)
+    assert provider.calls == 2

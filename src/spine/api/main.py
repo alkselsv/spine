@@ -40,6 +40,7 @@ from spine.api.feedback import install_feedback_routes
 from spine.api.qa_runs import install_qa_run_routes
 from spine.api.workflow_runs import install_workflow_run_routes
 from spine.api.requirements_artifacts import install_requirements_artifact_routes
+from spine.api.provider_connections import install_provider_connection_routes
 from spine.api.qa_stream import (
     QAStreamDisclosureAuthorizer,
     QAStreamReader,
@@ -95,6 +96,7 @@ from spine.application.persisted_workflow_runs import (
 from spine.application.requirements_artifacts import PersistedRequirementsArtifactService
 from spine.application.requirements_review import RequirementsReviewService
 from spine.application.requirements_evidence import RequirementsEvidenceValidationService
+from spine.application.connections.management import ProviderConnectionManager
 from spine.application.workflow_runs import WorkflowVersionResolver
 from spine.application.parsed_content_inspection import ParsedContentInspectionService
 from spine.application.processing_commands import ProcessingCommandService
@@ -262,6 +264,8 @@ def create_app(
     requirements_artifact_service: PersistedRequirementsArtifactService | None = None,
     requirements_review_service: RequirementsReviewService | None = None,
     requirements_evidence_service: RequirementsEvidenceValidationService | None = None,
+    provider_connection_service: ProviderConnectionManager | None = None,
+    provider_connection_cursor_secret: bytes | None = None,
     workflow_version_resolver: WorkflowVersionResolver | None = None,
     qa_stream_service: QAStreamReader | None = None,
     qa_stream_disclosure_authorizer: QAStreamDisclosureAuthorizer | None = None,
@@ -565,6 +569,17 @@ def create_app(
             application,
             service=requirements_artifact_service,
             evidence_service=requirements_evidence_service,
+        )
+    if provider_connection_service is not None:
+        if type(authorization_runtime) is not ApiAuthorizationRuntime:
+            raise RuntimeError("Provider connection routes require an authorization runtime.")
+        if provider_connection_cursor_secret is None:
+            raise RuntimeError("Provider connection routes require a cursor secret.")
+        install_provider_connection_routes(
+            application,
+            service=provider_connection_service,
+            cursor_secret=provider_connection_cursor_secret,
+            clock=resolved_clock,
         )
     if parsed_content_inspection_service is not None:
         if type(authorization_runtime) is not ApiAuthorizationRuntime:

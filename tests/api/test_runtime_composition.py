@@ -280,6 +280,8 @@ def test_production_app_exposes_protected_canonical_document_surface() -> None:
     ) in paths
     assert "/api/v1/projections/{projection_kind}/status" in paths
     assert "/api/v1/projections/{projection_kind}/recovery" in paths
+    assert "/api/v1/source-connections" in paths
+    assert "/api/v1/source-connections/{connection_id}" in paths
     assert "/api/v1/qa/sessions" in paths
     assert "/api/v1/qa/sessions/{session_id}" in paths
     assert (

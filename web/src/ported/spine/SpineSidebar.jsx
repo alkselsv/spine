@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Activity, House, Layers, Library, MessageSquare, Moon, PanelLeft, Settings, Sun } from "lucide-react";
+import { Activity, House, Layers, Library, MessageSquare, Moon, PanelLeft, Plug, Settings, Sun } from "lucide-react";
 import { Avatar, Caption, IconButton, Text, interactiveBase, motion, tokens, usePal, useThemeContext } from "../halaska-kit";
 import { ru } from "./ru";
 
@@ -8,7 +8,7 @@ const ICON = { size: 15, strokeWidth: 1.25 };
 
 const GROUPS = [
   { items: [{ id: "overview", label: N.overview, icon: House }] },
-  { title: N.groupWork, items: [{ id: "workflowStart", label: N.workflowStart, icon: MessageSquare }, { id: "chat", label: N.chat, icon: MessageSquare }, { id: "knowledge", label: N.knowledge, icon: Library }] },
+  { title: N.groupWork, items: [{ id: "workflowStart", label: N.workflowStart, icon: MessageSquare }, { id: "chat", label: N.chat, icon: MessageSquare }, { id: "knowledge", label: N.knowledge, icon: Library }, { id: "connections", label: N.connections, icon: Plug }] },
   { title: N.groupObserve, items: [{ id: "qaRuns", label: N.qaRuns, icon: Activity }, { id: "runs", label: N.runs, icon: Layers }] },
 ];
 

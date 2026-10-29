@@ -83,6 +83,7 @@ from spine.application.requirements_evidence import (
     RequirementsEvidenceInspectionResult,
     RequirementsEvidenceValidationService,
 )
+from spine.application.connections.management import ProviderConnectionManager
 from spine.application.workflow_runs import (
     PinnedWorkflowVersion,
     StartWorkflowCommand,
@@ -432,6 +433,20 @@ class _UnavailableParsedContentInspectionService:
         del kwargs
         raise RuntimeError("The OpenAPI composition is not executable.")
 
+
+class _UnavailableProviderConnectionService:
+    async def configure(self, *args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+    async def list(self, *args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+    async def inspect(self, *args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
 async def _contract_readiness() -> ApiAuthorizationReadiness:
     return ApiAuthorizationReadiness(
         ready=False,
@@ -518,6 +533,11 @@ def create_openapi_app() -> FastAPI:
             RequirementsEvidenceValidationService,
             _UnavailableRequirementsEvidenceService(),
         ),
+        provider_connection_service=cast(
+            ProviderConnectionManager,
+            _UnavailableProviderConnectionService(),
+        ),
+        provider_connection_cursor_secret=secrets.token_bytes(32),
     )
 
 

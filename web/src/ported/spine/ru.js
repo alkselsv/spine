@@ -12,6 +12,7 @@ export const ru = {
     chat: "Чат",
     qaRuns: "Запуски Q&A",
     runs: "Запуски",
+    connections: "Подключения",
     settings: "Настройки",
   },
   scope: {

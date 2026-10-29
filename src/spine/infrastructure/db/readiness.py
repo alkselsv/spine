@@ -471,6 +471,12 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "google_connection_versions": ExpectedTablePrivileges(
             True, True, True, False, False
         ),
+        "provider_connection_approvals": ExpectedTablePrivileges(
+            True, True, False, False, False
+        ),
+        "provider_connection_versions": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
         "requirements_artifact_versions": ExpectedTablePrivileges(
             True, True, True, False, False
         ),
