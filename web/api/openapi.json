@@ -228,6 +228,47 @@
         "title": "AccessPolicyMetadata",
         "type": "object"
       },
+      "ActorKind": {
+        "enum": [
+          "human",
+          "team",
+          "agent",
+          "service"
+        ],
+        "title": "ActorKind",
+        "type": "string"
+      },
+      "ActorRef": {
+        "additionalProperties": false,
+        "description": "A first-class assignee or initiator of work.",
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ActorKind"
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "title": "ActorRef",
+        "type": "object"
+      },
       "AddContextCommandV1": {
         "additionalProperties": false,
         "description": "Protected conversational context added to one existing run.",
@@ -257,7 +298,7 @@
           "artifact_refs": {
             "default": [],
             "items": {
-              "$ref": "#/components/schemas/WorkflowArtifactRef"
+              "$ref": "#/components/schemas/WorkflowArtifactRefRequestV1"
             },
             "title": "Artifact Refs",
             "type": "array"
@@ -3433,6 +3474,104 @@
           "created_at"
         ],
         "title": "DocumentSnapshot",
+        "type": "object"
+      },
+      "EditRequirementPayloadRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "requirement_id": {
+            "format": "uuid",
+            "title": "Requirement Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "statement": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "title": "Statement",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requirement_id",
+          "statement",
+          "reason"
+        ],
+        "title": "EditRequirementPayloadRequestV1",
+        "type": "object"
+      },
+      "EditRequirementWorkflowCommandRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_refs": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowArtifactRefRequestV1"
+            },
+            "title": "Artifact Refs",
+            "type": "array"
+          },
+          "causation_id": {
+            "format": "uuid",
+            "title": "Causation Id",
+            "type": "string"
+          },
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "command_schema_version": {
+            "const": 1,
+            "title": "Command Schema Version",
+            "type": "integer"
+          },
+          "command_type": {
+            "const": "edit_requirement",
+            "title": "Command Type",
+            "type": "string"
+          },
+          "correlation_id": {
+            "format": "uuid",
+            "title": "Correlation Id",
+            "type": "string"
+          },
+          "expected_run_version": {
+            "minimum": 1.0,
+            "title": "Expected Run Version",
+            "type": "integer"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/EditRequirementPayloadRequestV1"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command_id",
+          "command_type",
+          "command_schema_version",
+          "expected_run_version",
+          "payload",
+          "artifact_refs",
+          "correlation_id",
+          "causation_id"
+        ],
+        "title": "EditRequirementWorkflowCommandRequestV1",
         "type": "object"
       },
       "EvidenceLocator": {
@@ -8004,6 +8143,69 @@
         "title": "ReprocessProcessingRequest",
         "type": "object"
       },
+      "RequestRequirementsReworkWorkflowCommandRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_refs": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowArtifactRefRequestV1"
+            },
+            "title": "Artifact Refs",
+            "type": "array"
+          },
+          "causation_id": {
+            "format": "uuid",
+            "title": "Causation Id",
+            "type": "string"
+          },
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "command_schema_version": {
+            "const": 1,
+            "title": "Command Schema Version",
+            "type": "integer"
+          },
+          "command_type": {
+            "const": "request_rework",
+            "title": "Command Type",
+            "type": "string"
+          },
+          "correlation_id": {
+            "format": "uuid",
+            "title": "Correlation Id",
+            "type": "string"
+          },
+          "expected_run_version": {
+            "minimum": 1.0,
+            "title": "Expected Run Version",
+            "type": "integer"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/RequirementsReviewPayloadRequestV1"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command_id",
+          "command_type",
+          "command_schema_version",
+          "expected_run_version",
+          "payload",
+          "artifact_refs",
+          "correlation_id",
+          "causation_id"
+        ],
+        "title": "RequestRequirementsReworkWorkflowCommandRequestV1",
+        "type": "object"
+      },
       "Requirement": {
         "additionalProperties": false,
         "description": "One traceable, unaccepted statement proposed by requirements extraction.",
@@ -8584,6 +8786,126 @@
         "title": "RequirementsEvidenceInspectionStatus",
         "type": "string"
       },
+      "RequirementsReviewPayloadRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "RequirementsReviewPayloadRequestV1",
+        "type": "object"
+      },
+      "RequirementsReviewReceiptResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "edit_requirement",
+              "save_review",
+              "request_rework"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "actor": {
+            "$ref": "#/components/schemas/ActorRef"
+          },
+          "admission": {
+            "enum": [
+              "accepted",
+              "replayed"
+            ],
+            "title": "Admission",
+            "type": "string"
+          },
+          "base_artifact_ref": {
+            "$ref": "#/components/schemas/WorkflowArtifactRef"
+          },
+          "changed_requirement_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changed Requirement Id"
+          },
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "resulting_artifact_ref": {
+            "$ref": "#/components/schemas/WorkflowArtifactRef"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_version": {
+            "minimum": 1.0,
+            "title": "Run Version",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "work_item_id": {
+            "format": "uuid",
+            "title": "Work Item Id",
+            "type": "string"
+          },
+          "workflow_version_id": {
+            "format": "uuid",
+            "title": "Workflow Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command_id",
+          "work_item_id",
+          "run_id",
+          "workflow_version_id",
+          "state",
+          "run_version",
+          "admission",
+          "action",
+          "actor",
+          "reason",
+          "base_artifact_ref",
+          "resulting_artifact_ref"
+        ],
+        "title": "RequirementsReviewReceiptResponse",
+        "type": "object"
+      },
       "RestoreQASessionRequest": {
         "additionalProperties": false,
         "properties": {
@@ -8870,6 +9192,69 @@
           "lifecycle"
         ],
         "title": "RevisionSnapshot",
+        "type": "object"
+      },
+      "SaveRequirementsReviewWorkflowCommandRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_refs": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowArtifactRefRequestV1"
+            },
+            "title": "Artifact Refs",
+            "type": "array"
+          },
+          "causation_id": {
+            "format": "uuid",
+            "title": "Causation Id",
+            "type": "string"
+          },
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "command_schema_version": {
+            "const": 1,
+            "title": "Command Schema Version",
+            "type": "integer"
+          },
+          "command_type": {
+            "const": "save_review",
+            "title": "Command Type",
+            "type": "string"
+          },
+          "correlation_id": {
+            "format": "uuid",
+            "title": "Correlation Id",
+            "type": "string"
+          },
+          "expected_run_version": {
+            "minimum": 1.0,
+            "title": "Expected Run Version",
+            "type": "integer"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/RequirementsReviewPayloadRequestV1"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command_id",
+          "command_type",
+          "command_schema_version",
+          "expected_run_version",
+          "payload",
+          "artifact_refs",
+          "correlation_id",
+          "causation_id"
+        ],
+        "title": "SaveRequirementsReviewWorkflowCommandRequestV1",
         "type": "object"
       },
       "SecurityDomainMetadata": {
@@ -9337,6 +9722,41 @@
         "title": "WorkflowArtifactRef",
         "type": "object"
       },
+      "WorkflowArtifactRefRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "format": "uuid",
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "artifact_version": {
+            "minimum": 1.0,
+            "title": "Artifact Version",
+            "type": "integer"
+          },
+          "schema_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Schema Name",
+            "type": "string"
+          },
+          "schema_version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "schema_name",
+          "schema_version",
+          "artifact_version"
+        ],
+        "title": "WorkflowArtifactRefRequestV1",
+        "type": "object"
+      },
       "WorkflowEventPageResponse": {
         "additionalProperties": false,
         "properties": {
@@ -9508,7 +9928,12 @@
         "properties": {
           "allowed_commands": {
             "items": {
-              "const": "add_context",
+              "enum": [
+                "add_context",
+                "edit_requirement",
+                "save_review",
+                "request_rework"
+              ],
               "type": "string"
             },
             "title": "Allowed Commands",
@@ -16849,7 +17274,30 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AddContextWorkflowCommandRequestV1"
+                "discriminator": {
+                  "mapping": {
+                    "add_context": "#/components/schemas/AddContextWorkflowCommandRequestV1",
+                    "edit_requirement": "#/components/schemas/EditRequirementWorkflowCommandRequestV1",
+                    "request_rework": "#/components/schemas/RequestRequirementsReworkWorkflowCommandRequestV1",
+                    "save_review": "#/components/schemas/SaveRequirementsReviewWorkflowCommandRequestV1"
+                  },
+                  "propertyName": "command_type"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/AddContextWorkflowCommandRequestV1"
+                  },
+                  {
+                    "$ref": "#/components/schemas/EditRequirementWorkflowCommandRequestV1"
+                  },
+                  {
+                    "$ref": "#/components/schemas/SaveRequirementsReviewWorkflowCommandRequestV1"
+                  },
+                  {
+                    "$ref": "#/components/schemas/RequestRequirementsReworkWorkflowCommandRequestV1"
+                  }
+                ],
+                "title": "Body"
               }
             }
           },
@@ -16860,7 +17308,15 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WorkflowRunReceiptResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/WorkflowRunReceiptResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequirementsReviewReceiptResponse"
+                    }
+                  ],
+                  "title": "Response Workflow.Runs.Commands.Create"
                 }
               }
             },

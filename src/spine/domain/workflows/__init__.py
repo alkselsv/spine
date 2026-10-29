@@ -24,6 +24,7 @@ from spine.domain.workflows.requirements import (
     RequirementEvidenceStatus,
     RequirementEvidenceValidation,
     RequirementEvidenceValidationStatus,
+    RequirementReviewState,
     RequirementsArtifact,
     RequirementState,
 )
@@ -48,6 +49,7 @@ __all__ = [
     "RequirementEvidenceStatus",
     "RequirementEvidenceValidation",
     "RequirementEvidenceValidationStatus",
+    "RequirementReviewState",
     "RequirementsArtifact",
     "RequirementState",
 ]

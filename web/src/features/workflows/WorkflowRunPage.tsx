@@ -171,7 +171,14 @@ function WorkflowRunDetail({
         <dt>Run ID</dt><dd><code>{run.run_id}</code></dd>
       </dl>
       <h3>Хронология</h3>
-      <RequirementsArtifactCard client={client} queryKey={queryKey} runId={run.run_id} />
+      <RequirementsArtifactCard
+        allowedCommands={run.allowed_commands}
+        client={client}
+        onRefresh={onRefresh}
+        queryKey={queryKey}
+        runId={run.run_id}
+        runVersion={run.run_version}
+      />
       {eventsLoading ? <p role="status">Загружаем события…</p> : null}
       {eventsDegraded ? (
         <div role="status">

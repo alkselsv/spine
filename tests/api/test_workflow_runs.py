@@ -7,8 +7,12 @@ import httpx
 
 from spine.api.workflow_runs import install_workflow_run_routes
 from spine.application.persistence.context import EnvironmentScope
-from spine.application.persistence.errors import OptimisticConflictError
-from spine.application.workflow_runs import PinnedWorkflowVersion
+from spine.application.persistence.errors import ConstraintConflictError, OptimisticConflictError
+from spine.application.requirements_review import (
+    RequirementsArtifactStaleError,
+    RequirementsReviewReceipt,
+)
+from spine.application.workflow_runs import PinnedWorkflowVersion, WorkflowArtifactRef
 from spine.domain.common import ActorKind, ActorRef
 from spine.domain.workflows import (
     ClientRequestV1,
@@ -154,7 +158,7 @@ class FakeWorkflowVersionResolver:
 
 
 def _app(service: FakeWorkflowRunService, *, authorize_other_workspace: bool = False,
-         requirements_artifact_service=None):
+         requirements_artifact_service=None, requirements_review_service=None):
     directory = None
     if authorize_other_workspace:
         other_entry = authorization_entry().model_copy(
@@ -175,8 +179,44 @@ def _app(service: FakeWorkflowRunService, *, authorize_other_workspace: bool = F
         command_id_source=lambda: COMMAND_ID,
         cursor_secret=b"workflow-run-api-cursor-secret-639",
         requirements_artifact_service=requirements_artifact_service,
+        requirements_review_service=requirements_review_service,
     )
     return application
+
+
+class FakeRequirementsReviewService:
+    def __init__(self, *, stale: bool = False, terminal: bool = False) -> None:
+        self.command = None
+        self.stale = stale
+        self.terminal = terminal
+
+    async def dispatch(self, *, context, command):
+        if context.scope.workspace_id != WORKSPACE_ID:
+            return None
+        self.command = command
+        if self.terminal:
+            raise ConstraintConflictError("Workflow transition is invalid.")
+        base = command.artifact_refs[0]
+        current = base.model_copy(update={"artifact_version": 2})
+        if self.stale:
+            raise RequirementsArtifactStaleError(current)
+        return RequirementsReviewReceipt(
+            command_receipt=WorkflowCommandReceipt(
+                command_id=command.command_id,
+                work_item_id=WORK_ITEM_ID,
+                run_id=RUN_ID,
+                workflow_version_id=VERSION_ID,
+                state=WorkflowRunState.WAITING,
+                run_version=2,
+                admission="accepted",
+            ),
+            action=command.command_type,
+            actor=command.actor,
+            reason=command.payload.reason,
+            changed_requirement_id=getattr(command.payload, "requirement_id", None),
+            base_artifact_ref=base,
+            resulting_artifact_ref=current,
+        )
 
 
 def _headers(*, workspace_id: UUID = WORKSPACE_ID) -> dict[str, str]:
@@ -310,7 +350,7 @@ async def test_start_uses_server_scope_and_pins_selected_workflow_version() -> N
             },
         )
 
-    assert response.status_code == 202
+    assert response.status_code == 202, response.text
     assert response.json() == {
         "schema_version": 1,
         "command_id": str(COMMAND_ID),
@@ -387,3 +427,120 @@ async def test_run_command_hides_runs_outside_authorized_workspace() -> None:
     assert response.status_code == 404
     assert response.json() == {"code": "workflow.run_not_found"}
     assert "do not disclose" not in response.text.lower()
+
+
+async def test_exact_requirement_edit_returns_human_review_receipt() -> None:
+    service = FakeWorkflowRunService()
+    review = FakeRequirementsReviewService()
+    transport = httpx.ASGITransport(
+        app=_app(service, requirements_review_service=review)
+    )
+    artifact_id = UUID("64400000-0000-4000-8000-000000000001")
+    requirement_id = UUID("64400000-0000-4000-8000-000000000002")
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/v1/runs/{RUN_ID}/commands",
+            headers={**_headers(), "Idempotency-Key": "edit-644"},
+            json={
+                "schema_version": 1,
+                "command_id": "64400000-0000-4000-8000-000000000003",
+                "command_type": "edit_requirement",
+                "command_schema_version": 1,
+                "expected_run_version": 1,
+                "payload": {
+                    "schema_version": 1,
+                    "requirement_id": str(requirement_id),
+                    "statement": "Deliver on Friday by 12:00",
+                    "reason": "Manager clarified the deadline.",
+                },
+                "artifact_refs": [{
+                    "artifact_id": str(artifact_id),
+                    "schema_name": "requirements",
+                    "schema_version": "requirements:v1",
+                    "artifact_version": 1,
+                }],
+                "correlation_id": str(COMMAND_ID),
+                "causation_id": str(COMMAND_ID),
+            },
+        )
+
+    assert response.status_code == 202
+    assert response.json()["action"] == "edit_requirement"
+    assert response.json()["reason"] == "Manager clarified the deadline."
+    assert response.json()["base_artifact_ref"]["artifact_version"] == 1
+    assert response.json()["resulting_artifact_ref"]["artifact_version"] == 2
+    assert review.command.expected_run_version == 1
+    assert review.command.artifact_refs[0].artifact_id == artifact_id
+
+
+async def test_stale_requirement_edit_returns_current_ref_without_protected_content() -> None:
+    service = FakeWorkflowRunService()
+    review = FakeRequirementsReviewService(stale=True)
+    transport = httpx.ASGITransport(
+        app=_app(service, requirements_review_service=review)
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/v1/runs/{RUN_ID}/commands",
+            headers={**_headers(), "Idempotency-Key": "stale-644"},
+            json={
+                "schema_version": 1,
+                "command_id": "64400000-0000-4000-8000-000000000004",
+                "command_type": "request_rework",
+                "command_schema_version": 1,
+                "expected_run_version": 1,
+                "payload": {
+                    "schema_version": 1,
+                    "reason": "Protected customer correction",
+                },
+                "artifact_refs": [{
+                    "artifact_id": "64400000-0000-4000-8000-000000000001",
+                    "schema_name": "requirements",
+                    "schema_version": "requirements:v1",
+                    "artifact_version": 1,
+                }],
+                "correlation_id": str(COMMAND_ID),
+                "causation_id": str(COMMAND_ID),
+            },
+        )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "requirements.artifact_stale"
+    assert response.json()["current_artifact_ref"]["artifact_version"] == 2
+    assert "protected customer correction" not in response.text.lower()
+
+
+async def test_cancelled_run_rejects_requirements_review_without_creating_a_result() -> None:
+    service = FakeWorkflowRunService()
+    review = FakeRequirementsReviewService(terminal=True)
+    transport = httpx.ASGITransport(
+        app=_app(service, requirements_review_service=review)
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/v1/runs/{RUN_ID}/commands",
+            headers={**_headers(), "Idempotency-Key": "cancelled-644"},
+            json={
+                "schema_version": 1,
+                "command_id": "64400000-0000-4000-8000-000000000005",
+                "command_type": "save_review",
+                "command_schema_version": 1,
+                "expected_run_version": 1,
+                "payload": {"schema_version": 1, "reason": "Review after cancellation"},
+                "artifact_refs": [{
+                    "artifact_id": "64400000-0000-4000-8000-000000000001",
+                    "schema_name": "requirements",
+                    "schema_version": "requirements:v1",
+                    "artifact_version": 1,
+                }],
+                "correlation_id": str(COMMAND_ID),
+                "causation_id": str(COMMAND_ID),
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {"code": "workflow.run_terminal"}
+    assert "review after cancellation" not in response.text.lower()
