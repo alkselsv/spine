@@ -99,11 +99,38 @@ async def test_allowed_file_read_returns_path_scoped_v2_observation(
     assert observation.original_bytes == b"# mounted source\n"
     assert observation.external_identity.assurance.value == "path_scoped"
     assert (
-        observation.external_identity.provider_key.provider_object_id
-        == "docs/guide.md"
+        observation.external_identity.provider_key.provider_object_id == "docs/guide.md"
     )
     assert observation.required_capabilities() == frozenset({"binary_read"})
     assert observation.origin_locator_digest is not None
+    assert observation.representation.revision_evidence is not None
+    assert observation.representation.revision_evidence.resource_path == "docs/guide.md"
+
+
+@pytest.mark.asyncio
+async def test_reappearance_occurrence_creates_new_path_scoped_identity(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "mount"
+    root.mkdir()
+    (root / "guide.md").write_bytes(b"same bytes")
+    reader = _reader(root)
+
+    original = await reader.read(_connection(), _command("guide.md"))
+    reappeared = await reader.read(
+        _connection(),
+        replace(_command("guide.md"), external_identity_occurrence="scan-2"),
+    )
+
+    assert (
+        original.external_identity.provider_key
+        == reappeared.external_identity.provider_key
+    )
+    assert (
+        original.external_identity.external_object_id
+        != reappeared.external_identity.external_object_id
+    )
+    assert original.origin_locator_digest == reappeared.origin_locator_digest
 
 
 @pytest.mark.asyncio
@@ -174,9 +201,9 @@ async def test_large_file_is_read_in_bounded_chunks(
 
     monkeypatch.setattr(os, "read", record_read_size)
 
-    observation = await _reader(
-        root, max_file_bytes=256, read_chunk_bytes=13
-    ).read(_connection(), _command("large.bin"))
+    observation = await _reader(root, max_file_bytes=256, read_chunk_bytes=13).read(
+        _connection(), _command("large.bin")
+    )
 
     assert observation.original_bytes == expected
     assert len(read_sizes) > 10

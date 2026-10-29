@@ -19,12 +19,19 @@ from spine.application.connections.provider import (
     ProviderReadCommand,
     ProviderReadError,
 )
+from spine.application.mounted_filesystem_reconciliation import (
+    MountedFilesystemIncompleteScanError,
+    MountedFilesystemScanItem,
+    MountedFilesystemScanSnapshot,
+    MountedFilesystemUnavailableError,
+)
 from spine.connectors.observations import ConnectorCoverage
 from spine.connectors.observations_v2 import (
     BinaryObservationRepresentation,
     ExternalIdentityAssurance,
     NormalizedExternalObservationV2,
     ProviderExternalIdentity,
+    ProviderFileRevisionEvidence,
     ProviderFileKey,
     ProviderObservationDiscovery,
 )
@@ -33,7 +40,6 @@ from spine.domain.connections.provider import (
     ProviderConnection,
     ProviderKind,
 )
-
 
 DEFAULT_MAX_FILE_BYTES = 32 * 1024 * 1024
 MAX_CONFIGURED_FILE_BYTES = 256 * 1024 * 1024
@@ -134,9 +140,15 @@ class MountedFilesystemObservationReader:
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("mounted filesystem clock must return an aware datetime")
         path_digest = hashlib.sha256(relative_path.encode("utf-8")).hexdigest()
+        identity_material = relative_path
+        if command.external_identity_occurrence is not None:
+            identity_material = (
+                f"{relative_path}|occurrence:{command.external_identity_occurrence}"
+            )
+        identity_digest = hashlib.sha256(identity_material.encode("utf-8")).hexdigest()
         content_digest = hashlib.sha256(content).hexdigest()
         event_digest = hashlib.sha256(
-            f"{path_digest}:{content_digest}".encode("ascii")
+            f"{identity_digest}:{content_digest}".encode("ascii")
         ).hexdigest()
         media_type = mimetypes.guess_type(PurePosixPath(relative_path).name)[0]
         if media_type is None:
@@ -155,7 +167,7 @@ class MountedFilesystemObservationReader:
             external_identity=ProviderExternalIdentity(
                 external_namespace="mounted_filesystem",
                 external_generation="mounted-path:v1",
-                external_object_id=path_digest,
+                external_object_id=identity_digest,
                 provider_key=ProviderFileKey(
                     connection_id=command.connection_id,
                     provider_object_id=relative_path,
@@ -168,6 +180,13 @@ class MountedFilesystemObservationReader:
                 media_type=media_type,
                 extraction_profile=_EXTRACTION_PROFILE,
                 locator_contract_version=_LOCATOR_CONTRACT,
+                revision_evidence=ProviderFileRevisionEvidence(
+                    provider_revision=content_digest,
+                    resource_path=relative_path,
+                    content_sha256=content_digest,
+                    byte_length=len(content),
+                    modified_at=observed_at,
+                ),
             ),
             coverage=ConnectorCoverage.COMPLETE,
             discovery=ProviderObservationDiscovery.DIRECT,
@@ -183,6 +202,47 @@ class MountedFilesystemObservationReader:
             observed_at=observed_at,
             provider_media_type=media_type,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class MountedFilesystemTreeScanner:
+    """Enumerate one configured root without treating reachability as absence."""
+
+    roots: Mapping[UUID, MountedFilesystemRoot]
+    scan_timeout_seconds: float = DEFAULT_READ_TIMEOUT_SECONDS
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "roots", MappingProxyType(dict(self.roots)))
+        if (
+            not isinstance(self.scan_timeout_seconds, (int, float))
+            or isinstance(self.scan_timeout_seconds, bool)
+            or not 0 < self.scan_timeout_seconds < float("inf")
+        ):
+            raise ValueError("mounted filesystem scan timeout must be positive")
+
+    async def scan(
+        self,
+        connection: ProviderConnection,
+        resource_scope_reference: OpaqueProviderReference,
+    ) -> MountedFilesystemScanSnapshot:
+        root = self.roots.get(connection.connection_version_id)
+        if (
+            connection.provider_kind is not ProviderKind.MOUNTED_FILESYSTEM
+            or root is None
+            or root.resource_scope_reference != resource_scope_reference
+            or resource_scope_reference
+            not in connection.approved_resource_scope_references
+        ):
+            raise MountedFilesystemUnavailableError()
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(_scan_regular_files, root.path),
+                timeout=self.scan_timeout_seconds,
+            )
+        except MountedFilesystemIncompleteScanError:
+            raise
+        except (OSError, asyncio.TimeoutError) as error:
+            raise MountedFilesystemUnavailableError() from error
 
 
 async def _bounded_read(
@@ -224,12 +284,7 @@ def _read_regular_file_and_release(
 
 
 def _validate_relative_path(value: str) -> str:
-    if (
-        not value
-        or "\x00" in value
-        or "\\" in value
-        or value.startswith("/")
-    ):
+    if not value or "\x00" in value or "\\" in value or value.startswith("/"):
         raise MountedFilesystemReadError()
     parts = value.split("/")
     if any(part in {"", ".", ".."} for part in parts):
@@ -341,8 +396,78 @@ def _stat_node_identity(value: os.stat_result) -> tuple[int, int]:
     return value.st_dev, value.st_ino
 
 
+def _scan_regular_files(root: Path) -> MountedFilesystemScanSnapshot:
+    """Capture a metadata snapshot and fail closed on incomplete traversal."""
+
+    if not getattr(os, "O_NOFOLLOW", 0) or not getattr(os, "O_DIRECTORY", 0):
+        raise MountedFilesystemUnavailableError()
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    root_fd = os.open(root, flags)
+    errors: list[OSError] = []
+    try:
+        root_identity = _stat_node_identity(os.fstat(root_fd))
+        items: list[MountedFilesystemScanItem] = []
+        for directory, directory_names, file_names, directory_fd in os.fwalk(
+            root,
+            topdown=True,
+            onerror=errors.append,
+            follow_symlinks=False,
+        ):
+            # Symlinked directories are visible but are never traversed.
+            directory_names[:] = [
+                name
+                for name in directory_names
+                if not stat.S_ISLNK(
+                    os.stat(name, dir_fd=directory_fd, follow_symlinks=False).st_mode
+                )
+            ]
+            relative_directory = Path(directory).relative_to(root)
+            for name in file_names:
+                try:
+                    value = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                except OSError as error:
+                    errors.append(error)
+                    continue
+                if not stat.S_ISREG(value.st_mode):
+                    continue
+                relative = (relative_directory / name).as_posix()
+                try:
+                    relative = _validate_relative_path(relative)
+                except MountedFilesystemReadError as error:
+                    raise MountedFilesystemIncompleteScanError() from error
+                read_token = hashlib.sha256(
+                    ":".join(str(part) for part in _stat_identity(value)).encode()
+                ).hexdigest()
+                items.append(
+                    MountedFilesystemScanItem(
+                        provider_object_reference=relative,
+                        read_token=read_token,
+                    )
+                )
+        if errors:
+            raise MountedFilesystemIncompleteScanError()
+        verification_fd = os.open(root, flags)
+        try:
+            if _stat_node_identity(os.fstat(verification_fd)) != root_identity:
+                raise MountedFilesystemUnavailableError()
+        finally:
+            os.close(verification_fd)
+    finally:
+        os.close(root_fd)
+    items.sort(key=lambda item: item.provider_object_reference)
+    coverage_digest = hashlib.sha256(
+        "\n".join(
+            f"{item.provider_object_reference}\0{item.read_token}" for item in items
+        ).encode()
+    ).hexdigest()
+    return MountedFilesystemScanSnapshot(
+        items=tuple(items), coverage_digest=coverage_digest
+    )
+
+
 __all__ = [
     "MountedFilesystemObservationReader",
     "MountedFilesystemReadError",
     "MountedFilesystemRoot",
+    "MountedFilesystemTreeScanner",
 ]

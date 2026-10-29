@@ -246,6 +246,10 @@ target.
       confirmed scan generations, approval-bound removal policy, opaque durable
       checkpoints, path-scoped reappearance and fail-closed lifecycle evidence
       (#670)`;
+      `implemented: governed mounted-filesystem import and conservative change
+      reconciliation with verified scan generations, unavailable/incomplete
+      fencing, path-scoped rename/reappearance and unstable-read quarantine
+      (#667, #672)`;
       `not qualified: live Google and Shared Drive behavior`; product integration
       remains open.
 - [ ] Связывание строки реестра, запроса, встречи, клиента и итоговой сметы.

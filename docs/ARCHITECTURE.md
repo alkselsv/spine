@@ -199,6 +199,17 @@ envelope хранится tenant-scoped в PostgreSQL; исходные bytes и
 его состоянием. Canonical deletion authority и scan-generation fence закреплены
 в ADR-0018.
 
+Mounted-filesystem adapter сохраняет ту же canonical deletion authority, но не
+переносит provider semantics на локальные inode или checksum. Baseline identity
+остаётся path-scoped: rename означает подтверждённое отсутствие старого пути и
+новое наблюдение, а reappearance получает новый occurrence без заявления
+identity continuity. Полнота поколения подтверждается двумя совпавшими снимками
+metadata до и после bounded canonical reads. Исчезнувший или нечитаемый root,
+изменившийся снимок и quarantined unstable read оставляют поколение incomplete и
+не разрешают tombstone; восстановление повторяет те же idempotent item effects.
+Снимок содержит только относительные пути и change tokens, а bytes продолжают
+проходить через общий guarded reader и canonical ingestion.
+
 Состояние одного бизнес-объекта не должно одновременно независимо редактироваться в Postgres и Cognee. Сначала фиксируется каноническое изменение, затем outbox запускает обновление проекции.
 
 Обработка принятого аудио фиксируется отдельным tenant-scoped
