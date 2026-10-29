@@ -17,7 +17,7 @@ from pydantic import (
 )
 
 from spine.domain.artifacts import ArtifactRef, GoogleSheetCellLocator, Locator
-from spine.domain.common import DefinitionModel
+from spine.domain.common import ActorRef, DefinitionModel
 from spine.domain.workflows.runs import AcceptedSourceRevisionRef
 
 
@@ -70,6 +70,109 @@ class RequirementEvidenceValidationStatus(str, Enum):
     LOCATOR_MISMATCH = "locator_mismatch"
     FABRICATED = "fabricated"
     DEGRADED = "degraded"
+
+
+class ClarificationReason(str, Enum):
+    MISSING_INFORMATION = "missing_information"
+    AMBIGUOUS_INFORMATION = "ambiguous_information"
+
+
+class ClarificationAnswer(DefinitionModel):
+    """One manager answer admitted as canonical workflow data."""
+
+    schema_version: Literal["clarification-answer:v1"] = "clarification-answer:v1"
+    text: StrictStr = Field(min_length=1, max_length=32_768)
+    answered_by: ActorRef
+    answered_event_id: UUID
+    answered_at: datetime
+
+    @field_validator("text")
+    @classmethod
+    def reject_blank_answer(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("clarification answer must not be blank")
+        return value
+
+    @field_validator("answered_event_id")
+    @classmethod
+    def reject_zero_answer_event(cls, value: UUID) -> UUID:
+        if value.int == 0:
+            raise ValueError("clarification answer event identity must be non-zero")
+        return value
+
+    @field_validator("answered_at")
+    @classmethod
+    def require_aware_answer_time(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("clarification answer timestamp must be timezone-aware")
+        return value
+
+
+class Clarification(DefinitionModel):
+    """A durable question tied to one run, requirement and artifact version."""
+
+    schema_version: Literal["clarification:v1"] = "clarification:v1"
+    clarification_id: UUID
+    run_id: UUID
+    requirement_id: UUID
+    originating_artifact_id: UUID
+    originating_artifact_version: StrictInt = Field(ge=1)
+    question: StrictStr = Field(min_length=1, max_length=8_192)
+    reason: ClarificationReason
+    asked_by: ActorRef
+    asked_event_id: UUID
+    asked_at: datetime
+    correlation_id: UUID
+    answer: ClarificationAnswer | None = None
+    resulting_artifact_version: StrictInt | None = Field(default=None, ge=2)
+    affected_validation_references: tuple[UUID, ...] = ()
+
+    @field_validator(
+        "clarification_id",
+        "run_id",
+        "requirement_id",
+        "originating_artifact_id",
+        "asked_event_id",
+        "correlation_id",
+    )
+    @classmethod
+    def reject_zero_clarification_identity(cls, value: UUID) -> UUID:
+        if value.int == 0:
+            raise ValueError("clarification identities must be non-zero")
+        return value
+
+    @field_validator("question")
+    @classmethod
+    def reject_blank_question(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("clarification question must not be blank")
+        return value
+
+    @field_validator("asked_at")
+    @classmethod
+    def require_aware_asked_time(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("clarification question timestamp must be timezone-aware")
+        return value
+
+    @field_validator("affected_validation_references")
+    @classmethod
+    def validate_validation_lineage(cls, value: tuple[UUID, ...]) -> tuple[UUID, ...]:
+        if any(item.int == 0 for item in value) or len(set(value)) != len(value):
+            raise ValueError("clarification validation lineage must contain unique non-zero identities")
+        return value
+
+    @model_validator(mode="after")
+    def validate_answer_lineage(self) -> "Clarification":
+        if self.answer is None:
+            if self.resulting_artifact_version is not None or self.affected_validation_references:
+                raise ValueError("answered clarification lineage requires an answer")
+            return self
+        if self.resulting_artifact_version != self.originating_artifact_version + 1:
+            raise ValueError("answered clarification must identify its immediate successor")
+        if self.answer.answered_at < self.asked_at:
+            raise ValueError("clarification answer cannot predate the question")
+        return self
 
 
 class RequirementEvidenceValidation(DefinitionModel):
@@ -212,6 +315,7 @@ class RequirementsArtifact(DefinitionModel):
     work_item_id: UUID
     run_id: UUID
     requirements: tuple[Requirement, ...]
+    clarifications: tuple[Clarification, ...] = ()
     state: RequirementState = RequirementState.CANDIDATE
     upstream_artifact_ids: tuple[UUID, ...] = ()
     predecessor_version: StrictInt | None = Field(default=None, ge=1)
@@ -241,4 +345,19 @@ class RequirementsArtifact(DefinitionModel):
         requirement_ids = tuple(item.requirement_id for item in self.requirements)
         if len(set(requirement_ids)) != len(requirement_ids):
             raise ValueError("requirements in an artifact must have stable unique identities")
+        clarification_ids = tuple(item.clarification_id for item in self.clarifications)
+        if len(set(clarification_ids)) != len(clarification_ids):
+            raise ValueError("clarifications in an artifact must have stable unique identities")
+        if any(
+            item.run_id != self.run_id
+            or item.originating_artifact_id != self.artifact_id
+            or item.requirement_id not in requirement_ids
+            or item.originating_artifact_version > self.artifact_version
+            or (
+                item.answer is not None
+                and item.resulting_artifact_version != self.artifact_version
+            )
+            for item in self.clarifications
+        ):
+            raise ValueError("clarification lineage must belong to the exact requirements artifact")
         return self

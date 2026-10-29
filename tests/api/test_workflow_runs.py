@@ -99,7 +99,7 @@ class FakeWorkflowRunService:
             return None
         return self.run
 
-    async def dispatch(self, *, context, command):
+    async def dispatch(self, *, context, command, clarification_successor=None):
         scope = context.scope
         if (
             command.run_id != RUN_ID
@@ -108,16 +108,33 @@ class FakeWorkflowRunService:
         ):
             return None
         self.continuation = command
-        self.run = self.run.model_copy(update={"run_version": 2})
+        next_state = (
+            WorkflowRunState.RUNNING
+            if command.command_type == "answer_clarification"
+            else self.run.state
+        )
+        self.run = self.run.model_copy(update={
+            "run_version": self.run.run_version + 1,
+            "state": next_state,
+        })
+        self.clarification_successor = clarification_successor
         self.events.append(
             WorkflowEvent(
                 event_id=UUID("63900000-0000-0000-0000-000000000011"),
                 run_id=RUN_ID,
-                sequence=2,
-                event_type="workflow.context-added",
+                sequence=self.run.run_version,
+                event_type=(
+                    "workflow.clarification-answered"
+                    if command.command_type == "answer_clarification"
+                    else "workflow.context-added"
+                ),
                 event_schema_version=1,
-                run_version=2,
-                summary="Additional context received.",
+                run_version=self.run.run_version,
+                summary=(
+                    "Clarification answered."
+                    if command.command_type == "answer_clarification"
+                    else "Additional context received."
+                ),
                 correlation_id=command.correlation_id,
                 causation_id=command.command_id,
                 occurred_at=NOW,
@@ -128,8 +145,8 @@ class FakeWorkflowRunService:
             work_item_id=WORK_ITEM_ID,
             run_id=RUN_ID,
             workflow_version_id=VERSION_ID,
-            state=WorkflowRunState.ADMITTED,
-            run_version=2,
+            state=next_state,
+            run_version=self.run.run_version,
             admission="accepted",
         )
 
@@ -271,6 +288,66 @@ async def test_add_context_uses_trusted_scope_and_restores_safe_event_feed() -> 
         "workflow.context-added",
     ]
     assert "deadline" not in events_response.text.lower()
+
+
+async def test_answer_clarification_uses_typed_command_and_resumes_same_run() -> None:
+    service = FakeWorkflowRunService()
+    service.run = service.run.model_copy(
+        update={"state": WorkflowRunState.WAITING, "run_version": 2}
+    )
+
+    class CandidateService:
+        def __init__(self) -> None:
+            self.command = None
+            self.successor = object()
+
+        async def prepare_clarification_answer(self, *, context, command, requester):
+            assert context.scope == EnvironmentScope(WORKSPACE_ID, ENVIRONMENT_ID)
+            assert requester.subject_id == authorization_entry().canonical_human_identity_id
+            self.command = command
+            return self.successor
+
+    candidates = CandidateService()
+    transport = httpx.ASGITransport(
+        app=_app(service, requirements_artifact_service=candidates)
+    )
+    clarification_id = UUID("64300000-0000-4000-8000-000000000001")
+    requirement_id = UUID("64300000-0000-4000-8000-000000000002")
+    artifact_id = UUID("64300000-0000-4000-8000-000000000003")
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/v1/runs/{RUN_ID}/commands",
+            headers={**_headers(), "Idempotency-Key": "clarification-answer-643"},
+            json={
+                "schema_version": 1,
+                "command_id": "64300000-0000-4000-8000-000000000004",
+                "command_type": "answer_clarification",
+                "command_schema_version": 1,
+                "expected_run_version": 2,
+                "payload": {
+                    "schema_version": 1,
+                    "clarification_id": str(clarification_id),
+                    "requirement_id": str(requirement_id),
+                    "answer": "The delivery deadline is December 20.",
+                },
+                "artifact_refs": [{
+                    "artifact_id": str(artifact_id),
+                    "schema_name": "requirements",
+                    "schema_version": "requirements:v1",
+                    "artifact_version": 1,
+                }],
+                "correlation_id": str(RUN_ID),
+                "causation_id": str(clarification_id),
+            },
+        )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["run_id"] == str(RUN_ID)
+    assert response.json()["state"] == "running"
+    assert response.json()["run_version"] == 3
+    assert candidates.command.payload.answer.endswith("December 20.")
+    assert service.clarification_successor is candidates.successor
 
 
 async def test_event_cursor_is_stable_and_bound_to_run_scope() -> None:

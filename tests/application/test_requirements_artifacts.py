@@ -7,8 +7,16 @@ from spine.application.persistence.context import (
     EnvironmentScope, PersistenceOperation, PersistencePurpose,
     TrustedContextProvenance, TrustedPersistenceContext,
 )
-from spine.application.persistence.errors import InvalidPersistenceContextError
+from spine.application.persistence.errors import (
+    InvalidPersistenceContextError,
+    OptimisticConflictError,
+)
 from spine.application.requirements_artifacts import PersistedRequirementsArtifactService
+from spine.application.workflow_runs import (
+    AnswerClarificationCommandV1,
+    WorkflowArtifactRef,
+    WorkflowCommand,
+)
 from spine.domain.common import ActorKind, ActorRef, ContextOrigin
 from spine.domain.workflows import ClientRequestV1, Requirement, RequirementState, WorkflowRun
 from spine.domain.workflows.runs import WorkflowRunState
@@ -41,9 +49,18 @@ def _run(message: str = "Deliver by Friday") -> WorkflowRun:
 class _Runs:
     def __init__(self, run: WorkflowRun | None = None) -> None:
         self.run = run or _run()
+        self.waits = 0
 
     async def get_run(self, **kwargs: object) -> WorkflowRun | None:
         return self.run if kwargs["run_id"] == self.run.run_id else None
+
+    async def wait_for_clarification(self, artifact) -> WorkflowRun:
+        if self.run.state is not WorkflowRunState.WAITING:
+            self.run = self.run.model_copy(
+                update={"state": WorkflowRunState.WAITING, "run_version": self.run.run_version + 1}
+            )
+            self.waits += 1
+        return self.run
 
 
 class _Artifacts:
@@ -67,6 +84,12 @@ class _Artifacts:
         return tuple(sorted((item for item in self.records.values()
                              if item.workspace_id == workspace_id and item.environment_id == environment_id
                              and item.artifact_id == artifact_id), key=lambda item: item.artifact_version))
+
+    async def get_for_run(self, *, workspace_id, environment_id, run_id):
+        matches = [item for item in self.records.values()
+                   if item.workspace_id == workspace_id and item.environment_id == environment_id
+                   and item.run_id == run_id]
+        return max(matches, key=lambda item: item.artifact_version) if matches else None
 
 
 class _Uow:
@@ -158,7 +181,7 @@ async def test_successor_preserves_prior_version_and_records_lineage() -> None:
 @pytest.mark.asyncio
 async def test_low_information_first_message_produces_partial_candidate() -> None:
     artifacts = _Artifacts()
-    _, factory = _factory(artifacts, _run("Help"))
+    uow, factory = _factory(artifacts, _run("Help"))
     service = PersistedRequirementsArtifactService(factory)
 
     artifact = await service.produce_first_candidate(context=_context(), run_id=UUID(int=3))
@@ -166,3 +189,71 @@ async def test_low_information_first_message_produces_partial_candidate() -> Non
     assert artifact is not None
     assert artifact.state is RequirementState.PARTIAL
     assert artifact.requirements[0].missing_markers == ("scope", "success_criteria")
+    assert len(artifact.clarifications) == 1
+    clarification = artifact.clarifications[0]
+    assert clarification.run_id == artifact.run_id
+    assert clarification.requirement_id == artifact.requirements[0].requirement_id
+    assert clarification.originating_artifact_version == artifact.artifact_version
+    assert clarification.answer is None
+    assert "Help" not in clarification.question
+    assert uow.workflow_runs.run.state is WorkflowRunState.WAITING
+    assert uow.workflow_runs.run.run_version == 2
+    assert uow.workflow_runs.waits == 1
+
+
+@pytest.mark.asyncio
+async def test_clarification_answer_prepares_one_immutable_affected_successor() -> None:
+    artifacts = _Artifacts()
+    _, factory = _factory(artifacts, _run("Help"))
+    service = PersistedRequirementsArtifactService(factory)
+    first = await service.produce_first_candidate(context=_context(), run_id=UUID(int=3))
+    assert first is not None
+    clarification = first.clarifications[0]
+    command = WorkflowCommand(
+        command_id=UUID(int=643),
+        idempotency_key="clarification-643",
+        run_id=first.run_id,
+        workspace_id=first.workspace_id,
+        environment_id=first.environment_id,
+        actor=ActorRef(kind=ActorKind.HUMAN, id=UUID(int=21)),
+        command_type="answer_clarification",
+        command_schema_version=1,
+        expected_run_version=2,
+        payload=AnswerClarificationCommandV1(
+            clarification_id=clarification.clarification_id,
+            requirement_id=clarification.requirement_id,
+            answer="The scope is a customer portal delivered by December 20.",
+        ),
+        artifact_refs=(WorkflowArtifactRef(
+            artifact_id=first.artifact_id,
+            schema_name="requirements",
+            schema_version=first.schema_version,
+            artifact_version=first.artifact_version,
+        ),),
+        trace_id=UUID(int=20),
+        correlation_id=UUID(int=644),
+        causation_id=UUID(int=645),
+    )
+
+    successor = await service.prepare_clarification_answer(
+        context=_context(), command=command
+    )
+
+    assert first.clarifications[0].answer is None
+    assert successor.artifact_version == 2
+    assert successor.predecessor_version == 1
+    assert successor.clarifications[0].answer is not None
+    assert successor.clarifications[0].answer.text.startswith("The scope")
+    assert successor.requirements[0].missing_markers == ()
+    assert successor.requirements[0].ambiguous_markers == ()
+
+    await artifacts.persist_candidate(successor)
+    conflicting = command.model_copy(update={
+        "command_id": UUID(int=646),
+        "idempotency_key": "clarification-643-stale",
+        "payload": command.payload.model_copy(update={"answer": "A different deadline."}),
+    })
+    with pytest.raises(OptimisticConflictError, match="artifact version is stale"):
+        await service.prepare_clarification_answer(
+            context=_context(), command=conflicting
+        )

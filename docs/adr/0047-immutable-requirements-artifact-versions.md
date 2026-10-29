@@ -36,6 +36,16 @@ about a candidate and cannot itself establish acceptance.
    that workflow composition is enabled. The pre-runtime deterministic
    producer remains as a compatibility fallback for the current start API and
    uses the same immutable artifact/version boundary.
+6. Missing or ambiguous information is retained as a typed `Clarification`
+   inside the exact artifact lineage. Opening it advances the existing run to a
+   durable human wait; answering it is a shared `WorkflowCommand` against the
+   originating artifact version, never a new WorkItem, WorkflowRun or Q&A
+   Session.
+7. Answer admission appends one successor, revalidates only the affected
+   requirement evidence under current authority, and records content-free
+   wait/resume events and Temporal signals. Exact replay returns the original
+   receipt; stale run/artifact versions and mismatched clarification identity
+   fail without a second successor.
 
 ## Consequences
 
@@ -46,6 +56,10 @@ about a candidate and cannot itself establish acceptance.
   and preserves the prior version.
 - Source references identify accepted revisions only; disclosing source content
   remains subject to the separate evidence authorization contract.
+- PostgreSQL remains the canonical read model for questions, answers, artifact
+  lineage and run state. Temporal owns the durable wait and resumes the same
+  pinned workflow from content-free outbox signals; its history is not the
+  conversational timeline.
 
 ## Source
 

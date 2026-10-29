@@ -7,10 +7,12 @@ import pytest
 
 from spine.application.workflow_runs import (
     AddContextCommandV1,
+    AnswerClarificationCommandV1,
     ConfiguredWorkflowVersionResolver,
     PinnedWorkflowVersion,
     StartWorkflowCommand,
     WorkflowCommand,
+    WorkflowArtifactRef,
     WorkflowVersionUnavailableError,
     WorkflowRunAdmissionService,
     workflow_run_snapshot,
@@ -51,6 +53,40 @@ def test_add_context_command_is_versioned_typed_and_rejects_unknown_fields() -> 
     with pytest.raises(ValueError):
         WorkflowCommand.model_validate(
             {**command.model_dump(mode="python"), "unexpected": "rejected"}
+        )
+
+
+def test_answer_clarification_command_requires_exact_originating_artifact() -> None:
+    command = WorkflowCommand(
+        command_id=UUID("64300000-0000-4000-8000-000000000001"),
+        idempotency_key="clarification-643",
+        run_id=UUID("64300000-0000-4000-8000-000000000002"),
+        workspace_id=UUID("64300000-0000-4000-8000-000000000003"),
+        environment_id=UUID("64300000-0000-4000-8000-000000000004"),
+        actor=ActorRef(kind=ActorKind.HUMAN, id=UUID("64300000-0000-4000-8000-000000000005")),
+        command_type="answer_clarification",
+        command_schema_version=1,
+        expected_run_version=2,
+        payload=AnswerClarificationCommandV1(
+            clarification_id=UUID("64300000-0000-4000-8000-000000000006"),
+            requirement_id=UUID("64300000-0000-4000-8000-000000000007"),
+            answer="The delivery deadline is December 20.",
+        ),
+        artifact_refs=(WorkflowArtifactRef(
+            artifact_id=UUID("64300000-0000-4000-8000-000000000008"),
+            schema_name="requirements",
+            schema_version="requirements:v1",
+            artifact_version=1,
+        ),),
+        trace_id=UUID("64300000-0000-4000-8000-000000000009"),
+        correlation_id=UUID("64300000-0000-4000-8000-000000000010"),
+        causation_id=UUID("64300000-0000-4000-8000-000000000011"),
+    )
+
+    assert command.payload.answer == "The delivery deadline is December 20."
+    with pytest.raises(ValueError, match="exact requirements artifact"):
+        WorkflowCommand.model_validate(
+            command.model_dump(mode="python") | {"artifact_refs": ()}
         )
 
 

@@ -96,6 +96,39 @@ class EditRequirementCommandV1(SpineModel):
         return value
 
 
+class AnswerClarificationCommandV1(SpineModel):
+    """A manager answer linked to one persisted clarification."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal[1] = 1
+    clarification_id: UUID
+    requirement_id: UUID
+    answer: str = Field(min_length=1, max_length=32_768)
+
+    @field_validator("clarification_id", "requirement_id")
+    @classmethod
+    def reject_zero_identity(cls, value: UUID) -> UUID:
+        if value.int == 0:
+            raise ValueError("clarification command identities must be non-zero")
+        return value
+
+    @field_validator("answer")
+    @classmethod
+    def reject_blank_answer(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("clarification answer must not be blank")
+        return value
+
+
+class CancelWorkflowCommandV1(SpineModel):
+    """Content-free request to cancel the existing durable run."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal[1] = 1
+
+
 class SaveRequirementsReviewCommandV1(SpineModel):
     """A human decision that the exact requirements version has been reviewed."""
 
@@ -158,7 +191,12 @@ class WorkflowCommand(SpineModel):
     environment_id: UUID
     actor: ActorRef
     command_type: Literal[
-        "add_context", "edit_requirement", "save_review", "request_rework"
+        "add_context",
+        "edit_requirement",
+        "save_review",
+        "request_rework",
+        "answer_clarification",
+        "cancel",
     ]
     command_schema_version: Literal[1]
     expected_run_version: int = Field(ge=1, strict=True)
@@ -167,6 +205,8 @@ class WorkflowCommand(SpineModel):
         | EditRequirementCommandV1
         | SaveRequirementsReviewCommandV1
         | RequestRequirementsReworkCommandV1
+        | AnswerClarificationCommandV1
+        | CancelWorkflowCommandV1
     )
     artifact_refs: tuple[WorkflowArtifactRef, ...] = ()
     trace_id: UUID
@@ -191,15 +231,30 @@ class WorkflowCommand(SpineModel):
         return value
 
     @model_validator(mode="after")
-    def validate_payload_for_command_type(self) -> "WorkflowCommand":
+    def validate_command_variant(self) -> "WorkflowCommand":
         expected = {
             "add_context": AddContextCommandV1,
             "edit_requirement": EditRequirementCommandV1,
             "save_review": SaveRequirementsReviewCommandV1,
             "request_rework": RequestRequirementsReworkCommandV1,
+            "answer_clarification": AnswerClarificationCommandV1,
+            "cancel": CancelWorkflowCommandV1,
         }[self.command_type]
         if type(self.payload) is not expected:
             raise ValueError("workflow command payload does not match command type")
+        if self.command_type == "cancel":
+            if self.artifact_refs:
+                raise ValueError("cancel requires its typed content-free payload")
+            return self
+        if self.command_type == "answer_clarification":
+            if len(self.artifact_refs) != 1:
+                raise ValueError("answer_clarification requires one exact requirements artifact")
+            artifact = self.artifact_refs[0]
+            if (
+                artifact.schema_name != "requirements"
+                or artifact.schema_version != "requirements:v1"
+            ):
+                raise ValueError("answer_clarification requires one exact requirements artifact")
         return self
 
 class PinnedWorkflowVersion(SpineModel):
@@ -302,16 +357,26 @@ def workflow_run_snapshot(run: WorkflowRun) -> WorkflowRunSnapshot:
     """Project protected canonical state into the shared safe read model."""
 
     allowed_commands: tuple[
-        Literal["add_context", "edit_requirement", "save_review", "request_rework"], ...
+        Literal[
+            "add_context",
+            "edit_requirement",
+            "save_review",
+            "request_rework",
+            "answer_clarification",
+            "cancel",
+        ],
+        ...,
     ] = ()
     if run.state.value not in {"completed", "failed", "cancelled"}:
-        allowed_commands = ("add_context",)
+        allowed_commands = ("add_context", "cancel")
         if run.workflow_key == "commercial.requirements":
             allowed_commands += (
                 "edit_requirement",
                 "save_review",
                 "request_rework",
             )
+            if run.state.value == "waiting":
+                allowed_commands += ("answer_clarification",)
     return WorkflowRunSnapshot(
         run_id=run.run_id,
         work_item_id=run.work_item_id,
@@ -332,6 +397,8 @@ __all__ = [
     "EditRequirementCommandV1",
     "RequestRequirementsReworkCommandV1",
     "SaveRequirementsReviewCommandV1",
+    "AnswerClarificationCommandV1",
+    "CancelWorkflowCommandV1",
     "StartWorkflowCommand",
     "WorkflowArtifactRef",
     "WorkflowCommand",

@@ -27,6 +27,7 @@ from spine.workflows.temporal.definitions import (
     AskAdmissionWorkflowDefinition,
     build_ask_admission_activity_bindings as _build_ask_admission_activity_bindings,
 )
+from spine.workflows.temporal.requirements import RequirementsWorkflowDefinition
 from spine.workers import OutboxConsumerBinding
 
 if TYPE_CHECKING:
@@ -82,6 +83,12 @@ def build_ask_admission_workflow_definition() -> type[AskAdmissionWorkflowDefini
     return AskAdmissionWorkflowDefinition
 
 
+def build_requirements_workflow_definition() -> type[RequirementsWorkflowDefinition]:
+    """Return the durable R2 workflow registered under the shared run type."""
+
+    return RequirementsWorkflowDefinition
+
+
 def build_ask_admission_activity_bindings(
     activity: AskAdmissionActivity,
 ) -> tuple[object, object]:
@@ -110,7 +117,10 @@ def create_ask_admission_worker(
     return Worker(
         client,
         task_queue=task_queue,
-        workflows=[build_ask_admission_workflow_definition()],
+        workflows=[
+            build_ask_admission_workflow_definition(),
+            build_requirements_workflow_definition(),
+        ],
         activities=list(build_ask_admission_activity_bindings(activity)),
     )
 
@@ -122,6 +132,7 @@ __all__ = [
     "build_ask_admission_delivery_binding",
     "build_ask_admission_activity_bindings",
     "build_ask_admission_workflow_definition",
+    "build_requirements_workflow_definition",
     "create_ask_admission_worker",
     "register_ask_admission_delivery_route",
 ]

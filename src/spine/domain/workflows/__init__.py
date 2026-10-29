@@ -17,6 +17,9 @@ from spine.domain.workflows.runs import (
     WorkflowRunState,
 )
 from spine.domain.workflows.requirements import (
+    Clarification,
+    ClarificationAnswer,
+    ClarificationReason,
     Requirement,
     RequirementCategory,
     RequirementEvidenceRef,
@@ -30,6 +33,9 @@ from spine.domain.workflows.requirements import (
 )
 
 __all__ = [
+    "Clarification",
+    "ClarificationAnswer",
+    "ClarificationReason",
     "AcceptedSourceRevisionRef",
     "ClientRequestV1",
     "StepDefinition",

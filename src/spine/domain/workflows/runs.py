@@ -114,6 +114,9 @@ class WorkflowEvent(DefinitionModel):
         "workflow.requirement-edited",
         "workflow.requirements-reviewed",
         "workflow.requirements-rework-requested",
+        "workflow.clarification-requested",
+        "workflow.clarification-answered",
+        "workflow.run-cancelled",
     ]
     event_schema_version: Literal[1] = 1
     run_version: int = Field(ge=1)
@@ -158,7 +161,15 @@ class WorkflowRunSnapshot(DefinitionModel):
     state: WorkflowRunState
     run_version: int = Field(ge=1)
     allowed_commands: tuple[
-        Literal["add_context", "edit_requirement", "save_review", "request_rework"], ...
+        Literal[
+            "add_context",
+            "edit_requirement",
+            "save_review",
+            "request_rework",
+            "answer_clarification",
+            "cancel",
+        ],
+        ...,
     ]
     created_at: datetime
 

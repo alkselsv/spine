@@ -9,7 +9,13 @@ from spine.application.workflows.run_start_dispatch import (
     WorkflowRunStartHandle,
     WorkflowRunStartInput,
     WorkflowRunStartClient,
+    workflow_id_for_run,
     WORKFLOW_RUN_START_TYPE,
+)
+from spine.application.persistence.workflow_runs import (
+    ClarificationAnsweredDispatchPayload,
+    ClarificationRequestedDispatchPayload,
+    WorkflowCancelledDispatchPayload,
 )
 from spine.workflows.temporal.client import TemporalSdkClient
 
@@ -57,6 +63,37 @@ class TemporalSdkWorkflowRunClient(WorkflowRunStartClient):
             workflow_id=workflow_id,
             run_id=UUID(workflow_id),
         )
+
+    async def signal_clarification_requested(
+        self, payload: ClarificationRequestedDispatchPayload
+    ) -> None:
+        await self._signal(
+            run_id=payload.run_id,
+            signal="clarification_requested",
+            payload=payload.model_dump(mode="json"),
+        )
+
+    async def signal_clarification_answered(
+        self, payload: ClarificationAnsweredDispatchPayload
+    ) -> None:
+        await self._signal(
+            run_id=payload.run_id,
+            signal="clarification_answered",
+            payload=payload.model_dump(mode="json"),
+        )
+
+    async def signal_run_cancelled(
+        self, payload: WorkflowCancelledDispatchPayload
+    ) -> None:
+        await self._signal(
+            run_id=payload.run_id,
+            signal="run_cancelled",
+            payload=payload.model_dump(mode="json"),
+        )
+
+    async def _signal(self, *, run_id: UUID, signal: str, payload: object) -> None:
+        handle = self._client.get_workflow_handle(workflow_id_for_run(run_id))
+        await handle.signal(signal, payload)  # type: ignore[attr-defined]
 
 
 __all__ = ["TemporalSdkWorkflowRunClient"]

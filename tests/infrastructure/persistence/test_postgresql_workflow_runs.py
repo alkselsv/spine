@@ -19,10 +19,24 @@ from spine.application.persistence.idempotency import (
     OpaqueResultReference,
 )
 from spine.application.persistence.workflow_runs import register_workflow_run_outbox_event
-from spine.application.workflow_runs import AddContextCommandV1, StartWorkflowCommand, WorkflowCommand
+from spine.application.workflow_runs import (
+    AddContextCommandV1,
+    AnswerClarificationCommandV1,
+    CancelWorkflowCommandV1,
+    StartWorkflowCommand,
+    WorkflowArtifactRef,
+    WorkflowCommand,
+)
 from spine.domain.common import ActorKind, ActorRef, EnvironmentKind
 from spine.domain.workspaces import Environment
-from spine.domain.workflows import ClientRequestV1
+from spine.domain.workflows import (
+    Clarification,
+    ClarificationAnswer,
+    ClientRequestV1,
+    Requirement,
+    RequirementState,
+    RequirementsArtifact,
+)
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.postgresql_workflow_runs import (
     PostgreSQLWorkflowRunAdmissionRepository,
@@ -72,6 +86,7 @@ class FakeUow:
         self.claim_error = None
         self.intents = []
         self.completed = []
+        self.persisted_artifacts = []
         self.idempotency = SimpleNamespace(
             claim=self._claim,
             complete=self._complete,
@@ -79,6 +94,9 @@ class FakeUow:
         self.outbox = SimpleNamespace(append=self._append)
         self.environments = SimpleNamespace(
             resolve=self._resolve_environment,
+        )
+        self.requirements_artifacts = SimpleNamespace(
+            persist_candidate=self._persist_artifact,
         )
 
     def _guard_active(self):
@@ -109,6 +127,10 @@ class FakeUow:
 
     async def _append(self, intent):
         self.intents.append(intent)
+
+    async def _persist_artifact(self, artifact):
+        self.persisted_artifacts.append(artifact)
+        return artifact
 
     async def _execute(self, statement):
         self.statements.append(statement)
@@ -176,6 +198,96 @@ def _run_row(*, state: str = "running", run_version: int = 1) -> dict[str, objec
     }
 
 
+def _clarification_artifacts() -> tuple[RequirementsArtifact, RequirementsArtifact]:
+    requirement = Requirement(
+        requirement_id=UUID("64300000-0000-4000-8000-000000000010"),
+        category="unresolved_information",
+        statement="Delivery date is not confirmed.",
+        missing_markers=("delivery_date",),
+        state=RequirementState.PARTIAL,
+    )
+    clarification = Clarification(
+        clarification_id=UUID("64300000-0000-4000-8000-000000000011"),
+        run_id=RUN_ID,
+        requirement_id=requirement.requirement_id,
+        originating_artifact_id=UUID("64300000-0000-4000-8000-000000000012"),
+        originating_artifact_version=1,
+        question="Please provide the missing information required to continue.",
+        reason="missing_information",
+        asked_by=ActorRef(kind=ActorKind.AGENT, id=UUID("64300000-0000-4000-8000-000000000013")),
+        asked_event_id=UUID("64300000-0000-4000-8000-000000000014"),
+        asked_at=NOW,
+        correlation_id=UUID("64300000-0000-4000-8000-000000000015"),
+    )
+    first = RequirementsArtifact(
+        artifact_id=clarification.originating_artifact_id,
+        artifact_version=1,
+        production_identity="requirements-extraction-v1",
+        production_digest="a" * 64,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        work_item_id=WORK_ITEM_ID,
+        run_id=RUN_ID,
+        requirements=(requirement,),
+        clarifications=(clarification,),
+        state=RequirementState.PARTIAL,
+    )
+    answered = clarification.model_copy(update={
+        "answer": ClarificationAnswer(
+            text="December 20.",
+            answered_by=ActorRef(kind=ActorKind.HUMAN, id=ACTOR_ID),
+            answered_event_id=UUID("64300000-0000-4000-8000-000000000016"),
+            answered_at=NOW,
+        ),
+        "resulting_artifact_version": 2,
+    })
+    successor = RequirementsArtifact(
+        **{
+            **first.model_dump(mode="python"),
+            "artifact_version": 2,
+            "predecessor_version": 1,
+            "production_identity": "clarification-answer:v1:643",
+            "production_digest": "b" * 64,
+            "requirements": (requirement.model_copy(update={
+                "missing_markers": (), "state": RequirementState.CANDIDATE,
+            }),),
+            "clarifications": (answered,),
+            "state": RequirementState.CANDIDATE,
+        }
+    )
+    return first, successor
+
+
+def _answer_clarification() -> WorkflowCommand:
+    first, _ = _clarification_artifacts()
+    clarification = first.clarifications[0]
+    return WorkflowCommand(
+        command_id=UUID("64300000-0000-4000-8000-000000000001"),
+        idempotency_key="answer-643",
+        run_id=RUN_ID,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        actor=ActorRef(kind=ActorKind.HUMAN, id=ACTOR_ID),
+        command_type="answer_clarification",
+        command_schema_version=1,
+        expected_run_version=2,
+        payload=AnswerClarificationCommandV1(
+            clarification_id=clarification.clarification_id,
+            requirement_id=clarification.requirement_id,
+            answer="December 20.",
+        ),
+        artifact_refs=(WorkflowArtifactRef(
+            artifact_id=first.artifact_id,
+            schema_name="requirements",
+            schema_version=first.schema_version,
+            artifact_version=1,
+        ),),
+        trace_id=TRACE_ID,
+        correlation_id=UUID("64300000-0000-4000-8000-000000000002"),
+        causation_id=UUID("64300000-0000-4000-8000-000000000003"),
+    )
+
+
 @pytest.mark.asyncio
 async def test_add_context_updates_run_and_persists_safe_event_and_receipt() -> None:
     uow = FakeUow(operation="workflow.run.command")
@@ -199,6 +311,108 @@ async def test_add_context_updates_run_and_persists_safe_event_and_receipt() -> 
     )
     assert receipt_insert.compile().params["command_payload"]["message"] == "The delivery deadline is December 20."
     assert "delivery deadline" not in str(event_insert.compile().params).lower()
+
+
+@pytest.mark.asyncio
+async def test_open_clarification_enters_one_durable_wait_with_safe_event() -> None:
+    first, _ = _clarification_artifacts()
+    uow = FakeUow(operation="workflow.run.command")
+    uow.replay_row = _run_row(state="admitted", run_version=1)
+    repository = PostgreSQLWorkflowRunAdmissionRepository(uow, clock=lambda: NOW)
+
+    waiting = await repository.wait_for_clarification(first)
+
+    assert waiting.state.value == "waiting"
+    assert waiting.run_version == 2
+    event_insert = next(
+        statement for statement in uow.statements
+        if getattr(getattr(statement, "table", None), "name", None) == "workflow_run_events"
+    )
+    assert event_insert.compile().params["event_type"] == "workflow.clarification-requested"
+    assert "Delivery date" not in str(event_insert.compile().params)
+
+
+@pytest.mark.asyncio
+async def test_answer_clarification_resumes_same_run_and_persists_one_successor() -> None:
+    _, successor = _clarification_artifacts()
+    uow = FakeUow(operation="workflow.run.command")
+    uow.replay_row = _run_row(state="waiting", run_version=2)
+    repository = PostgreSQLWorkflowRunAdmissionRepository(uow, clock=lambda: NOW)
+
+    receipt = await repository.dispatch(
+        _answer_clarification(), clarification_successor=successor
+    )
+
+    assert receipt.run_id == RUN_ID
+    assert receipt.state.value == "running"
+    assert receipt.run_version == 3
+    assert uow.persisted_artifacts == [successor]
+    event_insert = next(
+        statement for statement in uow.statements
+        if getattr(getattr(statement, "table", None), "name", None) == "workflow_run_events"
+    )
+    assert event_insert.compile().params["event_type"] == "workflow.clarification-answered"
+    assert "December 20" not in str(event_insert.compile().params)
+
+
+@pytest.mark.asyncio
+async def test_answer_clarification_replay_returns_receipt_without_second_successor() -> None:
+    command = _answer_clarification()
+    uow = FakeUow(operation="workflow.run.command")
+    uow.claim_result = IdempotencyReplay(
+        kind="replay",
+        receipt_id=command.command_id,
+        operation=PersistenceOperation("workflow.run.command"),
+        operation_schema_version=1,
+        key=IdempotencyKey(command.idempotency_key),
+        result=OpaqueResultReference("workflow_command_receipt", command.command_id, 1),
+    )
+    uow.replay_row = {
+        "command_id": command.command_id,
+        "work_item_id": WORK_ITEM_ID,
+        "run_id": RUN_ID,
+        "workflow_version_id": VERSION_ID,
+        "run_state": "running",
+        "resulting_run_version": 3,
+    }
+    repository = PostgreSQLWorkflowRunAdmissionRepository(uow, clock=lambda: NOW)
+
+    receipt = await repository.dispatch(command)
+
+    assert receipt.admission == "replayed"
+    assert receipt.run_version == 3
+    assert uow.persisted_artifacts == []
+    assert uow.intents == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_while_waiting_is_terminal_on_the_same_run() -> None:
+    uow = FakeUow(operation="workflow.run.command")
+    uow.replay_row = _run_row(state="waiting", run_version=2)
+    repository = PostgreSQLWorkflowRunAdmissionRepository(uow, clock=lambda: NOW)
+    command = WorkflowCommand(
+        command_id=UUID("64300000-0000-4000-8000-000000000020"),
+        idempotency_key="cancel-643",
+        run_id=RUN_ID,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        actor=ActorRef(kind=ActorKind.HUMAN, id=ACTOR_ID),
+        command_type="cancel",
+        command_schema_version=1,
+        expected_run_version=2,
+        payload=CancelWorkflowCommandV1(),
+        trace_id=TRACE_ID,
+        correlation_id=UUID("64300000-0000-4000-8000-000000000021"),
+        causation_id=UUID("64300000-0000-4000-8000-000000000022"),
+    )
+
+    receipt = await repository.dispatch(command)
+
+    assert receipt.run_id == RUN_ID
+    assert receipt.state.value == "cancelled"
+    assert receipt.run_version == 3
+    assert len(uow.intents) == 1
+    assert uow.intents[0].event_type == "workflow.run-cancelled"
 
 
 @pytest.mark.asyncio
