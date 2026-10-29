@@ -30,6 +30,8 @@ def test_transcription_tables_are_tenant_scoped_and_keep_source_job_lineage() ->
         "adapter_reference",
         "model_config_reference",
     } <= {column.name for column in transcription_artifacts.columns}
+    assert transcription_artifacts.c.media_inspection.type.none_as_null is True
+    assert transcription_artifacts.c.failure.type.none_as_null is True
     assert {
         "schema_version",
         "authorization_decision_id",
