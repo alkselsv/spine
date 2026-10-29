@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 from uuid import UUID
@@ -167,7 +168,10 @@ class OfficialShapeService:
             return YandexDiskResourcePage(
                 _embedded={
                     "path": "disk:/approved",
-                    "items": [item.model_dump(mode="json"), item.model_dump(mode="json")],
+                    "items": [
+                        item.model_dump(mode="json"),
+                        _resource(path="disk:/approved/second.pdf").model_dump(mode="json"),
+                    ],
                     "limit": 2,
                     "offset": 0,
                     "total": 3,
@@ -225,6 +229,27 @@ async def test_reader_preserves_official_metadata_exact_bytes_and_path_scoped_id
         _connection().credential_reference,
         _connection().grant_reference,
     )
+
+
+@pytest.mark.asyncio
+async def test_path_scoped_reappearance_occurrence_never_claims_identity_continuity() -> None:
+    adapter = YandexDiskProviderAdapter(
+        service=OfficialShapeService(),
+        profile=YandexDiskReadProfile(page_size=2, max_attempts=1),
+        clock=lambda: NOW,
+        sleep=lambda _: _return_none(),
+    )
+
+    original = await adapter.read(_connection(), _command())
+    reappeared = await adapter.read(
+        _connection(),
+        replace(_command(), external_identity_occurrence="scan-occurrence-2"),
+    )
+
+    assert original.external_identity.assurance is ExternalIdentityAssurance.PATH_SCOPED
+    assert reappeared.external_identity.assurance is ExternalIdentityAssurance.PATH_SCOPED
+    assert original.external_identity.provider_key == reappeared.external_identity.provider_key
+    assert original.external_identity.external_object_id != reappeared.external_identity.external_object_id
 
 
 @pytest.mark.asyncio
@@ -302,9 +327,94 @@ def test_capabilities_do_not_emulate_stable_identity_or_incremental_changes() ->
     assert capabilities[ProviderCapabilityKind.BINARY_READ].status is ProviderCapabilityStatus.SUPPORTED
     assert capabilities[ProviderCapabilityKind.STABLE_IDENTITY].status is ProviderCapabilityStatus.UNSUPPORTED
     assert capabilities[ProviderCapabilityKind.INCREMENTAL_CHANGE_DISCOVERY].status is ProviderCapabilityStatus.UNSUPPORTED
-    assert capabilities[ProviderCapabilityKind.FULL_RECONCILIATION].status is ProviderCapabilityStatus.UNSUPPORTED
+    assert capabilities[ProviderCapabilityKind.FULL_RECONCILIATION].status is ProviderCapabilityStatus.SUPPORTED
     assert capabilities[ProviderCapabilityKind.LIFECYCLE_EVIDENCE].status is ProviderCapabilityStatus.UNSUPPORTED
     assert capabilities[ProviderCapabilityKind.HEALTH_DIAGNOSTICS].status is ProviderCapabilityStatus.UNQUALIFIED
+
+
+@pytest.mark.asyncio
+async def test_full_scan_uses_opaque_durable_checkpoints_and_complete_official_pages() -> None:
+    service = OfficialShapeService()
+    adapter = YandexDiskProviderAdapter(
+        service=service,
+        profile=YandexDiskReadProfile(page_size=2, max_attempts=1),
+        clock=lambda: NOW,
+        sleep=lambda _: _return_none(),
+    )
+
+    first = await adapter.scan_page(
+        _connection(),
+        _command().resource_scope_reference,
+        checkpoint=None,
+    )
+    second = await adapter.scan_page(
+        _connection(),
+        _command().resource_scope_reference,
+        checkpoint=first.next_checkpoint,
+    )
+
+    assert [item.provider_object_reference for item in first.items] == [
+        "disk:/approved/brief.pdf",
+        "disk:/approved/second.pdf",
+    ]
+    assert [item.provider_object_reference for item in second.items] == [
+        "disk:/approved/other.txt"
+    ]
+    assert first.requested_checkpoint is None
+    assert first.next_checkpoint is not None
+    assert first.checkpoint == first.next_checkpoint
+    assert "disk:/" not in first.next_checkpoint
+    assert first.next_checkpoint != "2"
+    assert second.requested_checkpoint == first.next_checkpoint
+    assert second.next_checkpoint is None
+    assert second.checkpoint != first.checkpoint
+    assert first.expected_entry_count == second.expected_entry_count == 3
+    assert len(first.coverage_entry_digests + second.coverage_entry_digests) == 3
+    assert second.confirmed_scan_generation is not None
+
+
+@pytest.mark.asyncio
+async def test_full_scan_rejects_same_count_unique_substitution_without_stable_generation() -> None:
+    class ChangingInventory(OfficialShapeService):
+        def __init__(self) -> None:
+            super().__init__()
+            self.list_calls = 0
+
+        async def list_resources(self, connection, scope, *, offset, limit):
+            del connection, scope
+            self.list_calls += 1
+            if offset == 0:
+                paths = ("disk:/approved/a.pdf", "disk:/approved/b.pdf")
+            elif self.list_calls <= 2:
+                paths = ("disk:/approved/c.pdf",)
+            else:
+                paths = ("disk:/approved/d.pdf",)
+            return YandexDiskResourcePage(
+                _embedded={
+                    "path": "disk:/approved",
+                    "items": [_resource(path=path) for path in paths],
+                    "limit": limit,
+                    "offset": offset,
+                    "total": 3,
+                }
+            )
+
+    adapter = YandexDiskProviderAdapter(
+        service=ChangingInventory(),
+        profile=YandexDiskReadProfile(page_size=2, max_attempts=1),
+        clock=lambda: NOW,
+        sleep=lambda _: _return_none(),
+    )
+    first = await adapter.scan_page(
+        _connection(), _command().resource_scope_reference, checkpoint=None
+    )
+
+    with pytest.raises(YandexDiskContractError):
+        await adapter.scan_page(
+            _connection(),
+            _command().resource_scope_reference,
+            checkpoint=first.next_checkpoint,
+        )
 
 
 @pytest.mark.asyncio

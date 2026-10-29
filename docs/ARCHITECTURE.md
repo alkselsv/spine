@@ -183,6 +183,22 @@ append-only версий подключения; конфигурировани�
 ограничена allowlisted кодами без credentials, provider names и content. См.
 ADR-0050.
 
+Yandex Disk использует только квалифицированные enumeration, metadata, binary
+read и bounded full-reconciliation capabilities. Offset-based pagination
+инкапсулирована в непрозрачные durable checkpoints: checkpoint страницы
+фиксируется после принятия покрытых канонических эффектов, а terminal checkpoint
+— только после повторного полного inventory pass, подтвердившего тот же
+scan-generation digest, и scan-wide lifecycle решений. Tombstone дополнительно
+требует immutable removal policy, полученную через admission port; approval и
+policy version входят в identity и durable state запуска. Незавершённая пагинация, исчерпание
+throttling retries, outage, access loss и revocation сохраняются как разные
+fail-closed evidence states и не разрешают tombstone. Поскольку identity остаётся
+path-scoped, rename/move не доказывает continuity, а reappearance создаёт новый
+Source Object с явной non-equivalence lineage. Версионированный durable replay
+envelope хранится tenant-scoped в PostgreSQL; исходные bytes и Cognee не являются
+его состоянием. Canonical deletion authority и scan-generation fence закреплены
+в ADR-0018.
+
 Состояние одного бизнес-объекта не должно одновременно независимо редактироваться в Postgres и Cognee. Сначала фиксируется каноническое изменение, затем outbox запускает обновление проекции.
 
 Обработка принятого аудио фиксируется отдельным tenant-scoped

@@ -7322,6 +7322,79 @@ async def test_drive_lifecycle_decision_repository_persists_tenant_scoped_transi
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_yandex_reconciliation_repository_persists_checkpoint_and_tenant_scope(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    from spine.application.yandex_disk_reconciliation import (
+        YandexDiskReconciliationRun,
+        YandexDiskReconciliationState,
+    )
+    from spine.infrastructure.persistence.postgresql_yandex_disk_reconciliation import (
+        PostgreSQLYandexDiskReconciliationRepository,
+    )
+
+    case = await prepare_canonical_case(postgresql_adapter, 67000)
+    assert postgresql_adapter.ingestion_context is not None
+    repository = PostgreSQLYandexDiskReconciliationRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=lambda operation, identity: postgresql_adapter.ingestion_context(
+            case.source.workspace_id,
+            case.source.environment_id,
+            operation.value,
+        ),
+    )
+    now = datetime(2026, 10, 29, 15, tzinfo=timezone.utc)
+    run = YandexDiskReconciliationRun(
+        run_id=synthetic_uuid(67010),
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        connection_id=synthetic_uuid(67011),
+        connection_version_id=synthetic_uuid(67012),
+        resource_scope_reference=synthetic_uuid(67013),
+        authorization_generation=1,
+        configuration_generation=1,
+        idempotency_key="issue670-postgresql-reconciliation",
+        removal_policy_version_id=synthetic_uuid(67014),
+        removal_policy_approval_id=synthetic_uuid(67015),
+        state=YandexDiskReconciliationState.RUNNING,
+        started_at=now,
+        updated_at=now,
+    )
+
+    assert await repository.save(run) == run
+    assert await repository.resolve(
+        run.run_id, case.source.workspace_id, case.source.environment_id
+    ) == run
+
+    advanced = run.model_copy(
+        update={
+            "state": YandexDiskReconciliationState.INTERRUPTED,
+            "committed_checkpoint": "opaque-page-1",
+            "next_checkpoint": "opaque-page-2",
+        }
+    )
+    assert await repository.save(advanced) == advanced
+    assert await repository.resolve(
+        run.run_id, case.source.workspace_id, case.source.environment_id
+    ) == advanced
+
+    other_case = await prepare_canonical_case(postgresql_adapter, 67020)
+    hidden_repository = PostgreSQLYandexDiskReconciliationRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=lambda operation, identity: postgresql_adapter.ingestion_context(
+            other_case.source.workspace_id,
+            other_case.source.environment_id,
+            operation.value,
+        ),
+    )
+    assert await hidden_repository.resolve(
+        run.run_id,
+        other_case.source.workspace_id,
+        other_case.source.environment_id,
+    ) is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_requirements_artifacts_replay_successor_and_isolate_workspaces(
     postgresql_adapter: PersistenceAdapter,
 ) -> None:
