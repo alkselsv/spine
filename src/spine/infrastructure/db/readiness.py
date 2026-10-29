@@ -493,7 +493,7 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
             True, True, True, False, False
         ),
         "transcript_publications": ExpectedTablePrivileges(
-            True, True, False, False, False
+            True, True, True, False, False
         ),
     }
     if set(tables) != set(expected):
