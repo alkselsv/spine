@@ -1477,6 +1477,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "workflow_command_receipts",
         "workflow_run_events",
         "requirements_artifact_versions",
+        "transcription_jobs",
+        "transcription_artifacts",
+        "transcript_segments",
         "idempotency_receipts",
         "initial_workspace_bootstrap",
         "outbox_intents",
@@ -2022,6 +2025,26 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         | AUDIT_CONSTRAINTS
         | DELIVERY_CONSTRAINTS
         | ADMISSION_CONSTRAINTS
+        | {
+            "pk_transcription_jobs",
+            "uq_transcription_jobs_command",
+            "fk_transcription_jobs_source_revision",
+            "fk_transcription_jobs_artifact",
+            "ck_transcription_jobs_execution_attempt_positive",
+            "ck_transcription_jobs_state",
+            "ck_transcription_jobs_terminal_shape",
+            "pk_transcription_artifacts",
+            "uq_transcription_artifacts_job",
+            "fk_transcription_artifacts_job",
+            "fk_transcription_artifacts_source_revision",
+            "ck_transcription_artifacts_duration_positive",
+            "pk_transcript_segments",
+            "uq_transcript_segments_artifact_ordinal",
+            "fk_transcript_segments_artifact",
+            "ck_transcript_segments_ordinal_positive",
+            "ck_transcript_segments_start_nonnegative",
+            "ck_transcript_segments_bounds",
+        }
     )
     disclosure_constraint_prefix = (
         "ck_qa_disclosure_validation_results_ck_qa_disclosure_"
@@ -2419,6 +2442,14 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ix_projection_activations_kind_generation",
         "ix_active_projections_snapshot_generation",
         "ix_projection_drifts_source",
+        "pk_transcription_jobs",
+        "uq_transcription_jobs_command",
+        "ix_transcription_jobs_source_revision",
+        "pk_transcription_artifacts",
+        "uq_transcription_artifacts_job",
+        "pk_transcript_segments",
+        "uq_transcript_segments_artifact_ordinal",
+        "ix_transcript_segments_artifact",
     } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES | CANONICAL_BOUNDARY_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
@@ -2429,6 +2460,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "workflow_command_receipts": (True, True),
         "workflow_run_events": (True, True),
         "requirements_artifact_versions": (True, True),
+        "transcription_jobs": (True, True),
+        "transcription_artifacts": (True, True),
+        "transcript_segments": (True, True),
         "context_profiles": (True, True),
         "context_bundles": (True, True),
         "answer_question_runs": (True, True),
@@ -2577,6 +2611,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "workflow_command_receipts": (True, True, False, False),
         "workflow_run_events": (True, True, False, False),
         "requirements_artifact_versions": (True, True, False, False),
+        "transcription_jobs": (True, True, False, False),
+        "transcription_artifacts": (True, True, False, False),
+        "transcript_segments": (True, True, False, False),
         "context_profiles": (True, True, False, False),
         "context_bundles": (True, True, False, False),
         "answer_question_runs": (True, True, True, False),
