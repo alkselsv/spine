@@ -86,6 +86,13 @@ class GoogleProviderPolicyError(GoogleProviderReadError):
         super().__init__(failure_code="provider_policy_denied")
 
 
+class GoogleProviderNotFoundError(GoogleProviderReadError):
+    """The exact approved provider resource was not found."""
+
+    def __init__(self) -> None:
+        super().__init__(failure_code="provider_not_found")
+
+
 class GoogleProviderContractError(GoogleConnectionError):
     """A provider response violated a typed, fail-closed reader contract."""
 
@@ -431,6 +438,9 @@ def revoked_connection_successor(
 def _classify_google_provider_error(error: Exception) -> GoogleProviderReadError:
     """Map common provider error shapes to content-free lifecycle categories."""
 
+    if isinstance(error, GoogleProviderReadError):
+        return error
+
     status = getattr(error, "status_code", None)
     response = getattr(error, "resp", None)
     if status is None and response is not None:
@@ -470,6 +480,7 @@ __all__ = [
     "GoogleProviderAuthorizationError",
     "GoogleProviderQuotaError",
     "GoogleProviderPolicyError",
+    "GoogleProviderNotFoundError",
     "GoogleReadAdmission",
     "GoogleReadCommand",
     "build_google_connection_audit_event",

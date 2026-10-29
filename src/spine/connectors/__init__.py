@@ -52,6 +52,15 @@ from spine.connectors.google_sheets import (
     GoogleSheetsSnapshot,
     GoogleSheetsUnsafeIdentityError,
 )
+from spine.connectors.google_api import (
+    GoogleApiEndpoints,
+    GoogleApiRequestPolicy,
+    GoogleApiService,
+    GoogleDesktopOAuthMaterial,
+    GoogleResourceScope,
+    HttpxGoogleApiTransport,
+    ReferenceGoogleCredentialResolver,
+)
 
 __all__ = [
     "CONNECTOR_OBSERVATION_SCHEMA",
@@ -102,4 +111,11 @@ __all__ = [
     "GoogleSheetsService",
     "GoogleSheetsSnapshot",
     "GoogleSheetsUnsafeIdentityError",
+    "GoogleApiEndpoints",
+    "GoogleApiRequestPolicy",
+    "GoogleApiService",
+    "GoogleDesktopOAuthMaterial",
+    "GoogleResourceScope",
+    "HttpxGoogleApiTransport",
+    "ReferenceGoogleCredentialResolver",
 ]

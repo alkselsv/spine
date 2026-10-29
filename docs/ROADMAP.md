@@ -233,6 +233,10 @@ target.
       command receipts, disclosure-safe snapshot/event feed с stable cursor и
       восстановление минимальной web timeline после reload (#639).
 - [ ] Google Sheets connector для реестра смет и Google Drive/file connector для материалов.
+      `implemented: concrete governed Drive v3 / Sheets v4 REST and Desktop OAuth
+      reference adapters with deterministic offline qualification (#652)`;
+      `not qualified: live Google and Shared Drive behavior`; product integration
+      remains open.
 - [ ] Связывание строки реестра, запроса, встречи, клиента и итоговой сметы.
 - [ ] Domain model: `ClientRequest`, `Requirement`, `ProposalDraft`, `Estimate`,
       `EstimateLine`, `Assumption`, `Exclusion`, `PricingBasis` и template version.
