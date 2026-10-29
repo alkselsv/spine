@@ -1484,6 +1484,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "transcription_jobs",
         "transcription_artifacts",
         "transcript_segments",
+        "transcript_publications",
         "idempotency_receipts",
         "initial_workspace_bootstrap",
         "outbox_intents",
@@ -2056,6 +2057,11 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
             "ck_transcript_segments_ordinal_positive",
             "ck_transcript_segments_start_nonnegative",
             "ck_transcript_segments_bounds",
+            "pk_transcript_publications",
+            "fk_transcript_publications_source_revision",
+            "fk_transcript_publications_artifact",
+            "ck_transcript_publications_state",
+            "ck_transcript_publications_projection_state",
         }
     )
     disclosure_constraint_prefix = (
@@ -2464,6 +2470,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_transcript_segments",
         "uq_transcript_segments_artifact_ordinal",
         "ix_transcript_segments_artifact",
+        "pk_transcript_publications",
+        "ix_transcript_publications_source_revision",
+        "uq_transcript_publications_artifact",
     } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES | CANONICAL_BOUNDARY_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
@@ -2477,6 +2486,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "transcription_jobs": (True, True),
         "transcription_artifacts": (True, True),
         "transcript_segments": (True, True),
+        "transcript_publications": (True, True),
         "context_profiles": (True, True),
         "context_bundles": (True, True),
         "answer_question_runs": (True, True),
@@ -2629,6 +2639,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "transcription_jobs": (True, True, False, False),
         "transcription_artifacts": (True, True, False, False),
         "transcript_segments": (True, True, False, False),
+        "transcript_publications": (True, True, False, False),
         "context_profiles": (True, True, False, False),
         "context_bundles": (True, True, False, False),
         "answer_question_runs": (True, True, True, False),
@@ -2844,7 +2855,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "WHERE source_namespace.nspname = 'spine' AND relation.relname IN "
                             "('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
-                        "'source_revision_receipt_associations', 'ingestion_runs', "
+                         "'source_revision_receipt_associations', 'transcript_publications', 'ingestion_runs', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_run_sources', 'ingestion_run_source_bindings', "
                         "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', "
@@ -2884,7 +2895,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "AND table_name NOT LIKE 'source_canonical%' "
                             "AND table_name NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
-                        "'source_revision_receipt_associations', "
+                         "'source_revision_receipt_associations', 'transcript_publications', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
@@ -2917,7 +2928,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "AND indexname NOT LIKE 'pk_source_canonical%' "
                         "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
-                        "'source_revision_receipt_associations', "
+                         "'source_revision_receipt_associations', 'transcript_publications', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
@@ -2949,7 +2960,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "AND tablename NOT LIKE 'source_canonical%' "
                             "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
-                        "'source_revision_receipt_associations', "
+                         "'source_revision_receipt_associations', 'transcript_publications', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                                 "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
@@ -2981,7 +2992,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "AND tablename NOT LIKE 'source_canonical%' "
                             "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
-                        "'source_revision_receipt_associations', "
+                         "'source_revision_receipt_associations', 'transcript_publications', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
@@ -3657,7 +3668,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
 	                            "'provider_connection_approvals', "
                         "'admission_decisions', "
                         "'source_objects', 'source_revisions', "
-                        "'source_revision_provenance', 'source_revision_receipt_associations', "
+                         "'source_revision_provenance', 'source_revision_receipt_associations', 'transcript_publications', "
                         "'ingestion_runs', "
                         "'ingestion_run_sources', 'ingestion_run_source_bindings', "
                         "'ingestion_transitions', 'ingestion_warnings', "
@@ -3720,6 +3731,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "transcription_jobs": (True, True),
         "transcription_artifacts": (True, True),
         "transcript_segments": (True, True),
+        "transcript_publications": (True, True),
             "context_profiles": (True, True),
             "context_bundles": (True, True),
             "answer_question_runs": (True, True),
@@ -5141,13 +5153,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261210_78_yandex_disk_reconciliation.py",
         "20261211_79_bounded_transcription.py",
         "20261212_80_transcription_chunk_checkpoints.py",
+        "20261213_81_transcript_publication.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261213_81_injected_failure.py").write_text(
+    (target / "versions" / "20261214_82_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261213_81'\n"
-        "down_revision = '20261212_80'\n"
+        "revision = '20261214_82'\n"
+        "down_revision = '20261213_81'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

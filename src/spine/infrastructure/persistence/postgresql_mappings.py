@@ -7,6 +7,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKeyConstraint,
+    Index,
     Integer,
     MetaData,
     Numeric,
@@ -716,6 +717,72 @@ transcript_segments = Table(
     ),
     CheckConstraint("start_ms >= 0", name=conv("ck_transcript_segments_start_nonnegative")),
     CheckConstraint("end_ms > start_ms", name=conv("ck_transcript_segments_bounds")),
+)
+
+transcript_publications = Table(
+    "transcript_publications",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("publication_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("is_current", Boolean, nullable=False),
+    Column("publication_digest", String(64), nullable=False),
+    Column("predecessor_publication_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_digest", String(64), nullable=False),
+    Column("transcript_artifact_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("transcript_artifact_digest", String(64), nullable=False),
+    Column("transcript_artifact_schema_version", Text, nullable=False),
+    Column("policy_reference", Text, nullable=False),
+    Column("approval_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("partial_allowed", Boolean, nullable=False),
+    Column("projection_version", Text, nullable=False),
+    Column("projection_state", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("segments", JSONB, nullable=False),
+    Column("published_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id",
+        "environment_id",
+        "publication_id",
+        name="pk_transcript_publications",
+    ),
+    Index(
+        "uq_transcript_publications_artifact",
+        "workspace_id",
+        "environment_id",
+        "transcript_artifact_id",
+        unique=True,
+        postgresql_where=text("is_current"),
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "source_object_id", "source_revision_id"],
+        [
+            "spine.source_revisions.workspace_id",
+            "spine.source_revisions.environment_id",
+            "spine.source_revisions.source_object_id",
+            "spine.source_revisions.revision_id",
+        ],
+        name="fk_transcript_publications_source_revision",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "transcript_artifact_id"],
+        [
+            "spine.transcription_artifacts.workspace_id",
+            "spine.transcription_artifacts.environment_id",
+            "spine.transcription_artifacts.artifact_id",
+        ],
+        name="fk_transcript_publications_artifact",
+    ),
+    CheckConstraint(
+        "state IN ('active', 'revoked', 'superseded', 'stale')",
+        name=conv("ck_transcript_publications_state"),
+    ),
+    CheckConstraint(
+        "projection_state IN ('current', 'stale')",
+        name=conv("ck_transcript_publications_projection_state"),
+    ),
 )
 
 ingestion_transitions = Table(
@@ -1681,6 +1748,7 @@ __all__ = [
     "transcription_jobs",
     "transcription_artifacts",
     "transcript_segments",
+    "transcript_publications",
     "process_only_operation_lineages",
     "admission_decisions",
     "current_access_policies",

@@ -32,11 +32,20 @@ from .transcription import (
     TranscriptionArtifact,
     TranscriptionChunkCheckpoint,
     TranscriptionChunkReceipt,
+    TranscriptionArtifactOutcome,
     TranscriptionFailureCode,
     TranscriptionJob,
     TranscriptionJobState,
     TranscriptionTimeRangeLocator,
     audio_chunk_id,
+)
+from .publication import (
+    TimeRangeLocator,
+    TranscriptProjectionSegment,
+    TranscriptProjectionState,
+    TranscriptPublication,
+    TranscriptPublicationApproval,
+    TranscriptPublicationState,
 )
 
 __all__ = [
@@ -69,9 +78,16 @@ __all__ = [
     "TranscriptionArtifact",
     "TranscriptionChunkCheckpoint",
     "TranscriptionChunkReceipt",
+    "TranscriptionArtifactOutcome",
     "TranscriptionFailureCode",
     "TranscriptionJob",
     "TranscriptionJobState",
     "TranscriptionTimeRangeLocator",
     "audio_chunk_id",
+    "TimeRangeLocator",
+    "TranscriptProjectionSegment",
+    "TranscriptProjectionState",
+    "TranscriptPublication",
+    "TranscriptPublicationApproval",
+    "TranscriptPublicationState",
 ]
