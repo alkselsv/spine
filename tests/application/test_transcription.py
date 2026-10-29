@@ -227,7 +227,7 @@ class ChunkedSpeechToText:
 
 @pytest.mark.asyncio
 async def test_long_audio_is_inspected_chunked_and_reassembled_reproducibly() -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     preparation = FakeAudioPreparation()
     adapter = ChunkedSpeechToText()
     requested = command().model_copy(
@@ -279,7 +279,7 @@ async def test_expired_worker_resumes_after_durable_chunk_checkpoint() -> None:
             return await super().transcribe(request)
 
     current_time = [NOW]
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: current_time[0])
     adapter = CrashesOnceOnSecondChunk()
     requested = command().model_copy(
         update={
@@ -316,6 +316,15 @@ async def test_expired_worker_resumes_after_durable_chunk_checkpoint() -> None:
     assert [item.boundary.ordinal for item in checkpoint.chunk_receipts] == [1]
 
     current_time[0] = NOW + timedelta(minutes=6)
+    with pytest.raises(TranscriptionConflictError, match="lease is stale"):
+        await repository.checkpoint_chunk(
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+            job_id=job_id,
+            lease_id=first_attempt.execution_lease_id,
+            expected_completed_chunks=1,
+            checkpoint=checkpoint,
+        )
     resumed = await service.transcribe(requested)
 
     assert resumed.job.state is TranscriptionJobState.COMPLETED
@@ -334,7 +343,7 @@ async def test_expired_worker_resumes_after_durable_chunk_checkpoint() -> None:
 
 @pytest.mark.asyncio
 async def test_authorized_time_range_resolves_to_exact_original_audio() -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     result = await TranscriptionService(
         repository=repository,
         speech_to_text=FakeSpeechToText(),
@@ -381,7 +390,7 @@ async def test_authorized_time_range_resolves_to_exact_original_audio() -> None:
 
 @pytest.mark.asyncio
 async def test_time_range_resolution_rejects_mismatched_artifact_lineage() -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     result = await TranscriptionService(
         repository=repository,
         speech_to_text=FakeSpeechToText(),
@@ -415,7 +424,7 @@ async def test_time_range_resolution_rejects_mismatched_artifact_lineage() -> No
 
 @pytest.mark.asyncio
 async def test_time_range_resolution_denies_before_reading_artifact() -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     result = await TranscriptionService(
         repository=repository,
         speech_to_text=FakeSpeechToText(),
@@ -446,7 +455,7 @@ async def test_time_range_resolution_denies_before_reading_artifact() -> None:
 
 @pytest.mark.asyncio
 async def test_time_range_resolution_does_not_disclose_cross_workspace_artifact() -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     result = await TranscriptionService(
         repository=repository,
         speech_to_text=FakeSpeechToText(),
@@ -480,7 +489,7 @@ async def test_time_range_resolution_does_not_disclose_cross_workspace_artifact(
 
 @pytest.mark.asyncio
 async def test_time_range_resolution_rejects_missing_artifact() -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     result = await TranscriptionService(
         repository=repository,
         speech_to_text=FakeSpeechToText(),
@@ -517,7 +526,7 @@ async def test_time_range_resolution_rejects_missing_artifact() -> None:
 async def test_time_range_resolution_rejects_missing_or_stale_source_lineage(
     source_case: str,
 ) -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     result = await TranscriptionService(
         repository=repository,
         speech_to_text=FakeSpeechToText(),
@@ -602,7 +611,7 @@ async def test_transient_chunk_failure_retries_with_the_same_stable_identity() -
 
     preparation.prepare = short_prepare
     result = await TranscriptionService(
-        repository=InMemoryTranscriptionRepository(),
+        repository=InMemoryTranscriptionRepository(clock=lambda: NOW),
         speech_to_text=adapter,
         authorizer=FakeAuthorizer(),
         media_preparation=preparation,
@@ -636,7 +645,7 @@ async def test_retry_exhaustion_persists_exact_partial_artifact_and_replays_it()
                 ),
             )
 
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     adapter = SecondChunkFails()
     service = TranscriptionService(
         repository=repository,
@@ -687,7 +696,7 @@ async def test_partial_artifact_preserves_completed_silent_chunk_receipt() -> No
             )
 
     result = await TranscriptionService(
-        repository=InMemoryTranscriptionRepository(),
+        repository=InMemoryTranscriptionRepository(clock=lambda: NOW),
         speech_to_text=SilentThenFails(),
         authorizer=FakeAuthorizer(),
         media_preparation=FakeAudioPreparation(),
@@ -733,7 +742,7 @@ async def test_cancellation_after_completed_chunk_stops_subsequent_model_work() 
                 ),
             )
 
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     adapter = PausingSpeechToText()
     preparation = FakeAudioPreparation()
     original_prepare = preparation.prepare
@@ -817,7 +826,7 @@ async def test_cancellation_accepted_during_finalization_wins_atomically() -> No
                 )
             return await super().finish(**kwargs)
 
-    repository = FinalizationRaceRepository()
+    repository = FinalizationRaceRepository(clock=lambda: NOW)
     result = await TranscriptionService(
         repository=repository,
         speech_to_text=ChunkedSpeechToText(),
@@ -861,7 +870,7 @@ async def test_invalid_later_chunk_preserves_completed_work_as_partial() -> None
             )
 
     result = await TranscriptionService(
-        repository=InMemoryTranscriptionRepository(),
+        repository=InMemoryTranscriptionRepository(clock=lambda: NOW),
         speech_to_text=InvalidSecondChunk(),
         authorizer=FakeAuthorizer(),
         media_preparation=FakeAudioPreparation(),
@@ -912,7 +921,7 @@ async def test_ineligible_inspected_media_stops_before_model_and_creates_no_arti
                 }
             )
 
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     preparation = IneligibleAudioPreparation()
     adapter = ChunkedSpeechToText()
     requested = command().model_copy(
@@ -957,7 +966,7 @@ async def test_no_speech_output_cannot_create_transcription_artifact() -> None:
                 segments=(),
             )
 
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     adapter = NoSpeech()
     requested = command().model_copy(
         update={
@@ -1008,7 +1017,7 @@ async def test_malformed_or_decoded_oversized_media_cleans_up_without_model_work
                 return result.model_copy(update={"peak_memory_bytes": 4_000_001})
             return result.model_copy(update={"peak_working_bytes": 10_000_001})
 
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     preparation = FailingPreparation()
     adapter = ChunkedSpeechToText()
     requested = command().model_copy(
@@ -1053,7 +1062,7 @@ async def test_decode_timeout_aborts_preparation_and_stops_before_model() -> Non
             self.aborted = True
             self.active.discard(request.recording.source_revision_id)
 
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     preparation = TimedOutPreparation()
     adapter = ChunkedSpeechToText()
     result = await TranscriptionService(
@@ -1121,7 +1130,7 @@ async def test_noisy_synthetic_russian_fixture_preserves_adapter_uncertainty() -
 
     preparation.prepare = noisy_short_fixture
     result = await TranscriptionService(
-        repository=InMemoryTranscriptionRepository(),
+        repository=InMemoryTranscriptionRepository(clock=lambda: NOW),
         speech_to_text=NoisyRussianSpeech(),
         authorizer=FakeAuthorizer(),
         media_preparation=preparation,
@@ -1146,7 +1155,7 @@ async def test_noisy_synthetic_russian_fixture_preserves_adapter_uncertainty() -
 
 @pytest.mark.asyncio
 async def test_accepted_audio_creates_pinned_immutable_transcription_artifact() -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     adapter = FakeSpeechToText()
     service = TranscriptionService(
         repository=repository,
@@ -1185,7 +1194,7 @@ async def test_accepted_audio_creates_pinned_immutable_transcription_artifact() 
 async def test_exact_replay_returns_one_logical_job_and_artifact_without_second_model_call() -> (
     None
 ):
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     adapter = FakeSpeechToText()
     service = TranscriptionService(
         repository=repository,
@@ -1222,7 +1231,7 @@ async def test_adapter_terminal_outcome_is_typed_and_creates_no_artifact(
     expected_state: TranscriptionJobState,
     expected_code: str,
 ) -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     adapter = FakeSpeechToText(failure=failure)
     service = TranscriptionService(
         repository=repository,
@@ -1245,7 +1254,7 @@ async def test_adapter_terminal_outcome_is_typed_and_creates_no_artifact(
 
 @pytest.mark.asyncio
 async def test_repository_reads_are_isolated_between_workspaces() -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     service = TranscriptionService(
         repository=repository,
         speech_to_text=FakeSpeechToText(),
@@ -1274,7 +1283,7 @@ async def test_repository_reads_are_isolated_between_workspaces() -> None:
 
 @pytest.mark.asyncio
 async def test_same_idempotency_key_is_independent_between_two_workspaces() -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     adapter = FakeSpeechToText()
     service = TranscriptionService(
         repository=repository,
@@ -1295,7 +1304,7 @@ async def test_same_idempotency_key_is_independent_between_two_workspaces() -> N
 
 @pytest.mark.asyncio
 async def test_denied_processing_stops_before_job_or_model_disclosure() -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     adapter = FakeSpeechToText()
     authorizer = FakeAuthorizer(allowed=False)
     service = TranscriptionService(
@@ -1329,7 +1338,7 @@ async def test_concurrent_exact_replay_has_one_execution_owner_and_one_model_cal
             await self.release.wait()
             return await super().transcribe(request)
 
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     adapter = BlockingSpeechToText()
     service = TranscriptionService(
         repository=repository,
@@ -1355,7 +1364,7 @@ async def test_concurrent_exact_replay_has_one_execution_owner_and_one_model_cal
 
 @pytest.mark.asyncio
 async def test_expired_pending_execution_is_reclaimed_after_worker_crash() -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     current_time = [NOW]
     crashed = TranscriptionService(
         repository=repository,
@@ -1440,7 +1449,7 @@ async def test_segment_outside_recording_becomes_typed_invalid_adapter_failure()
                 ),
             )
 
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     result = await TranscriptionService(
         repository=repository,
         speech_to_text=InvalidSpeechToText(),
@@ -1456,7 +1465,7 @@ async def test_segment_outside_recording_becomes_typed_invalid_adapter_failure()
 
 @pytest.mark.asyncio
 async def test_terminal_transition_revalidates_job_shape() -> None:
-    repository = InMemoryTranscriptionRepository()
+    repository = InMemoryTranscriptionRepository(clock=lambda: NOW)
     crashed = TranscriptionService(
         repository=repository,
         speech_to_text=FakeSpeechToText(failure=RuntimeError("worker crashed")),

@@ -293,8 +293,13 @@ class TranscriptionRepository(Protocol):
 class InMemoryTranscriptionRepository:
     """Atomic tenant-scoped canonical fake for application and contract tests."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    ) -> None:
         self._lock = asyncio.Lock()
+        self._clock = clock
         self._jobs: dict[tuple[UUID, UUID, UUID], TranscriptionJob] = {}
         self._commands: dict[tuple[UUID, UUID, str], UUID] = {}
         self._artifacts: dict[tuple[UUID, UUID, UUID], TranscriptionArtifact] = {}
@@ -469,7 +474,7 @@ class InMemoryTranscriptionRepository:
                 job is None
                 or job.state is not TranscriptionJobState.PENDING
                 or job.execution_lease_id != lease_id
-                or checkpoint.updated_at >= job.execution_lease_expires_at
+                or self._clock() >= job.execution_lease_expires_at
             ):
                 raise TranscriptionConflictError("transcription checkpoint lease is stale")
             current = self._checkpoints.get(key)

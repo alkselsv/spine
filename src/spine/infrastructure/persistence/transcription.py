@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import insert, select, text, update
+from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 
 from spine.application.persistence.context import (
@@ -334,7 +334,10 @@ class PostgreSQLTranscriptionRepository:
                 await self._bind_scope(session, workspace_id, environment_id)
                 row = (
                     await session.execute(
-                        select(transcription_jobs)
+                        select(
+                            *transcription_jobs.c,
+                            func.clock_timestamp().label("repository_now"),
+                        )
                         .where(
                             transcription_jobs.c.workspace_id == workspace_id,
                             transcription_jobs.c.environment_id == environment_id,
@@ -347,7 +350,7 @@ class PostgreSQLTranscriptionRepository:
                     row is None
                     or row["state"] != TranscriptionJobState.PENDING.value
                     or row["execution_lease_id"] != lease_id
-                    or checkpoint.updated_at >= row["execution_lease_expires_at"]
+                    or row["repository_now"] >= row["execution_lease_expires_at"]
                 ):
                     raise TranscriptionConflictError(
                         "transcription checkpoint lease is stale"
