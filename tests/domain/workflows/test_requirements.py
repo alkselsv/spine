@@ -3,7 +3,15 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from spine.domain.workflows import Requirement, RequirementState, RequirementsArtifact
+from spine.domain.artifacts import ArtifactRef, PhysicalLineLocator
+from spine.domain.workflows import (
+    AcceptedSourceRevisionRef,
+    Requirement,
+    RequirementEvidenceRef,
+    RequirementEvidenceStatus,
+    RequirementState,
+    RequirementsArtifact,
+)
 
 
 def test_requirement_defaults_to_unaccepted_candidate() -> None:
@@ -13,6 +21,53 @@ def test_requirement_defaults_to_unaccepted_candidate() -> None:
 
     assert requirement.state is RequirementState.CANDIDATE
     assert requirement.review_state == "needs_review"
+    assert requirement.evidence_status is RequirementEvidenceStatus.UNVERIFIED
+
+
+def test_requirement_preserves_exact_source_and_parsed_evidence_lineage() -> None:
+    source_ref = AcceptedSourceRevisionRef(
+        source_object_id=UUID(int=10), source_revision_id=UUID(int=11), provenance_id=UUID(int=12)
+    )
+    evidence_ref = RequirementEvidenceRef(
+        source_ref=source_ref,
+        parsed_artifact_ref=ArtifactRef(
+            id=UUID(int=13), schema_name="parsed-document", schema_version="parsed-document:v1"
+        ),
+        segment_id=UUID(int=14),
+        segment_digest="a" * 64,
+        locator=PhysicalLineLocator(
+            kind="physical_line", line_number=4, start_codepoint=5, end_codepoint=21
+        ),
+    )
+    requirement = Requirement(
+        requirement_id=UUID(int=1), category="functional", statement="Deliver by Friday",
+        source_refs=(source_ref,), evidence_refs=(evidence_ref,),
+        evidence_status=RequirementEvidenceStatus.REFERENCED,
+    )
+
+    assert requirement.evidence_refs == (evidence_ref,)
+    assert requirement.evidence_refs[0].locator.line_number == 4
+
+
+def test_requirement_rejects_evidence_from_an_unreferenced_source_revision() -> None:
+    evidence_ref = RequirementEvidenceRef(
+        source_ref=AcceptedSourceRevisionRef(
+            source_object_id=UUID(int=10), source_revision_id=UUID(int=11), provenance_id=UUID(int=12)
+        ),
+        parsed_artifact_ref=ArtifactRef(
+            id=UUID(int=13), schema_name="parsed-document", schema_version="parsed-document:v1"
+        ),
+        segment_id=UUID(int=14),
+        segment_digest="a" * 64,
+        locator=PhysicalLineLocator(
+            kind="physical_line", line_number=4, start_codepoint=5, end_codepoint=21
+        ),
+    )
+    with pytest.raises(ValidationError, match="evidence must belong"):
+        Requirement(
+            requirement_id=UUID(int=1), category="functional", statement="Deliver by Friday",
+            evidence_refs=(evidence_ref,), evidence_status=RequirementEvidenceStatus.REFERENCED,
+        )
 
 
 def test_requirements_artifact_preserves_exact_run_scope_and_version() -> None:

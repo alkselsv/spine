@@ -1816,6 +1816,18 @@ export interface components {
              */
             workspace_id: string;
         };
+        /** ArtifactRef */
+        ArtifactRef: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Schema Name */
+            schema_name: string;
+            /** Schema Version */
+            schema_version: string;
+        };
         /** AskAnswerResponse */
         AskAnswerResponse: {
             /**
@@ -2578,6 +2590,46 @@ export interface components {
          * @enum {string}
          */
         FeedbackTargetKind: "answer" | "citation";
+        /**
+         * GoogleSheetCellLocator
+         * @description One representation of a business-identified cell in an exact revision.
+         */
+        GoogleSheetCellLocator: {
+            /** Column Key */
+            column_key: string;
+            /** Immutable Business Id */
+            immutable_business_id: string;
+            /**
+             * Kind
+             * @default google_sheet_cell
+             * @constant
+             */
+            kind: "google_sheet_cell";
+            /** Observed A1 Range */
+            observed_a1_range: string;
+            /** Observed Cell Coordinate */
+            observed_cell_coordinate: string;
+            /**
+             * Representation
+             * @enum {string}
+             */
+            representation: "entered" | "effective" | "formatted" | "format";
+            /**
+             * Schema Version
+             * @default locator:google-sheet-cell:v1
+             * @constant
+             */
+            schema_version: "locator:google-sheet-cell:v1";
+            /** Sheet Id */
+            sheet_id: number;
+            /**
+             * Source Revision Id
+             * Format: uuid
+             */
+            source_revision_id: string;
+            /** Spreadsheet Id */
+            spreadsheet_id: string;
+        };
         /**
          * GroundedConflictStatus
          * @enum {string}
@@ -4304,6 +4356,13 @@ export interface components {
              */
             constraints: string[];
             /**
+             * Evidence Refs
+             * @default []
+             */
+            evidence_refs: components["schemas"]["RequirementEvidenceRef"][];
+            /** @default unverified */
+            evidence_status: components["schemas"]["RequirementEvidenceStatus"];
+            /**
              * Missing Markers
              * @default []
              */
@@ -4343,6 +4402,28 @@ export interface components {
          * @enum {string}
          */
         RequirementCategory: "functional" | "non_functional" | "constraint" | "assumption" | "unresolved_information";
+        /**
+         * RequirementEvidenceRef
+         * @description An exact source revision and parsed evidence segment without source text.
+         */
+        RequirementEvidenceRef: {
+            /** Locator */
+            locator: (components["schemas"]["PhysicalLineLocator"] | components["schemas"]["PageTextLocator"] | components["schemas"]["OoxmlTextLocator"] | components["schemas"]["XlsxCellLocator"]) | components["schemas"]["GoogleSheetCellLocator"];
+            parsed_artifact_ref: components["schemas"]["ArtifactRef"];
+            /** Segment Digest */
+            segment_digest: string;
+            /**
+             * Segment Id
+             * Format: uuid
+             */
+            segment_id: string;
+            source_ref: components["schemas"]["AcceptedSourceRevisionRef"];
+        };
+        /**
+         * RequirementEvidenceStatus
+         * @enum {string}
+         */
+        RequirementEvidenceStatus: "referenced" | "unverified" | "unsupported";
         /**
          * RequirementReviewState
          * @enum {string}

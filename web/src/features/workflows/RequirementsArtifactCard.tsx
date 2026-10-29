@@ -50,13 +50,25 @@ export function RequirementsArtifactCard({
             ) : null}
             {requirement.missing_markers.map((marker) => <p key={marker}>Не указано: {marker}</p>)}
             {requirement.ambiguous_markers.map((marker) => <p key={marker}>Требует уточнения: {marker}</p>)}
-            <small>Ссылки на источники: {requirement.source_refs.length ? `${requirement.source_refs.length} (доступ проверяется отдельно)` : 'нет'}</small>
+            <small>Ревизии источников: {requirement.source_refs.length || 'нет'}</small>
+            <small>
+              Подтверждения: {evidenceStatusLabel(requirement.evidence_status)} · точных ссылок {requirement.evidence_refs.length}
+            </small>
             {requirement.state === 'unsupported' || requirement.state === 'unverified' ? (
               <p role="status">{requirement.state === 'unsupported' ? 'Не подтверждено источниками' : 'Не проверено'}</p>
             ) : null}
+            {requirement.evidence_status === 'unverified' ? <p role="status">Источники не проверены</p> : null}
           </li>
         ))}
       </ul>
     </section>
   );
+}
+
+function evidenceStatusLabel(status: RequirementsArtifact['requirements'][number]['evidence_status']): string {
+  switch (status) {
+    case 'referenced': return 'есть ссылки';
+    case 'unsupported': return 'не подтверждено';
+    case 'unverified': return 'не проверено';
+  }
 }

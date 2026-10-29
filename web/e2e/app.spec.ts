@@ -119,6 +119,8 @@ test('test_requirements_artifact_is_restored_from_scoped_api_after_browser_reloa
             review_state: 'needs_review',
             confidence: null,
             source_refs: [],
+            evidence_refs: [],
+            evidence_status: 'unverified',
             upstream_artifact_ids: [],
           }],
         }),
@@ -155,6 +157,7 @@ test('test_requirements_artifact_is_restored_from_scoped_api_after_browser_reloa
   await expect(page.getByRole('heading', { name: 'Требования · версия 1' })).toBeVisible();
   await expect(page.getByText('Deliver the product proposal.')).toBeVisible();
   await expect(page.getByText('Не указано: delivery_date')).toBeVisible();
+  await expect(page.getByText('Источники не проверены')).toBeVisible();
   expect(artifactRequests).toHaveLength(1);
 
   await page.reload();

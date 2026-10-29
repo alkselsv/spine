@@ -1691,6 +1691,31 @@
         "title": "ApiResponseEnvelope[QASessionResponse]",
         "type": "object"
       },
+      "ArtifactRef": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "schema_name": {
+            "title": "Schema Name",
+            "type": "string"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "schema_name",
+          "schema_version"
+        ],
+        "title": "ArtifactRef",
+        "type": "object"
+      },
       "AskAnswerResponse": {
         "additionalProperties": false,
         "properties": {
@@ -3555,6 +3580,86 @@
         ],
         "title": "FeedbackTargetKind",
         "type": "string"
+      },
+      "GoogleSheetCellLocator": {
+        "additionalProperties": false,
+        "description": "One representation of a business-identified cell in an exact revision.",
+        "properties": {
+          "column_key": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Column Key",
+            "type": "string"
+          },
+          "immutable_business_id": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Immutable Business Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "google_sheet_cell",
+            "default": "google_sheet_cell",
+            "title": "Kind",
+            "type": "string"
+          },
+          "observed_a1_range": {
+            "maxLength": 128,
+            "pattern": "^[A-Z]+[1-9][0-9]*(?::[A-Z]+[1-9][0-9]*)?$",
+            "title": "Observed A1 Range",
+            "type": "string"
+          },
+          "observed_cell_coordinate": {
+            "maxLength": 64,
+            "pattern": "^[A-Z]+[1-9][0-9]*$",
+            "title": "Observed Cell Coordinate",
+            "type": "string"
+          },
+          "representation": {
+            "enum": [
+              "entered",
+              "effective",
+              "formatted",
+              "format"
+            ],
+            "title": "Representation",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "locator:google-sheet-cell:v1",
+            "default": "locator:google-sheet-cell:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "sheet_id": {
+            "minimum": 0.0,
+            "title": "Sheet Id",
+            "type": "integer"
+          },
+          "source_revision_id": {
+            "format": "uuid",
+            "title": "Source Revision Id",
+            "type": "string"
+          },
+          "spreadsheet_id": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Spreadsheet Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_revision_id",
+          "spreadsheet_id",
+          "sheet_id",
+          "immutable_business_id",
+          "column_key",
+          "representation",
+          "observed_a1_range",
+          "observed_cell_coordinate"
+        ],
+        "title": "GoogleSheetCellLocator",
+        "type": "object"
       },
       "GroundedConflictStatus": {
         "enum": [
@@ -7898,6 +8003,18 @@
             "title": "Constraints",
             "type": "array"
           },
+          "evidence_refs": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RequirementEvidenceRef"
+            },
+            "title": "Evidence Refs",
+            "type": "array"
+          },
+          "evidence_status": {
+            "$ref": "#/components/schemas/RequirementEvidenceStatus",
+            "default": "unverified"
+          },
           "missing_markers": {
             "default": [],
             "items": {
@@ -7978,6 +8095,79 @@
           "unresolved_information"
         ],
         "title": "RequirementCategory",
+        "type": "string"
+      },
+      "RequirementEvidenceRef": {
+        "additionalProperties": false,
+        "description": "An exact source revision and parsed evidence segment without source text.",
+        "properties": {
+          "locator": {
+            "anyOf": [
+              {
+                "discriminator": {
+                  "mapping": {
+                    "ooxml_text": "#/components/schemas/OoxmlTextLocator",
+                    "page_text": "#/components/schemas/PageTextLocator",
+                    "physical_line": "#/components/schemas/PhysicalLineLocator",
+                    "xlsx_cell": "#/components/schemas/XlsxCellLocator"
+                  },
+                  "propertyName": "kind"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/PhysicalLineLocator"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PageTextLocator"
+                  },
+                  {
+                    "$ref": "#/components/schemas/OoxmlTextLocator"
+                  },
+                  {
+                    "$ref": "#/components/schemas/XlsxCellLocator"
+                  }
+                ]
+              },
+              {
+                "$ref": "#/components/schemas/GoogleSheetCellLocator"
+              }
+            ],
+            "title": "Locator"
+          },
+          "parsed_artifact_ref": {
+            "$ref": "#/components/schemas/ArtifactRef"
+          },
+          "segment_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Segment Digest",
+            "type": "string"
+          },
+          "segment_id": {
+            "format": "uuid",
+            "title": "Segment Id",
+            "type": "string"
+          },
+          "source_ref": {
+            "$ref": "#/components/schemas/AcceptedSourceRevisionRef"
+          }
+        },
+        "required": [
+          "source_ref",
+          "parsed_artifact_ref",
+          "segment_id",
+          "segment_digest",
+          "locator"
+        ],
+        "title": "RequirementEvidenceRef",
+        "type": "object"
+      },
+      "RequirementEvidenceStatus": {
+        "enum": [
+          "referenced",
+          "unverified",
+          "unsupported"
+        ],
+        "title": "RequirementEvidenceStatus",
         "type": "string"
       },
       "RequirementReviewState": {

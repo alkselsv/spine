@@ -6,8 +6,16 @@ from enum import Enum
 from typing import Literal
 from uuid import UUID
 
-from pydantic import Field, StrictFloat, StrictInt, StrictStr, field_validator, model_validator
+from pydantic import (
+    Field,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
+from spine.domain.artifacts import ArtifactRef, GoogleSheetCellLocator, Locator
 from spine.domain.common import DefinitionModel
 from spine.domain.workflows.runs import AcceptedSourceRevisionRef
 
@@ -33,6 +41,45 @@ class RequirementCategory(str, Enum):
     UNRESOLVED_INFORMATION = "unresolved_information"
 
 
+class RequirementEvidenceStatus(str, Enum):
+    REFERENCED = "referenced"
+    UNVERIFIED = "unverified"
+    UNSUPPORTED = "unsupported"
+
+
+class RequirementEvidenceRef(DefinitionModel):
+    """An exact source revision and parsed evidence segment without source text."""
+
+    source_ref: AcceptedSourceRevisionRef
+    parsed_artifact_ref: ArtifactRef
+    segment_id: UUID
+    segment_digest: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    locator: Locator | GoogleSheetCellLocator
+
+    @field_validator("segment_id")
+    @classmethod
+    def reject_zero_segment_id(cls, value: UUID) -> UUID:
+        if value.int == 0:
+            raise ValueError("evidence segment identity must be non-zero")
+        return value
+
+    @model_validator(mode="after")
+    def validate_exact_parsed_reference(self) -> "RequirementEvidenceRef":
+        if self.parsed_artifact_ref.id.int == 0:
+            raise ValueError("parsed artifact identity must be non-zero")
+        if (
+            self.parsed_artifact_ref.schema_name != "parsed-document"
+            or self.parsed_artifact_ref.schema_version != "parsed-document:v1"
+        ):
+            raise ValueError("evidence must reference a versioned parsed document")
+        if (
+            isinstance(self.locator, GoogleSheetCellLocator)
+            and self.locator.source_revision_id != self.source_ref.source_revision_id
+        ):
+            raise ValueError("Google Sheets locator must reference the same source revision")
+        return self
+
+
 class Requirement(DefinitionModel):
     """One traceable, unaccepted statement proposed by requirements extraction."""
 
@@ -48,6 +95,8 @@ class Requirement(DefinitionModel):
     review_state: RequirementReviewState = RequirementReviewState.NEEDS_REVIEW
     confidence: StrictFloat | None = Field(default=None, ge=0, le=1)
     source_refs: tuple[AcceptedSourceRevisionRef, ...] = ()
+    evidence_refs: tuple[RequirementEvidenceRef, ...] = ()
+    evidence_status: RequirementEvidenceStatus = RequirementEvidenceStatus.UNVERIFIED
     upstream_artifact_ids: tuple[UUID, ...] = ()
 
     @field_validator("requirement_id", "upstream_artifact_ids")
@@ -59,6 +108,33 @@ class Requirement(DefinitionModel):
         if len(set(values)) != len(values):
             raise ValueError("upstream artifact identities must be unique")
         return value
+
+    @model_validator(mode="after")
+    def validate_evidence_lineage(self) -> "Requirement":
+        source_refs = {
+            (reference.source_object_id, reference.source_revision_id, reference.provenance_id)
+            for reference in self.source_refs
+        }
+        if len(source_refs) != len(self.source_refs):
+            raise ValueError("requirement source references must be unique")
+        evidence_keys = tuple(
+            (reference.parsed_artifact_ref.id, reference.segment_id)
+            for reference in self.evidence_refs
+        )
+        if len(set(evidence_keys)) != len(evidence_keys):
+            raise ValueError("requirement evidence references must be unique")
+        if any(
+            (
+                reference.source_ref.source_object_id,
+                reference.source_ref.source_revision_id,
+                reference.source_ref.provenance_id,
+            ) not in source_refs
+            for reference in self.evidence_refs
+        ):
+            raise ValueError("requirement evidence must belong to a referenced source revision")
+        if self.evidence_status is RequirementEvidenceStatus.REFERENCED and not self.evidence_refs:
+            raise ValueError("referenced evidence status requires exact evidence references")
+        return self
 
 
 class RequirementsArtifact(DefinitionModel):

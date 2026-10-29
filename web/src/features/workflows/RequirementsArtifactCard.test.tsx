@@ -24,7 +24,8 @@ describe('RequirementsArtifactCard', () => {
         schema_version: 'requirement:v1', category: 'constraint', statement: 'The request does not specify a price',
         constraints: [], uncertainty: 'No price source was provided', ambiguous_markers: ['price_basis'],
         missing_markers: ['currency'], state: 'unsupported', review_state: 'needs_review',
-        confidence: 0.99, source_refs: [], upstream_artifact_ids: [] }],
+        confidence: 0.99, source_refs: [], evidence_refs: [], evidence_status: 'unsupported',
+        upstream_artifact_ids: [] }],
     } });
     render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <RequirementsArtifactCard client={{ GET: get }} queryKey={['workspace', 'run']} runId="30000000-0000-4000-8000-000000000001" />
@@ -34,6 +35,7 @@ describe('RequirementsArtifactCard', () => {
     expect(screen.getByText('Статус: partial')).toBeVisible();
     expect(screen.getByText(/Не указано: currency/)).toBeVisible();
     expect(screen.getByText('Не подтверждено источниками')).toBeVisible();
+    expect(screen.getByText(/Подтверждения: не подтверждено/)).toBeVisible();
     expect(get).toHaveBeenCalledWith('/api/v1/runs/{run_id}/requirements', expect.any(Object));
   });
 });

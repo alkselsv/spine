@@ -19,6 +19,8 @@ from spine.domain.workflows.runs import (
 from spine.domain.workflows.requirements import (
     Requirement,
     RequirementCategory,
+    RequirementEvidenceRef,
+    RequirementEvidenceStatus,
     RequirementsArtifact,
     RequirementState,
 )
@@ -38,6 +40,8 @@ __all__ = [
     "WorkflowVersion",
     "Requirement",
     "RequirementCategory",
+    "RequirementEvidenceRef",
+    "RequirementEvidenceStatus",
     "RequirementsArtifact",
     "RequirementState",
 ]

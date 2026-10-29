@@ -46,7 +46,8 @@ describe('WorkflowRunPage', () => {
           predecessor_version: null, requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
             category: 'functional', statement: 'Deliver by Friday', constraints: [], uncertainty: null,
             ambiguous_markers: [], missing_markers: [], state: 'candidate', review_state: 'needs_review',
-            confidence: null, source_refs: [], upstream_artifact_ids: [] }],
+            confidence: null, source_refs: [], evidence_refs: [], evidence_status: 'unverified',
+            upstream_artifact_ids: [] }],
         } });
       }
       if (path.endsWith('/events')) {
@@ -109,7 +110,8 @@ describe('WorkflowRunPage', () => {
           predecessor_version: null, requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
             category: 'functional', statement: 'Deliver by Friday', constraints: [], uncertainty: null,
             ambiguous_markers: [], missing_markers: [], state: 'candidate', review_state: 'needs_review',
-            confidence: null, source_refs: [], upstream_artifact_ids: [] }],
+            confidence: null, source_refs: [], evidence_refs: [], evidence_status: 'unverified',
+            upstream_artifact_ids: [] }],
         } });
       }
       if (path.endsWith('/events')) {
