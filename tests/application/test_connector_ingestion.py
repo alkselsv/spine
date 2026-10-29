@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 from types import SimpleNamespace
@@ -11,9 +13,11 @@ from spine.application.connector_ingestion import (
     ConnectorIngestionCommand,
     ConnectorIngestionOrchestrator,
     ConnectorIngestionStatus,
+    ProviderAuthorizedObservationReader,
     build_connector_canonical_acceptance_command,
 )
 from spine.application.connections.google import GoogleReadCommand
+from spine.application.connections.provider import ProviderReadAdmission
 from spine.application.google_sheets_reconciliation import (
     ConnectorGoogleSheetsCanonicalIngestion,
     GoogleSheetsAdmittedPageReader,
@@ -37,6 +41,14 @@ from spine.application.persistence.google_sheets_sync import (
 )
 from spine.application.diagnostics import AuditEventRegistry
 from spine.connectors import ConnectorCoverage, NormalizedConnectorObservation
+from spine.connectors.google_observation_compatibility import (
+    google_v1_observation_to_v2,
+)
+from spine.connectors.observations_v2 import (
+    ExternalIdentityAssurance,
+    LifecycleObservationRepresentation,
+    ProviderLifecycleState,
+)
 from spine.connectors.google_drive import (
     DriveFileContent,
     DriveFileMetadata,
@@ -67,6 +79,15 @@ from spine.domain.sources.google import (
 )
 from spine.domain.sources import RevisionKind
 from spine.domain.connections.google import OpaqueGoogleReference
+from spine.domain.connections.provider import (
+    OpaqueProviderReference,
+    ProviderCapability,
+    ProviderCapabilityKind,
+    ProviderCapabilityStatus,
+    ProviderConnection,
+    ProviderConnectionStatus,
+    ProviderKind,
+)
 from spine.domain.common import EnvironmentKind
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.persistence.contexts import (
@@ -466,6 +487,8 @@ def _orchestrator(observation=None, *, reader=None):
             ),
             outbox_events=OutboxEventRegistry(),
             audit_events=AuditEventRegistry.with_default_families(),
+            read_operation=PersistenceOperation("google_connection_read"),
+            admission_reference_type="google_read_admission",
             clock=lambda: NOW,
         ),
         reader,
@@ -712,6 +735,68 @@ async def test_pre_read_normalized_observation_uses_canonical_and_projection_han
     assert ingestion.observation is not None
     assert len(uow.events) == 1
     assert uow.events[0].event_type == "ingestion.projection.requested"
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_only_v2_is_rejected_before_content_ingestion_effects():
+    orchestrator, _, uploader, ingestion, uow = _orchestrator()
+    observation = google_v1_observation_to_v2(
+        _drive_observation(), connection_version_id=_id("google-connection-version")
+    ).model_copy(
+        update={
+            "representation": LifecycleObservationRepresentation(
+                state=ProviderLifecycleState.CONFIRMED_DELETED,
+                evidence_reference="google-drive-reconciliation:v1",
+                evidence_digest="0" * 64,
+            )
+        }
+    )
+
+    with pytest.raises(
+        ValueError, match="Lifecycle-only observations cannot enter content ingestion"
+    ):
+        await orchestrator.ingest_observation(_command(), observation)
+
+    assert ingestion.run is None
+    assert ingestion.item is None
+    assert ingestion.transitions == []
+    assert uploader.calls == 0
+    assert uow.accepted == 0
+    assert uow.events == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("factory", "expected_assurance"),
+    (
+        (_observation, ExternalIdentityAssurance.SCOPE_STABLE),
+        (_drive_observation, ExternalIdentityAssurance.PROVIDER_STABLE),
+    ),
+)
+async def test_google_v1_and_provider_v2_produce_equivalent_canonical_outcomes(
+    factory,
+    expected_assurance: ExternalIdentityAssurance,
+):
+    legacy = factory()
+    provider_v2 = google_v1_observation_to_v2(
+        legacy, connection_version_id=_id("google-connection-version")
+    )
+    legacy_orchestrator, _, _, _, legacy_uow = _orchestrator()
+    v2_orchestrator, _, _, _, v2_uow = _orchestrator()
+
+    legacy_result = await legacy_orchestrator.ingest_observation(_command(), legacy)
+    v2_result = await v2_orchestrator.ingest_observation(_command(), provider_v2)
+
+    assert v2_result.source == legacy_result.source
+    assert v2_result.revision == legacy_result.revision
+    assert v2_result.provenance == legacy_result.provenance
+    assert v2_result.processing_receipt == legacy_result.processing_receipt
+    assert v2_uow.events == legacy_uow.events
+    assert provider_v2.external_identity.external_object_id == (
+        legacy.external_identity.external_object_id
+    )
+    assert provider_v2.origin_locator_value == legacy.origin_locator_value
+    assert provider_v2.external_identity.assurance is expected_assurance
 
 
 @pytest.mark.asyncio
@@ -1096,14 +1181,89 @@ async def test_handoff_uses_real_in_memory_source_admission_canonical_and_ledger
         ),
         outbox_events=events,
         audit_events=audits,
+        read_operation=PersistenceOperation("google_connection_read"),
+        admission_reference_type="google_read_admission",
         clock=lambda: NOW,
     )
 
-    first = await orchestrator.ingest(
-        _command("sheets-observation-1").model_copy(
-            update={"command_identity": "connector.sheets-observation-1"}
-        )
+    first_command = _command("sheets-observation-1").model_copy(
+        update={"command_identity": "connector.sheets-observation-1"}
     )
+    first = await orchestrator.ingest(first_command)
+    provider_v2 = google_v1_observation_to_v2(
+        first.observation,
+        connection_version_id=_id("provider-v2-connection-version"),
+    )
+
+    class ProviderConnectionRepository:
+        def __init__(self):
+            self.contexts = []
+
+        @asynccontextmanager
+        async def admit_read(self, command, context):
+            del command
+            self.contexts.append(context)
+            yield provider_connection
+
+    class Provider:
+        def __init__(self):
+            self.calls = 0
+
+        async def read(self, connection, command):
+            del connection, command
+            self.calls += 1
+            return provider_v2
+
+    qualification = OpaqueProviderReference(value=_id("provider-v2-qualification"))
+    provider_connection = ProviderConnection(
+        connection_version_id=provider_v2.connection_version_id,
+        connection_id=CONNECTION,
+        approval_id=_id("provider-v2-approval"),
+        version=1,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        service_principal_id=_id("service"),
+        provider_kind=ProviderKind.GOOGLE,
+        credential_reference=OpaqueProviderReference(
+            value=_id("provider-v2-credential")
+        ),
+        grant_reference=OpaqueProviderReference(value=_id("provider-v2-grant")),
+        approved_resource_scope_references=(
+            OpaqueProviderReference(value=SCOPE),
+        ),
+        authorization_generation=7,
+        configuration_generation=11,
+        status=ProviderConnectionStatus.ACTIVE,
+        capabilities=(
+            ProviderCapability(
+                kind=ProviderCapabilityKind.TABULAR_READ,
+                status=ProviderCapabilityStatus.SUPPORTED,
+                qualification_reference=qualification,
+            ),
+            ProviderCapability(
+                kind=ProviderCapabilityKind.STABLE_IDENTITY,
+                status=ProviderCapabilityStatus.SUPPORTED,
+                qualification_reference=qualification,
+            ),
+        ),
+    )
+    provider = Provider()
+    provider_connection_repository = ProviderConnectionRepository()
+    admitted_v2_orchestrator = replace(
+        orchestrator,
+        observation_reader=ProviderAuthorizedObservationReader(
+            admission=ProviderReadAdmission(
+                repository=provider_connection_repository,
+                provider=provider,
+            ),
+            connection_version_id=provider_v2.connection_version_id,
+            required_capabilities=(ProviderCapabilityKind.TABULAR_READ,),
+        ),
+        read_operation=PersistenceOperation("provider_connection_read"),
+        admission_reference_type="provider_read_admission",
+    )
+    compatibility_replay = await admitted_v2_orchestrator.ingest(first_command)
+
     moved = await orchestrator.ingest(
         _command("sheets-observation-2").model_copy(
             update={
@@ -1142,6 +1302,22 @@ async def test_handoff_uses_real_in_memory_source_admission_canonical_and_ledger
         await uow.rollback()
 
     assert current is not None
+    assert provider_v2.external_identity.assurance is (
+        ExternalIdentityAssurance.SCOPE_STABLE
+    )
+    assert provider.calls == 1
+    assert len(provider_connection_repository.contexts) == 1
+    assert provider_connection_repository.contexts[0].operation == (
+        PersistenceOperation("provider_connection_read")
+    )
+    assert compatibility_replay.replay is True
+    assert compatibility_replay.run == first.run
+    assert compatibility_replay.item == first.item
+    assert compatibility_replay.source == first.source
+    assert compatibility_replay.revision == first.revision
+    assert compatibility_replay.provenance == first.provenance
+    assert compatibility_replay.processing_receipt == first.processing_receipt
+    assert compatibility_replay.canonical_acceptance is None
     assert first.revision.revision_id == moved.revision.revision_id
     assert edited.revision.revision_id != moved.revision.revision_id
     assert current.current_revision_id == edited.revision.revision_id
@@ -1256,6 +1432,8 @@ async def test_google_reconciliation_composes_fake_provider_through_persisted_ca
         ),
         outbox_events=events,
         audit_events=audits,
+        read_operation=PersistenceOperation("google_connection_read"),
+        admission_reference_type="google_read_admission",
         clock=lambda: NOW,
     )
 
