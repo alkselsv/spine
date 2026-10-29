@@ -14,11 +14,19 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import re
 from typing import Any, Protocol
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from uuid import UUID
 
 import httpx
-from pydantic import ConfigDict, Field, StrictFloat, StrictInt, StrictStr, model_validator
+from pydantic import (
+    ConfigDict,
+    Field,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 from spine.application.connections.google import (
     GoogleProviderAuthorizationError,
@@ -63,8 +71,36 @@ class GoogleApiEndpoints(DefinitionModel):
     drive_base_url: StrictStr = Field(min_length=1, max_length=2048)
     sheets_base_url: StrictStr = Field(min_length=1, max_length=2048)
     oauth_token_url: StrictStr = Field(min_length=1, max_length=2048)
+    approved_oauth_scopes: tuple[StrictStr, ...] = Field(min_length=1)
     provider_api_version: StrictStr = Field(min_length=1, max_length=128)
     configuration_version: StrictStr = Field(min_length=1, max_length=128)
+
+    @field_validator("drive_base_url", "sheets_base_url", "oauth_token_url")
+    @classmethod
+    def validate_https_endpoint(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("Google provider endpoints must be absolute HTTPS URLs")
+        return value.rstrip("/")
+
+    @field_validator("approved_oauth_scopes")
+    @classmethod
+    def validate_oauth_scopes(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(values)) != len(values):
+            raise ValueError("approved OAuth scopes must be unique")
+        if any(
+            urlsplit(value).scheme != "https" or not urlsplit(value).hostname
+            for value in values
+        ):
+            raise ValueError("approved OAuth scopes must be absolute HTTPS identifiers")
+        return tuple(sorted(values))
 
 
 class GoogleApiRequestPolicy(DefinitionModel):
@@ -107,12 +143,12 @@ class GoogleResourceScope(DefinitionModel):
     @model_validator(mode="after")
     def validate_allowlist(self) -> "GoogleResourceScope":
         if not self.allowed_file_ids and not self.allowed_spreadsheet_ids:
-            raise ValueError("Google resource scope requires an exact resource allowlist")
+            raise ValueError(
+                "Google resource scope requires an exact resource allowlist"
+            )
         if len(set(self.allowed_file_ids)) != len(self.allowed_file_ids):
             raise ValueError("allowed_file_ids must be unique")
-        if len(set(self.allowed_spreadsheet_ids)) != len(
-            self.allowed_spreadsheet_ids
-        ):
+        if len(set(self.allowed_spreadsheet_ids)) != len(self.allowed_spreadsheet_ids):
             raise ValueError("allowed_spreadsheet_ids must be unique")
         return self
 
@@ -210,6 +246,23 @@ class GoogleApiTransport(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class GoogleApiRetryEvent:
+    """Sanitized tenant-scoped evidence for one bounded HTTP retry."""
+
+    workspace_id: UUID
+    environment_id: UUID
+    connection_id: UUID
+    operation: str
+    reason: str
+    attempt: int
+    max_attempts: int
+
+
+class GoogleApiRetryObserver(Protocol):
+    async def record_retry(self, event: GoogleApiRetryEvent) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
 class HttpxGoogleApiTransport:
     """Sanitizing transport for the selected, already-declared HTTP client."""
 
@@ -242,11 +295,7 @@ class HttpxGoogleApiTransport:
             status_code=response.status_code,
             json_body=json_body,
             content=response.content,
-            headers=(
-                {"content-type": content_type}
-                if content_type
-                else {}
-            ),
+            headers=({"content-type": content_type} if content_type else {}),
         )
 
 
@@ -271,6 +320,7 @@ class GoogleApiService:
         resource_scopes: tuple[GoogleResourceScope, ...],
         credential_resolver: GoogleCredentialResolver,
         transport: GoogleApiTransport,
+        retry_observer: GoogleApiRetryObserver,
         sheet_profiles: tuple[GoogleSheetsReadProfile, ...] = (),
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         sleep: Callable[[float], Awaitable[None]],
@@ -283,11 +333,14 @@ class GoogleApiService:
         self._scopes = {scope.reference.value: scope for scope in resource_scopes}
         self._resolver = credential_resolver
         self._transport = transport
+        self._retry_observer = retry_observer
         profile_keys = tuple(
             (profile.spreadsheet_id, profile.sheet_id) for profile in sheet_profiles
         )
         if len(set(profile_keys)) != len(profile_keys):
-            raise ValueError("Google Sheets profiles must be unique by spreadsheet/sheet")
+            raise ValueError(
+                "Google Sheets profiles must be unique by spreadsheet/sheet"
+            )
         self._sheet_profiles = {
             (profile.spreadsheet_id, profile.sheet_id): profile
             for profile in sheet_profiles
@@ -437,7 +490,9 @@ class GoogleApiService:
         if page_token is not None:
             query["pageToken"] = page_token
         if scope.folder_id is not None:
-            query["q"] = f"'{_drive_query_literal(scope.folder_id)}' in parents and trashed = false"
+            query["q"] = (
+                f"'{_drive_query_literal(scope.folder_id)}' in parents and trashed = false"
+            )
         if scope.drive_id is not None:
             query.update({"corpora": "drive", "driveId": scope.drive_id})
         payload = self._json_success(
@@ -461,13 +516,13 @@ class GoogleApiService:
             raise GoogleProviderContractError("Google provider response is invalid.")
         self._discovered_files.setdefault(
             self._scope_key(connection, scope), set()
-        ).update(
-            item.file_id for item in items
-        )
+        ).update(item.file_id for item in items)
         return DriveSnapshotPage(
             page_token=page_token,
             next_page_token=_optional_string(payload, "nextPageToken"),
-            incomplete_search=_required_bool(payload, "incompleteSearch", default=False),
+            incomplete_search=_required_bool(
+                payload, "incompleteSearch", default=False
+            ),
             items=items,
         )
 
@@ -506,14 +561,14 @@ class GoogleApiService:
         changes = tuple(_drive_change(item) for item in raw_changes)
         self._discovered_files.setdefault(
             self._scope_key(connection, scope), set()
-        ).update(
-            change.file_id for change in changes if not change.removed
-        )
+        ).update(change.file_id for change in changes if not change.removed)
         return DriveChangePage(
             page_token=page_token,
             next_page_token=_optional_string(payload, "nextPageToken"),
             new_start_page_token=_optional_string(payload, "newStartPageToken"),
-            incomplete_search=_required_bool(payload, "incompleteSearch", default=False),
+            incomplete_search=_required_bool(
+                payload, "incompleteSearch", default=False
+            ),
             changes=changes,
         )
 
@@ -600,12 +655,17 @@ class GoogleApiService:
                 "fields": _SHEETS_FIELDS,
             },
         )
-        snapshot = _sheets_snapshot(self._json_success(response), profile)
+        snapshot = _sheets_snapshot(
+            self._json_success(response),
+            profile,
+            expected_a1_range=provider_range,
+        )
         version_after = await self.get_provider_version(
             connection, resource_scope_reference, spreadsheet_id
         )
-        # A short final page is terminal even when the configured range extends.
-        complete = range_complete or len(snapshot.rows) < self._policy.sheets_page_size
+        # Sparse pages are valid Sheets responses. Only the configured A1 page
+        # boundary, never returned row count, determines completion.
+        complete = range_complete
         return GoogleSheetsRangePage(
             spreadsheet_id=spreadsheet_id,
             sheet_id=sheet_id,
@@ -636,10 +696,8 @@ class GoogleApiService:
             scope.workspace_id != connection.workspace_id
             or scope.environment_id != connection.environment_id
             or scope.connection_id != connection.connection_id
-            or scope.authorization_generation
-            != connection.authorization_generation
-            or scope.configuration_generation
-            != connection.configuration_generation
+            or scope.authorization_generation != connection.authorization_generation
+            or scope.configuration_generation != connection.configuration_generation
         ):
             raise GoogleResourceScopeError(
                 "Google request is outside the approved Google resource scope."
@@ -675,9 +733,7 @@ class GoogleApiService:
         )
 
     @staticmethod
-    def _require_spreadsheet(
-        scope: GoogleResourceScope, spreadsheet_id: str
-    ) -> None:
+    def _require_spreadsheet(scope: GoogleResourceScope, spreadsheet_id: str) -> None:
         if spreadsheet_id not in scope.allowed_spreadsheet_ids:
             raise GoogleResourceScopeError(
                 "Google request is outside the approved Google resource scope."
@@ -720,6 +776,7 @@ class GoogleApiService:
             except (TimeoutError, asyncio.TimeoutError, GoogleProviderReadError):
                 if attempt + 1 == self._policy.max_attempts:
                     raise GoogleProviderReadError() from None
+                await self._record_retry(connection, "provider", "transient", attempt)
                 await self._sleep(self._policy.backoff_seconds[attempt])
                 continue
             if 200 <= response.status_code < 300:
@@ -730,9 +787,13 @@ class GoogleApiService:
                 return response
             if response.status_code == 401:
                 self._invalidate_token(connection)
-                if refreshed_after_unauthorized or attempt + 1 == self._policy.max_attempts:
+                if (
+                    refreshed_after_unauthorized
+                    or attempt + 1 == self._policy.max_attempts
+                ):
                     raise GoogleProviderAuthorizationError()
                 refreshed_after_unauthorized = True
+                await self._record_retry(connection, "provider", "reauthorize", attempt)
                 await self._sleep(self._policy.backoff_seconds[attempt])
                 continue
             if response.status_code == 404:
@@ -760,6 +821,16 @@ class GoogleApiService:
                 raise GoogleProviderContractError("Google provider request failed.")
             if attempt + 1 == self._policy.max_attempts:
                 raise failure
+            await self._record_retry(
+                connection,
+                "provider",
+                (
+                    "quota"
+                    if isinstance(failure, GoogleProviderQuotaError)
+                    else "transient"
+                ),
+                attempt,
+            )
             await self._sleep(self._policy.backoff_seconds[attempt])
         raise AssertionError("bounded Google request must return or raise")
 
@@ -774,7 +845,9 @@ class GoogleApiService:
     def _invalidate_token(self, connection: GoogleConnection) -> None:
         self._tokens.pop(self._token_key(connection), None)
 
-    async def _oauth_request(self, request: GoogleApiRequest) -> GoogleApiResponse:
+    async def _oauth_request(
+        self, connection: GoogleConnection, request: GoogleApiRequest
+    ) -> GoogleApiResponse:
         for attempt in range(self._policy.max_attempts):
             try:
                 response = await self._transport.request(request)
@@ -784,7 +857,8 @@ class GoogleApiService:
                 return response
             if response is not None and (
                 response.status_code in {400, 401}
-                and _provider_reason(response) in {
+                and _provider_reason(response)
+                in {
                     "invalid_grant",
                     "token_revoked",
                     "access_revoked",
@@ -794,8 +868,28 @@ class GoogleApiService:
                 raise GoogleProviderAuthorizationError()
             if attempt + 1 == self._policy.max_attempts:
                 raise GoogleProviderReadError()
+            await self._record_retry(connection, "oauth", "transient", attempt)
             await self._sleep(self._policy.backoff_seconds[attempt])
         raise AssertionError("bounded OAuth request must return or raise")
+
+    async def _record_retry(
+        self,
+        connection: GoogleConnection,
+        operation: str,
+        reason: str,
+        zero_based_attempt: int,
+    ) -> None:
+        await self._retry_observer.record_retry(
+            GoogleApiRetryEvent(
+                workspace_id=connection.workspace_id,
+                environment_id=connection.environment_id,
+                connection_id=connection.connection_id,
+                operation=operation,
+                reason=reason,
+                attempt=zero_based_attempt + 1,
+                max_attempts=self._policy.max_attempts,
+            )
+        )
 
     async def _access_token(self, connection: GoogleConnection) -> str:
         now = self._clock()
@@ -805,10 +899,18 @@ class GoogleApiService:
         cached = self._tokens.get(key)
         if cached is not None and cached.expires_at > now + timedelta(seconds=30):
             return cached.value
-        material = await self._resolver.resolve(
-            connection.credential_reference, connection.grant_reference
-        )
+        try:
+            material = await self._resolver.resolve(
+                connection.credential_reference, connection.grant_reference
+            )
+        except asyncio.CancelledError:
+            raise
+        except GoogleProviderReadError:
+            raise
+        except Exception:
+            raise GoogleProviderReadError() from None
         response = await self._oauth_request(
+            connection,
             GoogleApiRequest(
                 method="POST",
                 url=self._endpoints.oauth_token_url,
@@ -819,14 +921,19 @@ class GoogleApiService:
                     "client_secret": material.client_secret,
                     "refresh_token": material.refresh_token,
                     "grant_type": "refresh_token",
+                    "scope": " ".join(self._endpoints.approved_oauth_scopes),
                 },
                 timeout_seconds=self._policy.timeout_seconds,
-            )
+            ),
         )
         payload = self._json_success(response)
         access_token = _required_string(payload, "access_token")
         expires_in = payload.get("expires_in")
-        if not isinstance(expires_in, int) or isinstance(expires_in, bool) or expires_in <= 0:
+        if (
+            not isinstance(expires_in, int)
+            or isinstance(expires_in, bool)
+            or expires_in <= 0
+        ):
             raise GoogleProviderContractError(
                 "Google OAuth response expiry is invalid."
             )
@@ -878,7 +985,9 @@ def _optional_datetime(payload: Mapping[str, Any], key: str) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        raise GoogleProviderContractError("Google provider response is invalid.") from None
+        raise GoogleProviderContractError(
+            "Google provider response is invalid."
+        ) from None
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise GoogleProviderContractError("Google provider response is invalid.")
     return parsed
@@ -953,13 +1062,16 @@ _SHEETS_FIELDS = (
     "spreadsheetId,properties(locale,timeZone),"
     "developerMetadata(metadataId,metadataKey,metadataValue,location),"
     "sheets(properties(sheetId,title),developerMetadata(metadataId,metadataKey,"
-    "metadataValue,location),data(startRow,startColumn,rowData(values(" 
+    "metadataValue,location),data(startRow,startColumn,rowData(values("
     "userEnteredValue,effectiveValue,formattedValue,effectiveFormat(numberFormat)))))"
 )
 
 
 def _sheets_snapshot(
-    payload: Mapping[str, Any], profile: GoogleSheetsReadProfile
+    payload: Mapping[str, Any],
+    profile: GoogleSheetsReadProfile,
+    *,
+    expected_a1_range: str | None = None,
 ) -> GoogleSheetsSnapshot:
     if payload.get("spreadsheetId") != profile.spreadsheet_id:
         raise GoogleSheetsConfiguredScopeError(
@@ -984,7 +1096,11 @@ def _sheets_snapshot(
     sheet_properties = sheet["properties"]
     title = _required_string(sheet_properties, "title")
     metadata = _developer_metadata_by_row(
-        tuple(_metadata_items(payload)) + tuple(_metadata_items(sheet))
+        tuple(_metadata_items(payload)) + tuple(_metadata_items(sheet)),
+        sheet_id=profile.sheet_id,
+    )
+    expected_bounds = (
+        _a1_bounds(expected_a1_range) if expected_a1_range is not None else None
     )
     rows: list[GoogleSheetsRowData] = []
     raw_grids = sheet.get("data", [])
@@ -998,13 +1114,37 @@ def _sheets_snapshot(
         row_data = grid.get("rowData", [])
         if not isinstance(row_data, list):
             raise GoogleProviderContractError("Google provider response is invalid.")
+        if expected_bounds is not None:
+            first_row, last_row, first_column, last_column = expected_bounds
+            observed_first_row = start_row + 1
+            if (
+                observed_first_row < first_row
+                or observed_first_row > last_row
+                or start_column < first_column
+                or start_column > last_column
+                or len(row_data) > last_row - observed_first_row + 1
+            ):
+                raise GoogleSheetsConfiguredScopeError(
+                    "Sheets grid data is outside the requested page range."
+                )
         for offset, raw_row in enumerate(row_data):
             if not isinstance(raw_row, Mapping):
-                raise GoogleProviderContractError("Google provider response is invalid.")
+                raise GoogleProviderContractError(
+                    "Google provider response is invalid."
+                )
             row_number = start_row + offset + 1
             raw_cells = raw_row.get("values", [])
             if not isinstance(raw_cells, list):
-                raise GoogleProviderContractError("Google provider response is invalid.")
+                raise GoogleProviderContractError(
+                    "Google provider response is invalid."
+                )
+            if (
+                expected_bounds is not None
+                and len(raw_cells) > last_column - start_column + 1
+            ):
+                raise GoogleSheetsConfiguredScopeError(
+                    "Sheets row data is outside the requested page range."
+                )
             by_column = {
                 _column_name(start_column + index): value
                 for index, value in enumerate(raw_cells)
@@ -1081,7 +1221,11 @@ def _sheet_value(value: Any, *, entered: bool) -> GoogleSheetCellValue:
     key, raw = next(iter(value.items()))
     if key == "stringValue" and isinstance(raw, str):
         return GoogleSheetCellValue(kind="string", value=raw)
-    if key == "numberValue" and isinstance(raw, (int, float)) and not isinstance(raw, bool):
+    if (
+        key == "numberValue"
+        and isinstance(raw, (int, float))
+        and not isinstance(raw, bool)
+    ):
         return GoogleSheetCellValue(kind="number", value=str(Decimal(str(raw))))
     if key == "boolValue" and isinstance(raw, bool):
         return GoogleSheetCellValue(kind="boolean", value=raw)
@@ -1096,13 +1240,17 @@ def _sheet_value(value: Any, *, entered: bool) -> GoogleSheetCellValue:
 
 def _metadata_items(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     value = payload.get("developerMetadata", [])
-    if not isinstance(value, list) or any(not isinstance(item, Mapping) for item in value):
+    if not isinstance(value, list) or any(
+        not isinstance(item, Mapping) for item in value
+    ):
         raise GoogleProviderContractError("Google provider response is invalid.")
     return value
 
 
 def _developer_metadata_by_row(
-    values: tuple[Mapping[str, Any], ...]
+    values: tuple[Mapping[str, Any], ...],
+    *,
+    sheet_id: int,
 ) -> dict[int, list[GoogleSheetsDeveloperMetadata]]:
     result: dict[int, list[GoogleSheetsDeveloperMetadata]] = {}
     for value in values:
@@ -1111,6 +1259,8 @@ def _developer_metadata_by_row(
             continue
         dimension = location.get("dimensionRange")
         if not isinstance(dimension, Mapping) or dimension.get("dimension") != "ROWS":
+            continue
+        if dimension.get("sheetId") != sheet_id:
             continue
         start = _non_negative_integer(dimension.get("startIndex"))
         end = _non_negative_integer(dimension.get("endIndex"))
@@ -1158,6 +1308,22 @@ def _paged_a1_range(
     return provider_range, next_token, complete
 
 
+def _a1_bounds(value: str) -> tuple[int, int, int, int]:
+    match = re.fullmatch(
+        r"(?:'(?:''|[^'])+'|[^!]+)!(?P<start>[A-Z]+)(?P<first>[1-9][0-9]*):"
+        r"(?P<end>[A-Z]+)(?P<last>[1-9][0-9]*)",
+        value,
+    )
+    if match is None:
+        raise GoogleSheetsConfiguredScopeError("Sheets A1 page range is invalid.")
+    return (
+        int(match.group("first")),
+        int(match.group("last")),
+        _column_index(match.group("start")) - 1,
+        _column_index(match.group("end")) - 1,
+    )
+
+
 def _column_name(index: int) -> str:
     result = ""
     value = index + 1
@@ -1185,6 +1351,8 @@ __all__ = [
     "GoogleApiRequest",
     "GoogleApiRequestPolicy",
     "GoogleApiResponse",
+    "GoogleApiRetryEvent",
+    "GoogleApiRetryObserver",
     "GoogleApiService",
     "GoogleApiTransport",
     "GoogleCredentialStore",

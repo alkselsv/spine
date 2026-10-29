@@ -21,7 +21,13 @@ from spine.connectors.google_api import (
 )
 from spine.application.connections.google import (
     GoogleProviderAuthorizationError,
+    GoogleProviderContractError,
+    GoogleProviderPolicyError,
+    GoogleProviderQuotaError,
+    GoogleProviderReadError,
 )
+from spine.connectors.google_api import GoogleResourceScopeError
+from spine.connectors.google_drive import GoogleDriveAccessOutcomeError
 from spine.connectors.google_sheets import GoogleSheetsColumn, GoogleSheetsReadProfile
 from spine.domain.connections.google import (
     GoogleConnection,
@@ -82,6 +88,14 @@ class RecordingTransport:
         return response
 
 
+class RecordingRetryObserver:
+    def __init__(self) -> None:
+        self.events = []
+
+    async def record_retry(self, event):
+        self.events.append(event)
+
+
 def _service(
     resolver,
     transport,
@@ -89,12 +103,17 @@ def _service(
     sleep=None,
     sheet_profiles: tuple[GoogleSheetsReadProfile, ...] = (),
     sheets_page_size: int = 200,
+    retry_observer=None,
 ) -> GoogleApiService:
     return GoogleApiService(
         endpoints=GoogleApiEndpoints(
             drive_base_url="https://www.googleapis.test/drive/v3",
             sheets_base_url="https://sheets.googleapis.test/v4",
             oauth_token_url="https://oauth2.googleapis.test/token",
+            approved_oauth_scopes=(
+                "https://www.googleapis.com/auth/drive.readonly",
+                "https://www.googleapis.com/auth/spreadsheets.readonly",
+            ),
             provider_api_version="google-drive:v3+google-sheets:v4",
             configuration_version="approved-google-runtime:v7",
         ),
@@ -120,6 +139,7 @@ def _service(
         ),
         credential_resolver=resolver,
         transport=transport,
+        retry_observer=retry_observer or RecordingRetryObserver(),
         sheet_profiles=sheet_profiles,
         clock=lambda: NOW,
         sleep=sleep or (lambda _delay: _completed_sleep()),
@@ -131,7 +151,9 @@ async def _completed_sleep() -> None:
 
 
 @pytest.mark.asyncio
-async def test_drive_metadata_resolves_opaque_credentials_and_maps_scoped_request() -> None:
+async def test_drive_metadata_resolves_opaque_credentials_and_maps_scoped_request() -> (
+    None
+):
     resolver = RecordingCredentialResolver()
     transport = RecordingTransport(
         [
@@ -170,6 +192,10 @@ async def test_drive_metadata_resolves_opaque_credentials_and_maps_scoped_reques
         "client_secret": "desktop-client-secret",
         "refresh_token": "desktop-refresh-token",
         "grant_type": "refresh_token",
+        "scope": (
+            "https://www.googleapis.com/auth/drive.readonly "
+            "https://www.googleapis.com/auth/spreadsheets.readonly"
+        ),
     }
     assert oauth_request.timeout_seconds == 7.5
     assert drive_request.url == "https://www.googleapis.test/drive/v3/files/file-1"
@@ -196,7 +222,9 @@ async def test_out_of_scope_file_fails_before_credentials_or_transport() -> None
 
 
 @pytest.mark.asyncio
-async def test_stale_runtime_scope_generation_fails_before_credentials_or_transport() -> None:
+async def test_stale_runtime_scope_generation_fails_before_credentials_or_transport() -> (
+    None
+):
     resolver = RecordingCredentialResolver()
     transport = RecordingTransport([])
     rotated = _connection().model_copy(update={"configuration_generation": 12})
@@ -278,7 +306,9 @@ async def test_drive_download_and_export_preserve_bytes_and_media_type() -> None
             GoogleApiResponse(
                 status_code=200,
                 content=b"docx-bytes",
-                headers={"Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+                headers={
+                    "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                },
             ),
             GoogleApiResponse(
                 status_code=200,
@@ -289,9 +319,7 @@ async def test_drive_download_and_export_preserve_bytes_and_media_type() -> None
     )
     service = _service(resolver, transport)
 
-    downloaded = await service.download(
-        _connection(), RESOURCE_SCOPE, "file-1", "42"
-    )
+    downloaded = await service.download(_connection(), RESOURCE_SCOPE, "file-1", "42")
     exported = await service.export(
         _connection(), RESOURCE_SCOPE, "file-1", "42", "application/pdf"
     )
@@ -396,9 +424,7 @@ async def test_provider_unauthorized_invalidates_token_and_refreshes_once() -> N
 
     assert result.version == "2"
     assert len(resolver.calls) == 2
-    assert transport.requests[-1].headers == {
-        "Authorization": "Bearer second-token"
-    }
+    assert transport.requests[-1].headers == {"Authorization": "Bearer second-token"}
 
 
 @pytest.mark.asyncio
@@ -453,6 +479,7 @@ def _spreadsheet_payload(*, spreadsheet_id: str = "sheet-1") -> dict:
                         "metadataValue": "EST-001",
                         "location": {
                             "dimensionRange": {
+                                "sheetId": 123,
                                 "dimension": "ROWS",
                                 "startIndex": 1,
                                 "endIndex": 2,
@@ -465,6 +492,7 @@ def _spreadsheet_payload(*, spreadsheet_id: str = "sheet-1") -> dict:
                         "metadataValue": "EST-002",
                         "location": {
                             "dimensionRange": {
+                                "sheetId": 123,
                                 "dimension": "ROWS",
                                 "startIndex": 2,
                                 "endIndex": 3,
@@ -494,7 +522,7 @@ def _spreadsheet_payload(*, spreadsheet_id: str = "sheet-1") -> dict:
                                         "effectiveFormat": {
                                             "numberFormat": {
                                                 "type": "CURRENCY",
-                                                "pattern": '#,##0.00 [$₽-ru-RU]',
+                                                "pattern": "#,##0.00 [$₽-ru-RU]",
                                             }
                                         },
                                     },
@@ -529,7 +557,9 @@ def _spreadsheet_payload(*, spreadsheet_id: str = "sheet-1") -> dict:
                                     },
                                     {
                                         "userEnteredValue": {"formulaValue": "=B3*2"},
-                                        "effectiveValue": {"errorValue": {"type": "DIVIDE_BY_ZERO"}},
+                                        "effectiveValue": {
+                                            "errorValue": {"type": "DIVIDE_BY_ZERO"}
+                                        },
                                         "formattedValue": "#DIV/0!",
                                         "effectiveFormat": {
                                             "numberFormat": {"type": "NUMBER"}
@@ -547,7 +577,9 @@ def _spreadsheet_payload(*, spreadsheet_id: str = "sheet-1") -> dict:
 
 
 @pytest.mark.asyncio
-async def test_sheets_range_page_preserves_representations_metadata_and_pagination() -> None:
+async def test_sheets_range_page_preserves_representations_metadata_and_pagination() -> (
+    None
+):
     resolver = RecordingCredentialResolver()
     transport = RecordingTransport(
         [
@@ -588,12 +620,79 @@ async def test_sheets_range_page_preserves_representations_metadata_and_paginati
     }
     assert first.cells[1].effective.value == "1250.5"
     assert first.cells[1].formatted == "1 250,50 ₽"
-    assert first.cells[1].number_format.pattern == '#,##0.00 [$₽-ru-RU]'
+    assert first.cells[1].number_format.pattern == "#,##0.00 [$₽-ru-RU]"
     assert first.cells[2].entered.kind == "formula"
     assert first.cells[2].effective.value == "2501"
     assert first.cells[3].entered.kind == "blank"
     assert result.snapshot.rows[1].cells[2].effective.kind == "error"
     assert transport.requests[2].query["ranges"] == "'Estimate Register'!A2:D3"
+
+
+@pytest.mark.asyncio
+async def test_sparse_sheets_page_uses_configured_range_for_continuation() -> None:
+    payload = _spreadsheet_payload()
+    payload["sheets"][0]["data"][0]["rowData"] = []
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(
+                status_code=200, json_body={"id": "sheet-1", "version": "77"}
+            ),
+            GoogleApiResponse(status_code=200, json_body=payload),
+            GoogleApiResponse(
+                status_code=200, json_body={"id": "sheet-1", "version": "77"}
+            ),
+        ]
+    )
+
+    result = await _service(
+        RecordingCredentialResolver(),
+        transport,
+        sheet_profiles=(_sheet_profile(),),
+        sheets_page_size=2,
+    ).get_spreadsheet_range_page(
+        _connection(), RESOURCE_SCOPE, "sheet-1", 123, "'Estimate Register'!A2:D5", None
+    )
+
+    assert result.complete is False
+    assert result.next_page_token == "4"
+    assert result.snapshot.rows == ()
+
+
+@pytest.mark.asyncio
+async def test_sheets_grid_start_outside_requested_page_fails_closed() -> None:
+    payload = _spreadsheet_payload()
+    payload["sheets"][0]["data"][0]["startRow"] = 0
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(
+                status_code=200, json_body={"id": "sheet-1", "version": "77"}
+            ),
+            GoogleApiResponse(status_code=200, json_body=payload),
+        ]
+    )
+
+    with pytest.raises(Exception, match="outside the requested page range"):
+        await _service(
+            RecordingCredentialResolver(),
+            transport,
+            sheet_profiles=(_sheet_profile(),),
+            sheets_page_size=2,
+        ).get_spreadsheet_range_page(
+            _connection(),
+            RESOURCE_SCOPE,
+            "sheet-1",
+            123,
+            "'Estimate Register'!A2:D5",
+            None,
+        )
 
 
 @pytest.mark.asyncio
@@ -619,7 +718,9 @@ async def test_sheets_misscoped_response_fails_closed_without_returning_rows() -
 
 
 @pytest.mark.asyncio
-async def test_reference_resolver_keeps_client_and_grant_behind_opaque_references() -> None:
+async def test_reference_resolver_keeps_client_and_grant_behind_opaque_references() -> (
+    None
+):
     class Store:
         def __init__(self) -> None:
             self.calls = []
@@ -647,7 +748,9 @@ async def test_reference_resolver_keeps_client_and_grant_behind_opaque_reference
 
 
 @pytest.mark.asyncio
-async def test_httpx_transport_maps_request_without_exposing_raw_request_errors() -> None:
+async def test_httpx_transport_maps_request_without_exposing_raw_request_errors() -> (
+    None
+):
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -672,3 +775,109 @@ async def test_httpx_transport_maps_request_without_exposing_raw_request_errors(
 
     assert response.json_body == {"id": "file-1"}
     assert seen[0].url == "https://google.test/files/file-1?fields=id"
+
+
+def test_google_endpoints_reject_non_https_provider_origins() -> None:
+    with pytest.raises(ValueError, match="HTTPS"):
+        GoogleApiEndpoints(
+            drive_base_url="http://www.googleapis.test/drive/v3",
+            sheets_base_url="https://sheets.googleapis.test/v4",
+            oauth_token_url="https://oauth2.googleapis.test/token",
+            approved_oauth_scopes=("https://example.test/scope",),
+            provider_api_version="google:v1",
+            configuration_version="approved:v1",
+        )
+
+
+@pytest.mark.asyncio
+async def test_cross_workspace_connection_is_denied_before_credentials_or_http() -> (
+    None
+):
+    resolver = RecordingCredentialResolver()
+    transport = RecordingTransport([])
+    other_workspace = _connection().model_copy(update={"workspace_id": _id(999)})
+
+    with pytest.raises(GoogleResourceScopeError):
+        await _service(resolver, transport).get_metadata_for_file(
+            other_workspace, RESOURCE_SCOPE, "file-1"
+        )
+
+    assert resolver.calls == []
+    assert transport.requests == []
+
+
+@pytest.mark.asyncio
+async def test_credential_resolver_failure_is_sanitized_before_transport() -> None:
+    class FailingResolver:
+        async def resolve(self, credential_reference, grant_reference):
+            del credential_reference, grant_reference
+            raise RuntimeError("raw-secret-from-store")
+
+    transport = RecordingTransport([])
+
+    with pytest.raises(GoogleProviderReadError) as captured:
+        await _service(FailingResolver(), transport).get_metadata_for_file(
+            _connection(), RESOURCE_SCOPE, "file-1"
+        )
+
+    assert "raw-secret-from-store" not in str(captured.value)
+    assert transport.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("responses", "error_type", "provider_attempts"),
+    (
+        (
+            [GoogleApiResponse(status_code=403, json_body={"error": {}})],
+            GoogleProviderPolicyError,
+            1,
+        ),
+        (
+            [
+                GoogleApiResponse(status_code=429, json_body={"error": {}}),
+                GoogleApiResponse(status_code=429, json_body={"error": {}}),
+            ],
+            GoogleProviderQuotaError,
+            2,
+        ),
+        (
+            [GoogleApiResponse(status_code=400, json_body={"error": {}})],
+            GoogleProviderContractError,
+            1,
+        ),
+        (
+            [GoogleApiResponse(status_code=404, json_body={"error": {}})],
+            GoogleDriveAccessOutcomeError,
+            1,
+        ),
+    ),
+)
+async def test_provider_failures_are_typed_and_only_retryable_failures_retry(
+    responses, error_type, provider_attempts
+) -> None:
+    resolver = RecordingCredentialResolver()
+    retry_observer = RecordingRetryObserver()
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            *responses,
+        ]
+    )
+
+    with pytest.raises(error_type):
+        await _service(
+            resolver, transport, retry_observer=retry_observer
+        ).get_metadata_for_file(_connection(), RESOURCE_SCOPE, "file-1")
+
+    assert len(transport.requests) == 1 + provider_attempts
+    assert len(retry_observer.events) == provider_attempts - 1
+    if retry_observer.events:
+        event = retry_observer.events[0]
+        assert event.workspace_id == _connection().workspace_id
+        assert event.environment_id == _connection().environment_id
+        assert event.connection_id == _connection().connection_id
+        assert event.operation == "provider"

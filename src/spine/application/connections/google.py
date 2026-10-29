@@ -235,12 +235,17 @@ class GoogleReadAdmission(Generic[ProviderResultT]):
                     classified = _classify_google_provider_error(error)
                     await self._emit_failure(
                         context,
-                        DiagnosticFailureCode.AUTHORIZATION_DENIED
-                        if isinstance(
-                            classified,
-                            (GoogleProviderAuthorizationError, GoogleProviderPolicyError),
-                        )
-                        else DiagnosticFailureCode.PROVIDER_UNAVAILABLE,
+                        (
+                            DiagnosticFailureCode.AUTHORIZATION_DENIED
+                            if isinstance(
+                                classified,
+                                (
+                                    GoogleProviderAuthorizationError,
+                                    GoogleProviderPolicyError,
+                                ),
+                            )
+                            else DiagnosticFailureCode.PROVIDER_UNAVAILABLE
+                        ),
                     )
                     if isinstance(classified, GoogleProviderAuthorizationError):
                         authorization_error = classified

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
@@ -17,8 +19,12 @@ from spine.connectors.google_live_qualification import (
     GoogleLiveQualificationConfig,
     GoogleLiveQualificationRefused,
     GoogleLiveQualificationRunner,
+    GoogleLiveProbeCounts,
+    compose_google_live_qualification_runner,
     write_google_live_report,
 )
+from spine.application.diagnostics import DiagnosticEventRegistry
+from spine.infrastructure.diagnostics import RecordingDiagnosticSink
 from spine.domain.connections.google import (
     GoogleConnection,
     GoogleConnectionStatus,
@@ -68,6 +74,10 @@ def _config(*, opt_in: bool) -> GoogleLiveQualificationConfig:
             drive_base_url="https://www.googleapis.test/drive/v3",
             sheets_base_url="https://sheets.googleapis.test/v4",
             oauth_token_url="https://oauth2.googleapis.test/token",
+            approved_oauth_scopes=(
+                "https://www.googleapis.com/auth/drive.readonly",
+                "https://www.googleapis.com/auth/spreadsheets.readonly",
+            ),
             provider_api_version="google-drive:v3+google-sheets:v4",
             configuration_version="approved-live-config:v1",
         ),
@@ -92,14 +102,49 @@ def _config(*, opt_in: bool) -> GoogleLiveQualificationConfig:
     )
 
 
-class RecordingService:
+class RecordingAdmission:
     def __init__(self) -> None:
         self.calls: list[str] = []
+
+    async def read(self, command, context):
+        del context
+        self.calls.append(str(command.connection_id))
+        return GoogleLiveProbeCounts(metadata_reads=1)
+
+
+class RecordingService:
+    def __init__(self) -> None:
+        self.calls = []
 
     async def get_metadata_for_file(self, connection, scope, file_id):
         del connection, scope
         self.calls.append(file_id)
         return SimpleNamespace(version="1")
+
+
+class CurrentConnectionRepository:
+    def __init__(self, current: GoogleConnection) -> None:
+        self.current = current
+        self.commands = []
+
+    @asynccontextmanager
+    async def admit_read(self, command, context):
+        del context
+        self.commands.append(command)
+        yield self.current
+
+    async def suspend_revoked(self, connection, context, *, occurred_at):
+        raise AssertionError("not expected")
+
+
+def _runner(
+    config: GoogleLiveQualificationConfig, admission
+) -> GoogleLiveQualificationRunner:
+    return GoogleLiveQualificationRunner(
+        config=config,
+        admission=admission,  # type: ignore[arg-type]
+        context=object(),  # type: ignore[arg-type]
+    )
 
 
 @pytest.mark.asyncio
@@ -109,24 +154,22 @@ class RecordingService:
 async def test_live_harness_refuses_before_provider_calls_without_double_opt_in(
     config_opt_in: bool, environment_opt_in: bool
 ) -> None:
-    service = RecordingService()
+    admission = RecordingAdmission()
 
     with pytest.raises(GoogleLiveQualificationRefused):
-        await GoogleLiveQualificationRunner(
-            _config(opt_in=config_opt_in), service  # type: ignore[arg-type]
-        ).run(environment_opt_in=environment_opt_in)
+        await _runner(_config(opt_in=config_opt_in), admission).run(
+            environment_opt_in=environment_opt_in
+        )
 
-    assert service.calls == []
+    assert admission.calls == []
 
 
 @pytest.mark.asyncio
 async def test_live_harness_writes_only_sanitized_versioned_evidence(
     tmp_path: Path,
 ) -> None:
-    service = RecordingService()
-    runner = GoogleLiveQualificationRunner(
-        _config(opt_in=True), service  # type: ignore[arg-type]
-    )
+    admission = RecordingAdmission()
+    runner = _runner(_config(opt_in=True), admission)
 
     report = await runner.run(environment_opt_in=True)
     report_path = tmp_path / "google-live-report.json"
@@ -138,7 +181,7 @@ async def test_live_harness_writes_only_sanitized_versioned_evidence(
     assert report.provider_api_version == "google-drive:v3+google-sheets:v4"
     assert report.configuration_version == "approved-live-config:v1"
     assert report.shared_drive_status == "NOT_EXERCISED"
-    assert service.calls == ["synthetic-file"]
+    assert admission.calls == [str(_connection().connection_id)]
     for forbidden in (
         "client-secret",
         "refresh-token",
@@ -154,3 +197,36 @@ def test_live_config_rejects_targets_that_do_not_equal_exact_allowlist() -> None
     payload["resource_scope"]["allowed_file_ids"] = ("different-file",)
     with pytest.raises(ValueError, match="exact file allowlist"):
         GoogleLiveQualificationConfig.model_validate(payload)
+
+
+@pytest.mark.asyncio
+async def test_live_harness_rejects_noncurrent_connection_before_provider_calls() -> (
+    None
+):
+    config = _config(opt_in=True)
+    current = config.connection.model_copy(
+        update={
+            "connection_version_id": _id(101),
+            "version": 2,
+            "predecessor_version_id": config.connection.connection_version_id,
+        }
+    )
+    repository = CurrentConnectionRepository(current)
+    service = RecordingService()
+    registry = DiagnosticEventRegistry.with_default_families()
+    runner = compose_google_live_qualification_runner(
+        config=config,
+        service=service,  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        diagnostic_sink=RecordingDiagnosticSink(registry),
+        diagnostic_registry=registry,
+        clock=lambda: datetime(2026, 10, 29, tzinfo=timezone.utc),
+        context=object(),  # type: ignore[arg-type]
+    )
+
+    report = await runner.run(environment_opt_in=True)
+
+    assert report.status == "failed"
+    assert report.failure_code == "provider_contract_rejected"
+    assert len(repository.commands) == 1
+    assert service.calls == []

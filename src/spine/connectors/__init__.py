@@ -55,11 +55,17 @@ from spine.connectors.google_sheets import (
 from spine.connectors.google_api import (
     GoogleApiEndpoints,
     GoogleApiRequestPolicy,
+    GoogleApiRetryEvent,
+    GoogleApiRetryObserver,
     GoogleApiService,
     GoogleDesktopOAuthMaterial,
     GoogleResourceScope,
     HttpxGoogleApiTransport,
     ReferenceGoogleCredentialResolver,
+)
+from spine.connectors.google_composition import (
+    GoogleApiReaderComposition,
+    compose_google_api_readers,
 )
 
 __all__ = [
@@ -113,9 +119,13 @@ __all__ = [
     "GoogleSheetsUnsafeIdentityError",
     "GoogleApiEndpoints",
     "GoogleApiRequestPolicy",
+    "GoogleApiRetryEvent",
+    "GoogleApiRetryObserver",
     "GoogleApiService",
     "GoogleDesktopOAuthMaterial",
     "GoogleResourceScope",
     "HttpxGoogleApiTransport",
     "ReferenceGoogleCredentialResolver",
+    "GoogleApiReaderComposition",
+    "compose_google_api_readers",
 ]

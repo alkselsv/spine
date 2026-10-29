@@ -7,7 +7,9 @@ raw exception messages are never serialized.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 import json
 from typing import Literal
@@ -15,9 +17,15 @@ from typing import Literal
 from pydantic import ConfigDict, Field, StrictBool, StrictStr, model_validator
 
 from spine.application.connections.google import (
+    GoogleConnectionRepository,
     GoogleConnectionError,
+    GoogleProviderContractError,
     GoogleProviderReadError,
+    GoogleReadAdmission,
+    GoogleReadCommand,
 )
+from spine.application.diagnostics import DiagnosticEventRegistry, DiagnosticSink
+from spine.application.persistence.context import TrustedPersistenceContext
 from spine.connectors.google_api import (
     GoogleApiEndpoints,
     GoogleApiRequestPolicy,
@@ -103,9 +111,9 @@ class GoogleLiveQualificationConfig(DefinitionModel):
         )
         if len(set(profile_keys)) != len(profile_keys):
             raise ValueError("live sheet targets must be unique")
-        if {
-            target.profile.spreadsheet_id for target in self.sheet_targets
-        } != set(self.resource_scope.allowed_spreadsheet_ids):
+        if {target.profile.spreadsheet_id for target in self.sheet_targets} != set(
+            self.resource_scope.allowed_spreadsheet_ids
+        ):
             raise ValueError(
                 "live sheet targets must equal the exact spreadsheet allowlist"
             )
@@ -135,15 +143,18 @@ class GoogleLiveQualificationReport(DefinitionModel):
     change_pages: int = Field(ge=0)
     sheet_pages: int = Field(ge=0)
     shared_drive_status: Literal["EXERCISED", "NOT_EXERCISED"]
-    failure_code: Literal[
-        "authorization_revoked",
-        "provider_quota_exhausted",
-        "provider_policy_denied",
-        "provider_not_found",
-        "provider_unavailable",
-        "provider_contract_rejected",
-        "harness_failure",
-    ] | None = None
+    failure_code: (
+        Literal[
+            "authorization_revoked",
+            "provider_quota_exhausted",
+            "provider_policy_denied",
+            "provider_not_found",
+            "provider_unavailable",
+            "provider_contract_rejected",
+            "harness_failure",
+        ]
+        | None
+    ) = None
     credentials_recorded: Literal[False] = False
     provider_payloads_recorded: Literal[False] = False
     source_content_recorded: Literal[False] = False
@@ -151,116 +162,96 @@ class GoogleLiveQualificationReport(DefinitionModel):
 
 
 @dataclass(frozen=True, slots=True)
-class GoogleLiveQualificationRunner:
+class GoogleLiveProbeCounts:
+    metadata_reads: int = 0
+    downloads: int = 0
+    exports: int = 0
+    snapshot_pages: int = 0
+    change_pages: int = 0
+    sheet_pages: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class GoogleLiveQualificationProvider:
+    """Execute a live probe only with the repository-admitted connection version."""
+
     config: GoogleLiveQualificationConfig
     service: GoogleApiService
 
-    async def run(self, *, environment_opt_in: bool) -> GoogleLiveQualificationReport:
-        self.preflight(environment_opt_in=environment_opt_in)
+    async def read(
+        self, connection: GoogleConnection, command: GoogleReadCommand
+    ) -> GoogleLiveProbeCounts:
+        if connection != self.config.connection or command != GoogleReadCommand(
+            connection_id=self.config.connection.connection_id,
+            resource_scope_reference=self.config.resource_scope.reference,
+            authorization_generation=self.config.connection.authorization_generation,
+            configuration_generation=self.config.connection.configuration_generation,
+        ):
+            raise GoogleProviderContractError()
         metadata_reads = downloads = exports = 0
         snapshot_pages = change_pages = sheet_pages = 0
-        try:
-            for target in self.config.file_targets:
-                metadata = await self.service.get_metadata_for_file(
-                    self.config.connection,
+        for target in self.config.file_targets:
+            metadata = await self.service.get_metadata_for_file(
+                connection,
+                self.config.resource_scope.reference,
+                target.file_id,
+            )
+            metadata_reads += 1
+            if target.download:
+                await self.service.download(
+                    connection,
                     self.config.resource_scope.reference,
                     target.file_id,
+                    metadata.version,
                 )
-                metadata_reads += 1
-                if target.download:
-                    await self.service.download(
-                        self.config.connection,
-                        self.config.resource_scope.reference,
-                        target.file_id,
-                        metadata.version,
-                    )
-                    downloads += 1
-                for media_type in target.export_mime_types:
-                    await self.service.export(
-                        self.config.connection,
-                        self.config.resource_scope.reference,
-                        target.file_id,
-                        metadata.version,
-                        media_type,
-                    )
-                    exports += 1
-            if (
-                self.config.resource_scope.folder_id is not None
-                or self.config.resource_scope.drive_id is not None
-            ):
-                start_token = await self.service.get_start_page_token(
-                    self.config.connection, self.config.resource_scope.reference
-                )
-                await self.service.list_page(
-                    self.config.connection,
+                downloads += 1
+            for media_type in target.export_mime_types:
+                await self.service.export(
+                    connection,
                     self.config.resource_scope.reference,
-                    None,
+                    target.file_id,
+                    metadata.version,
+                    media_type,
                 )
-                snapshot_pages += 1
-                await self.service.list_changes(
-                    self.config.connection,
-                    self.config.resource_scope.reference,
-                    start_token,
-                )
-                change_pages += 1
-            for target in self.config.sheet_targets:
-                for a1_range in target.a1_ranges:
-                    token: str | None = None
-                    while True:
-                        page = await self.service.get_spreadsheet_range_page(
-                            self.config.connection,
-                            self.config.resource_scope.reference,
-                            target.profile.spreadsheet_id,
-                            target.profile.sheet_id,
-                            a1_range,
-                            token,
-                        )
-                        sheet_pages += 1
-                        if page.complete:
-                            break
-                        if page.next_page_token is None:
-                            raise GoogleLiveQualificationRefused(
-                                "incomplete live Sheets page has no continuation"
-                            )
-                        token = page.next_page_token
-        except GoogleProviderReadError as error:
-            return self._report(
-                status="failed",
-                failure_code=error.failure_code,
-                metadata_reads=metadata_reads,
-                downloads=downloads,
-                exports=exports,
-                snapshot_pages=snapshot_pages,
-                change_pages=change_pages,
-                sheet_pages=sheet_pages,
+                exports += 1
+        if (
+            self.config.resource_scope.folder_id is not None
+            or self.config.resource_scope.drive_id is not None
+        ):
+            start_token = await self.service.get_start_page_token(
+                connection, self.config.resource_scope.reference
             )
-        except GoogleLiveQualificationRefused:
-            raise
-        except GoogleConnectionError:
-            return self._report(
-                status="failed",
-                failure_code="provider_contract_rejected",
-                metadata_reads=metadata_reads,
-                downloads=downloads,
-                exports=exports,
-                snapshot_pages=snapshot_pages,
-                change_pages=change_pages,
-                sheet_pages=sheet_pages,
+            await self.service.list_page(
+                connection,
+                self.config.resource_scope.reference,
+                None,
             )
-        except Exception:
-            return self._report(
-                status="failed",
-                failure_code="harness_failure",
-                metadata_reads=metadata_reads,
-                downloads=downloads,
-                exports=exports,
-                snapshot_pages=snapshot_pages,
-                change_pages=change_pages,
-                sheet_pages=sheet_pages,
+            snapshot_pages += 1
+            await self.service.list_changes(
+                connection,
+                self.config.resource_scope.reference,
+                start_token,
             )
-        return self._report(
-            status="passed",
-            failure_code=None,
+            change_pages += 1
+        for target in self.config.sheet_targets:
+            for a1_range in target.a1_ranges:
+                token: str | None = None
+                while True:
+                    page = await self.service.get_spreadsheet_range_page(
+                        connection,
+                        self.config.resource_scope.reference,
+                        target.profile.spreadsheet_id,
+                        target.profile.sheet_id,
+                        a1_range,
+                        token,
+                    )
+                    sheet_pages += 1
+                    if page.complete:
+                        break
+                    if page.next_page_token is None:
+                        raise GoogleProviderContractError()
+                    token = page.next_page_token
+        return GoogleLiveProbeCounts(
             metadata_reads=metadata_reads,
             downloads=downloads,
             exports=exports,
@@ -269,13 +260,61 @@ class GoogleLiveQualificationRunner:
             sheet_pages=sheet_pages,
         )
 
+
+@dataclass(frozen=True, slots=True)
+class GoogleLiveQualificationRunner:
+    config: GoogleLiveQualificationConfig
+    admission: GoogleReadAdmission[GoogleLiveProbeCounts]
+    context: TrustedPersistenceContext
+
+    async def run(self, *, environment_opt_in: bool) -> GoogleLiveQualificationReport:
+        self.preflight(environment_opt_in=environment_opt_in)
+        counts = GoogleLiveProbeCounts()
+        try:
+            counts = await self.admission.read(
+                GoogleReadCommand(
+                    connection_id=self.config.connection.connection_id,
+                    resource_scope_reference=self.config.resource_scope.reference,
+                    authorization_generation=(
+                        self.config.connection.authorization_generation
+                    ),
+                    configuration_generation=(
+                        self.config.connection.configuration_generation
+                    ),
+                ),
+                self.context,
+            )
+        except GoogleProviderReadError as error:
+            return self._report(
+                status="failed", failure_code=error.failure_code, counts=counts
+            )
+        except GoogleLiveQualificationRefused:
+            raise
+        except GoogleConnectionError:
+            return self._report(
+                status="failed",
+                failure_code="provider_contract_rejected",
+                counts=counts,
+            )
+        except Exception:
+            return self._report(
+                status="failed", failure_code="harness_failure", counts=counts
+            )
+        return self._report(status="passed", failure_code=None, counts=counts)
+
     def preflight(self, *, environment_opt_in: bool) -> None:
         if not self.config.opt_in or not environment_opt_in:
             raise GoogleLiveQualificationRefused(
                 "live Google qualification requires both config and environment opt-in"
             )
 
-    def _report(self, **values: object) -> GoogleLiveQualificationReport:
+    def _report(
+        self,
+        *,
+        status: Literal["passed", "failed"],
+        failure_code: str | None,
+        counts: GoogleLiveProbeCounts,
+    ) -> GoogleLiveQualificationReport:
         return GoogleLiveQualificationReport(
             provider_api_version=self.config.endpoints.provider_api_version,
             configuration_version=self.config.endpoints.configuration_version,
@@ -286,13 +325,37 @@ class GoogleLiveQualificationRunner:
                 if self.config.resource_scope.drive_id is not None
                 else "NOT_EXERCISED"
             ),
-            **values,
+            status=status,
+            failure_code=failure_code,
+            **asdict(counts),
         )
 
 
-def write_google_live_report(
-    path: Path, report: GoogleLiveQualificationReport
-) -> None:
+def compose_google_live_qualification_runner(
+    *,
+    config: GoogleLiveQualificationConfig,
+    service: GoogleApiService,
+    repository: GoogleConnectionRepository,
+    diagnostic_sink: DiagnosticSink,
+    diagnostic_registry: DiagnosticEventRegistry,
+    clock: Callable[[], datetime],
+    context: TrustedPersistenceContext,
+) -> GoogleLiveQualificationRunner:
+    """Wire the manual probe through the same trusted read admission as production."""
+
+    admission: GoogleReadAdmission[GoogleLiveProbeCounts] = GoogleReadAdmission(
+        repository=repository,
+        provider=GoogleLiveQualificationProvider(config=config, service=service),
+        diagnostic_sink=diagnostic_sink,
+        diagnostic_registry=diagnostic_registry,
+        clock=clock,
+    )
+    return GoogleLiveQualificationRunner(
+        config=config, admission=admission, context=context
+    )
+
+
+def write_google_live_report(path: Path, report: GoogleLiveQualificationReport) -> None:
     """Write only the closed, sanitized report schema."""
 
     path.write_text(
@@ -305,9 +368,12 @@ __all__ = [
     "GoogleLiveCredentialEnvironment",
     "GoogleLiveFileTarget",
     "GoogleLiveQualificationConfig",
+    "GoogleLiveQualificationProvider",
     "GoogleLiveQualificationRefused",
     "GoogleLiveQualificationReport",
     "GoogleLiveQualificationRunner",
+    "GoogleLiveProbeCounts",
     "GoogleLiveSheetTarget",
+    "compose_google_live_qualification_runner",
     "write_google_live_report",
 ]
