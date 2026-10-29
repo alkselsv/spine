@@ -416,8 +416,15 @@ async def test_allowed_request_persists_exact_bundle_and_replays_without_second_
     caplog,
 ) -> None:
     from tests.memory.test_physical_read_plan import _config, _context, _publication
+    from tests.yandex_disk_contract import (
+        YANDEX_SOURCE_OBJECT_ID,
+        YANDEX_SOURCE_REVISION_ID,
+    )
 
-    physical_context, _ = _context()
+    physical_context, _ = _context(
+        source=YANDEX_SOURCE_OBJECT_ID,
+        revision=YANDEX_SOURCE_REVISION_ID,
+    )
     base_publication = _publication(_config())
     findings: dict[str, object] = {}
     reconciliation = ProjectionReconciliationResult(
@@ -747,6 +754,9 @@ async def test_allowed_request_persists_exact_bundle_and_replays_without_second_
             publication_pin=capture.publication_pin,
         )
     assert first.outcome is ContextOutcome.ALLOWED
+    assert capture.retrieval.references[0].source_revision_id == (
+        YANDEX_SOURCE_REVISION_ID
+    )
     assert first.context_bundle_ref is not None
     assert second == first
     assert retrieval.calls == 1

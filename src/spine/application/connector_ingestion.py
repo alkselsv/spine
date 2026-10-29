@@ -72,6 +72,7 @@ from spine.domain.sources import (
     AdmissionDecision,
     AdmissionDisposition,
     AdmissionReference,
+    ExternalFileRevisionMetadata,
     IdentityMode,
     RevisionKind,
     RevisionMetadata,
@@ -79,6 +80,7 @@ from spine.domain.sources import (
     SourceRevision,
     SourceRevisionProvenance,
     SourceRevisionReceiptAssociation,
+    canonical_revision_metadata_digest,
     content_revision,
 )
 from spine.domain.sources.google import GoogleDriveFileKey, GoogleRegisterRowKey
@@ -93,6 +95,7 @@ from spine.connectors.observations import (
     NormalizedConnectorObservation,
 )
 from spine.connectors.observations_v2 import (
+    BinaryObservationRepresentation,
     ExternalIdentityAssurance,
     LifecycleObservationRepresentation,
     NormalizedExternalObservationV2,
@@ -532,6 +535,12 @@ class ConnectorIngestionOrchestrator:
     ]:
         now = upload.write_receipt.finalized_at
         identity = observation.external_identity
+        revision_metadata = _revision_metadata(observation)
+        external_revision_digest = (
+            canonical_revision_metadata_digest(revision_metadata)
+            if revision_metadata.external_file_revision is not None
+            else observation.extraction_profile
+        )
         source = SourceObject(
             source_object_id=_source_object_id(
                 command,
@@ -555,7 +564,7 @@ class ConnectorIngestionOrchestrator:
                 source.source_object_id,
                 upload.write_receipt.observed_content.observed_sha256,
                 observation.media_type,
-                observation.extraction_profile,
+                external_revision_digest,
             ),
             source_object_id=source.source_object_id,
             workspace_id=command.workspace_id,
@@ -563,9 +572,7 @@ class ConnectorIngestionOrchestrator:
             kind="content",
             revision_schema_version="source-revision:v1",
             revision_metadata_schema="revision-metadata:r1-document-v1",
-            revision_metadata=RevisionMetadata(
-                representation_profile=observation.extraction_profile
-            ),
+            revision_metadata=revision_metadata,
             original_reference=upload.write_receipt.object_reference,
             original_sha256=upload.write_receipt.observed_content.observed_sha256,
             byte_length=upload.write_receipt.observed_content.observed_byte_length,
@@ -973,6 +980,35 @@ def build_connector_canonical_acceptance_command(
 
 async def _bytes(value: bytes):
     yield value
+
+
+def _revision_metadata(observation: ConnectorObservation) -> RevisionMetadata:
+    external_file_revision = None
+    if (
+        isinstance(observation, NormalizedExternalObservationV2)
+        and isinstance(observation.representation, BinaryObservationRepresentation)
+        and observation.representation.revision_evidence is not None
+    ):
+        evidence = observation.representation.revision_evidence
+        external_file_revision = ExternalFileRevisionMetadata(
+            provider_kind=observation.provider_kind.value,
+            provider_revision=evidence.provider_revision,
+            provider_resource_id=evidence.provider_resource_id,
+            resource_name=evidence.resource_name,
+            resource_path=evidence.resource_path,
+            content_md5=evidence.content_md5,
+            content_sha256=evidence.content_sha256,
+            byte_length=evidence.byte_length,
+            modified_at=evidence.modified_at,
+            identity_assurance=observation.external_identity.assurance.value,
+            assurance_evidence_reference=(
+                observation.external_identity.assurance_evidence_reference
+            ),
+        )
+    return RevisionMetadata(
+        representation_profile=observation.extraction_profile,
+        external_file_revision=external_file_revision,
+    )
 
 
 def _observation_digest(

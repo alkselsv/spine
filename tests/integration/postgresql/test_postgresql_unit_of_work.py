@@ -1183,6 +1183,70 @@ async def test_postgresql_unit_of_work_tracks_activity_until_context_exit(
     assert unit_of_work_is_active() is False
 
 
+async def test_postgresql_source_revision_preserves_external_file_evidence(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    from spine.domain.sources import (
+        ExternalFileRevisionMetadata,
+        RevisionMetadata,
+    )
+
+    case = await prepare_canonical_case(postgresql_adapter, 76500)
+    metadata = RevisionMetadata(
+        representation_profile="yandex-disk.binary.v1",
+        external_file_revision=ExternalFileRevisionMetadata(
+            provider_kind="yandex_disk",
+            provider_revision="revision-665",
+            provider_resource_id="resource-665",
+            resource_name="proposal.docx",
+            resource_path="disk:/approved/proposal.docx",
+            content_md5="1" * 32,
+            content_sha256=case.revision.original_sha256,
+            byte_length=case.revision.byte_length,
+            modified_at=datetime(2026, 10, 29, 9, 30, tzinfo=timezone.utc),
+            identity_assurance="path_scoped",
+            assurance_evidence_reference="yandex-disk.resource.v1",
+        ),
+    )
+    revision = content_revision(
+        **{
+            **case.revision.model_dump(
+                exclude={"revision_digest", "revision_metadata_digest"}
+            ),
+            "revision_id": synthetic_uuid(76501),
+            "revision_metadata": metadata,
+        }
+    )
+    provenance = source_contract_provenance(
+        case.source, revision.revision_id, "yandex-event-665"
+    )
+
+    async with postgresql_adapter.uow_factory(
+        postgresql_adapter.source_context(
+            case.source.workspace_id, case.source.environment_id
+        )
+    ) as uow:
+        await uow.sources.record_observation(
+            SourceObservationCommand.create(
+                source=case.source,
+                revision=revision,
+                provenance=provenance,
+                idempotency_key=IdempotencyKey("issue665-yandex-source-revision"),
+            )
+        )
+        await uow.commit()
+
+    async with postgresql_adapter.uow_factory(
+        postgresql_adapter.source_context(
+            case.source.workspace_id, case.source.environment_id
+        )
+    ) as uow:
+        resolved = await uow.sources.resolve_revision(revision.revision_id)
+
+    assert resolved == revision
+    assert resolved.revision_metadata == metadata
+
+
 async def test_postgresql_parsed_artifacts_use_transaction_local_tenant_scope(
     postgresql_adapter: PersistenceAdapter,
     postgresql_contract_database: PostgreSQLContractDatabase,

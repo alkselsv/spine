@@ -5124,13 +5124,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261206_74_workflow_clarifications.py",
         "20261207_75_transcription_artifacts.py",
         "20261208_76_provider_connections.py",
+        "20261209_77_external_file_revision_metadata.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261209_77_injected_failure.py").write_text(
+    (target / "versions" / "20261210_78_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261209_77'\n"
-        "down_revision = '20261208_76'\n"
+        "revision = '20261210_78'\n"
+        "down_revision = '20261209_77'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

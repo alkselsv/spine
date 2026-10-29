@@ -183,15 +183,17 @@ def _scope(source: UUID, revision: UUID, member: UUID, partition: UUID, receipt:
     )
 
 
-def _context() -> tuple[PhysicalReadContext, ProjectionNamespaceRegistry]:
+def _context(
+    *,
+    source: UUID = UUID(int=43),
+    revision: UUID = UUID(int=44),
+) -> tuple[PhysicalReadContext, ProjectionNamespaceRegistry]:
     config = _config()
     publication = _publication(config)
     pin = PublicationPin.from_publication(publication)
     partition_id = UUID(int=40)
     receipt_id = UUID(int=41)
     member_id = UUID(int=42)
-    source = UUID(int=43)
-    revision = UUID(int=44)
     run = ProjectionRun(
         projection_run_id=RUN,
         projection_candidate_id=CANDIDATE,

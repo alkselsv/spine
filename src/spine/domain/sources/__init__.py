@@ -38,6 +38,7 @@ from .boundary import (
 )
 
 from .models import (
+    ExternalFileRevisionMetadata,
     IdentityMode,
     RevisionKind,
     RevisionMetadata,
@@ -105,6 +106,7 @@ __all__ = [
     "AccessPolicyVersion",
     "CurrentAccessPolicy",
     "EligibilityDisposition",
+    "ExternalFileRevisionMetadata",
     "InitialPolicyEligibilityDecision",
     "PolicyActivation",
     "PolicyApproval",
