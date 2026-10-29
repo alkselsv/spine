@@ -28,6 +28,9 @@ from spine.infrastructure.persistence.postgresql_google_sheets_sync import (
 from spine.infrastructure.persistence.postgresql_register_associations import (
     PostgreSQLRegisterAssociationRepository,
 )
+from spine.infrastructure.persistence.postgresql_bitrix24_crm_material import (
+    PostgreSQLBitrix24CrmMaterialAssociationRepository,
+)
 from spine.infrastructure.persistence.postgresql_drive_lifecycle import (
     PostgreSQLDriveLifecycleDecisionRepository,
     PostgreSQLGoogleDriveLifecycleSourceReader,
@@ -68,6 +71,7 @@ __all__ = [
     "PostgreSQLDriveChangeRepository",
     "PostgreSQLGoogleSheetsSyncRepository",
     "PostgreSQLRegisterAssociationRepository",
+    "PostgreSQLBitrix24CrmMaterialAssociationRepository",
     "PostgreSQLDriveLifecycleDecisionRepository",
     "PostgreSQLGoogleDriveLifecycleSourceReader",
     "PostgreSQLYandexDiskReconciliationRepository",

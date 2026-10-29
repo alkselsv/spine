@@ -242,6 +242,9 @@ target.
       deterministic offline qualification (#665)`;
       `implemented: bounded provider-neutral Bitrix24 Disk file reader with
       deterministic offline qualification (#666)`;
+      `implemented: governed Bitrix24 CRM activity-attachment material claims
+      with conditional CRM capability, exact current Disk revision acceptance,
+      revocation evidence and deterministic offline qualification (#671)`;
       `implemented: conservative Yandex Disk full-scope reconciliation with
       confirmed scan generations, approval-bound removal policy, opaque durable
       checkpoints, path-scoped reappearance and fail-closed lifecycle evidence

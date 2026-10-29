@@ -256,7 +256,9 @@ class Bitrix24DiskReadCommand(Protocol):
 
 
 def bitrix24_disk_capabilities(
-    *, qualification_reference: OpaqueProviderReference
+    *,
+    qualification_reference: OpaqueProviderReference,
+    crm_qualification_reference: OpaqueProviderReference | None = None,
 ) -> tuple[ProviderCapability, ...]:
     """Declare only the guarantees qualified by the bounded Disk reader."""
 
@@ -272,6 +274,18 @@ def bitrix24_disk_capabilities(
         ProviderCapabilityKind.INCREMENTAL_CHANGE_DISCOVERY,
         ProviderCapabilityKind.FULL_RECONCILIATION,
         ProviderCapabilityKind.LIFECYCLE_EVIDENCE,
+        ProviderCapabilityKind.CRM,
+    )
+    crm = (
+        (
+            ProviderCapability(
+                kind=ProviderCapabilityKind.CRM,
+                status=ProviderCapabilityStatus.SUPPORTED,
+                qualification_reference=crm_qualification_reference,
+            ),
+        )
+        if crm_qualification_reference is not None
+        else (ProviderCapability(kind=ProviderCapabilityKind.CRM, status=ProviderCapabilityStatus.UNQUALIFIED),)
     )
     return tuple(
         ProviderCapability(
@@ -283,12 +297,13 @@ def bitrix24_disk_capabilities(
     ) + tuple(
         ProviderCapability(kind=kind, status=ProviderCapabilityStatus.UNSUPPORTED)
         for kind in unsupported
+        if kind is not ProviderCapabilityKind.CRM
     ) + (
         ProviderCapability(
             kind=ProviderCapabilityKind.HEALTH_DIAGNOSTICS,
             status=ProviderCapabilityStatus.UNQUALIFIED,
         ),
-    )
+    ) + crm
 
 
 def _default_retry_jitter(backoff: float) -> float:
