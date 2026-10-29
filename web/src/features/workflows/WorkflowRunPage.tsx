@@ -9,6 +9,7 @@ import { useAuth } from '../../app/auth';
 import { ApiErrorPanel, StatusPanel } from '../../app/status';
 import { useScope } from '../../app/scope';
 import styles from '../chat/SessionBrowserPage.module.css';
+import { RequirementsArtifactCard } from './RequirementsArtifactCard';
 
 type WorkflowRun = components['schemas']['WorkflowRunResponse'];
 type WorkflowEventPage = components['schemas']['WorkflowEventPageResponse'];
@@ -85,6 +86,7 @@ export function WorkflowRunPage() {
       onBack={() => navigate('/workflow/start')}
       onRefresh={() => Promise.all([runQuery.refetch(), eventsQuery.refetch()]).then(() => undefined)}
       run={runQuery.data}
+      queryKey={queryKey('workflow-run')}
     />
   );
 }
@@ -97,6 +99,7 @@ function WorkflowRunDetail({
   onBack,
   onRefresh,
   run,
+  queryKey,
 }: {
   client: ReturnType<typeof createScopedApiClient>;
   events: WorkflowEventPage;
@@ -105,6 +108,7 @@ function WorkflowRunDetail({
   onBack: () => void;
   onRefresh: () => Promise<void>;
   run: WorkflowRun;
+  queryKey: readonly unknown[];
 }) {
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -167,6 +171,7 @@ function WorkflowRunDetail({
         <dt>Run ID</dt><dd><code>{run.run_id}</code></dd>
       </dl>
       <h3>Хронология</h3>
+      <RequirementsArtifactCard client={client} queryKey={queryKey} runId={run.run_id} />
       {eventsLoading ? <p role="status">Загружаем события…</p> : null}
       {eventsDegraded ? (
         <div role="status">

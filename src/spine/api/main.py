@@ -39,6 +39,7 @@ from spine.api.citation_inspector import install_citation_inspector_routes
 from spine.api.feedback import install_feedback_routes
 from spine.api.qa_runs import install_qa_run_routes
 from spine.api.workflow_runs import install_workflow_run_routes
+from spine.api.requirements_artifacts import install_requirements_artifact_routes
 from spine.api.qa_stream import (
     QAStreamDisclosureAuthorizer,
     QAStreamReader,
@@ -91,6 +92,7 @@ from spine.application.qa_run_history import QARunHistoryService
 from spine.application.persisted_workflow_runs import (
     PersistedWorkflowRunAdmissionService,
 )
+from spine.application.requirements_artifacts import PersistedRequirementsArtifactService
 from spine.application.workflow_runs import WorkflowVersionResolver
 from spine.application.parsed_content_inspection import ParsedContentInspectionService
 from spine.application.processing_commands import ProcessingCommandService
@@ -255,6 +257,7 @@ def create_app(
     qa_run_history_cursor_secret: bytes | None = None,
     workflow_run_cursor_secret: bytes | None = None,
     workflow_run_admission_service: PersistedWorkflowRunAdmissionService | None = None,
+    requirements_artifact_service: PersistedRequirementsArtifactService | None = None,
     workflow_version_resolver: WorkflowVersionResolver | None = None,
     qa_stream_service: QAStreamReader | None = None,
     qa_stream_disclosure_authorizer: QAStreamDisclosureAuthorizer | None = None,
@@ -548,7 +551,12 @@ def create_app(
             service=workflow_run_admission_service,
             version_resolver=workflow_version_resolver,
             cursor_secret=workflow_run_cursor_secret,
+            requirements_artifact_service=requirements_artifact_service,
         )
+    if requirements_artifact_service is not None:
+        if type(authorization_runtime) is not ApiAuthorizationRuntime:
+            raise RuntimeError("Requirements artifact routes require an authorization runtime.")
+        install_requirements_artifact_routes(application, service=requirements_artifact_service)
     if parsed_content_inspection_service is not None:
         if type(authorization_runtime) is not ApiAuthorizationRuntime:
             raise RuntimeError(

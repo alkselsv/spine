@@ -36,6 +36,19 @@ afterEach(() => {
 describe('WorkflowRunPage', () => {
   it('loads_every_cursor_page_of_the_run_timeline', async () => {
     get.mockImplementation((path: string, options?: { params?: { query?: { cursor?: string } } }) => {
+      if (path.endsWith('/requirements')) {
+        return Promise.resolve({ data: {
+          artifact_id: '60000000-0000-4000-8000-000000000001', artifact_version: 1,
+          schema_version: 'requirements:v1', production_identity: 'requirements-extraction-v1',
+          production_digest: 'a'.repeat(64), workspace_id: '10000000-0000-4000-8000-000000000001',
+          environment_id: '20000000-0000-4000-8000-000000000001', work_item_id: '40000000-0000-4000-8000-000000000001',
+          run_id: '30000000-0000-4000-8000-000000000001', state: 'candidate', upstream_artifact_ids: [],
+          predecessor_version: null, requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
+            category: 'functional', statement: 'Deliver by Friday', constraints: [], uncertainty: null,
+            ambiguous_markers: [], missing_markers: [], state: 'candidate', review_state: 'needs_review',
+            confidence: null, source_refs: [], upstream_artifact_ids: [] }],
+        } });
+      }
       if (path.endsWith('/events')) {
         return Promise.resolve({
           data: options?.params?.query?.cursor === 'next-page'
@@ -76,6 +89,7 @@ describe('WorkflowRunPage', () => {
     );
 
     expect(await screen.findByText('First timeline event.')).toBeVisible();
+    expect(await screen.findByText(/Deliver by Friday/)).toBeVisible();
     expect(screen.getByText('Later timeline event.')).toBeVisible();
     expect(get).toHaveBeenCalledWith(
       '/api/v1/runs/{run_id}/events',
@@ -85,6 +99,19 @@ describe('WorkflowRunPage', () => {
 
   it('restores_safe_timeline_and_continues_the_same_run', async () => {
     get.mockImplementation((path: string) => {
+      if (path.endsWith('/requirements')) {
+        return Promise.resolve({ data: {
+          artifact_id: '60000000-0000-4000-8000-000000000001', artifact_version: 1,
+          schema_version: 'requirements:v1', production_identity: 'requirements-extraction-v1',
+          production_digest: 'a'.repeat(64), workspace_id: '10000000-0000-4000-8000-000000000001',
+          environment_id: '20000000-0000-4000-8000-000000000001', work_item_id: '40000000-0000-4000-8000-000000000001',
+          run_id: '30000000-0000-4000-8000-000000000001', state: 'candidate', upstream_artifact_ids: [],
+          predecessor_version: null, requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
+            category: 'functional', statement: 'Deliver by Friday', constraints: [], uncertainty: null,
+            ambiguous_markers: [], missing_markers: [], state: 'candidate', review_state: 'needs_review',
+            confidence: null, source_refs: [], upstream_artifact_ids: [] }],
+        } });
+      }
       if (path.endsWith('/events')) {
         return Promise.resolve({
           data: {

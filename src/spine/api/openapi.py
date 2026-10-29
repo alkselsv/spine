@@ -78,6 +78,7 @@ from spine.application.document_lifecycle import (
 from spine.application.persisted_workflow_runs import (
     PersistedWorkflowRunAdmissionService,
 )
+from spine.application.requirements_artifacts import PersistedRequirementsArtifactService
 from spine.application.workflow_runs import (
     PinnedWorkflowVersion,
     StartWorkflowCommand,
@@ -222,6 +223,20 @@ class _UnavailableWorkflowVersionResolver:
         self, *, workspace_id: UUID, environment_id: UUID, workflow_key: str
     ) -> PinnedWorkflowVersion:
         del workspace_id, environment_id, workflow_key
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+
+class _UnavailableRequirementsArtifactService:
+    async def produce_first_candidate(self, **_kwargs):
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+    async def get_for_run(self, **_kwargs):
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+    async def get(self, **_kwargs):
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+    async def versions(self, **_kwargs):
         raise RuntimeError("The OpenAPI composition is not executable.")
 
 
@@ -487,6 +502,9 @@ def create_openapi_app() -> FastAPI:
         ),
         workflow_version_resolver=_UnavailableWorkflowVersionResolver(),
         workflow_run_cursor_secret=secrets.token_bytes(32),
+        requirements_artifact_service=cast(
+            PersistedRequirementsArtifactService, _UnavailableRequirementsArtifactService()
+        ),
     )
 
 

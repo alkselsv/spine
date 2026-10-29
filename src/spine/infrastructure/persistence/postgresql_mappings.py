@@ -3,8 +3,10 @@
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
+    ForeignKeyConstraint,
     Integer,
     MetaData,
     Numeric,
@@ -17,6 +19,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
+from sqlalchemy.sql.naming import conv
 
 
 metadata = MetaData(schema="spine")
@@ -223,6 +226,45 @@ workflow_run_events = Table(
         "workspace_id", "environment_id", "run_id", "sequence",
         name="uq_workflow_run_events_sequence",
     ),
+)
+
+requirements_artifact_versions = Table(
+    "requirements_artifact_versions",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("artifact_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("artifact_version", Integer, nullable=False),
+    Column("run_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("work_item_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("production_identity", Text, nullable=False),
+    Column("production_digest", String(64), nullable=False),
+    Column("predecessor_version", Integer, nullable=True),
+    Column("payload", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("workspace_id", "environment_id", "artifact_id", "artifact_version",
+                         name="pk_requirements_artifact_versions"),
+    UniqueConstraint("workspace_id", "environment_id", "run_id", "production_identity",
+                     name="uq_requirements_artifact_production"),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "run_id"],
+        ["spine.workflow_runs.workspace_id", "spine.workflow_runs.environment_id", "spine.workflow_runs.run_id"],
+        name="fk_requirements_artifact_run",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "work_item_id"],
+        ["spine.work_items.workspace_id", "spine.work_items.environment_id", "spine.work_items.id"],
+        name="fk_requirements_artifact_work_item",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "artifact_id", "predecessor_version"],
+        ["spine.requirements_artifact_versions.workspace_id", "spine.requirements_artifact_versions.environment_id",
+         "spine.requirements_artifact_versions.artifact_id", "spine.requirements_artifact_versions.artifact_version"],
+        name="fk_requirements_artifact_predecessor",
+    ),
+    CheckConstraint("artifact_version >= 1", name=conv("ck_requirements_artifact_version_positive")),
+    CheckConstraint("predecessor_version IS NULL OR predecessor_version = artifact_version - 1",
+                    name=conv("ck_requirements_artifact_predecessor")),
 )
 
 answer_question_attempts = Table(

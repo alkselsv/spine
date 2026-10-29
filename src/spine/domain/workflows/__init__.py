@@ -16,6 +16,12 @@ from spine.domain.workflows.runs import (
     WorkflowRunSnapshot,
     WorkflowRunState,
 )
+from spine.domain.workflows.requirements import (
+    Requirement,
+    RequirementCategory,
+    RequirementsArtifact,
+    RequirementState,
+)
 
 __all__ = [
     "AcceptedSourceRevisionRef",
@@ -30,4 +36,8 @@ __all__ = [
     "WorkflowRunSnapshot",
     "WorkflowRunState",
     "WorkflowVersion",
+    "Requirement",
+    "RequirementCategory",
+    "RequirementsArtifact",
+    "RequirementState",
 ]
