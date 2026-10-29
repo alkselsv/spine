@@ -77,6 +77,12 @@ class ExternalFileRevisionMetadata(DefinitionModel):
     resource_path: str | None = Field(default=None, min_length=1, max_length=2048)
     content_md5: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
     content_sha256: DigestHex | None = None
+    provider_payload_digest: DigestHex | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    provider_payload: dict[str, str | int | None] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     byte_length: int = Field(ge=0)
     modified_at: datetime
     identity_assurance: BoundedIdentifier

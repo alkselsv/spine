@@ -75,10 +75,13 @@ from spine.application.authorized_retrieval_scope import (
     AuthorizedRetrievalScopeReason,
 )
 from spine.application.evidence_lineage_verification import VerifiedEvidenceItem
+from tests.yandex_disk_contract import YANDEX_SOURCE_OBJECT_ID, YANDEX_SOURCE_REVISION_ID
 
 WORKSPACE = UUID(int=1)
 ENVIRONMENT = UUID(int=2)
 NOW = datetime(2026, 10, 15, 12, tzinfo=timezone.utc)
+BITRIX24_SOURCE_OBJECT_ID = UUID(int=666)
+BITRIX24_SOURCE_REVISION_ID = UUID(int=667)
 
 
 def request(**overrides: object) -> AuthorizedContextRequest:
@@ -412,18 +415,22 @@ async def test_replay_returns_immutable_bundle_without_reinvoking_profile_or_pub
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source_object_id", "source_revision_id"),
+    (
+        (YANDEX_SOURCE_OBJECT_ID, YANDEX_SOURCE_REVISION_ID),
+        (BITRIX24_SOURCE_OBJECT_ID, BITRIX24_SOURCE_REVISION_ID),
+    ),
+    ids=("yandex-disk", "bitrix24-disk"),
+)
 async def test_allowed_request_persists_exact_bundle_and_replays_without_second_read(
-    caplog,
+    caplog, source_object_id: UUID, source_revision_id: UUID
 ) -> None:
     from tests.memory.test_physical_read_plan import _config, _context, _publication
-    from tests.yandex_disk_contract import (
-        YANDEX_SOURCE_OBJECT_ID,
-        YANDEX_SOURCE_REVISION_ID,
-    )
 
     physical_context, _ = _context(
-        source=YANDEX_SOURCE_OBJECT_ID,
-        revision=YANDEX_SOURCE_REVISION_ID,
+        source=source_object_id,
+        revision=source_revision_id,
     )
     base_publication = _publication(_config())
     findings: dict[str, object] = {}
@@ -754,9 +761,7 @@ async def test_allowed_request_persists_exact_bundle_and_replays_without_second_
             publication_pin=capture.publication_pin,
         )
     assert first.outcome is ContextOutcome.ALLOWED
-    assert capture.retrieval.references[0].source_revision_id == (
-        YANDEX_SOURCE_REVISION_ID
-    )
+    assert capture.retrieval.references[0].source_revision_id == source_revision_id
     assert first.context_bundle_ref is not None
     assert second == first
     assert retrieval.calls == 1

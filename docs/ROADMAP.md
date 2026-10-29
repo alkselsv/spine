@@ -240,6 +240,8 @@ target.
       qualification (#664)`;
       `implemented: bounded provider-neutral Yandex Disk file reader with
       deterministic offline qualification (#665)`;
+      `implemented: bounded provider-neutral Bitrix24 Disk file reader with
+      deterministic offline qualification (#666)`;
       `implemented: conservative Yandex Disk full-scope reconciliation with
       confirmed scan generations, approval-bound removal policy, opaque durable
       checkpoints, path-scoped reappearance and fail-closed lifecycle evidence
