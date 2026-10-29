@@ -254,9 +254,13 @@ class PostgreSQLTranscriptPublicationRepository(TranscriptPublicationRepository)
                     if source_row is None:
                         raise KeyError("transcript projection version is unavailable")
                     source = _publication_from_row(source_row)
+                superseded = current.successor_state(
+                    state=TranscriptPublicationState.SUPERSEDED,
+                    projection_state=current.projection_state,
+                )
                 successor = source.successor_projection(
                     projection_version=projection_version,
-                    predecessor_publication_id=current.publication_id,
+                    predecessor_publication_id=superseded.publication_id,
                 )
                 changed = await session.execute(
                     update(transcript_publications)
@@ -270,6 +274,11 @@ class PostgreSQLTranscriptPublicationRepository(TranscriptPublicationRepository)
                 )
                 if changed.rowcount != 1:
                     raise ValueError("transcript projection replacement lost its owner")
+                await session.execute(
+                    transcript_publications.insert().values(
+                        _publication_values(superseded, is_current=False)
+                    )
+                )
                 await session.execute(
                     transcript_publications.insert().values(_publication_values(successor))
                 )
@@ -317,12 +326,14 @@ class PostgreSQLTranscriptPublicationRepository(TranscriptPublicationRepository)
         )
 
 
-def _publication_values(publication: TranscriptPublication) -> dict[str, Any]:
+def _publication_values(
+    publication: TranscriptPublication, *, is_current: bool = True
+) -> dict[str, Any]:
     return {
         "workspace_id": publication.workspace_id,
         "environment_id": publication.environment_id,
         "publication_id": publication.publication_id,
-        "is_current": True,
+        "is_current": is_current,
         "publication_digest": publication.publication_digest,
         "predecessor_publication_id": publication.predecessor_publication_id,
         "source_object_id": publication.source_object_id,

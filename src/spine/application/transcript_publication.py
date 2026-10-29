@@ -273,8 +273,12 @@ class InMemoryTranscriptPublicationRepository:
             self._history.append(updated)
             return updated
 
-    async def revoke(self, publication_id: UUID) -> TranscriptPublication:
-        current = await self._publication_by_id(publication_id)
+    async def revoke(
+        self, *, publication_id: UUID, workspace_id: UUID, environment_id: UUID
+    ) -> TranscriptPublication:
+        current = await self._publication_by_id(
+            publication_id, workspace_id=workspace_id, environment_id=environment_id
+        )
         if current is None:
             raise KeyError("transcript publication is unavailable")
         return await self.transition(
@@ -284,8 +288,12 @@ class InMemoryTranscriptPublicationRepository:
             state=TranscriptPublicationState.REVOKED,
         )
 
-    async def mark_projection_stale(self, publication_id: UUID) -> TranscriptPublication:
-        current = await self._publication_by_id(publication_id)
+    async def mark_projection_stale(
+        self, *, publication_id: UUID, workspace_id: UUID, environment_id: UUID
+    ) -> TranscriptPublication:
+        current = await self._publication_by_id(
+            publication_id, workspace_id=workspace_id, environment_id=environment_id
+        )
         if current is None:
             raise KeyError("transcript publication is unavailable")
         return await self.transition(
@@ -310,10 +318,18 @@ class InMemoryTranscriptPublicationRepository:
         )
         if current is None:
             raise KeyError("transcript publication is unavailable")
-        successor = current.successor_projection(projection_version=projection_version)
+        superseded = current.successor_state(
+            state=TranscriptPublicationState.SUPERSEDED,
+            projection_state=current.projection_state,
+        )
+        successor = current.successor_projection(
+            projection_version=projection_version,
+            predecessor_publication_id=superseded.publication_id,
+        )
         key = (current.workspace_id, current.environment_id, current.transcript_artifact_id)
         async with self._lock:
             self._current[key] = successor
+            self._history.append(superseded)
             self._history.append(successor)
         return successor
 
@@ -346,12 +362,17 @@ class InMemoryTranscriptPublicationRepository:
             )
             if target is None:
                 raise KeyError("transcript projection version is unavailable")
+            superseded = current.successor_state(
+                state=TranscriptPublicationState.SUPERSEDED,
+                projection_state=current.projection_state,
+            )
             successor = target.successor_projection(
                 projection_version=projection_version,
-                predecessor_publication_id=current.publication_id,
+                predecessor_publication_id=superseded.publication_id,
             )
             key = (workspace_id, environment_id, current.transcript_artifact_id)
             self._current[key] = successor
+            self._history.append(superseded)
             self._history.append(successor)
             return successor
 
@@ -377,6 +398,10 @@ class InMemoryTranscriptPublicationRepository:
     async def history_count(self) -> int:
         async with self._lock:
             return len(self._history)
+
+    async def history(self) -> tuple[TranscriptPublication, ...]:
+        async with self._lock:
+            return tuple(self._history)
 
 
 class TranscriptAuthorizationPort(Protocol):
@@ -607,7 +632,10 @@ def _segment_matches_locator(
 ) -> bool:
     if locator.segment_ids and segment.segment_id not in locator.segment_ids:
         return False
-    return segment.locator.start_ms < locator.end_ms and segment.locator.end_ms > locator.start_ms
+    return (
+        segment.locator.start_ms == locator.start_ms
+        and segment.locator.end_ms == locator.end_ms
+    )
 
 
 def _unavailable(reason_code: str) -> TranscriptContextResponse:

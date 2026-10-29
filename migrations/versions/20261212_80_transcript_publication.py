@@ -118,6 +118,9 @@ def _tenant_scope(table: str, *, mutable: bool = False) -> None:
     op.execute(f"GRANT SELECT, INSERT ON TABLE {qualified} TO {runtime}")
     if mutable:
         op.execute(
+            f"REVOKE UPDATE ON TABLE {qualified} FROM {runtime}"
+        )
+        op.execute(
             f"GRANT UPDATE (is_current) "
             f"ON TABLE {qualified} TO {runtime}"
         )

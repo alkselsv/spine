@@ -17,6 +17,7 @@ from spine.application.transcript_publication import (
 from spine.domain.artifacts import (
     SpeechToTextSegment,
     TranscriptProjectionState,
+    TranscriptPublicationState,
     TranscriptionArtifact,
 )
 
@@ -191,6 +192,27 @@ async def test_context_broker_returns_authorized_timestamped_segments() -> None:
 
 
 @pytest.mark.asyncio
+async def test_context_broker_requires_exact_segment_time_range() -> None:
+    _, repository, authorization, publication = await published_fixture()
+    broker = TranscriptContextBroker(repository=repository, authorization=authorization)
+    locator = publication.segments[0].locator.model_copy(
+        update={"start_ms": 1_500, "end_ms": 2_000}
+    )
+
+    response = await broker.retrieve(
+        TranscriptContextRequest(
+            request_id=UUID("80000000-0000-0000-0000-000000000008"),
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+            locator=locator,
+        )
+    )
+
+    assert response.outcome is TranscriptContextOutcome.UNAVAILABLE
+    assert response.segments == ()
+
+
+@pytest.mark.asyncio
 async def test_context_broker_denied_response_never_contains_transcript_text() -> None:
     _, repository, _, publication = await published_fixture()
     denied_authorization = Authorization(allowed=False)
@@ -228,7 +250,11 @@ async def test_context_broker_hides_stale_source_and_projection_states() -> None
     assert stale_source.segments == ()
 
     authorization.current_revision_id = SOURCE_REVISION
-    await repository.mark_projection_stale(publication.publication_id)
+    await repository.mark_projection_stale(
+        publication_id=publication.publication_id,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+    )
     stale_projection = await broker.retrieve(
         TranscriptContextRequest(
             request_id=UUID("80000000-0000-0000-0000-000000000004"),
@@ -244,7 +270,11 @@ async def test_context_broker_hides_stale_source_and_projection_states() -> None
 @pytest.mark.asyncio
 async def test_revoked_publication_is_unavailable_without_deleting_history() -> None:
     _, repository, authorization, publication = await published_fixture()
-    await repository.revoke(publication.publication_id)
+    await repository.revoke(
+        publication_id=publication.publication_id,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+    )
     broker = TranscriptContextBroker(repository=repository, authorization=authorization)
 
     response = await broker.retrieve(
@@ -264,7 +294,11 @@ async def test_revoked_publication_is_unavailable_without_deleting_history() -> 
 @pytest.mark.asyncio
 async def test_projection_rebuild_and_rollback_keep_publication_history() -> None:
     _, repository, authorization, publication = await published_fixture()
-    stale = await repository.mark_projection_stale(publication.publication_id)
+    stale = await repository.mark_projection_stale(
+        publication_id=publication.publication_id,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+    )
     rebuilt = await repository.rebuild_projection(
         publication_id=stale.publication_id,
         projection_version="transcript-projection:v2",
@@ -288,11 +322,15 @@ async def test_projection_rebuild_and_rollback_keep_publication_history() -> Non
         )
     )
 
-    assert rebuilt.predecessor_publication_id == stale.publication_id
-    assert rolled_back.predecessor_publication_id == rebuilt.publication_id
+    assert rebuilt.predecessor_publication_id != stale.publication_id
+    assert rolled_back.predecessor_publication_id != rebuilt.publication_id
     assert rolled_back.projection_state is TranscriptProjectionState.CURRENT
     assert response.outcome is TranscriptContextOutcome.ALLOWED
-    assert await repository.history_count() == 4
+    assert await repository.history_count() == 6
+    assert any(
+        item.state is TranscriptPublicationState.SUPERSEDED
+        for item in await repository.history()
+    )
 
 
 @pytest.mark.asyncio
