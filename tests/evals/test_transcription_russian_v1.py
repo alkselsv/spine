@@ -59,6 +59,12 @@ def test_dataset_rejects_fabricated_evidence_and_invalid_time_ranges() -> None:
     with pytest.raises(ValidationError, match="exceeds audio duration"):
         RussianTranscriptionDataset.model_validate(raw)
 
+    raw = deepcopy(load_russian_transcription_v1_dataset().model_dump(mode="json"))
+    raw["cases"][0]["reference_segments"] = []
+    raw["cases"][0]["expected_transcript"] = ""
+    with pytest.raises(ValidationError, match="requires reference transcript lineage"):
+        RussianTranscriptionDataset.model_validate(raw)
+
 
 def test_dataset_rejects_private_fixture_markers_and_actionable_attack_evidence() -> None:
     raw = deepcopy(load_russian_transcription_v1_dataset().model_dump(mode="json"))

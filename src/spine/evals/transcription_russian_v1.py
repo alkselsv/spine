@@ -76,8 +76,14 @@ class RussianTranscriptionCase(DefinitionModel):
             raise ValueError("fixtures must be synthetic and contain no private data")
         if self.kind in {"silence", "corruption"} and self.reference_segments:
             raise ValueError("silence and corrupt fixtures must not claim speech segments")
+        if self.kind not in {"silence", "corruption"} and not self.reference_segments:
+            raise ValueError("speech fixture requires reference transcript lineage")
         if self.kind == "silence" and (self.expected_transcript or self.expected_requirements_outcome != "abstain"):
             raise ValueError("silence must expect empty transcription and abstention")
+        if self.kind in {"silence", "corruption"} and (
+            self.expected_transcript or self.fake_asr_transcript
+        ):
+            raise ValueError("no-speech fixtures must not contain a transcript hypothesis")
         if self.kind == "corruption" and self.expected_requirements_outcome != "clarify":
             raise ValueError("corrupt audio must expect clarification")
         segment_ids = [segment.segment_id for segment in self.reference_segments]
