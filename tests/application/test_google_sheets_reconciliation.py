@@ -55,6 +55,7 @@ from spine.domain.sources.google import (
     GoogleSheetNumberFormat,
     google_source_identity,
 )
+from spine.domain.connections.google import OpaqueGoogleReference
 
 NOW = datetime(2026, 10, 27, tzinfo=timezone.utc)
 WORKSPACE = UUID("11111111-1111-4111-8111-111111111111")
@@ -227,9 +228,7 @@ async def test_revoked_grant_suspends_full_scope_before_any_row_is_accepted():
 async def test_quota_retry_limit_requires_reconciliation_and_stops_provider_reads():
     request = command()
     scope = request.scopes[0]
-    reader = FakeSheetsReader(
-        {(scope.identity, None): GoogleProviderQuotaError()}
-    )
+    reader = FakeSheetsReader({(scope.identity, None): GoogleProviderQuotaError()})
     sync = coordinator(reader, FakeCanonicalIngestion())
 
     for _ in range(3):
@@ -361,14 +360,17 @@ async def test_invalid_identity_scope_is_durably_quarantined_without_acceptance(
     )
     assert len(foreign_events) == 1
     assert foreign_events[0].workspace_id == other_workspace
-    assert len(
-        await repo.list_identity_dispositions(
-            workspace_id=WORKSPACE,
-            environment_id=ENVIRONMENT,
-            connection_id=CONNECTION,
-            scope_identities=(scope.identity,),
+    assert (
+        len(
+            await repo.list_identity_dispositions(
+                workspace_id=WORKSPACE,
+                environment_id=ENVIRONMENT,
+                connection_id=CONNECTION,
+                scope_identities=(scope.identity,),
+            )
         )
-    ) == 1
+        == 1
+    )
 
 
 @pytest.mark.asyncio
@@ -533,6 +535,69 @@ async def test_admitted_page_reader_preserves_range_and_provider_page_token():
     assert admitted.a1_range == "A2:F500"
     assert admitted.provider_page_token == "p2"
     assert admitted_context is context
+
+
+@pytest.mark.asyncio
+async def test_sparse_reconciliation_page_has_zero_observations_without_identity_failure():
+    profile = GoogleSheetsReadProfile(
+        spreadsheet_id="estimates",
+        sheet_id=7,
+        business_id_column="estimate_id",
+        columns=({"column_key": "estimate_id", "coordinate": "A"},),
+    )
+
+    class SparsePageService:
+        async def get_spreadsheet_range_page(
+            self,
+            connection,
+            resource_scope_reference,
+            spreadsheet_id,
+            sheet_id,
+            a1_range,
+            page_token,
+        ):
+            del connection, resource_scope_reference
+            return GoogleSheetsRangePage(
+                spreadsheet_id=spreadsheet_id,
+                sheet_id=sheet_id,
+                a1_range=a1_range,
+                page_token=page_token,
+                next_page_token="page-3",
+                complete=False,
+                provider_version_before="42",
+                provider_version_after="42",
+                snapshot=GoogleSheetsSnapshot(
+                    spreadsheet_id=spreadsheet_id,
+                    sheet_id=sheet_id,
+                    sheet_title="Estimates",
+                    locale="ru_RU",
+                    time_zone="Europe/Moscow",
+                    rows=(),
+                ),
+            )
+
+    result = await GoogleSheetsReconciliationProviderAdapter(
+        service=SparsePageService(),
+        profiles=(profile,),
+        clock=lambda: NOW,
+    ).read(
+        SimpleNamespace(
+            connection_id=CONNECTION,
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+        ),
+        SimpleNamespace(
+            resource_scope_reference=OpaqueGoogleReference(value=SCOPE_ID),
+            resource_object_reference="estimates",
+            sheet_id=7,
+            a1_range="A2:A100",
+            provider_page_token="page-2",
+        ),
+    )
+
+    assert result.observations == ()
+    assert result.identity_rejection_codes == ()
+    assert result.next_page_token == "page-3"
 
 
 @pytest.mark.asyncio
