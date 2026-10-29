@@ -7,6 +7,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKeyConstraint,
+    Index,
     Integer,
     MetaData,
     Numeric,
@@ -724,6 +725,7 @@ transcript_publications = Table(
     Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("publication_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("is_current", Boolean, nullable=False),
     Column("publication_digest", String(64), nullable=False),
     Column("predecessor_publication_id", PostgreSQLUUID(as_uuid=True), nullable=True),
     Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
@@ -745,11 +747,13 @@ transcript_publications = Table(
         "publication_id",
         name="pk_transcript_publications",
     ),
-    UniqueConstraint(
+    Index(
+        "uq_transcript_publications_artifact",
         "workspace_id",
         "environment_id",
         "transcript_artifact_id",
-        name="uq_transcript_publications_artifact",
+        unique=True,
+        postgresql_where=text("is_current"),
     ),
     ForeignKeyConstraint(
         ["workspace_id", "environment_id", "source_object_id", "source_revision_id"],

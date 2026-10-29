@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
 from pydantic import Field, model_validator
@@ -39,7 +39,9 @@ class TranscriptContextOutcome(str, Enum):
 class TranscriptAuthorizationSnapshot(DefinitionModel):
     """Opaque current source authorization facts used by publication/read gates."""
 
-    schema_version: str = "transcript-authorization-snapshot:v1"
+    schema_version: Literal["transcript-authorization-snapshot:v1"] = (
+        "transcript-authorization-snapshot:v1"
+    )
     allowed: bool
     workspace_id: UUID
     environment_id: UUID
@@ -70,7 +72,9 @@ class TranscriptAuthorizationSnapshot(DefinitionModel):
 
 
 class TranscriptPublicationDecision(DefinitionModel):
-    schema_version: str = "transcript-publication-decision:v1"
+    schema_version: Literal["transcript-publication-decision:v1"] = (
+        "transcript-publication-decision:v1"
+    )
     allowed: bool
     policy_reference: VersionIdentifier
     reason_code: str = Field(min_length=1, max_length=64)
@@ -258,7 +262,7 @@ class InMemoryTranscriptPublicationRepository:
             )
             if key is None or current is None:
                 raise KeyError("transcript publication is unavailable")
-            updated = current.with_state(
+            updated = current.successor_state(
                 state=state or current.state,
                 projection_state=projection_state or current.projection_state,
             )
@@ -296,7 +300,11 @@ class InMemoryTranscriptPublicationRepository:
         workspace_id: UUID | None = None,
         environment_id: UUID | None = None,
     ) -> TranscriptPublication:
-        current = await self._publication_by_id(publication_id)
+        current = await self._publication_by_id(
+            publication_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+        )
         if current is None:
             raise KeyError("transcript publication is unavailable")
         successor = current.successor_projection(projection_version=projection_version)
@@ -317,10 +325,16 @@ class InMemoryTranscriptPublicationRepository:
         return await self.rebuild_projection(
             publication_id=publication_id,
             projection_version=projection_version,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
         )
 
     async def _publication_by_id(
-        self, publication_id: UUID
+        self,
+        publication_id: UUID,
+        *,
+        workspace_id: UUID | None = None,
+        environment_id: UUID | None = None,
     ) -> TranscriptPublication | None:
         async with self._lock:
             return next(
@@ -328,6 +342,8 @@ class InMemoryTranscriptPublicationRepository:
                     publication
                     for publication in self._current.values()
                     if publication.publication_id == publication_id
+                    and (workspace_id is None or publication.workspace_id == workspace_id)
+                    and (environment_id is None or publication.environment_id == environment_id)
                 ),
                 None,
             )
@@ -414,7 +430,9 @@ class TranscriptPublicationService:
 
 
 class TranscriptContextRequest(DefinitionModel):
-    schema_version: str = "transcript-context-request:v1"
+    schema_version: Literal["transcript-context-request:v1"] = (
+        "transcript-context-request:v1"
+    )
     request_id: UUID
     workspace_id: UUID
     environment_id: UUID
@@ -431,7 +449,9 @@ class TranscriptContextRequest(DefinitionModel):
 
 
 class TranscriptContextResponse(DefinitionModel):
-    schema_version: str = "transcript-context-response:v1"
+    schema_version: Literal["transcript-context-response:v1"] = (
+        "transcript-context-response:v1"
+    )
     outcome: TranscriptContextOutcome
     reason_code: str = Field(min_length=1, max_length=64)
     segments: tuple[TranscriptProjectionSegment, ...] = ()
@@ -547,6 +567,7 @@ def _publication_matches_locator(
         and locator.transcript_artifact_digest == publication.transcript_artifact_digest
         and locator.transcript_artifact_schema_version
         == publication.transcript_artifact_schema_version
+        and locator.projection_version == publication.projection_version
         and locator.end_ms > locator.start_ms
     )
 

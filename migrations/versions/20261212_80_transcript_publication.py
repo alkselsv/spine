@@ -28,6 +28,7 @@ def upgrade() -> None:
         sa.Column("workspace_id", uuid, nullable=False),
         sa.Column("environment_id", uuid, nullable=False),
         sa.Column("publication_id", uuid, nullable=False),
+        sa.Column("is_current", sa.Boolean(), nullable=False),
         sa.Column("publication_digest", sa.String(64), nullable=False),
         sa.Column("predecessor_publication_id", uuid, nullable=True),
         sa.Column("source_object_id", uuid, nullable=False),
@@ -46,10 +47,6 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint(
             "workspace_id", "environment_id", "publication_id",
             name="pk_transcript_publications",
-        ),
-        sa.UniqueConstraint(
-            "workspace_id", "environment_id", "transcript_artifact_id",
-            name="uq_transcript_publications_artifact",
         ),
         sa.ForeignKeyConstraint(
             ["workspace_id", "environment_id", "source_object_id", "source_revision_id"],
@@ -86,6 +83,14 @@ def upgrade() -> None:
         ["workspace_id", "environment_id", "source_revision_id"],
         schema=SCHEMA,
     )
+    op.create_index(
+        "uq_transcript_publications_artifact",
+        "transcript_publications",
+        ["workspace_id", "environment_id", "transcript_artifact_id"],
+        unique=True,
+        postgresql_where=sa.text("is_current"),
+        schema=SCHEMA,
+    )
     _tenant_scope("transcript_publications", mutable=True)
 
 
@@ -112,8 +117,7 @@ def _tenant_scope(table: str, *, mutable: bool = False) -> None:
     op.execute(f"GRANT SELECT, INSERT ON TABLE {qualified} TO {runtime}")
     if mutable:
         op.execute(
-            f"GRANT UPDATE (publication_id, publication_digest, predecessor_publication_id, "
-            f"projection_version, projection_state, state, segments, published_at) "
+            f"GRANT UPDATE (is_current) "
             f"ON TABLE {qualified} TO {runtime}"
         )
     op.execute(f"REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE {qualified} FROM {runtime}")
@@ -123,6 +127,11 @@ def downgrade() -> None:
     qualified = f'{SCHEMA}."transcript_publications"'
     op.execute(f'DROP POLICY IF EXISTS "pol_transcript_publications_tenant_isolation" ON {qualified}')
     op.execute(f'DROP POLICY IF EXISTS "pol_transcript_publications_migration_maintenance" ON {qualified}')
+    op.drop_index(
+        "uq_transcript_publications_artifact",
+        table_name="transcript_publications",
+        schema=SCHEMA,
+    )
     op.drop_index(
         "ix_transcript_publications_source_revision",
         table_name="transcript_publications",

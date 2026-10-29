@@ -29,6 +29,7 @@ class TimeRangeLocator(DefinitionModel):
     transcript_artifact_id: UUID
     transcript_artifact_digest: str = Field(pattern=_DIGEST)
     transcript_artifact_schema_version: VersionIdentifier
+    projection_version: VersionIdentifier = "transcript-projection:v1"
     start_ms: StrictInt = Field(ge=0)
     end_ms: StrictInt = Field(gt=0)
     segment_ids: tuple[UUID, ...] = ()
@@ -56,6 +57,7 @@ class TimeRangeLocator(DefinitionModel):
         *,
         artifact: TranscriptionArtifact,
         segment: TranscriptSegment,
+        projection_version: VersionIdentifier = "transcript-projection:v1",
     ) -> "TimeRangeLocator":
         if segment not in artifact.segments:
             raise ValueError("segment does not belong to transcript artifact")
@@ -66,6 +68,7 @@ class TimeRangeLocator(DefinitionModel):
             transcript_artifact_id=artifact.artifact_id,
             transcript_artifact_digest=artifact.artifact_digest,
             transcript_artifact_schema_version=artifact.schema_version,
+            projection_version=projection_version,
             start_ms=segment.start_ms,
             end_ms=segment.end_ms,
             segment_ids=(segment.segment_id,),
@@ -148,14 +151,32 @@ class TranscriptProjectionSegment(DefinitionModel):
 
     @classmethod
     def from_segment(
-        cls, *, artifact: TranscriptionArtifact, segment: TranscriptSegment
+        cls,
+        *,
+        artifact: TranscriptionArtifact,
+        segment: TranscriptSegment,
+        projection_version: VersionIdentifier = "transcript-projection:v1",
     ) -> "TranscriptProjectionSegment":
         return cls(
             segment_id=segment.segment_id,
             ordinal=segment.ordinal,
             text=segment.text,
             text_digest=hashlib.sha256(segment.text.encode("utf-8")).hexdigest(),
-            locator=TimeRangeLocator.from_segment(artifact=artifact, segment=segment),
+            locator=TimeRangeLocator.from_segment(
+                artifact=artifact,
+                segment=segment,
+                projection_version=projection_version,
+            ),
+        )
+
+    def with_projection_version(
+        self, *, projection_version: VersionIdentifier
+    ) -> "TranscriptProjectionSegment":
+        locator = self.locator.model_copy(
+            update={"projection_version": projection_version}
+        )
+        return type(self).model_validate(
+            {**self.model_dump(mode="python"), "locator": locator}
         )
 
 
@@ -239,7 +260,11 @@ class TranscriptPublication(DefinitionModel):
             f"{artifact.artifact_id}:{artifact.artifact_digest}:{policy_reference}:{approval_id or 'none'}",
         )
         segments = tuple(
-            TranscriptProjectionSegment.from_segment(artifact=artifact, segment=segment)
+            TranscriptProjectionSegment.from_segment(
+                artifact=artifact,
+                segment=segment,
+                projection_version=projection_version,
+            )
             for segment in artifact.segments
         )
         values = {
@@ -311,7 +336,25 @@ class TranscriptPublication(DefinitionModel):
             projection_version=projection_version,
             projection_state=TranscriptProjectionState.CURRENT,
             state=TranscriptPublicationState.ACTIVE,
+            segments=tuple(
+                segment.with_projection_version(projection_version=projection_version)
+                for segment in self.segments
+            ),
         )
+        values["publication_digest"] = self._digest_for_values(
+            {key: value for key, value in values.items() if key != "publication_digest"}
+        )
+        return type(self).model_validate(values)
+
+    def successor_state(
+        self,
+        *,
+        state: TranscriptPublicationState,
+        projection_state: TranscriptProjectionState,
+    ) -> "TranscriptPublication":
+        successor = self.successor_projection(projection_version=self.projection_version)
+        values = successor.model_dump(mode="python")
+        values.update(state=state, projection_state=projection_state)
         values["publication_digest"] = self._digest_for_values(
             {key: value for key, value in values.items() if key != "publication_digest"}
         )

@@ -77,6 +77,7 @@ class PostgreSQLTranscriptPublicationRepository(TranscriptPublicationRepository)
                             transcript_publications.c.environment_id == publication.environment_id,
                             transcript_publications.c.transcript_artifact_id
                             == publication.transcript_artifact_id,
+                            transcript_publications.c.is_current.is_(True),
                         )
                     )
                 ).mappings().one_or_none()
@@ -104,6 +105,7 @@ class PostgreSQLTranscriptPublicationRepository(TranscriptPublicationRepository)
                             transcript_publications.c.environment_id == environment_id,
                             transcript_publications.c.transcript_artifact_id
                             == transcript_artifact_id,
+                            transcript_publications.c.is_current.is_(True),
                         )
                     )
                 ).mappings().one_or_none()
@@ -147,6 +149,7 @@ class PostgreSQLTranscriptPublicationRepository(TranscriptPublicationRepository)
                             transcript_publications.c.workspace_id == context.scope.workspace_id,
                             transcript_publications.c.environment_id == context.scope.environment_id,
                             transcript_publications.c.publication_id == publication_id,
+                            transcript_publications.c.is_current.is_(True),
                         )
                         .with_for_update()
                     )
@@ -154,7 +157,7 @@ class PostgreSQLTranscriptPublicationRepository(TranscriptPublicationRepository)
                 if row is None:
                     raise KeyError("transcript publication is unavailable")
                 current = _publication_from_row(row)
-                updated = current.with_state(
+                updated = current.successor_state(
                     state=state or current.state,
                     projection_state=projection_state or current.projection_state,
                 )
@@ -164,16 +167,15 @@ class PostgreSQLTranscriptPublicationRepository(TranscriptPublicationRepository)
                         transcript_publications.c.workspace_id == context.scope.workspace_id,
                         transcript_publications.c.environment_id == context.scope.environment_id,
                         transcript_publications.c.publication_id == publication_id,
-                        transcript_publications.c.publication_digest == current.publication_digest,
+                        transcript_publications.c.is_current.is_(True),
                     )
-                    .values(
-                        publication_digest=updated.publication_digest,
-                        state=updated.state.value,
-                        projection_state=updated.projection_state.value,
-                    )
+                    .values(is_current=False)
                 )
                 if changed.rowcount != 1:
                     raise ValueError("transcript publication transition lost its owner")
+                await session.execute(
+                    transcript_publications.insert().values(_publication_values(updated))
+                )
                 return updated
 
     async def rebuild_projection(
@@ -226,7 +228,8 @@ class PostgreSQLTranscriptPublicationRepository(TranscriptPublicationRepository)
                         select(transcript_publications).where(
                             transcript_publications.c.workspace_id == workspace_id,
                             transcript_publications.c.environment_id == environment_id,
-                            transcript_publications.c.publication_id == publication_id
+                            transcript_publications.c.publication_id == publication_id,
+                            transcript_publications.c.is_current.is_(True),
                         ).with_for_update()
                     )
                 ).mappings().one_or_none()
@@ -242,23 +245,15 @@ class PostgreSQLTranscriptPublicationRepository(TranscriptPublicationRepository)
                         transcript_publications.c.workspace_id == current.workspace_id,
                         transcript_publications.c.environment_id == current.environment_id,
                         transcript_publications.c.publication_id == publication_id,
+                        transcript_publications.c.is_current.is_(True),
                     )
-                    .values(
-                        publication_id=successor.publication_id,
-                        publication_digest=successor.publication_digest,
-                        predecessor_publication_id=successor.predecessor_publication_id,
-                        projection_version=successor.projection_version,
-                        projection_state=successor.projection_state.value,
-                        state=successor.state.value,
-                        segments=[
-                            segment.model_dump(mode="json")
-                            for segment in successor.segments
-                        ],
-                        published_at=successor.published_at,
-                    )
+                    .values(is_current=False)
                 )
                 if changed.rowcount != 1:
                     raise ValueError("transcript projection replacement lost its owner")
+                await session.execute(
+                    transcript_publications.insert().values(_publication_values(successor))
+                )
                 return successor
 
     async def _bind_scope(
@@ -308,6 +303,7 @@ def _publication_values(publication: TranscriptPublication) -> dict[str, Any]:
         "workspace_id": publication.workspace_id,
         "environment_id": publication.environment_id,
         "publication_id": publication.publication_id,
+        "is_current": True,
         "publication_digest": publication.publication_digest,
         "predecessor_publication_id": publication.predecessor_publication_id,
         "source_object_id": publication.source_object_id,

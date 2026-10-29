@@ -95,7 +95,7 @@ def test_transcript_publication_is_tenant_scoped_and_pins_projection_lineage() -
         "publication_id",
     ]
     assert "uq_transcript_publications_artifact" in {
-        constraint.name for constraint in transcript_publications.constraints
+        index.name for index in transcript_publications.indexes
     }
     assert {
         "source_revision_id",

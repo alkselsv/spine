@@ -264,9 +264,9 @@ async def test_revoked_publication_is_unavailable_without_deleting_history() -> 
 @pytest.mark.asyncio
 async def test_projection_rebuild_and_rollback_keep_publication_history() -> None:
     _, repository, authorization, publication = await published_fixture()
-    await repository.mark_projection_stale(publication.publication_id)
+    stale = await repository.mark_projection_stale(publication.publication_id)
     rebuilt = await repository.rebuild_projection(
-        publication_id=publication.publication_id,
+        publication_id=stale.publication_id,
         projection_version="transcript-projection:v2",
     )
     rolled_back = await repository.rollback_projection(
@@ -284,7 +284,7 @@ async def test_projection_rebuild_and_rollback_keep_publication_history() -> Non
         )
     )
 
-    assert rebuilt.predecessor_publication_id == publication.publication_id
+    assert rebuilt.predecessor_publication_id == stale.publication_id
     assert rolled_back.predecessor_publication_id == rebuilt.publication_id
     assert rolled_back.projection_state is TranscriptProjectionState.CURRENT
     assert response.outcome is TranscriptContextOutcome.ALLOWED
