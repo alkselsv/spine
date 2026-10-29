@@ -4633,7 +4633,7 @@ export interface components {
          * RequirementState
          * @enum {string}
          */
-        RequirementState: "candidate" | "partial" | "unsupported" | "unverified";
+        RequirementState: "candidate" | "partial" | "unsupported" | "unverified" | "human_reviewed" | "accepted";
         /**
          * RequirementsArtifact
          * @description Immutable, explicitly versioned requirements candidate for one run.

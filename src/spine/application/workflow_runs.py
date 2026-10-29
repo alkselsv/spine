@@ -303,11 +303,15 @@ def workflow_run_snapshot(run: WorkflowRun) -> WorkflowRunSnapshot:
 
     allowed_commands: tuple[
         Literal["add_context", "edit_requirement", "save_review", "request_rework"], ...
-    ] = (
-        ("add_context", "edit_requirement", "save_review", "request_rework")
-        if run.state.value not in {"completed", "failed", "cancelled"}
-        else ()
-    )
+    ] = ()
+    if run.state.value not in {"completed", "failed", "cancelled"}:
+        allowed_commands = ("add_context",)
+        if run.workflow_key == "commercial.requirements":
+            allowed_commands += (
+                "edit_requirement",
+                "save_review",
+                "request_rework",
+            )
     return WorkflowRunSnapshot(
         run_id=run.run_id,
         work_item_id=run.work_item_id,

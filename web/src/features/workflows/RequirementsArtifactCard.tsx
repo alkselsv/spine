@@ -95,10 +95,17 @@ export function RequirementsArtifactCard({
     });
     setSubmitting(false);
     if (error || !data) {
-      const stale = (error as { code?: string } | undefined)?.code === 'requirements.artifact_stale';
-      setReviewError(stale
-        ? 'Версия требований устарела. Обновите карточку перед повторной проверкой.'
-        : 'Не удалось сохранить проверку. Команду можно безопасно повторить.');
+      const errorCode = (error as { code?: string } | undefined)?.code;
+      const stale = errorCode === 'requirements.artifact_stale';
+      const denied = errorCode === 'spine.authorization.denied';
+      if (stale) commandRef.current = null;
+      setReviewError(
+        stale
+          ? 'Версия требований устарела. Обновите карточку перед повторной проверкой.'
+          : denied
+            ? 'Недостаточно прав для изменения требований.'
+            : 'Не удалось сохранить проверку. Команду можно безопасно повторить.',
+      );
       return;
     }
     commandRef.current = null;

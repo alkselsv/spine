@@ -22,7 +22,9 @@ from spine.application.workflow_runs import (
 )
 from spine.domain.common import ActorRef, SpineModel
 from spine.domain.workflows import (
+    RequirementEvidenceStatus,
     RequirementReviewState,
+    RequirementState,
     RequirementsArtifact,
     WorkflowCommandReceipt,
 )
@@ -88,6 +90,13 @@ class RequirementsReviewService:
             )
             if run is None:
                 return None
+            if (
+                run.workflow_key != "commercial.requirements"
+                or run.run_id != command.run_id
+            ):
+                raise RequirementsReviewUnavailableError(
+                    "Requirements review is unavailable for this workflow run."
+                )
             command_receipt = await uow.workflow_runs.dispatch(command)
             versions = await uow.requirements_artifacts.versions(
                 workspace_id=scope.workspace_id,
@@ -109,6 +118,13 @@ class RequirementsReviewService:
                         "Requirements artifact is unavailable."
                     )
                 previous = versions[-1]
+                if (
+                    previous.run_id != run.run_id
+                    or previous.work_item_id != run.work_item_id
+                ):
+                    raise RequirementsReviewUnavailableError(
+                        "Requirements artifact is unavailable for this workflow run."
+                    )
                 current_ref = _artifact_ref(previous)
                 if base_ref != current_ref:
                     raise RequirementsArtifactStaleError(current_ref)
@@ -175,6 +191,11 @@ def _review_successor(
                     update={
                         "statement": payload.statement.strip(),
                         "review_state": RequirementReviewState.REVIEWED,
+                        "evidence_refs": tuple(
+                            reference.model_copy(update={"validation": None})
+                            for reference in requirement.evidence_refs
+                        ),
+                        "evidence_status": RequirementEvidenceStatus.UNVERIFIED,
                     }
                 )
             requirements.append(requirement)
@@ -210,6 +231,11 @@ def _review_successor(
             "production_identity": production_identity,
             "production_digest": digest,
             "requirements": tuple(requirements),
+            "state": (
+                RequirementState.HUMAN_REVIEWED
+                if isinstance(payload, SaveRequirementsReviewCommandV1)
+                else previous.state
+            ),
         }
     )
 
