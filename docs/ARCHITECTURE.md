@@ -192,6 +192,14 @@ payload, optimistic `run_version` и disclosure-safe `WorkflowEvent`; повто
 продуктовым read model: они не раскрывают Temporal history, command payload или
 chain-of-thought и повторно авторизуются при каждом чтении. См. ADR-0046.
 
+Первый requirements candidate сохраняется как typed, tenant-scoped immutable
+artifact version, привязанный к точным `WorkItem` и `WorkflowRun`. Replay с тем
+же producer identity и digest возвращает тот же version; successor append-only
+указывает predecessor. Candidate, partial и unsupported/unverified outcomes
+остаются не принятыми требованиями независимо от confidence. Readback повторно
+авторизуется, а conversational card восстанавливается из PostgreSQL. См.
+ADR-0047.
+
 PostgreSQL использует три раздельных credential surface: migration owner,
 tenant-scoped runtime и узкий cross-tenant dispatcher. Dispatcher может читать
 неизменяемые outbox intents и изменять только operational delivery state; у
@@ -2446,6 +2454,9 @@ detectors без специальных обходов в platform core.
 - [ADR-040](adr/0040-production-qa-capability-and-observer-handoff.md): durable
   production Q&A composition, bounded canonical terminal readback, authenticated
   ephemeral typed-capture handoff, and worker-local latency.
+- [ADR-047](adr/0047-immutable-requirements-artifact-versions.md): PostgreSQL-canonical
+  immutable, versioned requirements candidates with replay-safe production
+  identity, predecessor lineage, workspace isolation and authorized readback.
 - ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.

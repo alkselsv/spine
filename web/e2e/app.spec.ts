@@ -21,6 +21,8 @@ const chatClaim = '90000000-0000-4000-8000-000000000006';
 const chatRelationship = '90000000-0000-4000-8000-000000000007';
 const chatAnswer = '90000000-0000-4000-8000-000000000008';
 const chatAttempt = '90000000-0000-4000-8000-000000000009';
+const workflowRun = 'b0000000-0000-4000-8000-000000000001';
+const requirementsArtifact = 'b0000000-0000-4000-8000-000000000002';
 
 async function installContainerRuntime(page: Page): Promise<void> {
   await page.addInitScript(({ environmentId, workspaceId }) => {
@@ -76,6 +78,98 @@ test('test_chat_fixture_shows_embedded_sessions_and_messages', { tag: '@embedded
   await expect(page.getByText('Доступ запрещён')).toBeVisible();
   await expect(page.getByText('Завершилось с ошибкой')).toBeVisible();
   await expect(page.getByText('Отменён')).toBeVisible();
+});
+
+test('test_requirements_artifact_is_restored_from_scoped_api_after_browser_reload', async ({ page }) => {
+  const artifactRequests: { authorization?: string; workspace?: string; environment?: string }[] = [];
+  await installContainerRuntime(page);
+  await page.route('**/api/v1/runs/' + workflowRun + '**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/requirements')) {
+      const headers = route.request().headers();
+      artifactRequests.push({
+        authorization: headers.authorization,
+        workspace: headers['x-workspace-id'],
+        environment: headers['x-environment-id'],
+      });
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          artifact_id: requirementsArtifact,
+          artifact_version: 1,
+          schema_version: 'requirements:v1',
+          production_identity: 'requirements-extraction-v1',
+          production_digest: 'a'.repeat(64),
+          workspace_id: primaryWorkspace,
+          environment_id: localEnvironment,
+          work_item_id: 'b0000000-0000-4000-8000-000000000003',
+          run_id: workflowRun,
+          state: 'partial',
+          upstream_artifact_ids: [],
+          predecessor_version: null,
+          requirements: [{
+            requirement_id: 'b0000000-0000-4000-8000-000000000004',
+            category: 'functional',
+            statement: 'Deliver the product proposal.',
+            constraints: [],
+            uncertainty: 'The schedule needs clarification.',
+            ambiguous_markers: ['schedule'],
+            missing_markers: ['delivery_date'],
+            state: 'partial',
+            review_state: 'needs_review',
+            confidence: null,
+            source_refs: [],
+            evidence_refs: [],
+            evidence_status: 'unverified',
+            upstream_artifact_ids: [],
+          }],
+        }),
+      });
+      return;
+    }
+    if (url.pathname.endsWith('/events')) {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ schema_version: 1, items: [], limit: 100, next_cursor: null }),
+      });
+      return;
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        schema_version: 1,
+        run_id: workflowRun,
+        work_item_id: 'b0000000-0000-4000-8000-000000000003',
+        workspace_id: primaryWorkspace,
+        environment_id: localEnvironment,
+        workflow_key: 'commercial.requirements',
+        workflow_version_id: 'b0000000-0000-4000-8000-000000000005',
+        workflow_version: '1.0.0',
+        run_version: 1,
+        state: 'accepted',
+        allowed_commands: [],
+        created_at: '2026-10-29T00:00:00Z',
+      }),
+    });
+  });
+
+  await page.goto(`/workflow/runs/${workflowRun}`);
+  await expect(page.getByRole('heading', { name: 'Требования · версия 1' })).toBeVisible();
+  await expect(page.getByText('Deliver the product proposal.')).toBeVisible();
+  await expect(page.getByText('Не указано: delivery_date')).toBeVisible();
+  await expect(page.getByText('Источники не проверены')).toBeVisible();
+  expect(artifactRequests).toHaveLength(1);
+
+  await page.reload();
+
+  await expect(page.getByRole('heading', { name: 'Требования · версия 1' })).toBeVisible();
+  await expect(page.getByText('Deliver the product proposal.')).toBeVisible();
+  expect(artifactRequests).toHaveLength(2);
+  expect(artifactRequests.every(({ authorization, workspace, environment }) =>
+    authorization === 'Bearer container-fixture-token'
+      && workspace === primaryWorkspace
+      && environment === localEnvironment,
+  )).toBe(true);
 });
 
 test('test_qa_runs_fixture_shows_embedded_run_history', { tag: '@embedded-fixture' }, async ({ page }) => {

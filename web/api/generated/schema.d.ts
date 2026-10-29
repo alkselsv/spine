@@ -21,6 +21,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/artifacts/{artifact_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Artifacts.Requirements.Read */
+        get: operations["artifacts.requirements.read"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/artifacts/{artifact_id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Artifacts.Requirements.Versions */
+        get: operations["artifacts.requirements.versions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ask": {
         parameters: {
             query?: never;
@@ -712,6 +746,23 @@ export interface paths {
         };
         /** Workflow.Runs.Events.List */
         get: operations["workflow.runs.events.list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/runs/{run_id}/requirements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Requirements.By Run */
+        get: operations["requirements.by_run"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1765,6 +1816,18 @@ export interface components {
              */
             workspace_id: string;
         };
+        /** ArtifactRef */
+        ArtifactRef: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Schema Name */
+            schema_name: string;
+            /** Schema Version */
+            schema_version: string;
+        };
         /** AskAnswerResponse */
         AskAnswerResponse: {
             /**
@@ -2527,6 +2590,46 @@ export interface components {
          * @enum {string}
          */
         FeedbackTargetKind: "answer" | "citation";
+        /**
+         * GoogleSheetCellLocator
+         * @description One representation of a business-identified cell in an exact revision.
+         */
+        GoogleSheetCellLocator: {
+            /** Column Key */
+            column_key: string;
+            /** Immutable Business Id */
+            immutable_business_id: string;
+            /**
+             * Kind
+             * @default google_sheet_cell
+             * @constant
+             */
+            kind: "google_sheet_cell";
+            /** Observed A1 Range */
+            observed_a1_range: string;
+            /** Observed Cell Coordinate */
+            observed_cell_coordinate: string;
+            /**
+             * Representation
+             * @enum {string}
+             */
+            representation: "entered" | "effective" | "formatted" | "format";
+            /**
+             * Schema Version
+             * @default locator:google-sheet-cell:v1
+             * @constant
+             */
+            schema_version: "locator:google-sheet-cell:v1";
+            /** Sheet Id */
+            sheet_id: number;
+            /**
+             * Source Revision Id
+             * Format: uuid
+             */
+            source_revision_id: string;
+            /** Spreadsheet Id */
+            spreadsheet_id: string;
+        };
         /**
          * GroundedConflictStatus
          * @enum {string}
@@ -4234,6 +4337,167 @@ export interface components {
              */
             source_revision_id: string;
         };
+        /**
+         * Requirement
+         * @description One traceable, unaccepted statement proposed by requirements extraction.
+         */
+        Requirement: {
+            /**
+             * Ambiguous Markers
+             * @default []
+             */
+            ambiguous_markers: string[];
+            category: components["schemas"]["RequirementCategory"];
+            /** Confidence */
+            confidence?: number | null;
+            /**
+             * Constraints
+             * @default []
+             */
+            constraints: string[];
+            /**
+             * Evidence Refs
+             * @default []
+             */
+            evidence_refs: components["schemas"]["RequirementEvidenceRef"][];
+            /** @default unverified */
+            evidence_status: components["schemas"]["RequirementEvidenceStatus"];
+            /**
+             * Missing Markers
+             * @default []
+             */
+            missing_markers: string[];
+            /**
+             * Requirement Id
+             * Format: uuid
+             */
+            requirement_id: string;
+            /** @default needs_review */
+            review_state: components["schemas"]["RequirementReviewState"];
+            /**
+             * Schema Version
+             * @default requirement:v1
+             * @constant
+             */
+            schema_version: "requirement:v1";
+            /**
+             * Source Refs
+             * @default []
+             */
+            source_refs: components["schemas"]["AcceptedSourceRevisionRef"][];
+            /** @default candidate */
+            state: components["schemas"]["RequirementState"];
+            /** Statement */
+            statement: string;
+            /** Uncertainty */
+            uncertainty?: string | null;
+            /**
+             * Upstream Artifact Ids
+             * @default []
+             */
+            upstream_artifact_ids: string[];
+        };
+        /**
+         * RequirementCategory
+         * @enum {string}
+         */
+        RequirementCategory: "functional" | "non_functional" | "constraint" | "assumption" | "unresolved_information";
+        /**
+         * RequirementEvidenceRef
+         * @description An exact source revision and parsed evidence segment without source text.
+         */
+        RequirementEvidenceRef: {
+            /** Locator */
+            locator: (components["schemas"]["PhysicalLineLocator"] | components["schemas"]["PageTextLocator"] | components["schemas"]["OoxmlTextLocator"] | components["schemas"]["XlsxCellLocator"]) | components["schemas"]["GoogleSheetCellLocator"];
+            parsed_artifact_ref: components["schemas"]["ArtifactRef"];
+            /** Segment Digest */
+            segment_digest: string;
+            /**
+             * Segment Id
+             * Format: uuid
+             */
+            segment_id: string;
+            source_ref: components["schemas"]["AcceptedSourceRevisionRef"];
+        };
+        /**
+         * RequirementEvidenceStatus
+         * @enum {string}
+         */
+        RequirementEvidenceStatus: "referenced" | "unverified" | "unsupported";
+        /**
+         * RequirementReviewState
+         * @enum {string}
+         */
+        RequirementReviewState: "needs_review" | "reviewed" | "changes_requested";
+        /**
+         * RequirementState
+         * @enum {string}
+         */
+        RequirementState: "candidate" | "partial" | "unsupported" | "unverified";
+        /**
+         * RequirementsArtifact
+         * @description Immutable, explicitly versioned requirements candidate for one run.
+         */
+        RequirementsArtifact: {
+            /**
+             * Artifact Id
+             * Format: uuid
+             */
+            artifact_id: string;
+            /** Artifact Version */
+            artifact_version: number;
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /** Predecessor Version */
+            predecessor_version?: number | null;
+            /** Production Digest */
+            production_digest: string;
+            /** Production Identity */
+            production_identity: string;
+            /** Requirements */
+            requirements: components["schemas"]["Requirement"][];
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Schema Version
+             * @default requirements:v1
+             */
+            schema_version: string;
+            /** @default candidate */
+            state: components["schemas"]["RequirementState"];
+            /**
+             * Upstream Artifact Ids
+             * @default []
+             */
+            upstream_artifact_ids: string[];
+            /**
+             * Work Item Id
+             * Format: uuid
+             */
+            work_item_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** RequirementsArtifactVersionsResponse */
+        RequirementsArtifactVersionsResponse: {
+            /** Items */
+            items: components["schemas"]["RequirementsArtifact"][];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
         /** RestoreQASessionRequest */
         RestoreQASessionRequest: {
             /** Expected Version */
@@ -4729,6 +4993,220 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OutboxDeliveryInspectionResponse"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "artifacts.requirements.read": {
+        parameters: {
+            query?: {
+                artifact_version?: number | null;
+            };
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                artifact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequirementsArtifact"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "artifacts.requirements.versions": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                artifact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequirementsArtifactVersionsResponse"];
                 };
             };
             /** @description Safe request error. */
@@ -9274,6 +9752,112 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkflowEventPageResponse"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "requirements.by_run": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequirementsArtifact"];
                 };
             };
             /** @description Safe request error. */

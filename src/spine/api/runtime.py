@@ -50,6 +50,7 @@ from spine.application.qa_run_history import PersistedQARunHistoryService
 from spine.application.persisted_workflow_runs import (
     PersistedWorkflowRunAdmissionService,
 )
+from spine.application.requirements_artifacts import PersistedRequirementsArtifactService
 from spine.application.workflow_runs import (
     ConfiguredWorkflowVersionResolver,
     PinnedWorkflowVersion,
@@ -375,6 +376,9 @@ def create_production_app(
             resolved_api.cursor_secret.get_secret_value().encode("utf-8")
         ),
         workflow_run_admission_service=PersistedWorkflowRunAdmissionService(
+            persistence.uow_factory
+        ),
+        requirements_artifact_service=PersistedRequirementsArtifactService(
             persistence.uow_factory
         ),
         workflow_version_resolver=ConfiguredWorkflowVersionResolver(

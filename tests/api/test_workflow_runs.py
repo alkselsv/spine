@@ -6,6 +6,7 @@ from uuid import UUID
 import httpx
 
 from spine.api.workflow_runs import install_workflow_run_routes
+from spine.application.persistence.context import EnvironmentScope
 from spine.application.persistence.errors import OptimisticConflictError
 from spine.application.workflow_runs import PinnedWorkflowVersion
 from spine.domain.common import ActorKind, ActorRef
@@ -152,7 +153,8 @@ class FakeWorkflowVersionResolver:
         )
 
 
-def _app(service: FakeWorkflowRunService, *, authorize_other_workspace: bool = False):
+def _app(service: FakeWorkflowRunService, *, authorize_other_workspace: bool = False,
+         requirements_artifact_service=None):
     directory = None
     if authorize_other_workspace:
         other_entry = authorization_entry().model_copy(
@@ -172,6 +174,7 @@ def _app(service: FakeWorkflowRunService, *, authorize_other_workspace: bool = F
         version_resolver=FakeWorkflowVersionResolver(),
         command_id_source=lambda: COMMAND_ID,
         cursor_secret=b"workflow-run-api-cursor-secret-639",
+        requirements_artifact_service=requirements_artifact_service,
     )
     return application
 
@@ -321,6 +324,31 @@ async def test_start_uses_server_scope_and_pins_selected_workflow_version() -> N
     assert service.command.workspace_id == WORKSPACE_ID
     assert service.command.environment_id == ENVIRONMENT_ID
     assert service.command.workflow_version_id == VERSION_ID
+
+
+async def test_run_start_persists_one_deterministic_requirements_candidate() -> None:
+    service = FakeWorkflowRunService()
+
+    class CandidateService:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def produce_first_candidate(self, *, context, run_id):
+            self.calls.append((context.scope, run_id))
+
+    candidate_service = CandidateService()
+    transport = httpx.ASGITransport(app=_app(service, requirements_artifact_service=candidate_service))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/runs", headers=_headers(),
+            json={"workflow_key": "commercial.requirements", "work_item_key": "proposal-640",
+                  "message": "Prepare a proposal"},
+        )
+
+    assert response.status_code == 202
+    assert candidate_service.calls == [(
+        EnvironmentScope(workspace_id=WORKSPACE_ID, environment_id=ENVIRONMENT_ID), RUN_ID
+    )]
 
 
 async def test_run_read_hides_runs_outside_authorized_workspace() -> None:

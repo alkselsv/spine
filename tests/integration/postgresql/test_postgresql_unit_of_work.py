@@ -6882,3 +6882,84 @@ async def test_drive_lifecycle_decision_repository_persists_tenant_scoped_transi
         workspace_id=decision.workspace_id,
         environment_id=decision.environment_id,
     ) == tombstoned
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_requirements_artifacts_replay_successor_and_isolate_workspaces(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    from spine.application.requirements_artifacts import PersistedRequirementsArtifactService
+    from spine.application.persistence.errors import IdempotencyConflictError
+    from spine.application.persistence.errors import InvalidPersistenceContextError
+    from spine.domain.workflows import Requirement, RequirementState
+
+    workspace_id = synthetic_uuid(64000)
+    environment_id = synthetic_uuid(64001)
+    actor_id = synthetic_uuid(959)
+    version_id = synthetic_uuid(64004)
+    start_id = synthetic_uuid(64005)
+    async with postgresql_adapter.uow_factory(postgresql_adapter.workspace_context(workspace_id)) as uow:
+        await uow.workspaces.add(Workspace(
+            id=workspace_id, slug="issue-640-requirements", display_name="Issue 640",
+        ))
+        await uow.environments.add(Environment(
+            id=environment_id, workspace_id=workspace_id,
+            kind=EnvironmentKind.PRODUCTION, display_name="Issue 640 environment",
+        ))
+        await uow.commit()
+
+    start_context = postgresql_adapter.ingestion_context(workspace_id, environment_id, "workflow.run.start")
+    register_workflow_run_outbox_event(postgresql_adapter.outbox_events)
+    run_service = PersistedWorkflowRunAdmissionService(postgresql_adapter.uow_factory)
+    receipt = await run_service.start(context=start_context, command=StartWorkflowCommand(
+        command_id=start_id, idempotency_key="issue-640-start", workspace_id=workspace_id,
+        environment_id=environment_id, actor=ActorRef(kind=ActorKind.SERVICE, id=actor_id),
+        environment=EnvironmentKind.PRODUCTION, workflow_key="commercial.requirements",
+        workflow_version_id=version_id, workflow_version="1.0.0", work_item_key="issue-640-work-item",
+        client_request=ClientRequestV1(message="Deliver by Friday"), trace_id=start_context.trace_id,
+        correlation_id=start_context.trace_id, causation_id=start_id,
+    ))
+    artifacts = PersistedRequirementsArtifactService(postgresql_adapter.uow_factory)
+    first = await artifacts.produce_first_candidate(context=start_context, run_id=receipt.run_id)
+    replay = await artifacts.produce_first_candidate(context=start_context, run_id=receipt.run_id)
+    assert first is not None and first == replay
+    with pytest.raises(IdempotencyConflictError):
+        async with postgresql_adapter.uow_factory(start_context) as uow:
+            await uow.requirements_artifacts.persist_candidate(
+                first.model_copy(update={"production_digest": "b" * 64})
+            )
+    with pytest.raises(InvalidPersistenceContextError):
+        async with postgresql_adapter.uow_factory(start_context) as uow:
+            await uow.requirements_artifacts.persist_candidate(
+                first.model_copy(update={"work_item_id": synthetic_uuid(64099),
+                                         "artifact_version": 2,
+                                         "predecessor_version": 1,
+                                         "production_identity": "invalid-work-item"})
+            )
+
+    successor = await artifacts.persist_successor(
+        context=start_context, artifact_id=first.artifact_id,
+        production_identity="issue-640-revision-2",
+        requirements=(Requirement(requirement_id=synthetic_uuid(64006), category="functional",
+                                  statement="Deliver by Friday at noon"),),
+        state=RequirementState.PARTIAL,
+    )
+    restored = await artifacts.get(context=start_context, artifact_id=first.artifact_id)
+    versions = await artifacts.versions(context=start_context, artifact_id=first.artifact_id)
+    assert restored == successor and successor.artifact_version == 2
+    assert successor.predecessor_version == 1
+    assert versions == (first, successor)
+
+    other_workspace = synthetic_uuid(64007)
+    other_environment = synthetic_uuid(64008)
+    async with postgresql_adapter.uow_factory(postgresql_adapter.workspace_context(other_workspace)) as uow:
+        await uow.workspaces.add(Workspace(
+            id=other_workspace, slug="issue-640-other", display_name="Other workspace",
+        ))
+        await uow.environments.add(Environment(
+            id=other_environment, workspace_id=other_workspace,
+            kind=EnvironmentKind.PRODUCTION, display_name="Other environment",
+        ))
+        await uow.commit()
+    other_context = postgresql_adapter.ingestion_context(other_workspace, other_environment, "workflow.run.read")
+    assert await artifacts.get(context=other_context, artifact_id=first.artifact_id) is None

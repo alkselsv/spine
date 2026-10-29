@@ -155,6 +155,9 @@ from spine.application.persistence.workflow_runs import (
 from spine.infrastructure.persistence.postgresql_workflow_runs import (
     PostgreSQLWorkflowRunAdmissionRepository,
 )
+from spine.infrastructure.persistence.postgresql_requirements_artifacts import (
+    PostgreSQLRequirementsArtifactRepository,
+)
 from spine.application.persistence.outbox import (
     OpaqueObjectReference,
     OutboxEventRegistry,
@@ -6331,6 +6334,7 @@ class PostgreSQLTenantUnitOfWork:
             clock=ask_admission_clock,
         )
         self._workflow_runs = PostgreSQLWorkflowRunAdmissionRepository(self)
+        self._requirements_artifacts = PostgreSQLRequirementsArtifactRepository(self)
         self._feedback = PostgreSQLFeedbackRepository(self)
         self._disclosure_validations = PostgreSQLDisclosureValidationRepository(self)
         self._answer_disclosures = PostgreSQLAnswerDisclosureRepository(self)
@@ -6395,6 +6399,11 @@ class PostgreSQLTenantUnitOfWork:
     def workflow_runs(self) -> PostgreSQLWorkflowRunAdmissionRepository:
         self._guard_active()
         return self._workflow_runs
+
+    @property
+    def requirements_artifacts(self) -> PostgreSQLRequirementsArtifactRepository:
+        self._guard_active()
+        return self._requirements_artifacts
 
     @property
     def feedback(self) -> PostgreSQLFeedbackRepository:

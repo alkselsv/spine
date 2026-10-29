@@ -23,6 +23,7 @@ from spine.api.schemas import (
     parse_idempotency_key_header,
 )
 from spine.application.persisted_workflow_runs import PersistedWorkflowRunAdmissionService
+from spine.application.requirements_artifacts import PersistedRequirementsArtifactService
 from spine.application.persistence.errors import OptimisticConflictError
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -142,6 +143,7 @@ def install_workflow_run_routes(
     version_resolver: WorkflowVersionResolver,
     cursor_secret: bytes,
     command_id_source=uuid4,
+    requirements_artifact_service: PersistedRequirementsArtifactService | None = None,
 ) -> None:
     """Register shared run admission and authorized read routes."""
 
@@ -217,6 +219,10 @@ def install_workflow_run_routes(
                 causation_id=causation_id,
             ),
         )
+        if requirements_artifact_service is not None:
+            await requirements_artifact_service.produce_first_candidate(
+                context=persistence_context, run_id=receipt.run_id
+            )
         response = WorkflowRunReceiptResponse(
             command_id=receipt.command_id,
             work_item_id=receipt.work_item_id,
