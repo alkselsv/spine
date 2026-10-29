@@ -24,6 +24,7 @@ from spine.domain.artifacts.transcription import (
     SpeechToTextSegment,
     TranscriptionArtifact,
     TranscriptionArtifactOutcome,
+    TranscriptionChunkCheckpoint,
     TranscriptionChunkReceipt,
     TranscriptionFailureProvenance,
     TranscriptionFailureCode,
@@ -273,15 +274,38 @@ class TranscriptionRepository(Protocol):
         requested_at: datetime,
     ) -> TranscriptionJob: ...
 
+    async def get_checkpoint(
+        self, *, workspace_id: UUID, environment_id: UUID, job_id: UUID
+    ) -> TranscriptionChunkCheckpoint | None: ...
+
+    async def checkpoint_chunk(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        job_id: UUID,
+        lease_id: UUID,
+        expected_completed_chunks: int,
+        checkpoint: TranscriptionChunkCheckpoint,
+    ) -> TranscriptionChunkCheckpoint: ...
+
 
 class InMemoryTranscriptionRepository:
     """Atomic tenant-scoped canonical fake for application and contract tests."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    ) -> None:
         self._lock = asyncio.Lock()
+        self._clock = clock
         self._jobs: dict[tuple[UUID, UUID, UUID], TranscriptionJob] = {}
         self._commands: dict[tuple[UUID, UUID, str], UUID] = {}
         self._artifacts: dict[tuple[UUID, UUID, UUID], TranscriptionArtifact] = {}
+        self._checkpoints: dict[
+            tuple[UUID, UUID, UUID], TranscriptionChunkCheckpoint
+        ] = {}
 
     async def admit(
         self, job: TranscriptionJob, *, now: datetime
@@ -425,6 +449,42 @@ class InMemoryTranscriptionRepository:
             updated = current.request_cancellation(requested_at=requested_at)
             self._jobs[key] = updated
             return updated.model_copy(deep=True)
+
+    async def get_checkpoint(
+        self, *, workspace_id: UUID, environment_id: UUID, job_id: UUID
+    ) -> TranscriptionChunkCheckpoint | None:
+        async with self._lock:
+            value = self._checkpoints.get((workspace_id, environment_id, job_id))
+            return value.model_copy(deep=True) if value is not None else None
+
+    async def checkpoint_chunk(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        job_id: UUID,
+        lease_id: UUID,
+        expected_completed_chunks: int,
+        checkpoint: TranscriptionChunkCheckpoint,
+    ) -> TranscriptionChunkCheckpoint:
+        key = (workspace_id, environment_id, job_id)
+        async with self._lock:
+            job = self._jobs.get(key)
+            if (
+                job is None
+                or job.state is not TranscriptionJobState.PENDING
+                or job.execution_lease_id != lease_id
+                or self._clock() >= job.execution_lease_expires_at
+            ):
+                raise TranscriptionConflictError("transcription checkpoint lease is stale")
+            current = self._checkpoints.get(key)
+            completed = len(current.chunk_receipts) if current is not None else 0
+            if completed != expected_completed_chunks:
+                if current == checkpoint:
+                    return current.model_copy(deep=True)
+                raise TranscriptionConflictError("transcription checkpoint is stale")
+            self._checkpoints[key] = checkpoint.model_copy(deep=True)
+            return checkpoint.model_copy(deep=True)
 
     async def count_jobs(self) -> int:
         async with self._lock:
@@ -578,6 +638,7 @@ class TranscriptionService:
                     prepared=prepared,
                     profile=command.processing_profile,
                     job_id=job_id,
+                    lease_id=admission.lease_id,
                 )
                 recording_duration_ms = prepared.inspection.duration_ms
                 artifact_provenance = {
@@ -695,6 +756,7 @@ class TranscriptionService:
         prepared: AudioPreparationResult,
         profile: TranscriptionProcessingProfile,
         job_id: UUID,
+        lease_id: UUID,
     ) -> ChunkedTranscriptionOutcome:
         if prepared.decoder_reference != profile.decoder_reference:
             raise SpeechToTextFailed(code="invalid_adapter_output", retryable=False)
@@ -715,10 +777,24 @@ class TranscriptionService:
             )
             raise SpeechToTextFailed(code=code, retryable=False) from None
 
-        segments: list[SpeechToTextSegment] = []
-        receipts: list[TranscriptionChunkReceipt] = []
-        detected_language: str | None = None
-        for boundary in boundaries:
+        checkpoint = await self._repository.get_checkpoint(
+            workspace_id=request.recording.workspace_id,
+            environment_id=request.recording.environment_id,
+            job_id=job_id,
+        )
+        if checkpoint is not None:
+            self._validate_checkpoint(
+                checkpoint=checkpoint,
+                request=request,
+                prepared=prepared,
+                profile=profile,
+                job_id=job_id,
+                boundaries=boundaries,
+            )
+        segments = list(checkpoint.segments) if checkpoint is not None else []
+        receipts = list(checkpoint.chunk_receipts) if checkpoint is not None else []
+        detected_language = checkpoint.detected_language if checkpoint is not None else None
+        for boundary in boundaries[len(receipts) :]:
             chunk = AudioChunkHandle.create(
                 boundary=boundary,
                 decoder_reference=prepared.decoder_reference,
@@ -779,7 +855,7 @@ class TranscriptionService:
                     terminal_code = (
                         "retry_exhausted" if failure.retryable else failure.code.value
                     )
-                    if not segments:
+                    if not receipts:
                         raise SpeechToTextFailed(
                             code=terminal_code,
                             retryable=False,
@@ -838,14 +914,36 @@ class TranscriptionService:
                         update={"start_ms": absolute_start, "end_ms": absolute_end}
                     )
                 )
-            segments.extend(normalized_segments)
-            receipts.append(
-                TranscriptionChunkReceipt(
-                    chunk_id=chunk.chunk_id,
-                    boundary=boundary,
-                    model_attempts=attempts,
-                )
+            receipt = TranscriptionChunkReceipt(
+                chunk_id=chunk.chunk_id,
+                boundary=boundary,
+                model_attempts=attempts,
             )
+            next_receipts = [*receipts, receipt]
+            next_segments = [*segments, *normalized_segments]
+            next_checkpoint = TranscriptionChunkCheckpoint(
+                job_id=job_id,
+                source_revision_id=request.recording.source_revision_id,
+                source_revision_digest=request.recording.source_revision_digest,
+                processing_profile_reference=profile.profile_reference,
+                decoder_reference=prepared.decoder_reference,
+                decoded_sha256=prepared.decoded_sha256,
+                reassembly_reference=profile.reassembly_reference,
+                detected_language=detected_language,
+                chunk_receipts=tuple(next_receipts),
+                segments=tuple(next_segments),
+                updated_at=self._clock(),
+            )
+            await self._repository.checkpoint_chunk(
+                workspace_id=request.recording.workspace_id,
+                environment_id=request.recording.environment_id,
+                job_id=job_id,
+                lease_id=lease_id,
+                expected_completed_chunks=len(receipts),
+                checkpoint=next_checkpoint,
+            )
+            receipts = next_receipts
+            segments = next_segments
             if await self._cancellation_requested(
                 workspace_id=request.recording.workspace_id,
                 environment_id=request.recording.environment_id,
@@ -873,6 +971,45 @@ class TranscriptionService:
             False,
         )
 
+    @staticmethod
+    def _validate_checkpoint(
+        *,
+        checkpoint: TranscriptionChunkCheckpoint,
+        request: SpeechToTextRequest,
+        prepared: AudioPreparationResult,
+        profile: TranscriptionProcessingProfile,
+        job_id: UUID,
+        boundaries: tuple,
+    ) -> None:
+        expected_lineage = (
+            job_id,
+            request.recording.source_revision_id,
+            request.recording.source_revision_digest,
+            profile.profile_reference,
+            prepared.decoder_reference,
+            prepared.decoded_sha256,
+            profile.reassembly_reference,
+        )
+        actual_lineage = (
+            checkpoint.job_id,
+            checkpoint.source_revision_id,
+            checkpoint.source_revision_digest,
+            checkpoint.processing_profile_reference,
+            checkpoint.decoder_reference,
+            checkpoint.decoded_sha256,
+            checkpoint.reassembly_reference,
+        )
+        checkpoint_boundaries = tuple(
+            receipt.boundary for receipt in checkpoint.chunk_receipts
+        )
+        if (
+            actual_lineage != expected_lineage
+            or checkpoint_boundaries != boundaries[: len(checkpoint_boundaries)]
+        ):
+            raise TranscriptionConflictError(
+                "transcription checkpoint does not match immutable processing lineage"
+            )
+
     async def _cancellation_requested(
         self, *, workspace_id: UUID, environment_id: UUID, job_id: UUID
     ) -> bool:
@@ -895,7 +1032,7 @@ class TranscriptionService:
         failed_chunk_ordinal: int | None,
         model_attempts: int,
     ) -> ChunkedTranscriptionOutcome:
-        if not segments:
+        if not receipts:
             raise SpeechToTextCancelled()
         return TranscriptionService._stopped_chunk_result(
             request=request,
@@ -921,7 +1058,7 @@ class TranscriptionService:
         failed_chunk_ordinal: int,
         model_attempts: int,
     ) -> ChunkedTranscriptionOutcome:
-        if not segments:
+        if not receipts:
             raise SpeechToTextFailed(code="invalid_adapter_output", retryable=False)
         return TranscriptionService._stopped_chunk_result(
             request=request,

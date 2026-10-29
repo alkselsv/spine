@@ -44,6 +44,22 @@ chunks completed or cancellation arrives during processing.
 6. The bounded command, chunked Speech-to-Text request/result, job and artifact
    are explicit v2 successors. Existing whole-recording v1 commands, jobs and
    artifacts retain their original schema and deterministic identities.
+7. The existing transcription job is the sole owner of durable chunk recovery.
+   After each completed model window it atomically stores a cumulative typed
+   checkpoint behind the current execution lease. A reclaimed worker validates
+   the pinned source, profile, decoder, decoded bytes and reassembly identity,
+   then resumes after the contiguous receipt prefix. Stale workers cannot
+   checkpoint or finalize. Completed v2 artifacts require full original-timeline
+   chunk coverage; incomplete coverage remains `partial`, never `completed` or
+   a new `suspended` terminal state.
+8. The processing outcome and #660 governance outcome are separate axes.
+   `partial` is an immutable diagnostic processing result with exact completed
+   chunk coverage and is never publishable in the first slice. #660 `SUSPEND`
+   means current policy, authorization or source eligibility cannot permit an
+   operation; it fences processing/publication/retrieval and may later be
+   re-evaluated, but it is not persisted as a terminal `TranscriptionJob`
+   state. A processing job therefore remains completed, partial, failed or
+   cancelled while current use can independently be suspended or denied.
 
 ## Consequences
 
@@ -60,3 +76,5 @@ chunks completed or cancellation arrives during processing.
 ## Source
 
 Ticket #668 under the R2 audio transcription specification (#656).
+The durable recovery and evidence-navigation completion is ticket #688; it
+extends this same orchestration path rather than adding a second workflow.
