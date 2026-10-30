@@ -1,5 +1,12 @@
 """Connections, sync cursors, and ingestion-run domain."""
 
+from spine.domain.connections.bitrix24_oauth import (
+    Bitrix24GrantAuthority,
+    Bitrix24GrantBinding,
+    Bitrix24GrantState,
+    Bitrix24Scope,
+)
+
 from spine.domain.connections.google import (
     GoogleConnection,
     GoogleConnectionApproval,
@@ -21,6 +28,10 @@ from spine.domain.connections.provider import (
 )
 
 __all__ = [
+    "Bitrix24GrantAuthority",
+    "Bitrix24GrantBinding",
+    "Bitrix24GrantState",
+    "Bitrix24Scope",
     "GoogleConnection",
     "GoogleConnectionApproval",
     "GoogleConnectionStatus",

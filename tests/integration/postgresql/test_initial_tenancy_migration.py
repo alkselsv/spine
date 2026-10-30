@@ -1321,6 +1321,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "google_connection_approvals",
         "provider_connection_versions",
         "provider_connection_approvals",
+        "bitrix24_grant_bindings",
+        "bitrix24_grant_authorities",
+        "bitrix24_oauth_attempts",
+        "bitrix24_oauth_callback_receipts",
         "register_link_claims",
         "register_association_acceptances",
     }
@@ -1347,7 +1351,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                     "'current_access_policies','original_upload_records',"
                     "'qa_agent_artifacts','qa_agent_results',"
                     "'google_connection_versions','google_connection_approvals',"
-                    "'provider_connection_versions','provider_connection_approvals'))"
+                    "'provider_connection_versions','provider_connection_approvals',"
+                    "'bitrix24_grant_bindings','bitrix24_grant_authorities',"
+                    "'bitrix24_oauth_attempts','bitrix24_oauth_callback_receipts'))"
                 )
             )
         ).scalars()
@@ -1361,7 +1367,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                      "'current_access_policies','original_upload_records',"
                      "'qa_agent_artifacts','qa_agent_results',"
                      "'google_connection_versions','google_connection_approvals',"
-                     "'provider_connection_versions','provider_connection_approvals')")
+                     "'provider_connection_versions','provider_connection_approvals',"
+                     "'bitrix24_grant_bindings','bitrix24_grant_authorities',"
+                     "'bitrix24_oauth_attempts','bitrix24_oauth_callback_receipts')")
             )
         ).scalars()
     )
@@ -2927,7 +2935,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "JOIN pg_namespace AS source_namespace "
                         "ON source_namespace.oid = relation.relnamespace "
                         "WHERE source_namespace.nspname = 'spine' AND relation.relname IN "
-                            "('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
+                            "('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                          "'source_revision_receipt_associations', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', 'ingestion_runs', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -2967,7 +2975,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "column_default FROM information_schema.columns "
                         "WHERE table_schema = 'spine' "
                         "AND table_name NOT LIKE 'source_canonical%' "
-                            "AND table_name NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
+                            "AND table_name NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                             "'source_revision_receipt_associations', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -3000,7 +3008,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "SELECT indexname FROM pg_indexes "
                         "WHERE schemaname = 'spine' "
                         "AND indexname NOT LIKE 'pk_source_canonical%' "
-                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
+                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                          "'source_revision_receipt_associations', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -3032,7 +3040,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                     text(
                         "SELECT tablename FROM pg_tables WHERE schemaname = 'spine' "
                         "AND tablename NOT LIKE 'source_canonical%' "
-                            "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
+                            "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                          "'source_revision_receipt_associations', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -3064,7 +3072,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                     text(
                         "SELECT tableowner FROM pg_tables WHERE schemaname = 'spine' "
                         "AND tablename NOT LIKE 'source_canonical%' "
-                            "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
+                            "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                          "'source_revision_receipt_associations', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -3740,6 +3748,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
 	                            "'google_connection_approvals', "
 	                            "'provider_connection_versions', "
 	                            "'provider_connection_approvals', "
+                            "'bitrix24_grant_bindings', 'bitrix24_grant_authorities', "
+                            "'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', "
                         "'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', "
                         "'bitrix24_crm_material_revocations', "
                         "'admission_decisions', "
@@ -3836,6 +3846,10 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "google_connection_approvals": (True, True),
         "provider_connection_versions": (True, True),
         "provider_connection_approvals": (True, True),
+        "bitrix24_grant_bindings": (True, True),
+        "bitrix24_grant_authorities": (True, True),
+        "bitrix24_oauth_attempts": (True, True),
+        "bitrix24_oauth_callback_receipts": (True, True),
         "source_objects": (True, True),
         "source_revisions": (True, True),
         "source_revision_provenance": (True, True),
@@ -5242,13 +5256,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261215_83_transcript_review.py",
         "20261216_84_corrected_transcript_publication.py",
         "20261217_85_mounted_filesystem_reconciliation.py",
+        "20261218_86_bitrix24_oauth_authority.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261218_86_injected_failure.py").write_text(
+    (target / "versions" / "20261219_87_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261218_86'\n"
-        "down_revision = '20261217_85'\n"
+        "revision = '20261219_87'\n"
+        "down_revision = '20261218_86'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

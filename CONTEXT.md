@@ -90,6 +90,12 @@ credential material. It does not grant Spine content disclosure or business
 authority.
 _Avoid_: Credential, Access Policy, provider account
 
+**Bitrix24 Grant Authority**:
+The current exact Bitrix24 acting-user grant binding, active token-pair
+reference, token epoch and security fence for one Provider Connection version.
+It contains no credential material and grants no access outside that connection.
+_Avoid_: OAuth token, Provider Connection, service principal
+
 **Tombstone Revision**:
 A deletion-kind Source Revision with deletion provenance and no retrievable
 content. When canonically current, it fences every earlier content revision.
