@@ -6,8 +6,8 @@ from sqlalchemy.dialects import postgresql
 
 from spine.infrastructure.db.settings import MigrationDatabaseSettings
 
-revision = "20261214_82"
-down_revision = "20261213_81"
+revision = "20261215_83"
+down_revision = "20261214_82"
 branch_labels = None
 depends_on = None
 SCHEMA = "spine"

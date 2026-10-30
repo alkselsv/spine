@@ -156,10 +156,10 @@ def test_transcript_reviews_are_immutable_and_corrections_pin_their_predecessors
     }
 
     source = (
-        PROJECT_ROOT / "migrations/versions/20261214_82_transcript_review.py"
+        PROJECT_ROOT / "migrations/versions/20261215_83_transcript_review.py"
     ).read_text(encoding="utf-8")
-    assert 'revision = "20261214_82"' in source
-    assert 'down_revision = "20261213_81"' in source
+    assert 'revision = "20261215_83"' in source
+    assert 'down_revision = "20261214_82"' in source
     assert "ENABLE ROW LEVEL SECURITY" in source
     assert "FORCE ROW LEVEL SECURITY" in source
     assert "GRANT SELECT, INSERT" in source
@@ -167,8 +167,8 @@ def test_transcript_reviews_are_immutable_and_corrections_pin_their_predecessors
 
     corrected_publications = (
         PROJECT_ROOT
-        / "migrations/versions/20261215_83_corrected_transcript_publication.py"
+        / "migrations/versions/20261216_84_corrected_transcript_publication.py"
     ).read_text(encoding="utf-8")
-    assert 'revision = "20261215_83"' in corrected_publications
-    assert 'down_revision = "20261214_82"' in corrected_publications
+    assert 'revision = "20261216_84"' in corrected_publications
+    assert 'down_revision = "20261215_83"' in corrected_publications
     assert 'op.drop_constraint(' in corrected_publications

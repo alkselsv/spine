@@ -11153,6 +11153,7 @@
             ]
           },
           "schema_version": {
+            "const": "transcript-review-inspection:v1",
             "default": "transcript-review-inspection:v1",
             "title": "Schema Version",
             "type": "string"

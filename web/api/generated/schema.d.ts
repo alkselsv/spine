@@ -5950,8 +5950,9 @@ export interface components {
             /**
              * Schema Version
              * @default transcript-review-inspection:v1
+             * @constant
              */
-            schema_version: string;
+            schema_version: "transcript-review-inspection:v1";
             status: components["schemas"]["TranscriptReviewArtifactStatus"];
         };
         /** TranscriptReviewInspectionRequest */

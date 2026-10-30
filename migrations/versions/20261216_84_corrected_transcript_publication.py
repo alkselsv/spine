@@ -2,8 +2,8 @@
 
 from alembic import op
 
-revision = "20261215_83"
-down_revision = "20261214_82"
+revision = "20261216_84"
+down_revision = "20261215_83"
 branch_labels = None
 depends_on = None
 SCHEMA = "spine"
