@@ -2734,6 +2734,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "drive_lifecycle_decisions": (True, True, True, False),
         "google_sheets_absence_candidates": (True, True, True, False),
         "google_sheets_removal_decisions": (True, True, True, False),
+        "bitrix24_crm_material_claims": (True, True, False, False),
+        "bitrix24_crm_material_acceptances": (True, True, False, False),
+        "bitrix24_crm_material_revocations": (True, True, False, False),
         "source_canonical_tables": (True, False, False, False),
         "source_canonical_unicode": (True, False, False, False),
         "source_canonical_compositions": (True, False, False, False),
@@ -3687,6 +3690,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
 	                            "'google_connection_approvals', "
 	                            "'provider_connection_versions', "
 	                            "'provider_connection_approvals', "
+                        "'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', "
+                        "'bitrix24_crm_material_revocations', "
                         "'admission_decisions', "
                         "'source_objects', 'source_revisions', "
                          "'source_revision_provenance', 'source_revision_receipt_associations', 'transcript_publications', "
