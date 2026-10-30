@@ -24,6 +24,11 @@ def _role(name: str) -> str:
 def _tenant_immutable(table: str) -> None:
     runtime, migration = _role("runtime_role"), _role("migration_role")
     qualified = f'{SCHEMA}."{table}"'
+    function = f"reject_{table}_mutation"
+    op.execute(f'DROP POLICY IF EXISTS "pol_{table}_tenant_isolation" ON {qualified}')
+    op.execute(f'DROP POLICY IF EXISTS "pol_{table}_migration_maintenance" ON {qualified}')
+    op.execute(f"DROP TRIGGER IF EXISTS trg_{table}_immutable ON {qualified}")
+    op.execute(f"DROP FUNCTION IF EXISTS {SCHEMA}.{function}()")
     ws_setting = "pg_catalog.current_setting('spine.workspace_id', true)"
     env_setting = "pg_catalog.current_setting('spine.environment_id', true)"
     uuid_pattern = "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
@@ -44,7 +49,6 @@ def _tenant_immutable(table: str) -> None:
     op.execute(
         f"REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE {qualified} FROM {runtime}"
     )
-    function = f"reject_{table}_mutation"
     op.execute(
         f"CREATE FUNCTION {SCHEMA}.{function}() RETURNS trigger LANGUAGE plpgsql "
         f"SECURITY INVOKER SET search_path = pg_catalog, {SCHEMA} AS $function$ BEGIN "
@@ -79,6 +83,7 @@ def upgrade() -> None:
             name="fk_bitrix24_crm_material_claim_target_revision",
         ),
         schema=SCHEMA,
+        if_not_exists=True,
     )
     op.create_table(
         "bitrix24_crm_material_acceptances",
@@ -103,6 +108,7 @@ def upgrade() -> None:
             name="fk_bitrix24_crm_material_acceptance_target",
         ),
         schema=SCHEMA,
+        if_not_exists=True,
     )
     op.create_table(
         "bitrix24_crm_material_revocations",
@@ -124,6 +130,7 @@ def upgrade() -> None:
             name=op.f("ck_bitrix24_crm_material_revocation_state"),
         ),
         schema=SCHEMA,
+        if_not_exists=True,
     )
     _tenant_immutable("bitrix24_crm_material_claims")
     _tenant_immutable("bitrix24_crm_material_acceptances")
