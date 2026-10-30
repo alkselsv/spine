@@ -157,6 +157,12 @@ def _tenant_scope(table: str) -> None:
     op.execute(f"ALTER TABLE {qualified} ENABLE ROW LEVEL SECURITY")
     op.execute(f"ALTER TABLE {qualified} FORCE ROW LEVEL SECURITY")
     op.execute(
+        f'DROP POLICY IF EXISTS "pol_{table}_tenant_isolation" ON {qualified}'
+    )
+    op.execute(
+        f'DROP POLICY IF EXISTS "pol_{table}_migration_maintenance" ON {qualified}'
+    )
+    op.execute(
         f'CREATE POLICY "pol_{table}_tenant_isolation" ON {qualified} FOR ALL TO {runtime} USING (workspace_id = ({ws}) AND environment_id = ({env})) WITH CHECK (workspace_id = ({ws}) AND environment_id = ({env}))'
     )
     op.execute(

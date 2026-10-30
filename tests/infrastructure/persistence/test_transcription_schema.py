@@ -162,6 +162,8 @@ def test_transcript_reviews_are_immutable_and_corrections_pin_their_predecessors
     assert 'down_revision = "20261214_82"' in source
     assert "ENABLE ROW LEVEL SECURITY" in source
     assert "FORCE ROW LEVEL SECURITY" in source
+    assert 'DROP POLICY IF EXISTS "pol_{table}_tenant_isolation"' in source
+    assert 'DROP POLICY IF EXISTS "pol_{table}_migration_maintenance"' in source
     assert "GRANT SELECT, INSERT" in source
     assert "REVOKE UPDATE, DELETE" in source
 

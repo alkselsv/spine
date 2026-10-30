@@ -1485,6 +1485,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "transcription_artifacts",
         "transcript_segments",
         "transcript_publications",
+        "transcript_reviews",
+        "corrected_transcript_artifacts",
         "idempotency_receipts",
         "initial_workspace_bootstrap",
         "outbox_intents",
@@ -2072,9 +2074,21 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
             "ck_transcript_segments_bounds",
             "pk_transcript_publications",
             "fk_transcript_publications_source_revision",
-            "fk_transcript_publications_artifact",
             "ck_transcript_publications_state",
             "ck_transcript_publications_projection_state",
+            "pk_transcript_reviews",
+            "uq_transcript_reviews_artifact",
+            "uq_transcript_reviews_command",
+            "fk_transcript_reviews_input_artifact",
+            "ck_transcript_reviews_decision",
+            "ck_transcript_reviews_correction_shape",
+            "ck_transcript_reviews_digest",
+            "pk_corrected_transcript_artifacts",
+            "uq_corrected_transcript_artifacts_review",
+            "fk_corrected_transcripts_original_artifact",
+            "fk_corrected_transcripts_review",
+            "ck_corrected_transcript_artifacts_digest",
+            "ck_corrected_transcript_artifacts_shape",
         }
     )
     disclosure_constraint_prefix = (
@@ -2491,6 +2505,11 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_transcript_publications",
         "ix_transcript_publications_source_revision",
         "uq_transcript_publications_artifact",
+        "pk_transcript_reviews",
+        "uq_transcript_reviews_artifact",
+        "uq_transcript_reviews_command",
+        "pk_corrected_transcript_artifacts",
+        "uq_corrected_transcript_artifacts_review",
     } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES | CANONICAL_BOUNDARY_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
@@ -2505,6 +2524,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "transcription_artifacts": (True, True),
         "transcript_segments": (True, True),
         "transcript_publications": (True, True),
+        "transcript_reviews": (True, True),
+        "corrected_transcript_artifacts": (True, True),
         "context_profiles": (True, True),
         "context_bundles": (True, True),
         "answer_question_runs": (True, True),
@@ -2661,6 +2682,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "transcription_artifacts": (True, True, False, False),
         "transcript_segments": (True, True, False, False),
         "transcript_publications": (True, True, False, False),
+        "transcript_reviews": (True, True, False, False),
+        "corrected_transcript_artifacts": (True, True, False, False),
         "context_profiles": (True, True, False, False),
         "context_bundles": (True, True, False, False),
         "answer_question_runs": (True, True, True, False),
@@ -3694,7 +3717,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'bitrix24_crm_material_revocations', "
                         "'admission_decisions', "
                         "'source_objects', 'source_revisions', "
-                         "'source_revision_provenance', 'source_revision_receipt_associations', 'transcript_publications', "
+                         "'source_revision_provenance', 'source_revision_receipt_associations', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'ingestion_runs', "
                         "'ingestion_run_sources', 'ingestion_run_source_bindings', "
                         "'ingestion_transitions', 'ingestion_warnings', "
@@ -3758,6 +3781,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "transcription_artifacts": (True, True),
         "transcript_segments": (True, True),
         "transcript_publications": (True, True),
+        "transcript_reviews": (True, True),
+        "corrected_transcript_artifacts": (True, True),
             "context_profiles": (True, True),
             "context_bundles": (True, True),
             "answer_question_runs": (True, True),
@@ -5184,13 +5209,15 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261212_80_transcription_chunk_checkpoints.py",
         "20261213_81_transcript_publication.py",
         "20261214_82_bitrix24_crm_material.py",
+        "20261215_83_transcript_review.py",
+        "20261216_84_corrected_transcript_publication.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261214_82_injected_failure.py").write_text(
+    (target / "versions" / "20261217_85_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261215_83'\n"
-        "down_revision = '20261214_82'\n"
+        "revision = '20261217_85'\n"
+        "down_revision = '20261216_84'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
