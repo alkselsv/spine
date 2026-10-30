@@ -1470,7 +1470,9 @@ async def test_mounted_filesystem_observation_reaches_canonical_path_with_stable
     first = await orchestrator.ingest(command)
     replay = await orchestrator.ingest(command)
 
-    assert first.source.external_generation == "mounted-path:v1"
+    assert first.source.external_generation == (
+        f"mounted-path:v2:{connection_version_id.hex}"
+    )
     assert first.source.external_object_id == (
         first.observation.external_identity.external_object_id
     )
@@ -1482,6 +1484,11 @@ async def test_mounted_filesystem_observation_reaches_canonical_path_with_stable
     assert first.revision.original_sha256 == hashlib.sha256(
         b"Read-only source content.\n"
     ).hexdigest()
+    revision_evidence = first.revision.revision_metadata.external_file_revision
+    assert revision_evidence is not None
+    assert revision_evidence.provider_kind == "mounted_filesystem"
+    assert revision_evidence.resource_path == "guides/safety.md"
+    assert revision_evidence.identity_assurance == "path_scoped"
     assert uow.accepted == 1
     assert uploader.calls == 2
     assert len(uow.events) == 1

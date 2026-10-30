@@ -6,4 +6,8 @@ from spine.workers.composition import (
     create_outbox_worker,
 )
 
-__all__ = ["OutboxConsumerBinding", "OutboxWorker", "create_outbox_worker"]
+__all__ = [
+    "OutboxConsumerBinding",
+    "OutboxWorker",
+    "create_outbox_worker",
+]

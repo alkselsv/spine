@@ -199,6 +199,29 @@ envelope хранится tenant-scoped в PostgreSQL; исходные bytes и
 его состоянием. Canonical deletion authority и scan-generation fence закреплены
 в ADR-0018.
 
+Mounted-filesystem adapter сохраняет ту же canonical deletion authority, но не
+переносит provider semantics на локальные inode или checksum. Baseline identity
+остаётся path-scoped: rename означает подтверждённое отсутствие старого пути и
+новое наблюдение, а reappearance получает новый occurrence без заявления
+identity continuity. Полнота поколения подтверждается двумя совпавшими снимками
+metadata до и после bounded canonical reads. Исчезнувший или нечитаемый root,
+изменившийся снимок и quarantined unstable read оставляют поколение incomplete и
+не разрешают tombstone; восстановление повторяет те же idempotent item effects.
+Снимок содержит только относительные пути и change tokens, а bytes продолжают
+проходить через общий guarded reader и canonical ingestion.
+
+Scoped mounted identity использует `mounted-path:v2:<connection-version>` и
+включает approved root scope в identity digest. Legacy `mounted-path:v1` нельзя
+автоматически приписать конкретному root: production source reader останавливает
+reconciliation с migration-required, чтобы не создать duplicate или mass
+tombstone. Rebuild выполняется под backup fence: остановить worker, выгрузить
+tenant-scoped inventory v1, явно сопоставить connection version и root approval,
+провести каждую запись через canonical replacement/reappearance lifecycle и
+только затем включить v2 scan. Rollback восстанавливает предмиграционный backup
+и v1 worker build; смешанный v1/v2 baseline запрещён. Regression gate покрывает
+scope/version isolation, tombstone → reappearance → unchanged replay и отсутствие
+canonical deletion при incomplete migration.
+
 Состояние одного бизнес-объекта не должно одновременно независимо редактироваться в Postgres и Cognee. Сначала фиксируется каноническое изменение, затем outbox запускает обновление проекции.
 
 Обработка принятого аудио фиксируется отдельным tenant-scoped

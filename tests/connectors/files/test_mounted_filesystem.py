@@ -18,6 +18,7 @@ from spine.connectors.files.mounted_filesystem import (
     MountedFilesystemObservationReader,
     MountedFilesystemReadError,
     MountedFilesystemRoot,
+    MountedFilesystemTreeScanner,
 )
 from spine.domain.connections.provider import (
     OpaqueProviderReference,
@@ -99,11 +100,73 @@ async def test_allowed_file_read_returns_path_scoped_v2_observation(
     assert observation.original_bytes == b"# mounted source\n"
     assert observation.external_identity.assurance.value == "path_scoped"
     assert (
-        observation.external_identity.provider_key.provider_object_id
-        == "docs/guide.md"
+        observation.external_identity.provider_key.provider_object_id == "docs/guide.md"
     )
     assert observation.required_capabilities() == frozenset({"binary_read"})
     assert observation.origin_locator_digest is not None
+    assert observation.representation.revision_evidence is not None
+    assert observation.representation.revision_evidence.resource_path == "docs/guide.md"
+    assert (
+        observation.representation.revision_evidence.modified_at
+        == datetime.fromtimestamp(
+            (root / "docs" / "guide.md").stat().st_mtime_ns / 1_000_000_000,
+            tz=timezone.utc,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_scan_token_fences_the_exact_file_revision(tmp_path: Path) -> None:
+    root = tmp_path / "mount"
+    root.mkdir()
+    path = root / "guide.md"
+    path.write_text("before")
+    configured_root = MountedFilesystemRoot(
+        resource_scope_reference=OpaqueProviderReference(value=SCOPE), path=root
+    )
+    snapshot = await MountedFilesystemTreeScanner(
+        roots={CONNECTION_VERSION: configured_root}
+    ).scan(_connection(), OpaqueProviderReference(value=SCOPE))
+    expected = snapshot.items[0].read_token
+
+    accepted = await _reader(root).read(
+        _connection(),
+        replace(_command("guide.md"), expected_provider_revision=expected),
+    )
+    assert accepted.representation.revision_evidence.provider_revision == expected
+
+    path.write_text("after")
+    with pytest.raises(MountedFilesystemReadError):
+        await _reader(root).read(
+            _connection(),
+            replace(_command("guide.md"), expected_provider_revision=expected),
+        )
+
+
+@pytest.mark.asyncio
+async def test_reappearance_occurrence_creates_new_path_scoped_identity(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "mount"
+    root.mkdir()
+    (root / "guide.md").write_bytes(b"same bytes")
+    reader = _reader(root)
+
+    original = await reader.read(_connection(), _command("guide.md"))
+    reappeared = await reader.read(
+        _connection(),
+        replace(_command("guide.md"), external_identity_occurrence="scan-2"),
+    )
+
+    assert (
+        original.external_identity.provider_key
+        == reappeared.external_identity.provider_key
+    )
+    assert (
+        original.external_identity.external_object_id
+        != reappeared.external_identity.external_object_id
+    )
+    assert original.origin_locator_digest == reappeared.origin_locator_digest
 
 
 @pytest.mark.asyncio
@@ -174,9 +237,9 @@ async def test_large_file_is_read_in_bounded_chunks(
 
     monkeypatch.setattr(os, "read", record_read_size)
 
-    observation = await _reader(
-        root, max_file_bytes=256, read_chunk_bytes=13
-    ).read(_connection(), _command("large.bin"))
+    observation = await _reader(root, max_file_bytes=256, read_chunk_bytes=13).read(
+        _connection(), _command("large.bin")
+    )
 
     assert observation.original_bytes == expected
     assert len(read_sizes) > 10

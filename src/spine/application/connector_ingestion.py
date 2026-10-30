@@ -128,6 +128,9 @@ class ConnectorIngestionCommand(BaseModel):
     external_identity_occurrence: str | None = Field(
         default=None, min_length=1, max_length=128
     )
+    expected_provider_revision: str | None = Field(
+        default=None, min_length=1, max_length=128
+    )
     access_policy_version_id: UUID
     expected_current_revision_id: UUID | None = None
 
@@ -235,6 +238,7 @@ class ProviderAuthorizedObservationReader:
                 resource_object_reference=command.resource_object_reference,
                 acting_subject_id=getattr(context, "acting_subject_id", None),
                 external_identity_occurrence=command.external_identity_occurrence,
+                expected_provider_revision=command.expected_provider_revision,
             ),
             context,
         )
