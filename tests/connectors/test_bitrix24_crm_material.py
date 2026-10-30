@@ -8,11 +8,12 @@ from spine.connectors.bitrix24_crm_material import (
     Bitrix24CrmActivity,
     Bitrix24CrmAttachment,
     Bitrix24CrmMaterialAdapter,
+    Bitrix24CrmMaterialNotFoundError,
+    Bitrix24CrmMaterialPermissionLostError,
     Bitrix24CrmMaterialReadCommand,
     Bitrix24CrmMaterialReadProfile,
-    Bitrix24CrmMaterialPermissionLostError,
-    Bitrix24CrmMaterialNotFoundError,
     bitrix24_crm_capability,
+    bitrix24_crm_normalized_observation,
 )
 from spine.connectors.bitrix24_disk import bitrix24_disk_capabilities
 from spine.domain.connections.provider import (
@@ -139,7 +140,9 @@ def _adapter(service: FakeCrmService) -> Bitrix24CrmMaterialAdapter:
 
 
 @pytest.mark.asyncio
-async def test_crm_activity_attachment_preserves_exact_binding_and_disk_revision() -> None:
+async def test_crm_activity_attachment_preserves_exact_binding_and_disk_revision() -> (
+    None
+):
     service = FakeCrmService()
     observation = await _adapter(service).read(_connection(), _command())
 
@@ -150,6 +153,25 @@ async def test_crm_activity_attachment_preserves_exact_binding_and_disk_revision
     assert observation.disk_file_revision == "42"
     assert observation.target_source_revision_id == _id(21)
     assert "brief" not in observation.model_dump_json().lower()
+
+
+@pytest.mark.asyncio
+async def test_crm_relationship_maps_to_shared_structured_observation() -> None:
+    observation = await _adapter(FakeCrmService()).read(_connection(), _command())
+
+    normalized = bitrix24_crm_normalized_observation(
+        observation,
+        authorization_generation=2,
+        configuration_generation=3,
+    )
+
+    assert normalized.representation.kind == "structured"
+    assert normalized.provider_kind is ProviderKind.BITRIX24
+    assert normalized.external_identity.provider_key.provider_object_id == (
+        "501:attachment-1"
+    )
+    assert normalized.authorization_generation == 2
+    assert normalized.configuration_generation == 3
 
 
 @pytest.mark.asyncio
@@ -185,10 +207,14 @@ async def test_crm_reader_rejects_cross_workspace_before_provider_access() -> No
 async def test_crm_reader_rejects_mismatched_attachment_file() -> None:
     service = FakeCrmService()
     with pytest.raises(Bitrix24CrmMaterialNotFoundError):
-        await _adapter(service).read(_connection(), _command(disk_file_id="different-file"))
+        await _adapter(service).read(
+            _connection(), _command(disk_file_id="different-file")
+        )
 
 
-def test_crm_capability_is_conditional_and_does_not_enable_unrelated_management() -> None:
+def test_crm_capability_is_conditional_and_does_not_enable_unrelated_management() -> (
+    None
+):
     capabilities = {
         capability.kind: capability
         for capability in bitrix24_crm_capability(
@@ -196,12 +222,20 @@ def test_crm_capability_is_conditional_and_does_not_enable_unrelated_management(
             approved_entity_types=("deal",),
         )
     }
-    assert capabilities[ProviderCapabilityKind.CRM].status is ProviderCapabilityStatus.SUPPORTED
-    assert ProviderCapabilityKind.STRUCTURED_READ not in BITRIX24_CRM_REQUIRED_CAPABILITIES
+    assert (
+        capabilities[ProviderCapabilityKind.CRM].status
+        is ProviderCapabilityStatus.SUPPORTED
+    )
+    assert capabilities[ProviderCapabilityKind.STRUCTURED_READ].status is (
+        ProviderCapabilityStatus.SUPPORTED
+    )
+    assert ProviderCapabilityKind.STRUCTURED_READ in BITRIX24_CRM_REQUIRED_CAPABILITIES
 
 
 @pytest.mark.asyncio
-async def test_crm_reader_translates_current_access_loss_without_disclosing_payload() -> None:
+async def test_crm_reader_translates_current_access_loss_without_disclosing_payload() -> (
+    None
+):
     service = FakeCrmService()
 
     async def deny(
