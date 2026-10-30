@@ -1,13 +1,17 @@
+from datetime import datetime, timezone
 from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
 
 from spine.domain.artifacts import (
+    CorrectedTranscriptArtifact,
     PhysicalLineLocator,
     SpeechToTextSegment,
     TimeRangeLocator,
     TranscriptionArtifact,
+    transcript_artifact_language,
+    validate_transcript_artifact_locator,
 )
 
 
@@ -35,6 +39,22 @@ def artifact() -> TranscriptionArtifact:
         segments=(
             SpeechToTextSegment(start_ms=1_000, end_ms=2_500, text="Первый сегмент"),
         ),
+    )
+
+
+def corrected_artifact() -> CorrectedTranscriptArtifact:
+    original = artifact()
+    return CorrectedTranscriptArtifact.create(
+        original=original,
+        review_id=UUID("60000000-0000-0000-0000-000000000001"),
+        segments=(
+            SpeechToTextSegment(
+                start_ms=1_000,
+                end_ms=2_500,
+                text="Исправленный сегмент",
+            ),
+        ),
+        created_at=datetime(2026, 10, 30, tzinfo=timezone.utc),
     )
 
 
@@ -75,6 +95,39 @@ def test_time_range_locator_rejects_cross_artifact_or_invalid_range() -> None:
                 update={"segment_id": UUID("60000000-0000-0000-0000-000000000001")}
             ),
         )
+
+
+def test_corrected_transcript_locator_validates_shared_lineage_contract() -> None:
+    corrected = corrected_artifact()
+    locator = TimeRangeLocator.from_segment(
+        artifact=corrected,
+        segment=corrected.segments[0],
+    )
+
+    validate_transcript_artifact_locator(corrected, locator)
+
+    assert transcript_artifact_language(corrected) is None
+
+
+@pytest.mark.parametrize(
+    "locator_update",
+    [
+        {"transcript_artifact_digest": "f" * 64},
+        {"transcript_artifact_schema_version": "fabricated-transcript:v1"},
+        {"end_ms": 10_001},
+    ],
+)
+def test_corrected_transcript_locator_rejects_fabricated_lineage(
+    locator_update: dict[str, object],
+) -> None:
+    corrected = corrected_artifact()
+    locator = TimeRangeLocator.from_segment(
+        artifact=corrected,
+        segment=corrected.segments[0],
+    ).model_copy(update=locator_update)
+
+    with pytest.raises(ValueError, match="lineage"):
+        validate_transcript_artifact_locator(corrected, locator)
 
 
 def test_existing_document_locators_remain_unchanged() -> None:

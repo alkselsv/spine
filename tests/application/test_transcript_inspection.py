@@ -21,7 +21,7 @@ from spine.application.persistence.context import (
 from spine.domain.common import ContextOrigin
 from spine.domain.artifacts import TimeRangeLocator
 
-from .test_transcript_publication import published_fixture
+from .test_transcript_publication import published_corrected_fixture, published_fixture
 
 
 WORKSPACE = UUID("10000000-0000-0000-0000-000000000001")
@@ -74,6 +74,69 @@ async def test_inspection_returns_exact_authorized_locator_and_safe_navigation_b
     assert result.recording_duration_ms == 10_000
     assert result.text == "protected transcript"
     assert "original_reference" not in result.model_dump()
+
+
+@pytest.mark.asyncio
+async def test_inspection_returns_current_corrected_transcript_evidence() -> None:
+    corrected, repository, authorization, publication = (
+        await published_corrected_fixture()
+    )
+    locator = publication.segments[0].locator
+
+    result = await TranscriptEvidenceInspector(
+        publications=repository,
+        authorization=authorization,
+    ).inspect(
+        context=context(),
+        requester=requester(),
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        locator=locator,
+    )
+
+    assert result.status is TranscriptInspectionStatus.CURRENT
+    assert result.locator == locator
+    assert result.transcript_artifact_id == corrected.artifact_id
+    assert result.text == "corrected transcript"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("locator_update", "expected_status"),
+    [
+        (
+            {"transcript_artifact_id": UUID("81000000-0000-0000-0000-000000000001")},
+            TranscriptInspectionStatus.REVIEW_REQUIRED,
+        ),
+        ({"transcript_artifact_digest": "f" * 64}, TranscriptInspectionStatus.STALE),
+        (
+            {"transcript_artifact_schema_version": "fabricated-transcript:v1"},
+            TranscriptInspectionStatus.STALE,
+        ),
+        ({"end_ms": 10_001}, TranscriptInspectionStatus.STALE),
+    ],
+)
+async def test_inspection_rejects_stale_corrected_transcript_locator(
+    locator_update: dict[str, object],
+    expected_status: TranscriptInspectionStatus,
+) -> None:
+    _, repository, authorization, publication = await published_corrected_fixture()
+    locator = publication.segments[0].locator.model_copy(update=locator_update)
+
+    result = await TranscriptEvidenceInspector(
+        publications=repository,
+        authorization=authorization,
+    ).inspect(
+        context=context(),
+        requester=requester(),
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        locator=locator,
+    )
+
+    assert result.status is expected_status
+    assert result.text is None
+    assert result.locator is None
 
 
 @pytest.mark.asyncio

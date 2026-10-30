@@ -13,7 +13,11 @@ from pydantic import Field, StrictBool, StrictInt, model_validator
 
 from spine.domain.common import DefinitionModel, VersionIdentifier
 
-from .transcription import TranscriptSegment, TranscriptionArtifact
+from .transcription import (
+    TranscriptSegment,
+    TranscriptionArtifact,
+    TranscriptionTimeRangeLocator,
+)
 from .transcript_review import CorrectedTranscriptArtifact
 
 TranscriptPublicationArtifact = TranscriptionArtifact | CorrectedTranscriptArtifact
@@ -81,8 +85,61 @@ class TimeRangeLocator(DefinitionModel):
     def digest(self) -> str:
         payload = self.model_dump(mode="json", exclude={"schema_version"})
         return hashlib.sha256(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
         ).hexdigest()
+
+
+def validate_transcript_artifact_locator(
+    artifact: TranscriptPublicationArtifact,
+    locator: TimeRangeLocator,
+) -> None:
+    """Validate a publication locator against either supported transcript artifact."""
+    if isinstance(artifact, CorrectedTranscriptArtifact):
+        expected = (
+            artifact.source_object_id,
+            artifact.source_revision_id,
+            artifact.source_revision_digest,
+            artifact.artifact_id,
+            artifact.artifact_digest,
+            artifact.schema_version,
+        )
+        actual = (
+            locator.source_object_id,
+            locator.source_revision_id,
+            locator.source_revision_digest,
+            locator.transcript_artifact_id,
+            locator.transcript_artifact_digest,
+            locator.transcript_artifact_schema_version,
+        )
+        if actual != expected or locator.end_ms > artifact.recording_duration_ms:
+            raise ValueError("time-range locator lineage does not match artifact")
+        return
+    artifact.validate_time_range_locator(
+        TranscriptionTimeRangeLocator(
+            workspace_id=artifact.workspace_id,
+            environment_id=artifact.environment_id,
+            source_object_id=locator.source_object_id,
+            source_revision_id=locator.source_revision_id,
+            source_revision_digest=locator.source_revision_digest,
+            original_sha256=artifact.original_sha256,
+            artifact_id=locator.transcript_artifact_id,
+            artifact_digest=locator.transcript_artifact_digest,
+            artifact_schema_version=locator.transcript_artifact_schema_version,
+            start_ms=locator.start_ms,
+            end_ms=locator.end_ms,
+        )
+    )
+
+
+def transcript_artifact_language(
+    artifact: TranscriptPublicationArtifact,
+) -> str | None:
+    return artifact.language if isinstance(artifact, TranscriptionArtifact) else None
 
 
 class TranscriptPublicationApproval(DefinitionModel):
@@ -391,4 +448,6 @@ __all__ = [
     "TranscriptPublication",
     "TranscriptPublicationApproval",
     "TranscriptPublicationState",
+    "transcript_artifact_language",
+    "validate_transcript_artifact_locator",
 ]

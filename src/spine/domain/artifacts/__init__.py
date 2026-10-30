@@ -53,6 +53,8 @@ from .publication import (
     TranscriptPublication,
     TranscriptPublicationApproval,
     TranscriptPublicationState,
+    transcript_artifact_language,
+    validate_transcript_artifact_locator,
 )
 
 __all__ = [
@@ -102,4 +104,6 @@ __all__ = [
     "TranscriptPublication",
     "TranscriptPublicationApproval",
     "TranscriptPublicationState",
+    "transcript_artifact_language",
+    "validate_transcript_artifact_locator",
 ]
