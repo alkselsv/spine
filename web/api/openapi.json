@@ -9376,8 +9376,11 @@
             "default": "needs_review"
           },
           "schema_version": {
-            "const": "requirement:v1",
             "default": "requirement:v1",
+            "enum": [
+              "requirement:v1",
+              "requirement:v2"
+            ],
             "title": "Schema Version",
             "type": "string"
           },

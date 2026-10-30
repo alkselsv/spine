@@ -8,6 +8,15 @@ vi.mock('../../api/client', () => ({ createScopedApiClient: () => ({ GET: get, P
 
 import { RequirementsArtifactCard } from './RequirementsArtifactCard';
 
+const requirementsArtifact = (requirement: Record<string, unknown>, overrides: Record<string, unknown> = {}) => ({
+  artifact_id: '60000000-0000-4000-8000-000000000001', artifact_version: 1,
+  schema_version: 'requirements:v2', production_identity: 'requirements-extraction-v2',
+  production_digest: 'a'.repeat(64), workspace_id: '10000000-0000-4000-8000-000000000001',
+  environment_id: '20000000-0000-4000-8000-000000000001', work_item_id: '40000000-0000-4000-8000-000000000001',
+  run_id: '30000000-0000-4000-8000-000000000001', state: 'candidate', upstream_artifact_ids: [],
+  predecessor_version: null, clarifications: [], requirements: [requirement], ...overrides,
+});
+
 afterEach(() => {
   cleanup();
   get.mockReset();
@@ -335,14 +344,8 @@ describe('RequirementsArtifactCard', () => {
       end_ms: 2_750,
       segment_ids: ['80000000-0000-4000-8000-000000000005'],
     } as const;
-    const artifact = {
-      artifact_id: '60000000-0000-4000-8000-000000000001', artifact_version: 1,
-      schema_version: 'requirements:v1', production_identity: 'requirements-extraction-v1',
-      production_digest: 'a'.repeat(64), workspace_id: '10000000-0000-4000-8000-000000000001',
-      environment_id: '20000000-0000-4000-8000-000000000001', work_item_id: '40000000-0000-4000-8000-000000000001',
-      run_id: '30000000-0000-4000-8000-000000000001', state: 'candidate', upstream_artifact_ids: [],
-      predecessor_version: null, clarifications: [], requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
-        schema_version: 'requirement:v1', category: 'schedule', statement: 'Launch by 20 December', constraints: [], uncertainty: null,
+    const artifact = requirementsArtifact({ requirement_id: '70000000-0000-4000-8000-000000000001',
+        schema_version: 'requirement:v2', category: 'schedule', statement: 'Launch by 20 December', constraints: [], uncertainty: null,
         ambiguous_markers: [], missing_markers: [], state: 'candidate', review_state: 'needs_review', confidence: null,
         source_refs: [{ source_object_id: locator.source_object_id, source_revision_id: locator.source_revision_id,
           provenance_id: '80000000-0000-4000-8000-000000000003' }],
@@ -350,8 +353,7 @@ describe('RequirementsArtifactCard', () => {
           provenance_id: '80000000-0000-4000-8000-000000000003' }, parsed_artifact_ref: null,
           transcript_locator: locator, segment_id: locator.segment_ids[0], segment_digest: 'c'.repeat(64),
           locator_contract_version: 'time-range-locator:v1', locator: null, relationship: 'supports', validation: null }],
-        evidence_status: 'referenced', upstream_artifact_ids: [] }],
-    } as const;
+        evidence_status: 'referenced', upstream_artifact_ids: [] });
     get.mockResolvedValue({ data: artifact });
     post.mockResolvedValue({ data: {
       workspace_id: artifact.workspace_id, environment_id: artifact.environment_id,

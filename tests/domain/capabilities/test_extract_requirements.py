@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from spine.domain.capabilities import (
     DocumentRequirementsEvidence,
     ExtractRequirementsInput,
+    ExtractRequirementsInputV1,
     RequirementsEvidenceAvailability,
     RequirementsExecutionConfiguration,
     RequirementsExtractionOutcome,
@@ -13,6 +14,7 @@ from spine.domain.capabilities import (
     RequirementsExtractionReason,
     RequirementsExtractionReasonCode,
     TranscriptRequirementsEvidence,
+    upgrade_extract_requirements_input,
 )
 from spine.domain.artifacts import ArtifactRef, PhysicalLineLocator, TimeRangeLocator
 from spine.domain.common import EnvironmentKind
@@ -48,6 +50,21 @@ def test_extract_requirements_input_rejects_unauthorized_source_reference() -> N
 
     with pytest.raises(ValidationError, match="authorized sources"):
         extraction_input(authorized_source_refs=(source,))
+
+
+def test_extract_requirements_v1_input_upgrades_without_fabricating_evidence() -> None:
+    legacy = ExtractRequirementsInputV1(
+        workspace_id=uid(1), environment_id=uid(2),
+        environment=EnvironmentKind.DEVELOPMENT,
+        workflow_run_id=uid(3), work_item_id=uid(4),
+        client_request=ClientRequestV1(message="Prepare a proposal"),
+    )
+
+    upgraded = upgrade_extract_requirements_input(legacy)
+
+    assert legacy.schema_version == "extract-requirements.input:v1"
+    assert upgraded.schema_version == "extract-requirements.input:v2"
+    assert upgraded.evidence == ()
 
 
 def test_extract_requirements_input_accepts_discriminated_document_and_transcript_evidence() -> None:

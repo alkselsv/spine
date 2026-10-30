@@ -14,7 +14,6 @@ from uuid import UUID
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
-from spine.domain.artifacts import AdapterSignal
 from spine.domain.common import EnvironmentKind, ValidatedDefinitionModel
 from spine.domain.workflows import (
     AcceptedSourceRevisionRef,
@@ -24,8 +23,18 @@ from spine.domain.workflows import (
 )
 
 
-EXTRACT_REQUIREMENTS_INPUT_SCHEMA = "extract-requirements.input:v1"
-EXTRACT_REQUIREMENTS_OUTPUT_SCHEMA = "extract-requirements.output:v1"
+EXTRACT_REQUIREMENTS_INPUT_SCHEMA_V1 = "extract-requirements.input:v1"
+EXTRACT_REQUIREMENTS_OUTPUT_SCHEMA_V1 = "extract-requirements.output:v1"
+EXTRACT_REQUIREMENTS_INPUT_SCHEMA = "extract-requirements.input:v2"
+EXTRACT_REQUIREMENTS_OUTPUT_SCHEMA = "extract-requirements.output:v2"
+
+
+class TranscriptRecognitionQuality(str, Enum):
+    """Versioned, provider-independent recognition assessment."""
+
+    RELIABLE = "reliable"
+    WEAK = "weak"
+    UNKNOWN = "unknown"
 class RequirementsExtractionOutcome(str, Enum):
     """Closed outcomes returned by the requirements capability."""
 
@@ -137,15 +146,14 @@ class TranscriptRequirementsEvidence(_RequirementsEvidence):
     anonymous_speaker_label: str | None = Field(
         default=None, min_length=1, max_length=128
     )
-    signals: tuple[AdapterSignal, ...] = ()
+    recognition_quality: TranscriptRecognitionQuality = (
+        TranscriptRecognitionQuality.RELIABLE
+    )
 
     @model_validator(mode="after")
     def validate_transcript_reference(self) -> TranscriptRequirementsEvidence:
         if self.reference.transcript_locator is None:
             raise ValueError("transcript evidence requires a time-range reference")
-        names = tuple(signal.name for signal in self.signals)
-        if len(set(names)) != len(names):
-            raise ValueError("transcript evidence signals must be unique")
         return self
 
 
@@ -153,6 +161,38 @@ RequirementsEvidence = Annotated[
     DocumentRequirementsEvidence | TranscriptRequirementsEvidence,
     Field(discriminator="kind"),
 ]
+
+
+class ExtractRequirementsInputV1(ValidatedDefinitionModel):
+    """Frozen compatibility contract used by pre-transcript executions."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal[EXTRACT_REQUIREMENTS_INPUT_SCHEMA_V1] = (
+        EXTRACT_REQUIREMENTS_INPUT_SCHEMA_V1
+    )
+    capability: Literal["extract_requirements"] = "extract_requirements"
+    workspace_id: UUID
+    environment_id: UUID
+    environment: EnvironmentKind
+    workflow_run_id: UUID
+    work_item_id: UUID
+    client_request: ClientRequestV1
+    authorized_source_refs: tuple[AcceptedSourceRevisionRef, ...] = ()
+    execution: RequirementsExecutionConfiguration = RequirementsExecutionConfiguration()
+
+    @model_validator(mode="after")
+    def validate_legacy_scope(self) -> "ExtractRequirementsInputV1":
+        if any(value.int == 0 for value in (
+            self.workspace_id, self.environment_id, self.workflow_run_id, self.work_item_id
+        )):
+            raise ValueError("requirements extraction identities must be non-zero")
+        accepted = set(self.client_request.accepted_sources)
+        if len(set(self.authorized_source_refs)) != len(self.authorized_source_refs):
+            raise ValueError("authorized source references must be unique")
+        if not set(self.authorized_source_refs).issubset(accepted):
+            raise ValueError("authorized sources must belong to the client request")
+        return self
 
 
 class ExtractRequirementsInput(ValidatedDefinitionModel):
@@ -281,6 +321,31 @@ class RequirementsExtractionOutput(ValidatedDefinitionModel):
         return self
 
 
+class RequirementsExtractionOutputV1(RequirementsExtractionOutput):
+    """Frozen compatibility output for already persisted v1 artifacts."""
+
+    schema_version: Literal[EXTRACT_REQUIREMENTS_OUTPUT_SCHEMA_V1] = (
+        EXTRACT_REQUIREMENTS_OUTPUT_SCHEMA_V1
+    )
+
+    @model_validator(mode="after")
+    def reject_new_requirement_contracts(self) -> "RequirementsExtractionOutputV1":
+        if any(item.schema_version != "requirement:v1" for item in self.requirements):
+            raise ValueError("v1 extraction output requires requirement:v1")
+        return self
+
+
+def upgrade_extract_requirements_input(
+    value: ExtractRequirementsInputV1,
+) -> ExtractRequirementsInput:
+    """Upgrade a legacy input without fabricating newly required evidence."""
+
+    payload = value.model_dump(mode="python")
+    payload["schema_version"] = EXTRACT_REQUIREMENTS_INPUT_SCHEMA
+    payload["evidence"] = ()
+    return ExtractRequirementsInput.model_validate(payload)
+
+
 # Descriptive aliases used by composition roots that name the boundary by its
 # capability rather than its implementation detail.
 ExtractRequirementsResult = RequirementsExtractionOutput
@@ -289,9 +354,12 @@ ExtractRequirementsOutcome = RequirementsExtractionOutcome
 
 __all__ = [
     "EXTRACT_REQUIREMENTS_INPUT_SCHEMA",
+    "EXTRACT_REQUIREMENTS_INPUT_SCHEMA_V1",
     "EXTRACT_REQUIREMENTS_OUTPUT_SCHEMA",
+    "EXTRACT_REQUIREMENTS_OUTPUT_SCHEMA_V1",
     "DocumentRequirementsEvidence",
     "ExtractRequirementsInput",
+    "ExtractRequirementsInputV1",
     "ExtractRequirementsOutcome",
     "ExtractRequirementsResult",
     "RequirementsClarification",
@@ -300,7 +368,10 @@ __all__ = [
     "RequirementsExecutionConfiguration",
     "RequirementsExtractionOutcome",
     "RequirementsExtractionOutput",
+    "RequirementsExtractionOutputV1",
     "RequirementsExtractionReason",
     "RequirementsExtractionReasonCode",
     "TranscriptRequirementsEvidence",
+    "TranscriptRecognitionQuality",
+    "upgrade_extract_requirements_input",
 ]

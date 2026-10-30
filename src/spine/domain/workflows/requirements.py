@@ -272,7 +272,7 @@ class RequirementEvidenceRef(DefinitionModel):
 class Requirement(DefinitionModel):
     """One traceable, unaccepted statement proposed by requirements extraction."""
 
-    schema_version: Literal["requirement:v1"] = "requirement:v1"
+    schema_version: Literal["requirement:v1", "requirement:v2"] = "requirement:v1"
     requirement_id: UUID
     category: RequirementCategory
     statement: StrictStr = Field(min_length=1, max_length=8_192)
@@ -300,6 +300,14 @@ class Requirement(DefinitionModel):
 
     @model_validator(mode="after")
     def validate_evidence_lineage(self) -> "Requirement":
+        v2_categories = {
+            RequirementCategory.DESIGN,
+            RequirementCategory.SCHEDULE,
+            RequirementCategory.AGREEMENT,
+            RequirementCategory.OPEN_QUESTION,
+        }
+        if self.category in v2_categories and self.schema_version != "requirement:v2":
+            raise ValueError("new requirement categories require requirement:v2")
         source_refs = {
             (reference.source_object_id, reference.source_revision_id, reference.provenance_id)
             for reference in self.source_refs
@@ -365,6 +373,10 @@ class RequirementsArtifact(DefinitionModel):
 
     @model_validator(mode="after")
     def validate_successor(self) -> "RequirementsArtifact":
+        if self.schema_version == "requirements:v1" and any(
+            item.schema_version != "requirement:v1" for item in self.requirements
+        ):
+            raise ValueError("requirements:v1 cannot contain newer requirement contracts")
         if self.predecessor_version is None and self.artifact_version != 1:
             raise ValueError("successor versions must identify their predecessor")
         if self.predecessor_version is not None and self.predecessor_version != self.artifact_version - 1:

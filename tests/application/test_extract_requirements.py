@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from hashlib import sha256
 from uuid import UUID
 
 import pytest
@@ -16,6 +17,7 @@ from spine.agents.runtime.artifacts import PersistedAgentInvocationResult
 from spine.application.diagnostics import DiagnosticContext
 from spine.application.extract_requirements import (
     EXTRACT_REQUIREMENTS_IMPLEMENTATION_KEY,
+    AuthorizedTranscriptRequirementsInputBuilder,
     RequirementsExecutionRequest,
     RequirementsExtractionExecutionBoundary,
     extract_requirements_agent_version,
@@ -23,6 +25,10 @@ from spine.application.extract_requirements import (
     extract_requirements_capability,
     deterministic_extract_requirements,
     register_deterministic_extract_requirements_handler,
+)
+from spine.application.transcript_publication import (
+    TranscriptContextOutcome,
+    TranscriptContextResponse,
 )
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -40,13 +46,14 @@ from spine.domain.agents import (
     AgentRunStatus,
     DeploymentStage,
 )
-from spine.domain.artifacts import AdapterSignal, Artifact, TimeRangeLocator
+from spine.domain.artifacts import Artifact, TimeRangeLocator, TranscriptProjectionSegment
 from spine.domain.capabilities import (
     ExtractRequirementsInput,
     RequirementsEvidenceAvailability,
     RequirementsExtractionOutcome,
     RequirementsExtractionOutput,
     TranscriptRequirementsEvidence,
+    TranscriptRecognitionQuality,
 )
 from spine.domain.common import ActorKind, ActorRef, EnvironmentKind
 from spine.domain.workflows import (
@@ -117,7 +124,7 @@ def transcript_evidence(
     ordinal: int,
     text: str,
     speaker: str | None = "speaker-1",
-    signals: tuple[AdapterSignal, ...] = (),
+    recognition_quality: TranscriptRecognitionQuality = TranscriptRecognitionQuality.RELIABLE,
 ) -> tuple[AcceptedSourceRevisionRef, TranscriptRequirementsEvidence]:
     source = AcceptedSourceRevisionRef(
         source_object_id=uid(100), source_revision_id=uid(101), provenance_id=uid(102)
@@ -144,8 +151,50 @@ def transcript_evidence(
         text=text,
         language="ru",
         anonymous_speaker_label=speaker,
-        signals=signals,
+        recognition_quality=recognition_quality,
     )
+
+
+def workflow_run(source: AcceptedSourceRevisionRef, *, workspace_id: UUID = WORKSPACE) -> WorkflowRun:
+    return WorkflowRun(
+        run_id=RUN,
+        command_id=uid(200),
+        work_item_id=WORK_ITEM,
+        workspace_id=workspace_id,
+        environment_id=ENVIRONMENT,
+        workflow_key="proposal-generation",
+        workflow_version_id=uid(201),
+        workflow_version="v1",
+        started_by=ActorRef(kind=ActorKind.HUMAN, id=uid(9)),
+        client_request=ClientRequestV1(
+            message="Prepare proposal requirements", accepted_sources=(source,)
+        ),
+        trace_id=uid(202),
+        correlation_id=uid(203),
+        causation_id=uid(204),
+        created_at=datetime(2026, 10, 30, tzinfo=timezone.utc),
+    )
+
+
+class MutableTranscriptContext:
+    def __init__(self, segment: TranscriptProjectionSegment) -> None:
+        self.segment = segment
+        self.outcome = TranscriptContextOutcome.ALLOWED
+        self.requests = []
+
+    async def retrieve(self, request):
+        self.requests.append(request)
+        if self.outcome is TranscriptContextOutcome.ALLOWED:
+            return TranscriptContextResponse(
+                outcome=self.outcome,
+                reason_code="allowed",
+                segments=(self.segment,),
+                publication_id=uid(205),
+            )
+        return TranscriptContextResponse(
+            outcome=self.outcome,
+            reason_code="current_authority_changed",
+        )
 
 
 async def extract_from_transcript(
@@ -169,6 +218,163 @@ async def extract_from_transcript(
         AgentRequest[ExtractRequirementsInput](capability=capability, input=value),
         handler_context(),
     )
+
+
+@pytest.mark.asyncio
+async def test_existing_run_builds_input_from_freshly_authorized_transcript_and_rechecks_revocation() -> None:
+    source, fixture = transcript_evidence(
+        ordinal=1, text="FUNCTIONAL: Synchronize orders every hour."
+    )
+    locator = fixture.reference.transcript_locator
+    assert locator is not None
+    segment = TranscriptProjectionSegment(
+        segment_id=fixture.reference.segment_id,
+        ordinal=1,
+        text=fixture.text,
+        text_digest=sha256(fixture.text.encode()).hexdigest(),
+        locator=locator,
+    )
+    context = MutableTranscriptContext(segment)
+    builder = AuthorizedTranscriptRequirementsInputBuilder(context=context)
+
+    admitted = await builder.build(
+        run=workflow_run(source),
+        environment=EnvironmentKind.DEVELOPMENT,
+        locators=(locator,),
+    )
+    result = await deterministic_extract_requirements(
+        AgentRequest(capability=extract_requirements_capability(), input=admitted),
+        handler_context(),
+    )
+
+    assert result.outcome is RequirementsExtractionOutcome.PARTIAL
+    assert result.requirements[0].evidence_refs[0].transcript_locator == locator
+    assert admitted.workflow_run_id == RUN
+    assert context.requests[0].workspace_id == WORKSPACE
+
+    context.outcome = TranscriptContextOutcome.DENIED
+    revoked = await builder.build(
+        run=workflow_run(source),
+        environment=EnvironmentKind.DEVELOPMENT,
+        locators=(locator,),
+    )
+    revoked_result = await deterministic_extract_requirements(
+        AgentRequest(capability=extract_requirements_capability(), input=revoked),
+        handler_context(),
+    )
+
+    assert revoked.evidence[0].text is None
+    assert revoked_result.outcome is RequirementsExtractionOutcome.ABSTAINED
+    assert revoked_result.reason is not None
+    assert revoked_result.reason.code.value == "authorization_denied"
+    assert "synchronize orders" not in revoked_result.model_dump_json().lower()
+
+
+@pytest.mark.asyncio
+async def test_mixed_current_and_inaccessible_transcript_is_partial() -> None:
+    source, current = transcript_evidence(
+        ordinal=1, text="FUNCTIONAL: Synchronize orders every hour."
+    )
+    _, missing = transcript_evidence(
+        ordinal=2, text="SCHEDULE: Launch in November."
+    )
+    missing = missing.model_copy(update={
+        "availability": RequirementsEvidenceAvailability.MISSING,
+        "text": None,
+    })
+    value = ExtractRequirementsInput(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        environment=EnvironmentKind.DEVELOPMENT,
+        workflow_run_id=RUN,
+        work_item_id=WORK_ITEM,
+        client_request=ClientRequestV1(
+            message="Prepare proposal requirements", accepted_sources=(source,)
+        ),
+        authorized_source_refs=(source,),
+        evidence=(current, missing),
+    )
+
+    result = await deterministic_extract_requirements(
+        AgentRequest(capability=extract_requirements_capability(), input=value),
+        handler_context(),
+    )
+
+    assert result.outcome is RequirementsExtractionOutcome.PARTIAL
+    assert result.requirements[0].state is RequirementState.PARTIAL
+    assert "inaccessible_evidence" in result.requirements[0].missing_markers
+    assert result.clarifications[-1].missing_markers == ("inaccessible_evidence",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outcome", "availability"),
+    [
+        (TranscriptContextOutcome.STALE, RequirementsEvidenceAvailability.STALE),
+        (TranscriptContextOutcome.UNAVAILABLE, RequirementsEvidenceAvailability.MISSING),
+    ],
+)
+async def test_builder_maps_current_broker_failure_without_transcript_text(
+    outcome: TranscriptContextOutcome,
+    availability: RequirementsEvidenceAvailability,
+) -> None:
+    source, fixture = transcript_evidence(ordinal=1, text="FUNCTIONAL: Secret text.")
+    locator = fixture.reference.transcript_locator
+    assert locator is not None and fixture.text is not None
+    context = MutableTranscriptContext(TranscriptProjectionSegment(
+        segment_id=fixture.reference.segment_id,
+        ordinal=1,
+        text=fixture.text,
+        text_digest=sha256(fixture.text.encode()).hexdigest(),
+        locator=locator,
+    ))
+    context.outcome = outcome
+
+    value = await AuthorizedTranscriptRequirementsInputBuilder(context=context).build(
+        run=workflow_run(source),
+        environment=EnvironmentKind.DEVELOPMENT,
+        locators=(locator,),
+    )
+
+    assert value.evidence[0].availability is availability
+    assert value.evidence[0].text is None
+
+
+@pytest.mark.asyncio
+async def test_builder_preserves_two_workspace_isolation() -> None:
+    source, fixture = transcript_evidence(ordinal=1, text="FUNCTIONAL: Secret text.")
+    locator = fixture.reference.transcript_locator
+    assert locator is not None and fixture.text is not None
+    segment = TranscriptProjectionSegment(
+        segment_id=fixture.reference.segment_id,
+        ordinal=1,
+        text=fixture.text,
+        text_digest=sha256(fixture.text.encode()).hexdigest(),
+        locator=locator,
+    )
+
+    class WorkspaceContext(MutableTranscriptContext):
+        async def retrieve(self, request):
+            if request.workspace_id != WORKSPACE:
+                return TranscriptContextResponse(
+                    outcome=TranscriptContextOutcome.DENIED,
+                    reason_code="workspace_denied",
+                )
+            return await super().retrieve(request)
+
+    builder = AuthorizedTranscriptRequirementsInputBuilder(
+        context=WorkspaceContext(segment)
+    )
+    other = await builder.build(
+        run=workflow_run(source, workspace_id=uid(300)),
+        environment=EnvironmentKind.DEVELOPMENT,
+        locators=(locator,),
+    )
+
+    assert other.workspace_id == uid(300)
+    assert other.authorized_source_refs == ()
+    assert other.evidence[0].availability is RequirementsEvidenceAvailability.DENIED
+    assert other.evidence[0].text is None
 
 
 def request() -> RequirementsExecutionRequest:
@@ -275,7 +481,11 @@ class ArtifactService:
         return "requirements-artifact-v1"
 
 
-def boundary() -> tuple[RequirementsExtractionExecutionBoundary, Runtime, ArtifactService]:
+def boundary(
+    *,
+    input_model: ExtractRequirementsInput | None = None,
+    output_model: RequirementsExtractionOutput | None = None,
+) -> tuple[RequirementsExtractionExecutionBoundary, Runtime, ArtifactService]:
     capability = extract_requirements_capability()
     version = extract_requirements_agent_version()
     registry = HandlerRegistry()
@@ -295,7 +505,7 @@ def boundary() -> tuple[RequirementsExtractionExecutionBoundary, Runtime, Artifa
             allowed_stages=frozenset({DeploymentStage.DEVELOPMENT})
         ),
     )
-    input_model = ExtractRequirementsInput(
+    input_model = input_model or ExtractRequirementsInput(
         workspace_id=WORKSPACE,
         environment_id=ENVIRONMENT,
         environment=EnvironmentKind.DEVELOPMENT,
@@ -303,7 +513,7 @@ def boundary() -> tuple[RequirementsExtractionExecutionBoundary, Runtime, Artifa
         work_item_id=WORK_ITEM,
         client_request={"message": "Prepare proposal requirements"},
     )
-    output_model = RequirementsExtractionOutput(
+    output_model = output_model or RequirementsExtractionOutput(
         workspace_id=WORKSPACE,
         environment_id=ENVIRONMENT,
         workflow_run_id=RUN,
@@ -369,6 +579,44 @@ async def test_execution_pins_binding_and_runtime_config_and_preserves_typed_abs
     assert artifacts.calls == []
 
 
+@pytest.mark.asyncio
+async def test_existing_run_transcript_flows_through_execution_artifact_and_persistence_seam() -> None:
+    source, fixture = transcript_evidence(
+        ordinal=1, text="SCHEDULE: Launch by 20 December."
+    )
+    locator = fixture.reference.transcript_locator
+    assert locator is not None and fixture.text is not None
+    segment = TranscriptProjectionSegment(
+        segment_id=fixture.reference.segment_id,
+        ordinal=1,
+        text=fixture.text,
+        text_digest=sha256(fixture.text.encode()).hexdigest(),
+        locator=locator,
+    )
+    value = await AuthorizedTranscriptRequirementsInputBuilder(
+        context=MutableTranscriptContext(segment)
+    ).build(
+        run=workflow_run(source),
+        environment=EnvironmentKind.DEVELOPMENT,
+        locators=(locator,),
+    )
+    output = await deterministic_extract_requirements(
+        AgentRequest(capability=extract_requirements_capability(), input=value),
+        handler_context(),
+    )
+    execution, _, artifacts = boundary(input_model=value, output_model=output)
+
+    result = await execution.execute(
+        request=request(), persistence_context=persistence_context()
+    )
+
+    assert result.extraction == output
+    assert result.artifact == "requirements-artifact-v1"
+    persisted = artifacts.calls[0]["extraction"]
+    assert persisted.requirements[0].schema_version == "requirement:v2"
+    assert persisted.requirements[0].evidence_refs[0].transcript_locator == locator
+
+
 def test_extract_requirements_schema_rejects_wrong_capability_schema() -> None:
     capability = extract_requirements_capability().model_copy(
         update={"output_schema": {"name": "other", "version": "v1"}}
@@ -429,7 +677,7 @@ async def test_weak_unknown_and_contradictory_transcript_requests_clarification(
         ordinal=1,
         text="FUNCTIONAL: Synchronize orders every hour.",
         speaker=None,
-        signals=(AdapterSignal(name="recognition_confidence", value=0.31),),
+        recognition_quality=TranscriptRecognitionQuality.WEAK,
     )
     _, contradiction = transcript_evidence(
         ordinal=2,
@@ -507,7 +755,11 @@ async def test_revoked_transcript_abstains_without_disclosing_cached_text() -> N
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "availability",
-    [RequirementsEvidenceAvailability.STALE, RequirementsEvidenceAvailability.FABRICATED],
+    [
+        RequirementsEvidenceAvailability.STALE,
+        RequirementsEvidenceAvailability.MISSING,
+        RequirementsEvidenceAvailability.FABRICATED,
+    ],
 )
 async def test_stale_or_fabricated_transcript_locator_abstains(
     availability: RequirementsEvidenceAvailability,

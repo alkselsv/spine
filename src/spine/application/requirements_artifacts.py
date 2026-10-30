@@ -177,6 +177,11 @@ class PersistedRequirementsArtifactService:
             artifact = RequirementsArtifact(
                 artifact_id=uuid5(NAMESPACE_URL, f"spine:requirements:{run.run_id}"),
                 artifact_version=1,
+                schema_version=(
+                    "requirements:v2"
+                    if any(item.schema_version == "requirement:v2" for item in extraction.requirements)
+                    else "requirements:v1"
+                ),
                 production_identity=self._production_identity,
                 production_digest=digest,
                 workspace_id=run.workspace_id,

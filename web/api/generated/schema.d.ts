@@ -5218,9 +5218,9 @@ export interface components {
             /**
              * Schema Version
              * @default requirement:v1
-             * @constant
+             * @enum {string}
              */
-            schema_version: "requirement:v1";
+            schema_version: "requirement:v1" | "requirement:v2";
             /**
              * Source Refs
              * @default []

@@ -30,6 +30,11 @@ from spine.agents.runtime import (
 from spine.agents.runtime.artifacts import PersistedAgentInvocationResult
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.application.persistence.idempotency import OpaqueResultReference
+from spine.application.transcript_publication import (
+    TranscriptContextOutcome,
+    TranscriptContextRequest,
+    TranscriptContextResponse,
+)
 from spine.domain.agents import (
     AgentInvocation,
     AgentResult,
@@ -38,7 +43,7 @@ from spine.domain.agents import (
     AgentRuntimeKind,
     AgentVersion,
 )
-from spine.domain.artifacts import Artifact
+from spine.domain.artifacts import Artifact, TimeRangeLocator
 from spine.domain.capabilities import (
     ExtractRequirementsInput,
     RequirementsClarification,
@@ -48,8 +53,9 @@ from spine.domain.capabilities import (
     RequirementsExtractionOutput,
     RequirementsExtractionReason,
     RequirementsExtractionReasonCode,
-    TranscriptRequirementsEvidence,
     CapabilityDefinition,
+    TranscriptRequirementsEvidence,
+    TranscriptRecognitionQuality,
 )
 from spine.domain.common import ActorRef, EnvironmentKind, SchemaRef, ValidatedDefinitionModel
 from spine.domain.workflows import (
@@ -62,17 +68,18 @@ from spine.domain.workflows import (
     RequirementEvidenceStatus,
     RequirementState,
     RequirementsArtifact,
+    WorkflowRun,
 )
 
 
 EXTRACT_REQUIREMENTS_CAPABILITY_ID = uuid5(
-    NAMESPACE_URL, "spine:capability:extract-requirements:v1"
+    NAMESPACE_URL, "spine:capability:extract-requirements:v2"
 )
 EXTRACT_REQUIREMENTS_AGENT_ID = uuid5(
     NAMESPACE_URL, "spine:agent:requirements-extractor:v1"
 )
 EXTRACT_REQUIREMENTS_AGENT_VERSION_ID = uuid5(
-    NAMESPACE_URL, "spine:agent-version:requirements-extractor:2026.10"
+    NAMESPACE_URL, "spine:agent-version:requirements-extractor:2026.10.2"
 )
 EXTRACT_REQUIREMENTS_IMPLEMENTATION_KEY = "requirements.extract.deterministic"
 
@@ -85,10 +92,10 @@ def extract_requirements_capability() -> CapabilityDefinition:
         key="extract_requirements",
         display_name="Extract proposal requirements",
         input_schema=SchemaRef(
-            name="extract-requirements.input", version="v1"
+            name="extract-requirements.input", version="v2"
         ),
         output_schema=SchemaRef(
-            name="extract-requirements.output", version="v1"
+            name="extract-requirements.output", version="v2"
         ),
         description="Produce a reviewable, evidence-aware requirements candidate.",
     )
@@ -100,7 +107,7 @@ def extract_requirements_agent_version() -> AgentVersion:
     return AgentVersion(
         id=EXTRACT_REQUIREMENTS_AGENT_VERSION_ID,
         agent_id=EXTRACT_REQUIREMENTS_AGENT_ID,
-        version="2026.10",
+        version="2026.10.2",
         runtime=AgentRuntimeKind.CODE,
         capabilities=("extract_requirements",),
         prompt_version="requirements.extract:none",
@@ -274,6 +281,107 @@ class RequirementsRuntimeProvider(Protocol):
         implementation_key: str,
         pin: RequirementsExecutionPin,
     ) -> AgentRuntime: ...
+
+
+class TranscriptRequirementsContextPort(Protocol):
+    """Current-authority read seam used to admit transcript evidence."""
+
+    async def retrieve(
+        self, request: TranscriptContextRequest
+    ) -> TranscriptContextResponse: ...
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizedTranscriptRequirementsInputBuilder:
+    """Build extraction input for an existing run from freshly authorized text."""
+
+    context: TranscriptRequirementsContextPort
+
+    async def build(
+        self,
+        *,
+        run: WorkflowRun,
+        environment: EnvironmentKind,
+        locators: tuple[TimeRangeLocator, ...],
+        execution: RequirementsExecutionConfiguration = RequirementsExecutionConfiguration(),
+    ) -> ExtractRequirementsInput:
+        accepted_by_revision = {
+            (item.source_object_id, item.source_revision_id): item
+            for item in run.client_request.accepted_sources
+        }
+        evidence: list[TranscriptRequirementsEvidence] = []
+        authorized = []
+        for ordinal, locator in enumerate(locators, start=1):
+            source = accepted_by_revision.get(
+                (locator.source_object_id, locator.source_revision_id)
+            )
+            if source is None:
+                raise ValueError("transcript locator does not belong to the existing run")
+            response = await self.context.retrieve(
+                TranscriptContextRequest(
+                    request_id=uuid5(
+                        run.run_id,
+                        f"requirements:transcript:{ordinal}:{locator.model_dump_json()}",
+                    ),
+                    workspace_id=run.workspace_id,
+                    environment_id=run.environment_id,
+                    locator=locator,
+                )
+            )
+            availability = _context_availability(response.outcome)
+            if response.outcome is TranscriptContextOutcome.ALLOWED:
+                authorized.append(source)
+                for segment in response.segments:
+                    evidence.append(TranscriptRequirementsEvidence(
+                        availability=RequirementsEvidenceAvailability.CURRENT,
+                        reference=RequirementEvidenceRef(
+                            source_ref=source,
+                            transcript_locator=segment.locator,
+                            segment_id=segment.segment_id,
+                            segment_digest=segment.text_digest,
+                            locator_contract_version="time-range-locator:v1",
+                        ),
+                        text=segment.text,
+                    ))
+                continue
+            for segment_id in locator.segment_ids:
+                exact_locator = locator.model_copy(update={"segment_ids": (segment_id,)})
+                digest = hashlib.sha256(
+                    exact_locator.model_dump_json().encode("utf-8")
+                ).hexdigest()
+                evidence.append(TranscriptRequirementsEvidence(
+                    availability=availability,
+                    reference=RequirementEvidenceRef(
+                        source_ref=source,
+                        transcript_locator=exact_locator,
+                        segment_id=segment_id,
+                        segment_digest=digest,
+                        locator_contract_version="time-range-locator:v1",
+                    ),
+                    text=None,
+                ))
+        return ExtractRequirementsInput(
+            workspace_id=run.workspace_id,
+            environment_id=run.environment_id,
+            environment=environment,
+            workflow_run_id=run.run_id,
+            work_item_id=run.work_item_id,
+            client_request=run.client_request,
+            authorized_source_refs=tuple(dict.fromkeys(authorized)),
+            evidence=tuple(evidence),
+            execution=execution,
+        )
+
+
+def _context_availability(
+    outcome: TranscriptContextOutcome,
+) -> RequirementsEvidenceAvailability:
+    return {
+        TranscriptContextOutcome.DENIED: RequirementsEvidenceAvailability.DENIED,
+        TranscriptContextOutcome.STALE: RequirementsEvidenceAvailability.STALE,
+        TranscriptContextOutcome.UNAVAILABLE: RequirementsEvidenceAvailability.MISSING,
+        TranscriptContextOutcome.ALLOWED: RequirementsEvidenceAvailability.CURRENT,
+    }[outcome]
 
 
 @dataclass(frozen=True, slots=True)
@@ -584,7 +692,7 @@ def _extract_labelled_evidence(
             markers: list[str] = []
             uncertainty: list[str] = []
             if isinstance(evidence, TranscriptRequirementsEvidence):
-                if _has_weak_recognition(evidence):
+                if evidence.recognition_quality is not TranscriptRecognitionQuality.RELIABLE:
                     markers.append("weak_recognition")
                     uncertainty.append("Transcript recognition is weak and requires review.")
                 if evidence.anonymous_speaker_label is None:
@@ -613,6 +721,7 @@ def _extract_labelled_evidence(
             partial = bool(markers)
             requirements.append(
                 Requirement(
+                    schema_version="requirement:v2",
                     requirement_id=requirement_id,
                     category=category,
                     statement=statement,
@@ -648,6 +757,35 @@ def _extract_labelled_evidence(
                 code=RequirementsExtractionReasonCode.NO_USABLE_SOURCE
             ),
         )
+    unavailable = tuple(
+        item for item in value.evidence
+        if item.availability is not RequirementsEvidenceAvailability.CURRENT
+    )
+    if unavailable:
+        marker = "inaccessible_evidence"
+        requirements = [
+            item.model_copy(update={
+                "state": RequirementState.PARTIAL,
+                "uncertainty": " ".join(filter(None, (
+                    item.uncertainty,
+                    "Some requested evidence is inaccessible or stale.",
+                ))),
+                "ambiguous_markers": tuple(dict.fromkeys((*item.ambiguous_markers, marker))),
+                "missing_markers": tuple(dict.fromkeys((*item.missing_markers, marker))),
+            })
+            for item in requirements
+        ]
+        if len(clarifications) < value.execution.max_clarifications:
+            clarifications.append(RequirementsClarification(
+                clarification_id=uuid5(
+                    value.workflow_run_id,
+                    "requirements:clarification:inaccessible-evidence",
+                ),
+                prompt=(
+                    "Restore access to the unavailable evidence or confirm it can be omitted."
+                ),
+                missing_markers=(marker,),
+            ))
     partial = any(item.state is RequirementState.PARTIAL for item in requirements)
     return RequirementsExtractionOutput(
         workspace_id=value.workspace_id,
@@ -677,24 +815,6 @@ def _parse_labelled_candidate(
     if not separator or category is None or not statement.strip():
         return None
     return category, statement.strip(), contradiction
-
-
-def _has_weak_recognition(evidence: TranscriptRequirementsEvidence) -> bool:
-    for signal in evidence.signals:
-        if signal.name in {"recognition_confidence", "confidence"}:
-            if isinstance(signal.value, (int, float)) and not isinstance(signal.value, bool):
-                if float(signal.value) < 0.65:
-                    return True
-        if signal.name in {"recognition_quality", "recognition_state"}:
-            if isinstance(signal.value, str) and signal.value.lower() in {
-                "weak",
-                "uncertain",
-                "noisy",
-            }:
-                return True
-        if signal.name == "recognition_weak" and signal.value is True:
-            return True
-    return False
 
 
 def revalidate_clarified_requirement(
@@ -894,6 +1014,7 @@ __all__ = [
     "EXTRACT_REQUIREMENTS_IMPLEMENTATION_KEY",
     "RequirementsArtifactCandidatePort",
     "RequirementsArtifactReader",
+    "AuthorizedTranscriptRequirementsInputBuilder",
     "RequirementsExecutionError",
     "RequirementsExecutionErrorCode",
     "RequirementsExecutionPin",
@@ -901,6 +1022,7 @@ __all__ = [
     "RequirementsExecutionResult",
     "RequirementsExtractionExecutionBoundary",
     "RequirementsRuntimeProvider",
+    "TranscriptRequirementsContextPort",
     "build_extract_requirements_artifact_schema",
     "deterministic_extract_requirements",
     "extract_requirements_agent_version",
