@@ -10,11 +10,9 @@ SCHEMA = "spine"
 
 
 def upgrade() -> None:
-    op.drop_constraint(
-        "fk_transcript_publications_artifact",
-        "transcript_publications",
-        schema=SCHEMA,
-        type_="foreignkey",
+    op.execute(
+        f'ALTER TABLE {SCHEMA}."transcript_publications" '
+        'DROP CONSTRAINT IF EXISTS "fk_transcript_publications_artifact"'
     )
 
 

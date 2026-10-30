@@ -173,4 +173,4 @@ def test_transcript_reviews_are_immutable_and_corrections_pin_their_predecessors
     ).read_text(encoding="utf-8")
     assert 'revision = "20261216_84"' in corrected_publications
     assert 'down_revision = "20261215_83"' in corrected_publications
-    assert 'op.drop_constraint(' in corrected_publications
+    assert "DROP CONSTRAINT IF EXISTS" in corrected_publications
