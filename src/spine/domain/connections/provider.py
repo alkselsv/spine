@@ -12,6 +12,15 @@ from spine.domain.common import DefinitionModel
 from spine.domain.connections.google import GoogleConnection
 
 
+def _normalize_crm_entity_types(values: tuple[str, ...]) -> tuple[str, ...]:
+    normalized = tuple(value.strip().lower() for value in values)
+    if any(not value for value in normalized):
+        raise ValueError("approved CRM entity types must not be empty")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("approved CRM entity types must be unique")
+    return tuple(sorted(normalized))
+
+
 def _non_nil_uuid(value: UUID, info: ValidationInfo) -> UUID:
     if value.int == 0:
         raise ValueError(f"{info.field_name} must be a non-nil UUID")
@@ -73,6 +82,7 @@ class ProviderCapabilityKind(str, Enum):
     FULL_RECONCILIATION = "full_reconciliation"
     LIFECYCLE_EVIDENCE = "lifecycle_evidence"
     HEALTH_DIAGNOSTICS = "health_diagnostics"
+    CRM = "crm"
 
 
 class ProviderCapabilityStatus(str, Enum):
@@ -121,6 +131,7 @@ class ProviderConnection(DefinitionModel):
     approved_resource_scope_references: tuple[OpaqueProviderReference, ...] = Field(
         min_length=1
     )
+    approved_crm_entity_types: tuple[str, ...] = ()
     authorization_generation: int = Field(ge=1)
     configuration_generation: int = Field(ge=1)
     status: ProviderConnectionStatus
@@ -155,6 +166,11 @@ class ProviderConnection(DefinitionModel):
         if len({item.kind for item in values}) != len(values):
             raise ValueError("provider capability kinds must be unique")
         return tuple(sorted(values, key=lambda item: item.kind.value))
+
+    @field_validator("approved_crm_entity_types")
+    @classmethod
+    def _validate_crm_entity_types(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        return _normalize_crm_entity_types(values)
 
     @model_validator(mode="after")
     def _validate_version_history(self) -> "ProviderConnection":
@@ -194,6 +210,7 @@ class ProviderConnectionApproval(DefinitionModel):
     approved_resource_scope_references: tuple[OpaqueProviderReference, ...] = Field(
         min_length=1
     )
+    approved_crm_entity_types: tuple[str, ...] = ()
     authorization_generation: int = Field(ge=1)
     configuration_generation: int = Field(ge=1)
     status: ProviderConnectionStatus
@@ -216,6 +233,11 @@ class ProviderConnectionApproval(DefinitionModel):
         if len({item.value for item in values}) != len(values):
             raise ValueError("approved resource scope references must be unique")
         return tuple(sorted(values, key=lambda item: item.value.int))
+
+    @field_validator("approved_crm_entity_types")
+    @classmethod
+    def _validate_crm_entity_types(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        return _normalize_crm_entity_types(values)
 
 
 def google_v1_connection_to_v2(

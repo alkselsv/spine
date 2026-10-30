@@ -161,6 +161,17 @@ __all__ = [
     "GoogleSheetsRemovalPolicy",
     "GoogleSheetsRemovalState",
     "InMemoryGoogleSheetsLifecycleRepository",
+    "ExplicitTranscriptPublicationPolicy",
+    "InMemoryTranscriptPublicationRepository",
+    "PublishTranscriptCommand",
+    "TranscriptAuthorizationSnapshot",
+    "TranscriptContextBroker",
+    "TranscriptContextOutcome",
+    "TranscriptContextRequest",
+    "TranscriptContextResponse",
+    "TranscriptPublicationDeniedError",
+    "TranscriptPublicationResult",
+    "TranscriptPublicationService",
 ]
 
 
@@ -279,6 +290,20 @@ def __getattr__(name: str) -> object:
             "QAResultEventPublisher",
         }:
             module_name = "spine.application.qa_streaming"
+        if name in {
+            "ExplicitTranscriptPublicationPolicy",
+            "InMemoryTranscriptPublicationRepository",
+            "PublishTranscriptCommand",
+            "TranscriptAuthorizationSnapshot",
+            "TranscriptContextBroker",
+            "TranscriptContextOutcome",
+            "TranscriptContextRequest",
+            "TranscriptContextResponse",
+            "TranscriptPublicationDeniedError",
+            "TranscriptPublicationResult",
+            "TranscriptPublicationService",
+        }:
+            module_name = "spine.application.transcript_publication"
         module = import_module(module_name)
         return getattr(module, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -413,6 +413,15 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "register_association_acceptances": ExpectedTablePrivileges(
             True, True, True, False, False
         ),
+        "bitrix24_crm_material_claims": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "bitrix24_crm_material_acceptances": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "bitrix24_crm_material_revocations": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
         "google_sheets_identity_dispositions": ExpectedTablePrivileges(
             True, True, True, False, False
         ),
@@ -499,6 +508,13 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
             True, True, True, False, False
         ),
         "transcript_segments": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "transcript_publications": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "transcript_reviews": ExpectedTablePrivileges(True, True, True, False, False),
+        "corrected_transcript_artifacts": ExpectedTablePrivileges(
             True, True, True, False, False
         ),
     }

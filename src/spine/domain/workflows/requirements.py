@@ -16,7 +16,12 @@ from pydantic import (
     model_validator,
 )
 
-from spine.domain.artifacts import ArtifactRef, GoogleSheetCellLocator, Locator
+from spine.domain.artifacts import (
+    ArtifactRef,
+    GoogleSheetCellLocator,
+    Locator,
+    TimeRangeLocator,
+)
 from spine.domain.common import ActorRef, DefinitionModel
 from spine.domain.workflows.runs import AcceptedSourceRevisionRef
 
@@ -202,16 +207,17 @@ class RequirementEvidenceValidation(DefinitionModel):
 
 
 class RequirementEvidenceRef(DefinitionModel):
-    """An exact source revision and parsed evidence segment without source text."""
+    """An exact source revision and parsed or time-based evidence segment."""
 
     source_ref: AcceptedSourceRevisionRef
-    parsed_artifact_ref: ArtifactRef
+    parsed_artifact_ref: ArtifactRef | None = None
+    transcript_locator: TimeRangeLocator | None = None
     segment_id: UUID
     segment_digest: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     locator_contract_version: StrictStr = Field(
         default="locator:v1", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
     )
-    locator: Locator | GoogleSheetCellLocator
+    locator: Locator | GoogleSheetCellLocator | None = None
     relationship: RequirementEvidenceRelationship = RequirementEvidenceRelationship.SUPPORTS
     validation: RequirementEvidenceValidation | None = None
 
@@ -224,18 +230,32 @@ class RequirementEvidenceRef(DefinitionModel):
 
     @model_validator(mode="after")
     def validate_exact_parsed_reference(self) -> "RequirementEvidenceRef":
-        if self.parsed_artifact_ref.id.int == 0:
-            raise ValueError("parsed artifact identity must be non-zero")
-        if (
-            self.parsed_artifact_ref.schema_name != "parsed-document"
-            or self.parsed_artifact_ref.schema_version != "parsed-document:v1"
-        ):
-            raise ValueError("evidence must reference a versioned parsed document")
-        if (
-            isinstance(self.locator, GoogleSheetCellLocator)
-            and self.locator.source_revision_id != self.source_ref.source_revision_id
-        ):
-            raise ValueError("Google Sheets locator must reference the same source revision")
+        if (self.parsed_artifact_ref is None) == (self.transcript_locator is None):
+            raise ValueError("evidence must identify exactly one parsed or transcript locator")
+        if self.parsed_artifact_ref is not None:
+            if self.parsed_artifact_ref.id.int == 0:
+                raise ValueError("parsed artifact identity must be non-zero")
+            if (
+                self.parsed_artifact_ref.schema_name != "parsed-document"
+                or self.parsed_artifact_ref.schema_version != "parsed-document:v1"
+            ):
+                raise ValueError("evidence must reference a versioned parsed document")
+            if self.locator is None:
+                raise ValueError("parsed evidence requires its stable locator")
+            if (
+                isinstance(self.locator, GoogleSheetCellLocator)
+                and self.locator.source_revision_id != self.source_ref.source_revision_id
+            ):
+                raise ValueError("Google Sheets locator must reference the same source revision")
+        elif self.transcript_locator is not None:
+            if self.locator is not None:
+                raise ValueError("transcript evidence uses its time-range locator")
+            if (
+                self.transcript_locator.source_object_id != self.source_ref.source_object_id
+                or self.transcript_locator.source_revision_id != self.source_ref.source_revision_id
+                or self.transcript_locator.segment_ids != (self.segment_id,)
+            ):
+                raise ValueError("transcript locator must identify the exact source segment")
         if (
             self.validation is not None
             and self.validation.status is RequirementEvidenceValidationStatus.VALID
@@ -283,7 +303,12 @@ class Requirement(DefinitionModel):
         if len(source_refs) != len(self.source_refs):
             raise ValueError("requirement source references must be unique")
         evidence_keys = tuple(
-            (reference.parsed_artifact_ref.id, reference.segment_id)
+            (
+                reference.parsed_artifact_ref.id
+                if reference.parsed_artifact_ref is not None
+                else reference.transcript_locator.transcript_artifact_id,
+                reference.segment_id,
+            )
             for reference in self.evidence_refs
         )
         if len(set(evidence_keys)) != len(evidence_keys):

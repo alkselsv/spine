@@ -4,8 +4,10 @@ import { useQuery } from '@tanstack/react-query';
 import type { components } from '../../../api/generated/schema';
 import { apiQueryOptions } from '../../api/query';
 import type { createScopedApiClient } from '../../api/client';
+import type { Scope } from '../../app/scope';
 import { ApiErrorPanel, StatusPanel } from '../../app/status';
 import styles from '../chat/SessionBrowserPage.module.css';
+import { TranscriptEvidenceInspector } from './TranscriptEvidenceInspector';
 
 type Client = Pick<ReturnType<typeof createScopedApiClient>, 'GET' | 'POST'>;
 type RequirementsArtifact = components['schemas']['RequirementsArtifact'];
@@ -21,6 +23,7 @@ export function RequirementsArtifactCard({
   runVersion,
   canAnswerClarification = false,
   onAnswered,
+  scope,
 }: {
   client: Client;
   allowedCommands?: AllowedCommand[];
@@ -30,6 +33,7 @@ export function RequirementsArtifactCard({
   runVersion?: number;
   canAnswerClarification?: boolean;
   onAnswered?: () => Promise<void>;
+  scope?: Scope;
 }) {
   const [editingRequirementId, setEditingRequirementId] = useState<string | null>(null);
   const [statement, setStatement] = useState('');
@@ -155,14 +159,24 @@ export function RequirementsArtifactCard({
             ) : null}
             {requirement.evidence_status === 'unverified' ? <p role="status">Источники не проверены</p> : null}
             {requirement.evidence_refs.map((evidence) => (
-              <RequirementEvidenceInspector
-                key={`${requirement.requirement_id}-${evidence.segment_id}`}
-                client={client}
-                artifactId={artifact.artifact_id}
-                artifactVersion={artifact.artifact_version}
-                requirementId={requirement.requirement_id}
-                evidence={evidence}
-              />
+              evidence.transcript_locator ? scope ? (
+                  <TranscriptEvidenceInspector
+                    key={`${requirement.requirement_id}-${evidence.segment_id}`}
+                    client={client}
+                    locator={evidence.transcript_locator}
+                    scope={scope}
+                  />
+                ) : <p key={`${requirement.requirement_id}-${evidence.segment_id}`} role="status">Рабочая область для проверки записи недоступна.</p>
+              : (
+                <RequirementEvidenceInspector
+                  key={`${requirement.requirement_id}-${evidence.segment_id}`}
+                  client={client}
+                  artifactId={artifact.artifact_id}
+                  artifactVersion={artifact.artifact_version}
+                  requirementId={requirement.requirement_id}
+                  evidence={evidence}
+                />
+              )
             ))}
             {canEdit && editingRequirementId !== requirement.requirement_id ? (
               <button

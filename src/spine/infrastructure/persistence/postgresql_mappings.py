@@ -7,6 +7,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKeyConstraint,
+    Index,
     Integer,
     MetaData,
     Numeric,
@@ -476,6 +477,42 @@ register_association_acceptances = Table(
     Column("accepted_at", DateTime(timezone=True), nullable=False),
 )
 
+bitrix24_crm_material_claims = Table(
+    "bitrix24_crm_material_claims", metadata,
+    Column("claim_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("target_source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("target_source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("disk_file_id", Text, nullable=False),
+    Column("disk_file_revision", Text, nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("observed_at", DateTime(timezone=True), nullable=False),
+)
+
+bitrix24_crm_material_acceptances = Table(
+    "bitrix24_crm_material_acceptances", metadata,
+    Column("acceptance_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("claim_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("target_source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("target_source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("accepted_at", DateTime(timezone=True), nullable=False),
+)
+
+bitrix24_crm_material_revocations = Table(
+    "bitrix24_crm_material_revocations", metadata,
+    Column("revocation_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("claim_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("state", Text, nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("observed_at", DateTime(timezone=True), nullable=False),
+)
+
 source_revision_receipt_associations = Table(
     "source_revision_receipt_associations", metadata,
     Column("association_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
@@ -716,6 +753,163 @@ transcript_segments = Table(
     ),
     CheckConstraint("start_ms >= 0", name=conv("ck_transcript_segments_start_nonnegative")),
     CheckConstraint("end_ms > start_ms", name=conv("ck_transcript_segments_bounds")),
+)
+
+transcript_publications = Table(
+    "transcript_publications",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("publication_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("is_current", Boolean, nullable=False),
+    Column("publication_digest", String(64), nullable=False),
+    Column("predecessor_publication_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_digest", String(64), nullable=False),
+    Column("transcript_artifact_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("transcript_artifact_digest", String(64), nullable=False),
+    Column("transcript_artifact_schema_version", Text, nullable=False),
+    Column("policy_reference", Text, nullable=False),
+    Column("approval_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("partial_allowed", Boolean, nullable=False),
+    Column("projection_version", Text, nullable=False),
+    Column("projection_state", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("segments", JSONB, nullable=False),
+    Column("published_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id",
+        "environment_id",
+        "publication_id",
+        name="pk_transcript_publications",
+    ),
+    Index(
+        "uq_transcript_publications_artifact",
+        "workspace_id",
+        "environment_id",
+        "transcript_artifact_id",
+        unique=True,
+        postgresql_where=text("is_current"),
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "source_object_id", "source_revision_id"],
+        [
+            "spine.source_revisions.workspace_id",
+            "spine.source_revisions.environment_id",
+            "spine.source_revisions.source_object_id",
+            "spine.source_revisions.revision_id",
+        ],
+        name="fk_transcript_publications_source_revision",
+    ),
+    CheckConstraint(
+        "state IN ('active', 'revoked', 'superseded', 'stale')",
+        name=conv("ck_transcript_publications_state"),
+    ),
+    CheckConstraint(
+        "projection_state IN ('current', 'stale')",
+        name=conv("ck_transcript_publications_projection_state"),
+    ),
+)
+
+transcript_reviews = Table(
+    "transcript_reviews",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("review_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("review_digest", String(64), nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("command_digest", String(64), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_digest", String(64), nullable=False),
+    Column("input_artifact_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("input_artifact_digest", String(64), nullable=False),
+    Column("input_artifact_schema_version", Text, nullable=False),
+    Column("decision", Text, nullable=False),
+    Column("rationale", Text, nullable=False),
+    Column("actor_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("actor_authority", Text, nullable=False),
+    Column("policy_reference", Text, nullable=False),
+    Column("publication_eligible", Boolean, nullable=False),
+    Column("correlation_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("corrected_artifact_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("decided_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "review_id", name="pk_transcript_reviews"
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "input_artifact_id",
+        name="uq_transcript_reviews_artifact",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "actor_id", "idempotency_key",
+        name="uq_transcript_reviews_command",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "input_artifact_id"],
+        [
+            "spine.transcription_artifacts.workspace_id",
+            "spine.transcription_artifacts.environment_id",
+            "spine.transcription_artifacts.artifact_id",
+        ],
+        name="fk_transcript_reviews_input_artifact",
+    ),
+    CheckConstraint(
+        "decision IN ('approve', 'correct', 'reject')",
+        name=conv("ck_transcript_reviews_decision"),
+    ),
+    CheckConstraint(
+        "(decision = 'correct' AND corrected_artifact_id IS NOT NULL) OR "
+        "(decision <> 'correct' AND corrected_artifact_id IS NULL)",
+        name=conv("ck_transcript_reviews_correction_shape"),
+    ),
+)
+
+corrected_transcript_artifacts = Table(
+    "corrected_transcript_artifacts",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("artifact_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("artifact_digest", String(64), nullable=False),
+    Column("original_artifact_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("review_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("artifact", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "artifact_id",
+        name="pk_corrected_transcript_artifacts",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "review_id",
+        name="uq_corrected_transcript_artifacts_review",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "original_artifact_id"],
+        [
+            "spine.transcription_artifacts.workspace_id",
+            "spine.transcription_artifacts.environment_id",
+            "spine.transcription_artifacts.artifact_id",
+        ],
+        name="fk_corrected_transcripts_original_artifact",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "review_id"],
+        [
+            "spine.transcript_reviews.workspace_id",
+            "spine.transcript_reviews.environment_id",
+            "spine.transcript_reviews.review_id",
+        ],
+        name="fk_corrected_transcripts_review",
+        deferrable=True,
+        initially="DEFERRED",
+    ),
+    CheckConstraint(
+        "jsonb_typeof(artifact) = 'object' AND artifact->>'schema_version' = 'human-corrected-transcript:v1'",
+        name=conv("ck_corrected_transcript_artifacts_shape"),
+    ),
 )
 
 ingestion_transitions = Table(
@@ -1707,6 +1901,9 @@ __all__ = [
     "source_revision_provenance",
     "register_link_claims",
     "register_association_acceptances",
+    "bitrix24_crm_material_claims",
+    "bitrix24_crm_material_acceptances",
+    "bitrix24_crm_material_revocations",
     "source_revision_receipt_associations",
     "ingestion_runs",
     "ingestion_run_sources",
@@ -1726,6 +1923,9 @@ __all__ = [
     "transcription_jobs",
     "transcription_artifacts",
     "transcript_segments",
+    "transcript_publications",
+    "transcript_reviews",
+    "corrected_transcript_artifacts",
     "process_only_operation_lineages",
     "admission_decisions",
     "current_access_policies",

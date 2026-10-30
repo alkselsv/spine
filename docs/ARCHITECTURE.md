@@ -239,6 +239,15 @@ completed или partial artifact; durable cancellation intent останавл�
 последующие model calls и завершается стабильным cancelled receipt. См.
 ADR-0049 и ADR-0051.
 
+Human review адресует конкретный digest ASR-артефакта и сохраняет решение,
+rationale, authority проверяющего, версию policy и correlation lineage в
+append-only tenant-scoped записи. Исправление создаёт отдельный immutable
+`CorrectedTranscriptArtifact`, связанный с ASR-версией и review record; исходная
+история распознавания не меняется. Внедряемая review policy возвращает eligibility
+публикации, поэтому обязательность проверки задаётся политикой, а не доменным
+правилом. Повтор того же idempotency key возвращает прежний результат, а другое
+решение для уже проверенного digest получает конфликт. См. ADR-0053.
+
 Первый разговорный запрос, запускающий работу, создаёт один tenant-scoped
 `WorkItem` и pinned `WorkflowRun`. PostgreSQL атомарно сохраняет их вместе с
 idempotency receipt и content-safe outbox intent; повторная доставка запускает
@@ -2519,6 +2528,13 @@ detectors без специальных обходов в platform core.
 - [ADR-047](adr/0047-immutable-requirements-artifact-versions.md): PostgreSQL-canonical
   immutable, versioned requirements candidates with replay-safe production
   identity, predecessor lineage, workspace isolation and authorized readback.
+- [ADR-053](adr/0053-governed-bitrix24-crm-material-associations.md): conditional
+  Bitrix24 CRM capability, exact activity-to-Disk revision association,
+  fail-closed current-revision/access checks and visible revocation without
+  disclosure or pricing authority.
+- [ADR-054](adr/0054-immutable-transcript-review-and-correction.md): exact-version
+  human decisions, idempotent review records, immutable correction successors and
+  policy-controlled publication eligibility.
 - ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.
@@ -2560,3 +2576,11 @@ tombstoned, fabricated and degraded resolutions are content-free. The
 immutable candidate may retain validation status and decision lineage, but the
 boundary never rewrites source facts or substitutes a newer revision. ADR-0048
 defines this contract.
+
+### Governed transcript publication boundary
+
+Transcript publication is a separate tenant-scoped transition: `TimeRangeLocator`
+pins the exact audio `SourceRevision` and transcript artifact/version, an
+injected publication policy decides approval and partial-output eligibility, and
+Context Broker rechecks current source authorization, artifact status and
+projection state before disclosing timestamped segments. See ADR-0052.

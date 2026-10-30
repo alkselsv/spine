@@ -147,6 +147,11 @@ One text span on the original recording timeline with stable artifact-local
 identity and only optional signals actually supplied by the ASR adapter.
 _Avoid_: Document chunk, inferred requirement, speaker identity
 
+**Transcript Evidence Reference**:
+A requirement's exact link to one transcript segment, including its immutable
+audio Source Revision, transcript artifact version and original-time range.
+_Avoid_: Transcript citation, playback URL, meeting note
+
 **Manifest Completeness**:
 The property that every source in a Projection Snapshot's declared boundary is
 accounted for as included, tombstoned or excluded with an auditable reason.

@@ -23,3 +23,24 @@ uv run pytest -q \
 Live Bitrix24 qualification is not part of the default suite. It requires an
 approved synthetic portal, a governed `disk` connection, an acting-user access
 policy and explicit cleanup/authorization before it can be run.
+
+## CRM-linked material (#671)
+
+The CRM material slice is a separate read-only relationship adapter. It admits
+only an approved CRM entity type and a current acting-user grant, then records
+the exact activity, attachment, Disk file ID and Disk provider revision. It
+does not read CRM content, resolve a relationship from a filename/subject, or
+grant source disclosure or `PricingBasis` authority.
+
+Offline qualification is synthetic and runs with:
+
+```bash
+uv run pytest -q \
+  tests/connectors/test_bitrix24_crm_material.py \
+  tests/application/test_bitrix24_crm_material_service.py \
+  tests/qualification/test_issue671_bitrix24_crm_material.py
+```
+
+Acceptance is rejected for an unapproved entity, a cross-workspace target, an
+inaccessible or stale Disk revision, or a mismatched activity attachment.
+Relationship and source revocation are retained as visible append-only state.
