@@ -498,6 +498,18 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "provider_connection_versions": ExpectedTablePrivileges(
             True, True, True, False, False
         ),
+        "bitrix24_grant_bindings": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "bitrix24_grant_authorities": ExpectedTablePrivileges(
+            True, True, True, True, False
+        ),
+        "bitrix24_oauth_attempts": ExpectedTablePrivileges(
+            True, True, True, True, False
+        ),
+        "bitrix24_oauth_callback_receipts": ExpectedTablePrivileges(
+            True, True, True, True, False
+        ),
         "requirements_artifact_versions": ExpectedTablePrivileges(
             True, True, True, False, False
         ),
