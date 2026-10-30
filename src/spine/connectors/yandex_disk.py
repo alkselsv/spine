@@ -199,6 +199,7 @@ def yandex_disk_capabilities(
         ProviderCapabilityKind.STABLE_IDENTITY,
         ProviderCapabilityKind.INCREMENTAL_CHANGE_DISCOVERY,
         ProviderCapabilityKind.LIFECYCLE_EVIDENCE,
+        ProviderCapabilityKind.CRM,
     )
     return tuple(
         ProviderCapability(

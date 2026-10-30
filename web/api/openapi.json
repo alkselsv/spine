@@ -7016,7 +7016,8 @@
           "incremental_change_discovery",
           "full_reconciliation",
           "lifecycle_evidence",
-          "health_diagnostics"
+          "health_diagnostics",
+          "crm"
         ],
         "title": "ProviderCapabilityKind",
         "type": "string"

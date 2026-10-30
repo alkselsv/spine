@@ -404,6 +404,15 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "register_association_acceptances": ExpectedTablePrivileges(
             True, True, True, False, False
         ),
+        "bitrix24_crm_material_claims": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "bitrix24_crm_material_acceptances": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "bitrix24_crm_material_revocations": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
         "google_sheets_identity_dispositions": ExpectedTablePrivileges(
             True, True, True, False, False
         ),

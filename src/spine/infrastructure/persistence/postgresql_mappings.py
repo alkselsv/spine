@@ -477,6 +477,42 @@ register_association_acceptances = Table(
     Column("accepted_at", DateTime(timezone=True), nullable=False),
 )
 
+bitrix24_crm_material_claims = Table(
+    "bitrix24_crm_material_claims", metadata,
+    Column("claim_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("target_source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("target_source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("disk_file_id", Text, nullable=False),
+    Column("disk_file_revision", Text, nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("observed_at", DateTime(timezone=True), nullable=False),
+)
+
+bitrix24_crm_material_acceptances = Table(
+    "bitrix24_crm_material_acceptances", metadata,
+    Column("acceptance_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("claim_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("target_source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("target_source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("accepted_at", DateTime(timezone=True), nullable=False),
+)
+
+bitrix24_crm_material_revocations = Table(
+    "bitrix24_crm_material_revocations", metadata,
+    Column("revocation_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("claim_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("state", Text, nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("observed_at", DateTime(timezone=True), nullable=False),
+)
+
 source_revision_receipt_associations = Table(
     "source_revision_receipt_associations", metadata,
     Column("association_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
@@ -1732,6 +1768,9 @@ __all__ = [
     "source_revision_provenance",
     "register_link_claims",
     "register_association_acceptances",
+    "bitrix24_crm_material_claims",
+    "bitrix24_crm_material_acceptances",
+    "bitrix24_crm_material_revocations",
     "source_revision_receipt_associations",
     "ingestion_runs",
     "ingestion_run_sources",

@@ -31,6 +31,13 @@ from .register_associations import (
     RegisterLinkRole,
     RegisterObservedLinkClaim,
 )
+from .bitrix24_crm import (
+    Bitrix24CrmMaterialAcceptance,
+    Bitrix24CrmMaterialClaim,
+    Bitrix24CrmMaterialHandoff,
+    Bitrix24CrmMaterialRevocation,
+    Bitrix24CrmMaterialState,
+)
 from .boundary import (
     CanonicalBoundary,
     CanonicalBoundaryMember,
@@ -97,6 +104,11 @@ __all__ = [
     "RegisterAssociationHandoff",
     "RegisterLinkRole",
     "RegisterObservedLinkClaim",
+    "Bitrix24CrmMaterialAcceptance",
+    "Bitrix24CrmMaterialClaim",
+    "Bitrix24CrmMaterialHandoff",
+    "Bitrix24CrmMaterialRevocation",
+    "Bitrix24CrmMaterialState",
     "CanonicalBoundary",
     "CanonicalBoundaryMember",
     "CanonicalOrdering",
