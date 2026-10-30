@@ -318,3 +318,200 @@ reconstruct an existing artifact only when its required identity and integrity
 are provable; otherwise it builds a successor snapshot. The concrete Cognee
 shadow, routing and rollback mechanism remains a feasibility responsibility of
 Issue #28 and must not require a distributed transaction with PostgreSQL.
+
+## Exact-source tombstone authorization and versioned canonical linkage
+
+### Context
+
+Canonical source history represents verified removal through an immutable tombstone
+`SourceRevision` and a `CurrentSourceHead` transition. The tombstone's
+`deletion_provenance` records evidence lineage; it is not permission to change canonical
+state. A provider observation, absence, timestamp, path/name/checksum match or
+connection read grant alone does not authorize a tombstone.
+
+ADR-0018 after PR #722 defines `SourceProcessingAdmission:v1` and content-only
+`CanonicalAcceptance:v2`. Processing admission does not authorize deletion. This
+amendment adds an independent deletion authority contract. `AccessPolicy` remains the
+separate positive authority for disclosure.
+
+### Decision
+
+1. **Qualified deletion evidence.** A new canonical tombstone requires an immutable
+   `QualifiedDeletionEvidence:v1` result from a versioned provider/source evidence
+   profile. It binds workspace/environment, exact `SourceObject`, provider/source
+   identity and namespace, exact connection and authorization/configuration generations
+   when applicable, exact approved resource scope and scope-approval version/digest,
+   observation/scan identity, verifier profile/version, canonical evidence digest, exact
+   object identity, freshness, applicable ordering/completeness guarantees and
+   identity-continuity result. It stores references and digests, not source contents,
+   credentials, signed URLs, raw provider payloads or sensitive filenames.
+
+   A positive `CONFIRMED_QUALIFIED_DELETION` result is distinct from outage, permission
+   loss, incomplete or permission-filtered inventory, scope withdrawal, move-out, trash
+   metadata, `DELETED_TYPE` alone, CRM relationship disappearance, OAuth/grant
+   revocation, unknown identity continuity and reappearance. Those states may block
+   reads or require review under their own contracts; none grants canonical tombstone
+   authority. Evidence and approval are separate records.
+
+2. **Yandex preservation and Bitrix24 restriction.** Retain the accepted Yandex Disk
+   `YandexDiskRemovalPolicy` and strict confirmed two-pass complete inventory protocol,
+   including same ordered full-inventory digest, expected count, exact coverage and
+   current workspace/environment/connection/scope approval. A provider-neutral evidence
+   profile cannot weaken or bypass this gate. Bitrix24 permanent-deletion signal,
+   complete inventory, permission-filtered absence and identity continuity remain
+   NOT_VERIFIED for production. Synthetic deterministic evidence may test offline
+   contracts; this ADR authorizes no live Bitrix24 calls or production deletion.
+
+3. **Policy approval and trusted issuance.** A distinct `SourceDeletionPolicyApprover`
+   is a verified canonical human identity with current workspace/environment-scoped
+   authority to approve an immutable exact deletion-policy proposal. The approval binds
+   policy/version/digest, exact source contract/scope, approver identity and the
+   authority generation used to validate the approver. Actual production role mapping,
+   delegation, separation of duties, legal/retention authority and source allowlists
+   remain separately approved governance inputs.
+
+   A `TrustedTombstoneAuthorizationIssuer` is a Spine-owned source-governance service
+   principal. It may issue only after resolving the current immutable approval, current
+   scope/connection authority, a positive qualified evidence result and exact expected
+   source head. The issuer cannot approve policy, qualify evidence by assertion, broaden
+   scope or accept caller-selected authority. A qualified evidence verifier validates
+   evidence only. A canonical commit verifier rechecks persisted authority inside
+   PostgreSQL. Provider observation workers submit observations/references only and
+   cannot issue authorization. Provider read scope, S2 content admission, `AccessPolicy`
+   and `SourceProcessingAdmission` grant no deletion authority.
+
+4. **`TombstoneAuthorization:v1`.** This frozen, immutable, content-free artifact binds
+   exactly one transition: authorization ID/schema version; workspace/environment; exact
+   SourceObject and source identity; provider kind/connection version and generations
+   when provider-backed; exact object namespace and resource scope; current scope
+   approval and source-scope policy versions/digests; qualified evidence
+   ID/profile/version/digest and observation identity; exact qualified object identity;
+   current deletion-policy approval/version/digest and approver authority; immutable
+   issuance decision; current revocation/supersession head; expected current revision,
+   canonical acceptance ID and head CAS version; exact tombstone revision and transition
+   ID; applicable retention eligibility and legal-hold check references/generations;
+   idempotency key/command digest; audit reference; issue/expiry times and
+   predecessor/supersession lineage.
+
+   Source identity uses the existing canonical `SourceObject` identity tuple.
+   Provider-specific variants are explicit; absence of provider fields never infers
+   another authority mode. The authorization is single-use for its exact head transition
+   and cannot be transferred to another source or reused as a new transition.
+   Revocation/supersession appends a decision and advances the current authority
+   pointer; it never edits accepted authorization or canonical history.
+
+5. **Deletion version selector and acceptance v3.** New governed tombstones use an
+   explicit persisted, tombstone-only `CanonicalAcceptance:v3`. It requires
+   `revision_kind=tombstone`, an exact `TombstoneAuthorization:v1` ID/digest and
+   matching source/head/transition references; it forbids processing-admission and
+   content-policy links. `CanonicalAcceptance:v2` remains content-only and requires its
+   exact `SourceProcessingAdmission:v1`. Historical v1 records retain their persisted
+   original meaning. Unknown schema versions fail closed for active/current use; no
+   nullable authorization link or missing field is a version selector; no historical
+   authorization is fabricated or backfilled.
+
+   A separate immutable `TrustedCanonicalTombstoneVersionSelector:v1` selects a
+   tombstone writer mode for an exact source contract/scope. It is distinct from
+   `TrustedCanonicalAcceptanceVersionSelector:v1` for content processing and grants no
+   deletion authority. It binds source/provider contract, scope, required schema mode,
+   immutable approval reference, predecessor, audit/idempotency identity and validity
+   interval. Connector workers cannot choose or widen the selector.
+
+   Its modes are `LEGACY_V1_ALLOWED`, `V3_REQUIRED` and `DENY_NEW`. `LEGACY_V1_ALLOWED`
+   is an explicit, source-contract-specific, approved and time-bounded compatibility
+   mode. It may permit a new v1 transition only while its selector is current and
+   unexpired, and only when that exact contract has current deletion-policy approval,
+   qualified evidence, expected-head fencing and audit lineage. It does not create a v3
+   authorization or generalize historical semantics. When it expires without an approved
+   successor, new writes become `DENY_NEW`. `V3_REQUIRED` forbids every new v1 commit;
+   v3 failures never fall back. `DENY_NEW` blocks new transitions but retains historical
+   reads/replay. A source contract advances to `V3_REQUIRED` only after all writers and
+   readers are v3-capable. Exact historical replay is allowed by its stored idempotency
+   identity and original immutable record and does not consult a later approval.
+
+6. **Same-UoW verification and current-head CAS.** Before v3 tombstone commit,
+   PostgreSQL verifies trusted tenant/environment; exact
+   source/provider/connection/scope; current connection and authorization/configuration
+   generations; positive qualified evidence and freshness; current deletion-policy
+   approval and issuer authority; no revocation/supersession; lifecycle, retention and
+   applicable legal-hold eligibility; expected current revision + acceptance +
+   `cas_version`; exact tombstone transition; and idempotency key/digest. Missing,
+   unavailable, stale, expired, unsupported or mismatched required authority fails
+   closed as `TOMBSTONE_NOT_AUTHORIZED` or an existing typed safe denial.
+
+   The immutable authorization, v3 canonical acceptance/link, `CurrentSourceHead` CAS,
+   required Audit Event, outbox intent and idempotency result commit within one
+   PostgreSQL Unit of Work. Provider calls, inventory scans, external storage and
+   network I/O remain outside that transaction.
+
+7. **Authority serialization.** Current deletion-policy, connection, scope and relevant
+   lifecycle authority mutations use serialization points compatible with the canonical
+   commit and #718 current-authority invariant. If revocation/supersession serializes
+   first, stale tombstone commit is denied. If tombstone commit serializes first,
+   immutable canonical history remains and later restrictions are enforced by lifecycle,
+   projection and disclosure guards. This ADR defines the invariant, not a concrete SQL
+   lock order. Implementation inventories every mutation path and proves a compatible
+   lock/fence protocol before asserting one.
+
+8. **Idempotency and unknown commit.** Authorization is bound to one exact command key
+   and digest. Exact duplicate replay returns the original stable result without a
+   second effect; changed payload under the key conflicts. A later revocation does not
+   retroactively erase a committed result. Known deadlock/serialization aborts may be
+   retried only after rollback, bounded and with the same key/digest plus complete
+   current-authority revalidation. Unknown commit is reconciled using the original
+   idempotency identity/result receipt; a lost response never creates a fresh tombstone
+   command. Required audit/outbox failure aborts the transition. No numeric production
+   retry budget is set here.
+
+9. **Historical compatibility and rollout.** Historical Google/Yandex content and
+   tombstone v1 remain interpretable; historical replay does not consult present
+   approval and no fabricated approvals are backfilled. Existing Yandex policy remains
+   intact. New governed writes use v3 after explicit enforcement activation.
+   Reader-first additive rollout supports v1/v2/v3 before any v3 writer. A per-contract
+   explicit selector controls v1 compatibility; selector absence denies new writes.
+   Rollback may disable v3 writes but retains v3 readers, schema and accepted records.
+   Rollback never rewrites canonical history.
+
+10. **Projection, retrieval and disclosure.** `SourceRevision` history remains
+   immutable; accepted tombstone advances `CurrentSourceHead`. Older projection cannot
+   become current. Projection resolution, Context Broker retrieval, citations,
+   cached-result reuse and final disclosure revalidate exact current head and
+   acceptance. PostgreSQL currentness denial is primary; asynchronous cache purge is
+   supplementary. `AccessPolicy` is not automatically changed and remains the positive
+   disclosure authority.
+
+11. **Lifecycle and physical cleanup separation.** Scope withdrawal, move-out,
+   `DisclosureHold`, legal hold and retention expiry do not authorize tombstone.
+   Retention and legal eligibility are separately governed inputs; this ADR sets no
+   period or legal conclusion. Canonical tombstone does not trigger provider mutation or
+   physical deletion. Physical source/artifact cleanup requires its own current
+   approval, hold-aware checks and idempotent reconciliation. Reappearance requires
+   governed content authority and qualified identity continuity referencing the exact
+   tombstone; no silent resurrection or AccessPolicy transfer.
+
+12. **Offline verification and operational limits.** Offline implementation uses
+   deterministic synthetic evidence and fake-first contract tests for exact binding, all
+   non-authorizing outcomes, worker self-authorization, revocation, CAS, v1/v2/v3
+   dispatch, replay, unknown commit, audit/outbox failure, cross-tenant isolation,
+   Yandex preservation, Bitrix evidence rejection, reappearance and cache lag. Isolated
+   PostgreSQL integration must qualify RLS, composite FKs, immutability, same-UoW
+   effects, authority races, CAS, idempotency, unknown commit and reader-first
+   migration/rollback. Fakes do not prove SQL atomicity. Audits and diagnostics contain
+   only safe references/digests and bounded reason codes, never content, secrets,
+   provider payloads or sensitive names. Offline contract approval is not production
+   Security/Operations approval, provider qualification, deployment, retention/cleanup
+   approval or authorization to execute #679.
+
+13. **Independent processing boundary.** `SourceProcessingAdmission:v1` remains content
+   processing authority only; it does not authorize deletion.
+   `TombstoneAuthorization:v1` does not authorize content processing or disclosure.
+   `CanonicalAcceptance:v2` remains content-only. `AccessPolicy` remains independent
+   positive disclosure authority. These contracts are not merged.
+
+### Consequences
+
+The current runtime writer does not implement this contract. New v3 writers remain
+blocked until the separate implementation and PostgreSQL gates pass. Existing v1
+readers/replay remain intact; any new v1 writer requires explicit approved selector
+mode. This amendment changes no provider behavior, production source allowlist,
+retention period, legal authority or physical cleanup policy.

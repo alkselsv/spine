@@ -470,6 +470,10 @@ active policy не может задержать authoritative deletion fence. C
 `AccessPolicy` продолжает управлять любым разрешённым historical disclosure, но
 не выдаёт и не блокирует право удалить объект из ordinary retrieval.
 
+Deletion provenance records observation lineage and is not current deletion
+authorization; new governed tombstone acceptance requires the exact versioned
+authorization and canonical linkage defined by ADR-0018.
+
 Canonical current выбирается по trustworthy connector-defined source version или
 ordering token, когда он существует. Late older observation сохраняется в
 истории, но не заменяет более новую current revision. Источник без authoritative
