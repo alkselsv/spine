@@ -9323,7 +9323,7 @@
             "type": "array"
           },
           "category": {
-            "$ref": "#/components/schemas/RequirementCategory"
+            "$ref": "#/components/schemas/RequirementCategoryV1"
           },
           "confidence": {
             "anyOf": [
@@ -9433,11 +9433,27 @@
         "enum": [
           "functional",
           "non_functional",
+          "design",
+          "schedule",
           "constraint",
+          "agreement",
+          "open_question",
           "assumption",
           "unresolved_information"
         ],
         "title": "RequirementCategory",
+        "type": "string"
+      },
+      "RequirementCategoryV1": {
+        "description": "Categories frozen with the original requirement:v1 contract.",
+        "enum": [
+          "functional",
+          "non_functional",
+          "constraint",
+          "assumption",
+          "unresolved_information"
+        ],
+        "title": "RequirementCategoryV1",
         "type": "string"
       },
       "RequirementEvidenceRef": {
@@ -9648,6 +9664,125 @@
         "title": "RequirementState",
         "type": "string"
       },
+      "RequirementV2": {
+        "additionalProperties": false,
+        "description": "Transcript-aware requirement contract with expanded categories.",
+        "properties": {
+          "ambiguous_markers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Ambiguous Markers",
+            "type": "array"
+          },
+          "category": {
+            "$ref": "#/components/schemas/RequirementCategory"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "constraints": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Constraints",
+            "type": "array"
+          },
+          "evidence_refs": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RequirementEvidenceRef"
+            },
+            "title": "Evidence Refs",
+            "type": "array"
+          },
+          "evidence_status": {
+            "$ref": "#/components/schemas/RequirementEvidenceStatus",
+            "default": "unverified"
+          },
+          "missing_markers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing Markers",
+            "type": "array"
+          },
+          "requirement_id": {
+            "format": "uuid",
+            "title": "Requirement Id",
+            "type": "string"
+          },
+          "review_state": {
+            "$ref": "#/components/schemas/RequirementReviewState",
+            "default": "needs_review"
+          },
+          "schema_version": {
+            "const": "requirement:v2",
+            "default": "requirement:v2",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_refs": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AcceptedSourceRevisionRef"
+            },
+            "title": "Source Refs",
+            "type": "array"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RequirementState",
+            "default": "candidate"
+          },
+          "statement": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "title": "Statement",
+            "type": "string"
+          },
+          "uncertainty": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uncertainty"
+          },
+          "upstream_artifact_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Upstream Artifact Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "requirement_id",
+          "category",
+          "statement"
+        ],
+        "title": "RequirementV2",
+        "type": "object"
+      },
       "RequirementsArtifact": {
         "additionalProperties": false,
         "description": "Immutable, explicitly versioned requirements candidate for one run.",
@@ -9700,7 +9835,21 @@
           },
           "requirements": {
             "items": {
-              "$ref": "#/components/schemas/Requirement"
+              "discriminator": {
+                "mapping": {
+                  "requirement:v1": "#/components/schemas/Requirement",
+                  "requirement:v2": "#/components/schemas/RequirementV2"
+                },
+                "propertyName": "schema_version"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/Requirement"
+                },
+                {
+                  "$ref": "#/components/schemas/RequirementV2"
+                }
+              ]
             },
             "title": "Requirements",
             "type": "array"

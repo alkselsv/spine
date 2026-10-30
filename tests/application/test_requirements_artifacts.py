@@ -25,7 +25,13 @@ from spine.domain.capabilities.extract_requirements import (
     RequirementsExtractionOutcome,
     RequirementsExtractionOutput,
 )
-from spine.domain.workflows import ClientRequestV1, Requirement, RequirementState, WorkflowRun
+from spine.domain.workflows import (
+    ClientRequestV1,
+    Requirement,
+    RequirementState,
+    RequirementV2,
+    WorkflowRun,
+)
 from spine.domain.workflows.runs import WorkflowRunState
 
 
@@ -306,6 +312,34 @@ async def test_clarification_answer_prepares_one_immutable_affected_successor() 
         await service.prepare_clarification_answer(
             context=_context(), command=conflicting
         )
+
+
+@pytest.mark.asyncio
+async def test_transcript_requirement_persists_as_version_two_artifact() -> None:
+    artifacts = _Artifacts()
+    _, factory = _factory(artifacts)
+    service = PersistedRequirementsArtifactService(
+        factory,
+        clarification_revalidator=RequirementsExtractionClarificationRevalidator(),
+    )
+    extraction = RequirementsExtractionOutput(
+        workspace_id=UUID(int=1), environment_id=UUID(int=2),
+        workflow_run_id=UUID(int=3), work_item_id=UUID(int=5),
+        outcome=RequirementsExtractionOutcome.SUCCESS,
+        requirements=(RequirementV2(
+            requirement_id=UUID(int=30),
+            category="schedule",
+            statement="Launch by 20 December",
+        ),),
+    )
+
+    artifact = await service.persist_extracted_candidate(
+        context=_context(), run_id=UUID(int=3), extraction=extraction
+    )
+
+    assert artifact is not None
+    assert artifact.schema_version == "requirements:v2"
+    assert artifact.requirements[0].schema_version == "requirement:v2"
 
 
 @pytest.mark.asyncio

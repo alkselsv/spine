@@ -13,11 +13,14 @@ from uuid import UUID
 from pydantic import Field, model_validator
 
 from spine.domain.artifacts import (
+    AdapterSignal,
     TranscriptPublication,
     TranscriptPublicationArtifact,
     TranscriptPublicationApproval,
     TranscriptPublicationState,
     TranscriptProjectionSegment,
+    TranscriptRecognitionQuality,
+    TranscriptSegment,
     TranscriptProjectionState,
     TranscriptionArtifactOutcome,
     TimeRangeLocator,
@@ -34,6 +37,81 @@ class TranscriptContextOutcome(str, Enum):
     DENIED = "denied"
     UNAVAILABLE = "unavailable"
     STALE = "stale"
+
+
+TRANSCRIPT_RECOGNITION_POLICY_REFERENCE = "transcript-recognition-quality:v1"
+
+
+class TranscriptContextSegment(DefinitionModel):
+    """Authorized text plus typed source observations needed by consumers."""
+
+    schema_version: Literal["transcript-context-segment:v1"] = (
+        "transcript-context-segment:v1"
+    )
+    segment_id: UUID
+    ordinal: int = Field(gt=0)
+    text: str = Field(min_length=1)
+    text_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    locator: TimeRangeLocator
+    language: str | None = Field(default=None, min_length=2, max_length=35)
+    anonymous_speaker_label: str | None = Field(
+        default=None, min_length=1, max_length=128
+    )
+    recognition_quality: TranscriptRecognitionQuality = (
+        TranscriptRecognitionQuality.UNKNOWN
+    )
+    recognition_policy_reference: Literal["transcript-recognition-quality:v1"] = (
+        TRANSCRIPT_RECOGNITION_POLICY_REFERENCE
+    )
+
+    @classmethod
+    def from_projection(
+        cls,
+        *,
+        projection: TranscriptProjectionSegment,
+        source: TranscriptSegment,
+        language: str | None,
+    ) -> "TranscriptContextSegment":
+        return cls(
+            segment_id=projection.segment_id,
+            ordinal=projection.ordinal,
+            text=projection.text,
+            text_digest=projection.text_digest,
+            locator=projection.locator,
+            language=language,
+            anonymous_speaker_label=source.anonymous_speaker_label,
+            recognition_quality=_recognition_quality(source.signals),
+        )
+
+
+def _recognition_quality(
+    signals: tuple[AdapterSignal, ...],
+) -> TranscriptRecognitionQuality:
+    observed: list[TranscriptRecognitionQuality] = []
+    for signal in signals:
+        if signal.name in {"recognition_confidence", "confidence"} and isinstance(
+            signal.value, (int, float)
+        ) and not isinstance(signal.value, bool):
+            observed.append(
+                TranscriptRecognitionQuality.WEAK
+                if float(signal.value) < 0.65
+                else TranscriptRecognitionQuality.RELIABLE
+            )
+        elif signal.name in {"recognition_quality", "recognition_state"} and isinstance(
+            signal.value, str
+        ):
+            normalized = signal.value.lower()
+            if normalized in {"weak", "uncertain", "noisy"}:
+                observed.append(TranscriptRecognitionQuality.WEAK)
+            elif normalized in {"reliable", "clear", "good"}:
+                observed.append(TranscriptRecognitionQuality.RELIABLE)
+        elif signal.name == "recognition_weak" and signal.value is True:
+            observed.append(TranscriptRecognitionQuality.WEAK)
+    if TranscriptRecognitionQuality.WEAK in observed:
+        return TranscriptRecognitionQuality.WEAK
+    if TranscriptRecognitionQuality.RELIABLE in observed:
+        return TranscriptRecognitionQuality.RELIABLE
+    return TranscriptRecognitionQuality.UNKNOWN
 
 
 class TranscriptAuthorizationSnapshot(DefinitionModel):
@@ -500,13 +578,25 @@ class TranscriptContextRequest(DefinitionModel):
         return self
 
 
-class TranscriptContextResponse(DefinitionModel):
+class TranscriptContextResponseV1(DefinitionModel):
+    """Frozen response used by already serialized context reads."""
+
     schema_version: Literal["transcript-context-response:v1"] = (
         "transcript-context-response:v1"
     )
     outcome: TranscriptContextOutcome
     reason_code: str = Field(min_length=1, max_length=64)
     segments: tuple[TranscriptProjectionSegment, ...] = ()
+    publication_id: UUID | None = None
+
+
+class TranscriptContextResponse(DefinitionModel):
+    schema_version: Literal["transcript-context-response:v2"] = (
+        "transcript-context-response:v2"
+    )
+    outcome: TranscriptContextOutcome
+    reason_code: str = Field(min_length=1, max_length=64)
+    segments: tuple[TranscriptContextSegment, ...] = ()
     publication_id: UUID | None = None
 
     @model_validator(mode="after")
@@ -571,13 +661,24 @@ class TranscriptContextBroker:
         ):
             return _unavailable("partial_artifact_unavailable")
 
-        segments = tuple(
+        projected_segments = tuple(
             segment
             for segment in publication.segments
             if _segment_matches_locator(segment, request.locator)
         )
-        if not segments:
+        if not projected_segments:
             return _unavailable("locator_unavailable")
+        source_by_id = {segment.segment_id: segment for segment in artifact.segments}
+        if any(segment.segment_id not in source_by_id for segment in projected_segments):
+            return _unavailable("artifact_segment_unavailable")
+        segments = tuple(
+            TranscriptContextSegment.from_projection(
+                projection=segment,
+                source=source_by_id[segment.segment_id],
+                language=artifact.language,
+            )
+            for segment in projected_segments
+        )
         return TranscriptContextResponse(
             outcome=TranscriptContextOutcome.ALLOWED,
             reason_code="allowed",
@@ -657,6 +758,9 @@ __all__ = [
     "TranscriptContextOutcome",
     "TranscriptContextRequest",
     "TranscriptContextResponse",
+    "TranscriptContextResponseV1",
+    "TranscriptContextSegment",
+    "TRANSCRIPT_RECOGNITION_POLICY_REFERENCE",
     "TranscriptPublicationDecision",
     "TranscriptPublicationDeniedError",
     "TranscriptPublicationPolicy",

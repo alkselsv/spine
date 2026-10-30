@@ -299,6 +299,8 @@ def __getattr__(name: str) -> object:
             "TranscriptContextOutcome",
             "TranscriptContextRequest",
             "TranscriptContextResponse",
+            "TranscriptContextResponseV1",
+            "TranscriptContextSegment",
             "TranscriptPublicationDeniedError",
             "TranscriptPublicationResult",
             "TranscriptPublicationService",
