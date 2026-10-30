@@ -216,6 +216,15 @@ completed или partial artifact; durable cancellation intent останавл�
 последующие model calls и завершается стабильным cancelled receipt. См.
 ADR-0049 и ADR-0051.
 
+Human review адресует конкретный digest ASR-артефакта и сохраняет решение,
+rationale, authority проверяющего, версию policy и correlation lineage в
+append-only tenant-scoped записи. Исправление создаёт отдельный immutable
+`CorrectedTranscriptArtifact`, связанный с ASR-версией и review record; исходная
+история распознавания не меняется. Внедряемая review policy возвращает eligibility
+публикации, поэтому обязательность проверки задаётся политикой, а не доменным
+правилом. Повтор того же idempotency key возвращает прежний результат, а другое
+решение для уже проверенного digest получает конфликт. См. ADR-0053.
+
 Первый разговорный запрос, запускающий работу, создаёт один tenant-scoped
 `WorkItem` и pinned `WorkflowRun`. PostgreSQL атомарно сохраняет их вместе с
 idempotency receipt и content-safe outbox intent; повторная доставка запускает
@@ -2500,6 +2509,9 @@ detectors без специальных обходов в platform core.
   Bitrix24 CRM capability, exact activity-to-Disk revision association,
   fail-closed current-revision/access checks and visible revocation without
   disclosure or pricing authority.
+- [ADR-054](adr/0054-immutable-transcript-review-and-correction.md): exact-version
+  human decisions, idempotent review records, immutable correction successors and
+  policy-controlled publication eligibility.
 - ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.

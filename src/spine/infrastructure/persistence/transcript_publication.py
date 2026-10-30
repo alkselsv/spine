@@ -20,13 +20,17 @@ from spine.application.transcript_publication import (
     TranscriptPublicationRepository,
 )
 from spine.domain.artifacts import (
+    CorrectedTranscriptArtifact,
     TranscriptPublication,
     TranscriptPublicationState,
     TranscriptProjectionSegment,
     TranscriptProjectionState,
-    TranscriptionArtifact,
 )
-from spine.infrastructure.persistence.postgresql_mappings import transcript_publications
+from spine.domain.artifacts.publication import TranscriptPublicationArtifact
+from spine.infrastructure.persistence.postgresql_mappings import (
+    corrected_transcript_artifacts,
+    transcript_publications,
+)
 
 
 class PostgreSQLTranscriptPublicationRepository(TranscriptPublicationRepository):
@@ -47,11 +51,30 @@ class PostgreSQLTranscriptPublicationRepository(TranscriptPublicationRepository)
 
     async def get_artifact(
         self, *, workspace_id: UUID, environment_id: UUID, artifact_id: UUID
-    ) -> TranscriptionArtifact | None:
-        return await self._artifact_repository.get_artifact(
+    ) -> TranscriptPublicationArtifact | None:
+        artifact = await self._artifact_repository.get_artifact(
             workspace_id=workspace_id,
             environment_id=environment_id,
             artifact_id=artifact_id,
+        )
+        if artifact is not None:
+            return artifact
+        async with self._session_factory() as session:
+            async with session.begin():
+                await self._bind_scope(session, workspace_id, environment_id)
+                row = (
+                    await session.execute(
+                        select(corrected_transcript_artifacts.c.artifact).where(
+                            corrected_transcript_artifacts.c.workspace_id == workspace_id,
+                            corrected_transcript_artifacts.c.environment_id == environment_id,
+                            corrected_transcript_artifacts.c.artifact_id == artifact_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+        return (
+            CorrectedTranscriptArtifact.model_validate(row)
+            if row is not None
+            else None
         )
 
     async def create_or_replay(

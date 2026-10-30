@@ -61,6 +61,12 @@ from spine.application.requirements_evidence import (
     RequirementsEvidenceValidationService,
 )
 from spine.application.transcript_inspection import TranscriptEvidenceInspector
+from spine.application.transcript_review import (
+    ExplicitTranscriptReviewPolicy,
+    TranscriptReviewPolicyOutcome,
+    TranscriptReviewPublicationGateway,
+    TranscriptReviewService,
+)
 from spine.application.persistence.context import (
     EnvironmentScope,
     PersistenceOperation,
@@ -118,6 +124,9 @@ from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
 from spine.infrastructure.persistence.transcription import PostgreSQLTranscriptionRepository
 from spine.infrastructure.persistence.transcript_publication import (
     PostgreSQLTranscriptPublicationRepository,
+)
+from spine.infrastructure.persistence.transcript_review import (
+    PostgreSQLTranscriptReviewRepository,
 )
 from spine.infrastructure.qa_observation_capture import (
     CaptureAuthorizer,
@@ -179,6 +188,12 @@ class DeployableApiSettings(BaseSettings):
     workflow_versions: tuple[PinnedWorkflowVersion, ...] = Field(
         default=(), validation_alias="SPINE_API_WORKFLOW_VERSIONS"
     )
+    transcript_review_policy_reference: str | None = Field(
+        default=None, min_length=1, max_length=128
+    )
+    transcript_review_policy_outcome: Literal[
+        "allow", "require", "deny"
+    ] | None = None
 
     @model_validator(mode="after")
     def validate_capture_credentials(self) -> "DeployableApiSettings":
@@ -187,6 +202,12 @@ class DeployableApiSettings(BaseSettings):
             self.qa_capture_observer_credential.get_secret_value(),
         ):
             raise ValueError("capture workload credentials must be distinct")
+        if (self.transcript_review_policy_reference is None) != (
+            self.transcript_review_policy_outcome is None
+        ):
+            raise ValueError(
+                "transcript review policy reference and outcome must be configured together"
+            )
         return self
 
 
@@ -386,14 +407,38 @@ def create_production_app(
         context_factory=transcript_context_factory,
         context_verifier=request_boundary,
     )
+    transcript_authorization = ProductionTranscriptEvidenceAuthorization(
+        uow_factory=persistence.uow_factory,
+        authorizer=parsed_content_authorizer,
+        decision_audit=parsed_content_decision_audit,
+    )
     transcript_evidence_inspector = TranscriptEvidenceInspector(
         publications=transcript_publications,
-        authorization=ProductionTranscriptEvidenceAuthorization(
-            uow_factory=persistence.uow_factory,
-            authorizer=parsed_content_authorizer,
-            decision_audit=parsed_content_decision_audit,
-        ),
+        authorization=transcript_authorization,
     )
+    transcript_review_service = None
+    if resolved_api.transcript_review_policy_reference is not None:
+        assert resolved_api.transcript_review_policy_outcome is not None
+        transcript_review_repository = PostgreSQLTranscriptReviewRepository(
+            session_factory=sessions,
+            artifact_repository=transcript_artifacts,
+            context_factory=transcript_context_factory,
+            context_verifier=request_boundary,
+        )
+        transcript_review_service = TranscriptReviewService(
+            repository=transcript_review_repository,
+            policy=ExplicitTranscriptReviewPolicy(
+                policy_reference=resolved_api.transcript_review_policy_reference,
+                outcome=TranscriptReviewPolicyOutcome(
+                    resolved_api.transcript_review_policy_outcome
+                ),
+            ),
+            authorization=transcript_authorization,
+            publication_gateway=TranscriptReviewPublicationGateway(
+                repository=transcript_publications,
+                authorization=transcript_authorization,
+            ),
+        )
     application = create_app(
         authorization_runtime=authorization,
         diagnostic_registry=diagnostic_registry,
@@ -469,6 +514,7 @@ def create_production_app(
         ),
         requirements_evidence_service=requirements_evidence_service,
         transcript_evidence_inspector_service=transcript_evidence_inspector,
+        transcript_review_service=transcript_review_service,
         provider_connection_service=provider_connections,
         provider_connection_cursor_secret=(
             resolved_api.cursor_secret.get_secret_value().encode("utf-8")
