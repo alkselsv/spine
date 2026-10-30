@@ -210,6 +210,16 @@ metadata до и после bounded canonical reads. Исчезнувший ил
 Снимок содержит только относительные пути и change tokens, а bytes продолжают
 проходить через общий guarded reader и canonical ingestion.
 
+Production boundary для первого mounted-filesystem slice — отдельный
+предварительно смонтированный read-only leaf root на immutable Provider
+Connection version. Platform Operations владеет mount lifecycle, а worker читает
+его непривилегированной identity `spine-source-reader` без mount/write authority;
+прямой SMB/CIFS client и credentials не входят в этот slice. Approved namespace,
+mount enforcement, resource limits, monitoring, outage recovery, retention и
+qualification cleanup закреплены в
+[`runbooks/r2-mounted-filesystem.md`](runbooks/r2-mounted-filesystem.md) и
+ADR-0056.
+
 Scoped mounted identity использует `mounted-path:v2:<connection-version>` и
 включает approved root scope в identity digest. Legacy `mounted-path:v1` нельзя
 автоматически приписать конкретному root: production source reader останавливает

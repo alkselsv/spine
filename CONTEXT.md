@@ -90,6 +90,13 @@ credential material. It does not grant Spine content disclosure or business
 authority.
 _Avoid_: Credential, Access Policy, provider account
 
+**Mounted Filesystem Scope**:
+A versioned approved external resource scope bound to one canonical absolute
+pre-mounted root and one Workspace/Environment. Its object identity is
+path-scoped unless the exact backend has separately qualified stronger identity;
+mount authority and credentials remain outside Spine.
+_Avoid_: SMB connection, host mount namespace, Provider Connection
+
 **Bitrix24 Grant Authority**:
 The current exact Bitrix24 acting-user grant binding, active token-pair
 reference, token epoch and security fence for one Provider Connection version.
