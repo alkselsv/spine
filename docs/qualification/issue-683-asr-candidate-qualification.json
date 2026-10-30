@@ -1,0 +1,88 @@
+{
+  "schema_version": "asr-candidate-qualification:v1",
+  "ticket": 683,
+  "qualification_scope": "independent synthetic Russian evidence for two candidate adapters",
+  "dataset": {
+    "id": "russian-meeting-transcription-synthetic",
+    "version": "1.0.0",
+    "sha256": "0f2c70d2663a6bfb69afc13e34d65683e04d7ddfb1914520b8a1174646a290e7"
+  },
+  "execution_boundary": {
+    "mode": "synthetic-only-offline",
+    "production_recordings_used": false,
+    "external_asr_calls": false,
+    "production_capacity_claim": false,
+    "status_rule": "Missing assets, host evidence or measurements remain NOT_VERIFIED. Synthetic/fake execution is not real candidate qualification."
+  },
+  "candidates": [
+    {
+      "candidate_id": "gigaam-v3-rnnt",
+      "adapter_reference": "gigaam-v3-rnnt-adapter:v1",
+      "model_reference": "gigaam:v3_rnnt",
+      "source_repository": "https://github.com/salute-developers/GigaAM",
+      "source_revision": null,
+      "runtime_reference": "official-gigaam-runtime:v1",
+      "runtime_revision": null,
+      "checkpoint_reference": "v3_rnnt",
+      "checkpoint_sha256": null,
+      "asset_sha256": null,
+      "dependency_lock_digest": null,
+      "configuration_digest": "051f83b329a84dfff9482f451c69cb85c7cfc1522d55b10ea9836b2a765cb5c0",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "candidate_id": "whisper-large-v3-faster-whisper",
+      "adapter_reference": "whisper-large-v3-faster-whisper-adapter:v1",
+      "model_reference": "whisper:large-v3",
+      "source_repository": "https://github.com/SYSTRAN/faster-whisper",
+      "source_revision": null,
+      "runtime_reference": "faster-whisper-ctranslate2:v1",
+      "runtime_revision": null,
+      "checkpoint_reference": "large-v3",
+      "checkpoint_sha256": null,
+      "asset_sha256": null,
+      "dependency_lock_digest": null,
+      "configuration_digest": "3fa725fb92f1c2f583f97190e3bb069481a0970f81ad270dbff03bd16c639435",
+      "status": "NOT_VERIFIED"
+    }
+  ],
+  "independent_gates": [
+    "russian_transcription",
+    "critical_business_fragments",
+    "adversarial_semantic_inversions",
+    "terminology",
+    "segment_timestamps",
+    "silence",
+    "long_form_chunking",
+    "preprocessing_effects",
+    "performance",
+    "offline_integrity"
+  ],
+  "reported_metrics": [
+    "wer",
+    "cer",
+    "critical_fragment_accuracy",
+    "semantic_inversions",
+    "terminology_precision",
+    "terminology_recall",
+    "segment_timestamp_p50_ms",
+    "segment_timestamp_p95_ms",
+    "silence_hallucinations",
+    "preprocessing_ms",
+    "inference_ms",
+    "reassembly_ms",
+    "cold_start_ms",
+    "warm_inference_rtf",
+    "end_to_end_rtf",
+    "peak_ram_mb",
+    "peak_vram_mb"
+  ],
+  "downstream_boundary": "Requirements extraction is separate ASR-consumer evidence owned by #646/#682 and is not folded into ASR quality.",
+  "next_evidence_required": [
+    "Pinned official source/runtime revisions and dependency locks for each candidate",
+    "Checkpoint and staged-asset SHA-256 hashes",
+    "Recorded isolated CPU/GPU/RAM/VRAM/OS/precision host identity with no-egress verification",
+    "Independent runs against the frozen #674 set with annotation and alignment coverage",
+    "Measured cold/warm/end-to-end timing, RTF, memory and resource-failure evidence"
+  ]
+}
