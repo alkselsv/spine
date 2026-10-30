@@ -46,16 +46,19 @@ from spine.domain.agents import (
 from spine.domain.artifacts import Artifact, TimeRangeLocator
 from spine.domain.capabilities import (
     ExtractRequirementsInput,
+    ExtractRequirementsInputV1,
     RequirementsClarification,
     RequirementsEvidenceAvailability,
     RequirementsExecutionConfiguration,
     RequirementsExtractionOutcome,
     RequirementsExtractionOutput,
+    RequirementsExtractionOutputV1,
     RequirementsExtractionReason,
     RequirementsExtractionReasonCode,
     CapabilityDefinition,
     TranscriptRequirementsEvidence,
     TranscriptRecognitionQuality,
+    upgrade_extract_requirements_input,
 )
 from spine.domain.common import ActorRef, EnvironmentKind, SchemaRef, ValidatedDefinitionModel
 from spine.domain.workflows import (
@@ -68,18 +71,22 @@ from spine.domain.workflows import (
     RequirementEvidenceStatus,
     RequirementState,
     RequirementsArtifact,
+    RequirementV2,
     WorkflowRun,
 )
 
 
 EXTRACT_REQUIREMENTS_CAPABILITY_ID = uuid5(
-    NAMESPACE_URL, "spine:capability:extract-requirements:v2"
+    NAMESPACE_URL, "spine:capability:extract-requirements:v1"
 )
 EXTRACT_REQUIREMENTS_AGENT_ID = uuid5(
     NAMESPACE_URL, "spine:agent:requirements-extractor:v1"
 )
 EXTRACT_REQUIREMENTS_AGENT_VERSION_ID = uuid5(
     NAMESPACE_URL, "spine:agent-version:requirements-extractor:2026.10.2"
+)
+EXTRACT_REQUIREMENTS_AGENT_VERSION_V1_ID = uuid5(
+    NAMESPACE_URL, "spine:agent-version:requirements-extractor:2026.10"
 )
 EXTRACT_REQUIREMENTS_IMPLEMENTATION_KEY = "requirements.extract.deterministic"
 
@@ -101,6 +108,19 @@ def extract_requirements_capability() -> CapabilityDefinition:
     )
 
 
+def extract_requirements_capability_v1() -> CapabilityDefinition:
+    """Return the frozen schema identity used by already pinned #636 runs."""
+
+    return CapabilityDefinition(
+        id=EXTRACT_REQUIREMENTS_CAPABILITY_ID,
+        key="extract_requirements",
+        display_name="Extract proposal requirements",
+        input_schema=SchemaRef(name="extract-requirements.input", version="v1"),
+        output_schema=SchemaRef(name="extract-requirements.output", version="v1"),
+        description="Produce a reviewable, evidence-aware requirements candidate.",
+    )
+
+
 def extract_requirements_agent_version() -> AgentVersion:
     """Return the immutable synthetic implementation identity for offline execution."""
 
@@ -108,6 +128,21 @@ def extract_requirements_agent_version() -> AgentVersion:
         id=EXTRACT_REQUIREMENTS_AGENT_VERSION_ID,
         agent_id=EXTRACT_REQUIREMENTS_AGENT_ID,
         version="2026.10.2",
+        runtime=AgentRuntimeKind.CODE,
+        capabilities=("extract_requirements",),
+        prompt_version="requirements.extract:none",
+        model_profile="requirements.extract:deterministic",
+        context_profile="requirements.extract:none",
+    )
+
+
+def extract_requirements_agent_version_v1() -> AgentVersion:
+    """Return the immutable implementation identity used by v1 replays."""
+
+    return AgentVersion(
+        id=EXTRACT_REQUIREMENTS_AGENT_VERSION_V1_ID,
+        agent_id=EXTRACT_REQUIREMENTS_AGENT_ID,
+        version="2026.10",
         runtime=AgentRuntimeKind.CODE,
         capabilities=("extract_requirements",),
         prompt_version="requirements.extract:none",
@@ -291,6 +326,21 @@ class TranscriptRequirementsContextPort(Protocol):
     ) -> TranscriptContextResponse: ...
 
 
+class RequirementsEvidenceRevalidator(Protocol):
+    async def revalidate(
+        self, request: ExtractRequirementsInput
+    ) -> ExtractRequirementsInput: ...
+
+
+class RequirementsInputArtifactWriter(Protocol):
+    async def persist_requirements_input(
+        self,
+        *,
+        value: ExtractRequirementsInput,
+        produced_by: ActorRef,
+    ) -> Artifact: ...
+
+
 @dataclass(frozen=True, slots=True)
 class AuthorizedTranscriptRequirementsInputBuilder:
     """Build extraction input for an existing run from freshly authorized text."""
@@ -342,6 +392,9 @@ class AuthorizedTranscriptRequirementsInputBuilder:
                             locator_contract_version="time-range-locator:v1",
                         ),
                         text=segment.text,
+                        language=segment.language,
+                        anonymous_speaker_label=segment.anonymous_speaker_label,
+                        recognition_quality=segment.recognition_quality,
                     ))
                 continue
             for segment_id in locator.segment_ids:
@@ -372,6 +425,64 @@ class AuthorizedTranscriptRequirementsInputBuilder:
             execution=execution,
         )
 
+    async def revalidate(
+        self, request: ExtractRequirementsInput
+    ) -> ExtractRequirementsInput:
+        """Refresh transcript authority after runtime and before persistence."""
+
+        refreshed = []
+        for ordinal, item in enumerate(request.evidence, start=1):
+            if not isinstance(item, TranscriptRequirementsEvidence):
+                refreshed.append(item)
+                continue
+            locator = item.reference.transcript_locator
+            if locator is None:
+                raise ValueError("transcript evidence locator is unavailable")
+            response = await self.context.retrieve(TranscriptContextRequest(
+                request_id=uuid5(
+                    request.workflow_run_id,
+                    f"requirements:revalidate:{ordinal}:{locator.model_dump_json()}",
+                ),
+                workspace_id=request.workspace_id,
+                environment_id=request.environment_id,
+                locator=locator,
+            ))
+            matching = next((
+                segment for segment in response.segments
+                if (
+                    segment.segment_id == item.reference.segment_id
+                    and segment.text_digest == item.reference.segment_digest
+                    and segment.locator == locator
+                )
+            ), None)
+            if response.outcome is TranscriptContextOutcome.ALLOWED and matching is not None:
+                refreshed.append(item.model_copy(update={
+                    "availability": RequirementsEvidenceAvailability.CURRENT,
+                    "text": matching.text,
+                    "language": matching.language,
+                    "anonymous_speaker_label": matching.anonymous_speaker_label,
+                    "recognition_quality": matching.recognition_quality,
+                }))
+                continue
+            availability = (
+                _context_availability(response.outcome)
+                if response.outcome is not TranscriptContextOutcome.ALLOWED
+                else RequirementsEvidenceAvailability.STALE
+            )
+            refreshed.append(item.model_copy(update={
+                "availability": availability,
+                "text": None,
+            }))
+        authorized = tuple(dict.fromkeys(
+            item.reference.source_ref
+            for item in refreshed
+            if item.availability is RequirementsEvidenceAvailability.CURRENT
+        ))
+        return request.model_copy(update={
+            "authorized_source_refs": authorized,
+            "evidence": tuple(refreshed),
+        })
+
 
 def _context_availability(
     outcome: TranscriptContextOutcome,
@@ -394,6 +505,53 @@ class RequirementsExecutionResult:
     artifact: RequirementsArtifact | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ExistingRunTranscriptRequirementsService:
+    """Reachable application path for transcript extraction on an existing run."""
+
+    input_builder: AuthorizedTranscriptRequirementsInputBuilder
+    input_artifacts: RequirementsInputArtifactWriter
+    execution: "RequirementsExtractionExecutionBoundary"
+
+    async def execute(
+        self,
+        *,
+        run: WorkflowRun,
+        locators: tuple[TimeRangeLocator, ...],
+        request: RequirementsExecutionRequest,
+        persistence_context: TrustedPersistenceContext,
+    ) -> RequirementsExecutionResult:
+        if (
+            request.workspace_id != run.workspace_id
+            or request.environment_id != run.environment_id
+            or request.workflow_run_id != run.run_id
+            or request.work_item_id != run.work_item_id
+        ):
+            raise RequirementsExecutionError(RequirementsExecutionErrorCode.INVALID_REQUEST)
+        value = await self.input_builder.build(
+            run=run,
+            environment=request.environment,
+            locators=locators,
+            execution=request.execution,
+        )
+        artifact = await self.input_artifacts.persist_requirements_input(
+            value=value,
+            produced_by=request.acting_on_behalf_of,
+        )
+        if (
+            artifact.workspace_id != run.workspace_id
+            or artifact.environment_id != run.environment_id
+            or artifact.work_item_id != run.work_item_id
+            or artifact.artifact_schema != extract_requirements_capability().input_schema
+            or artifact.content != value.model_dump(mode="json")
+        ):
+            raise RequirementsExecutionError(RequirementsExecutionErrorCode.INPUT_UNAVAILABLE)
+        return await self.execution.execute(
+            request=request.model_copy(update={"input_artifact_id": artifact.id}),
+            persistence_context=persistence_context,
+        )
+
+
 class RequirementsExtractionExecutionBoundary:
     """Resolve, invoke and persist one pinned requirements extraction."""
 
@@ -405,6 +563,7 @@ class RequirementsExtractionExecutionBoundary:
         runtime_provider: RequirementsRuntimeProvider,
         artifacts: RequirementsArtifactReader,
         requirements_artifacts: RequirementsArtifactCandidatePort,
+        evidence_revalidator: RequirementsEvidenceRevalidator | None = None,
     ) -> None:
         if capability.key != "extract_requirements":
             raise ValueError("extract_requirements capability is required")
@@ -413,6 +572,7 @@ class RequirementsExtractionExecutionBoundary:
         self._runtime_provider = runtime_provider
         self._artifacts = artifacts
         self._requirements_artifacts = requirements_artifacts
+        self._evidence_revalidator = evidence_revalidator
 
     def resolve(
         self, request: RequirementsExecutionRequest
@@ -509,7 +669,10 @@ class RequirementsExtractionExecutionBoundary:
                 input_artifact.workspace_id != request.workspace_id
                 or input_artifact.environment_id != request.environment_id
                 or input_artifact.work_item_id != request.work_item_id
-                or input_artifact.artifact_schema != self._capability.input_schema
+                or input_artifact.artifact_schema not in (
+                    self._capability.input_schema,
+                    extract_requirements_capability_v1().input_schema,
+                )
                 or output_artifact.workspace_id != request.workspace_id
                 or output_artifact.environment_id != request.environment_id
                 or output_artifact.work_item_id != request.work_item_id
@@ -517,7 +680,24 @@ class RequirementsExtractionExecutionBoundary:
                 or output_artifact.produced_by_agent_version_id != resolved.agent_version.id
             ):
                 raise ValueError
-            normalized_input = ExtractRequirementsInput.model_validate(input_artifact.content)
+            if input_artifact.artifact_schema == extract_requirements_capability_v1().input_schema:
+                normalized_input = upgrade_extract_requirements_input(
+                    ExtractRequirementsInputV1.model_validate(input_artifact.content)
+                )
+            else:
+                normalized_input = ExtractRequirementsInput.model_validate(
+                    input_artifact.content
+                )
+            if any(
+                isinstance(item, TranscriptRequirementsEvidence)
+                and item.availability is RequirementsEvidenceAvailability.CURRENT
+                for item in normalized_input.evidence
+            ):
+                if self._evidence_revalidator is None:
+                    raise ValueError
+                normalized_input = await self._evidence_revalidator.revalidate(
+                    normalized_input
+                )
             extraction = RequirementsExtractionOutput.model_validate(output_artifact.content)
             _validate_handoff(
                 capability=self._capability,
@@ -559,6 +739,20 @@ def extract_requirements_artifact_schema(
     if type(capability) is not CapabilityDefinition or capability.key != "extract_requirements":
         raise ValueError("extract_requirements capability is required")
     expected = extract_requirements_capability()
+    legacy = extract_requirements_capability_v1()
+    if (
+        capability.id == legacy.id
+        and capability.input_schema == legacy.input_schema
+        and capability.output_schema == legacy.output_schema
+    ):
+        return CapabilityArtifactSchema(
+            schema_identity=CapabilitySchemaIdentity.from_capability(capability),
+            input_model=ExtractRequirementsInputV1,
+            output_model=RequirementsExtractionOutputV1,
+            assemble_input=_assemble_input,
+            validate_metadata=_validate_metadata,
+            validate_handoff=_validate_runtime_handoff_v1,
+        )
     if (
         capability.input_schema != expected.input_schema
         or capability.output_schema != expected.output_schema
@@ -636,6 +830,25 @@ async def deterministic_extract_requirements(
     )
 
 
+async def deterministic_extract_requirements_v1(
+    request: AgentRequest[ExtractRequirementsInputV1],
+    context: AgentExecutionContext,
+) -> RequirementsExtractionOutputV1:
+    """Replay the frozen pre-transcript deterministic implementation."""
+
+    upgraded = upgrade_extract_requirements_input(request.input)
+    current = await deterministic_extract_requirements(
+        AgentRequest(
+            capability=extract_requirements_capability(),
+            input=upgraded,
+        ),
+        context,
+    )
+    payload = current.model_dump(mode="python")
+    payload["schema_version"] = "extract-requirements.output:v1"
+    return RequirementsExtractionOutputV1.model_validate(payload)
+
+
 _LABELLED_REQUIREMENT_CATEGORIES = {
     "FUNCTIONAL": RequirementCategory.FUNCTIONAL,
     "NON_FUNCTIONAL": RequirementCategory.NON_FUNCTIONAL,
@@ -677,7 +890,7 @@ def _extract_labelled_evidence(
             ),
         )
 
-    requirements: list[Requirement] = []
+    requirements: list[RequirementV2] = []
     clarifications: list[RequirementsClarification] = []
     for evidence in current:
         if evidence.text is None:
@@ -720,8 +933,7 @@ def _extract_labelled_evidence(
             )
             partial = bool(markers)
             requirements.append(
-                Requirement(
-                    schema_version="requirement:v2",
+                RequirementV2(
                     requirement_id=requirement_id,
                     category=category,
                     statement=statement,
@@ -884,12 +1096,53 @@ def register_deterministic_extract_requirements_handler(registry: Any) -> None:
             output_type=RequirementsExtractionOutput,
         ),
     )
+    legacy_capability = extract_requirements_capability_v1()
+    legacy_version = extract_requirements_agent_version_v1()
+    registry.register_handler(
+        registration=AgentImplementationRegistration.from_version(
+            version=legacy_version,
+            capability=legacy_capability,
+            implementation_key=EXTRACT_REQUIREMENTS_IMPLEMENTATION_KEY,
+        ),
+        handler=adapt_async_function(
+            deterministic_extract_requirements_v1,
+            input_type=ExtractRequirementsInputV1,
+            output_type=RequirementsExtractionOutputV1,
+        ),
+    )
 
 
 def _assemble_input(artifacts: tuple[Artifact, ...]) -> Any:
     if len(artifacts) != 1:
         raise ValueError("requirements extraction requires exactly one input artifact")
     return artifacts[0].content
+
+
+def _validate_runtime_handoff_v1(
+    input_model: Any,
+    output_model: Any,
+    response: AgentResponse[Any],
+) -> None:
+    if response.error is not None:
+        return
+    if not isinstance(input_model, ExtractRequirementsInputV1) or not isinstance(
+        output_model, RequirementsExtractionOutputV1
+    ):
+        raise ValueError("requirements extraction v1 handoff is invalid")
+    if (
+        input_model.workspace_id != output_model.workspace_id
+        or input_model.environment_id != output_model.environment_id
+        or input_model.workflow_run_id != output_model.workflow_run_id
+        or input_model.work_item_id != output_model.work_item_id
+    ):
+        raise ValueError("requirements extraction v1 output scope changed")
+    allowed = set(input_model.authorized_source_refs)
+    if any(
+        source not in allowed
+        for requirement in output_model.requirements
+        for source in requirement.source_refs
+    ):
+        raise ValueError("requirements extraction v1 cited an unauthorized source")
 
 
 def _validate_metadata(response: AgentResponse[Any]) -> None:
@@ -1010,6 +1263,7 @@ def _binding_error_code(message: str) -> RequirementsExecutionErrorCode:
 __all__ = [
     "EXTRACT_REQUIREMENTS_AGENT_ID",
     "EXTRACT_REQUIREMENTS_AGENT_VERSION_ID",
+    "EXTRACT_REQUIREMENTS_AGENT_VERSION_V1_ID",
     "EXTRACT_REQUIREMENTS_CAPABILITY_ID",
     "EXTRACT_REQUIREMENTS_IMPLEMENTATION_KEY",
     "RequirementsArtifactCandidatePort",
@@ -1022,12 +1276,18 @@ __all__ = [
     "RequirementsExecutionResult",
     "RequirementsExtractionExecutionBoundary",
     "RequirementsRuntimeProvider",
+    "RequirementsEvidenceRevalidator",
+    "RequirementsInputArtifactWriter",
+    "ExistingRunTranscriptRequirementsService",
     "TranscriptRequirementsContextPort",
     "build_extract_requirements_artifact_schema",
     "deterministic_extract_requirements",
+    "deterministic_extract_requirements_v1",
     "extract_requirements_agent_version",
+    "extract_requirements_agent_version_v1",
     "extract_requirements_artifact_schema",
     "extract_requirements_capability",
+    "extract_requirements_capability_v1",
     "register_deterministic_extract_requirements_handler",
     "revalidate_clarified_requirement",
 ]

@@ -5188,7 +5188,7 @@ export interface components {
              * @default []
              */
             ambiguous_markers: string[];
-            category: components["schemas"]["RequirementCategory"];
+            category: components["schemas"]["RequirementCategoryV1"];
             /** Confidence */
             confidence?: number | null;
             /**
@@ -5216,11 +5216,10 @@ export interface components {
             /** @default needs_review */
             review_state: components["schemas"]["RequirementReviewState"];
             /**
-             * Schema Version
-             * @default requirement:v1
+             * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            schema_version: "requirement:v1" | "requirement:v2";
+            schema_version: "requirement:v1";
             /**
              * Source Refs
              * @default []
@@ -5243,6 +5242,12 @@ export interface components {
          * @enum {string}
          */
         RequirementCategory: "functional" | "non_functional" | "design" | "schedule" | "constraint" | "agreement" | "open_question" | "assumption" | "unresolved_information";
+        /**
+         * RequirementCategoryV1
+         * @description Categories frozen with the original requirement:v1 contract.
+         * @enum {string}
+         */
+        RequirementCategoryV1: "functional" | "non_functional" | "constraint" | "assumption" | "unresolved_information";
         /**
          * RequirementEvidenceRef
          * @description An exact source revision and parsed or time-based evidence segment.
@@ -5320,6 +5325,65 @@ export interface components {
          */
         RequirementState: "candidate" | "partial" | "unsupported" | "unverified" | "human_reviewed" | "accepted";
         /**
+         * RequirementV2
+         * @description Transcript-aware requirement contract with expanded categories.
+         */
+        RequirementV2: {
+            /**
+             * Ambiguous Markers
+             * @default []
+             */
+            ambiguous_markers: string[];
+            category: components["schemas"]["RequirementCategory"];
+            /** Confidence */
+            confidence?: number | null;
+            /**
+             * Constraints
+             * @default []
+             */
+            constraints: string[];
+            /**
+             * Evidence Refs
+             * @default []
+             */
+            evidence_refs: components["schemas"]["RequirementEvidenceRef"][];
+            /** @default unverified */
+            evidence_status: components["schemas"]["RequirementEvidenceStatus"];
+            /**
+             * Missing Markers
+             * @default []
+             */
+            missing_markers: string[];
+            /**
+             * Requirement Id
+             * Format: uuid
+             */
+            requirement_id: string;
+            /** @default needs_review */
+            review_state: components["schemas"]["RequirementReviewState"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            schema_version: "requirement:v2";
+            /**
+             * Source Refs
+             * @default []
+             */
+            source_refs: components["schemas"]["AcceptedSourceRevisionRef"][];
+            /** @default candidate */
+            state: components["schemas"]["RequirementState"];
+            /** Statement */
+            statement: string;
+            /** Uncertainty */
+            uncertainty?: string | null;
+            /**
+             * Upstream Artifact Ids
+             * @default []
+             */
+            upstream_artifact_ids: string[];
+        };
+        /**
          * RequirementsArtifact
          * @description Immutable, explicitly versioned requirements candidate for one run.
          */
@@ -5348,7 +5412,7 @@ export interface components {
             /** Production Identity */
             production_identity: string;
             /** Requirements */
-            requirements: components["schemas"]["Requirement"][];
+            requirements: (components["schemas"]["Requirement"] | components["schemas"]["RequirementV2"])[];
             /**
              * Run Id
              * Format: uuid

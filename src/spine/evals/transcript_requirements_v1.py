@@ -31,6 +31,7 @@ class TranscriptRequirementsEvalCase(DefinitionModel):
 class TranscriptRequirementsEvalDataset(DefinitionModel):
     schema_version: Literal["transcript-requirements-dataset:v1"]
     dataset_version: Literal["transcript-requirements:v1"]
+    source_assumptions: tuple[str, ...] = Field(min_length=1)
     cases: tuple[TranscriptRequirementsEvalCase, ...]
 
 

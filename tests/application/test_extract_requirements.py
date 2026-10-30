@@ -18,17 +18,23 @@ from spine.application.diagnostics import DiagnosticContext
 from spine.application.extract_requirements import (
     EXTRACT_REQUIREMENTS_IMPLEMENTATION_KEY,
     AuthorizedTranscriptRequirementsInputBuilder,
+    ExistingRunTranscriptRequirementsService,
+    RequirementsExecutionError,
+    RequirementsExecutionErrorCode,
     RequirementsExecutionRequest,
     RequirementsExtractionExecutionBoundary,
     extract_requirements_agent_version,
+    extract_requirements_agent_version_v1,
     extract_requirements_artifact_schema,
     extract_requirements_capability,
+    extract_requirements_capability_v1,
     deterministic_extract_requirements,
     register_deterministic_extract_requirements_handler,
 )
 from spine.application.transcript_publication import (
     TranscriptContextOutcome,
     TranscriptContextResponse,
+    TranscriptContextSegment,
 )
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -49,6 +55,7 @@ from spine.domain.agents import (
 from spine.domain.artifacts import Artifact, TimeRangeLocator, TranscriptProjectionSegment
 from spine.domain.capabilities import (
     ExtractRequirementsInput,
+    ExtractRequirementsInputV1,
     RequirementsEvidenceAvailability,
     RequirementsExtractionOutcome,
     RequirementsExtractionOutput,
@@ -188,7 +195,16 @@ class MutableTranscriptContext:
             return TranscriptContextResponse(
                 outcome=self.outcome,
                 reason_code="allowed",
-                segments=(self.segment,),
+                segments=(TranscriptContextSegment(
+                    segment_id=self.segment.segment_id,
+                    ordinal=self.segment.ordinal,
+                    text=self.segment.text,
+                    text_digest=self.segment.text_digest,
+                    locator=self.segment.locator,
+                    language="ru",
+                    anonymous_speaker_label="speaker-1",
+                    recognition_quality=TranscriptRecognitionQuality.RELIABLE,
+                ),),
                 publication_id=uid(205),
             )
         return TranscriptContextResponse(
@@ -247,7 +263,7 @@ async def test_existing_run_builds_input_from_freshly_authorized_transcript_and_
         handler_context(),
     )
 
-    assert result.outcome is RequirementsExtractionOutcome.PARTIAL
+    assert result.outcome is RequirementsExtractionOutcome.SUCCESS
     assert result.requirements[0].evidence_refs[0].transcript_locator == locator
     assert admitted.workflow_run_id == RUN
     assert context.requests[0].workspace_id == WORKSPACE
@@ -483,8 +499,10 @@ class ArtifactService:
 
 def boundary(
     *,
-    input_model: ExtractRequirementsInput | None = None,
+    input_model: ExtractRequirementsInput | ExtractRequirementsInputV1 | None = None,
     output_model: RequirementsExtractionOutput | None = None,
+    evidence_revalidator=None,
+    input_schema=None,
 ) -> tuple[RequirementsExtractionExecutionBoundary, Runtime, ArtifactService]:
     capability = extract_requirements_capability()
     version = extract_requirements_agent_version()
@@ -528,7 +546,7 @@ def boundary(
         environment_id=ENVIRONMENT,
         work_item_id=WORK_ITEM,
         produced_by=ActorRef(kind=ActorKind.HUMAN, id=uid(9)),
-        artifact_schema=capability.input_schema,
+        artifact_schema=input_schema or capability.input_schema,
         content=input_model.model_dump(mode="json"),
     )
     output_artifact = Artifact(
@@ -556,6 +574,7 @@ def boundary(
             runtime_provider=Provider(),
             artifacts=reader,
             requirements_artifacts=service,
+            evidence_revalidator=evidence_revalidator,
         ),
         runtime,
         service,
@@ -577,6 +596,29 @@ async def test_execution_pins_binding_and_runtime_config_and_preserves_typed_abs
     assert result.extraction.outcome is RequirementsExtractionOutcome.ABSTAINED
     assert result.artifact is None
     assert artifacts.calls == []
+
+
+@pytest.mark.asyncio
+async def test_existing_v1_input_artifact_rehydrates_in_current_execution_boundary() -> None:
+    legacy = ExtractRequirementsInputV1(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        environment=EnvironmentKind.DEVELOPMENT,
+        workflow_run_id=RUN,
+        work_item_id=WORK_ITEM,
+        client_request=ClientRequestV1(message="Prepare proposal requirements"),
+    )
+    execution, _, _ = boundary(
+        input_model=legacy,
+        input_schema=extract_requirements_capability_v1().input_schema,
+    )
+
+    result = await execution.execute(
+        request=request(), persistence_context=persistence_context()
+    )
+
+    assert result.extraction is not None
+    assert result.extraction.outcome is RequirementsExtractionOutcome.ABSTAINED
 
 
 @pytest.mark.asyncio
@@ -604,10 +646,37 @@ async def test_existing_run_transcript_flows_through_execution_artifact_and_pers
         AgentRequest(capability=extract_requirements_capability(), input=value),
         handler_context(),
     )
-    execution, _, artifacts = boundary(input_model=value, output_model=output)
+    revalidator = AuthorizedTranscriptRequirementsInputBuilder(
+        context=MutableTranscriptContext(segment)
+    )
+    execution, _, artifacts = boundary(
+        input_model=value,
+        output_model=output,
+        evidence_revalidator=revalidator,
+    )
 
-    result = await execution.execute(
-        request=request(), persistence_context=persistence_context()
+    class Writer:
+        async def persist_requirements_input(self, *, value, produced_by):
+            del produced_by
+            return Artifact(
+                id=INPUT_ARTIFACT,
+                workspace_id=WORKSPACE,
+                environment_id=ENVIRONMENT,
+                work_item_id=WORK_ITEM,
+                produced_by=ActorRef(kind=ActorKind.HUMAN, id=uid(9)),
+                artifact_schema=extract_requirements_capability().input_schema,
+                content=value.model_dump(mode="json"),
+            )
+
+    result = await ExistingRunTranscriptRequirementsService(
+        input_builder=revalidator,
+        input_artifacts=Writer(),
+        execution=execution,
+    ).execute(
+        run=workflow_run(source),
+        locators=(locator,),
+        request=request(),
+        persistence_context=persistence_context(),
     )
 
     assert result.extraction == output
@@ -615,6 +684,47 @@ async def test_existing_run_transcript_flows_through_execution_artifact_and_pers
     persisted = artifacts.calls[0]["extraction"]
     assert persisted.requirements[0].schema_version == "requirement:v2"
     assert persisted.requirements[0].evidence_refs[0].transcript_locator == locator
+
+
+@pytest.mark.asyncio
+async def test_revocation_after_runtime_blocks_handoff_and_persistence() -> None:
+    source, fixture = transcript_evidence(
+        ordinal=1, text="FUNCTIONAL: Synchronize orders."
+    )
+    locator = fixture.reference.transcript_locator
+    assert locator is not None and fixture.text is not None
+    segment = TranscriptProjectionSegment(
+        segment_id=fixture.reference.segment_id,
+        ordinal=1,
+        text=fixture.text,
+        text_digest=sha256(fixture.text.encode()).hexdigest(),
+        locator=locator,
+    )
+    context = MutableTranscriptContext(segment)
+    revalidator = AuthorizedTranscriptRequirementsInputBuilder(context=context)
+    value = await revalidator.build(
+        run=workflow_run(source),
+        environment=EnvironmentKind.DEVELOPMENT,
+        locators=(locator,),
+    )
+    output = await deterministic_extract_requirements(
+        AgentRequest(capability=extract_requirements_capability(), input=value),
+        handler_context(),
+    )
+    context.outcome = TranscriptContextOutcome.DENIED
+    execution, _, artifacts = boundary(
+        input_model=value,
+        output_model=output,
+        evidence_revalidator=revalidator,
+    )
+
+    with pytest.raises(RequirementsExecutionError) as raised:
+        await execution.execute(
+            request=request(), persistence_context=persistence_context()
+        )
+
+    assert raised.value.code is RequirementsExecutionErrorCode.OUTPUT_INVALID
+    assert artifacts.calls == []
 
 
 def test_extract_requirements_schema_rejects_wrong_capability_schema() -> None:
@@ -635,6 +745,12 @@ def test_deterministic_handler_is_registered_through_the_existing_registry() -> 
         version=extract_requirements_agent_version(),
     )
     assert selected is not None
+
+    legacy = registry.construct(
+        capability=extract_requirements_capability_v1(),
+        version=extract_requirements_agent_version_v1(),
+    )
+    assert legacy is not None
 
 
 @pytest.mark.asyncio

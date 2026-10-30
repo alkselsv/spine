@@ -14,12 +14,14 @@ from uuid import UUID
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
+from spine.domain.artifacts import TranscriptRecognitionQuality
 from spine.domain.common import EnvironmentKind, ValidatedDefinitionModel
 from spine.domain.workflows import (
     AcceptedSourceRevisionRef,
     ClientRequestV1,
     Requirement,
     RequirementEvidenceRef,
+    VersionedRequirement,
 )
 
 
@@ -29,12 +31,6 @@ EXTRACT_REQUIREMENTS_INPUT_SCHEMA = "extract-requirements.input:v2"
 EXTRACT_REQUIREMENTS_OUTPUT_SCHEMA = "extract-requirements.output:v2"
 
 
-class TranscriptRecognitionQuality(str, Enum):
-    """Versioned, provider-independent recognition assessment."""
-
-    RELIABLE = "reliable"
-    WEAK = "weak"
-    UNKNOWN = "unknown"
 class RequirementsExtractionOutcome(str, Enum):
     """Closed outcomes returned by the requirements capability."""
 
@@ -146,9 +142,7 @@ class TranscriptRequirementsEvidence(_RequirementsEvidence):
     anonymous_speaker_label: str | None = Field(
         default=None, min_length=1, max_length=128
     )
-    recognition_quality: TranscriptRecognitionQuality = (
-        TranscriptRecognitionQuality.RELIABLE
-    )
+    recognition_quality: TranscriptRecognitionQuality = TranscriptRecognitionQuality.UNKNOWN
 
     @model_validator(mode="after")
     def validate_transcript_reference(self) -> TranscriptRequirementsEvidence:
@@ -273,7 +267,7 @@ class RequirementsExtractionOutput(ValidatedDefinitionModel):
     workflow_run_id: UUID
     work_item_id: UUID
     outcome: RequirementsExtractionOutcome
-    requirements: tuple[Requirement, ...] = ()
+    requirements: tuple[VersionedRequirement, ...] = ()
     clarifications: tuple[RequirementsClarification, ...] = ()
     reason: RequirementsExtractionReason | None = None
 

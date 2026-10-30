@@ -464,6 +464,14 @@ class TranscriptSegment(DefinitionModel):
         return self
 
 
+class TranscriptRecognitionQuality(str, Enum):
+    """Provider-independent assessment exposed by governed transcript reads."""
+
+    RELIABLE = "reliable"
+    WEAK = "weak"
+    UNKNOWN = "unknown"
+
+
 class TranscriptionArtifact(DefinitionModel):
     """Immutable ASR output pinned to one exact audio revision and configuration."""
 
@@ -1100,6 +1108,7 @@ __all__ = [
     "SpeechToTextResult",
     "SpeechToTextSegment",
     "TranscriptSegment",
+    "TranscriptRecognitionQuality",
     "TranscriptionArtifact",
     "TranscriptionArtifactOutcome",
     "TranscriptionChunkCheckpoint",

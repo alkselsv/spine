@@ -15,9 +15,11 @@ from spine.application.transcript_publication import (
     TranscriptPublicationService,
 )
 from spine.domain.artifacts import (
+    AdapterSignal,
     SpeechToTextSegment,
     TranscriptProjectionState,
     TranscriptPublicationState,
+    TranscriptRecognitionQuality,
     TranscriptionArtifact,
 )
 
@@ -33,7 +35,12 @@ APPROVER = UUID("70000000-0000-0000-0000-000000000001")
 NOW = datetime(2026, 10, 30, 9, 0, tzinfo=timezone.utc)
 
 
-def artifact(*, workspace_id: UUID = WORKSPACE) -> TranscriptionArtifact:
+def artifact(
+    *,
+    workspace_id: UUID = WORKSPACE,
+    signals: tuple[AdapterSignal, ...] = (),
+    speaker: str | None = None,
+) -> TranscriptionArtifact:
     return TranscriptionArtifact.create(
         workspace_id=workspace_id,
         environment_id=ENVIRONMENT,
@@ -48,7 +55,13 @@ def artifact(*, workspace_id: UUID = WORKSPACE) -> TranscriptionArtifact:
         recording_duration_ms=10_000,
         language="ru",
         segments=(
-            SpeechToTextSegment(start_ms=1_000, end_ms=2_500, text="protected transcript"),
+            SpeechToTextSegment(
+                start_ms=1_000,
+                end_ms=2_500,
+                text="protected transcript",
+                anonymous_speaker_label=speaker,
+                signals=signals,
+            ),
         ),
     )
 
@@ -189,6 +202,48 @@ async def test_context_broker_returns_authorized_timestamped_segments() -> None:
     assert response.segments[0].locator.transcript_artifact_id == transcript.artifact_id
     assert response.segments[0].locator.start_ms == 1_000
     assert authorization.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_context_broker_preserves_typed_speaker_and_weak_recognition() -> None:
+    transcript = artifact(
+        speaker="speaker-1",
+        signals=(AdapterSignal(name="recognition_confidence", value=0.31),),
+    )
+
+    class Artifacts:
+        async def get_artifact(self, **kwargs: object):
+            return transcript
+
+    repository = InMemoryTranscriptPublicationRepository(Artifacts())
+    authorization = Authorization()
+    publication = (await TranscriptPublicationService(
+        repository=repository,
+        policy=ExplicitTranscriptPublicationPolicy(
+            policy_reference="transcript-review:v1",
+            require_human_approval=True,
+            allow_partial=False,
+        ),
+        authorization=authorization,
+        clock=lambda: NOW,
+    ).publish(PublishTranscriptCommand(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        transcript_artifact_id=transcript.artifact_id,
+        approval=approval(transcript),
+    ))).publication
+
+    response = await TranscriptContextBroker(
+        repository=repository, authorization=authorization
+    ).retrieve(TranscriptContextRequest(
+        request_id=UUID("80000000-0000-0000-0000-000000000009"),
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        locator=publication.segments[0].locator,
+    ))
+
+    assert response.segments[0].anonymous_speaker_label == "speaker-1"
+    assert response.segments[0].recognition_quality is TranscriptRecognitionQuality.WEAK
 
 
 @pytest.mark.asyncio

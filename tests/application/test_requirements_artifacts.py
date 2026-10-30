@@ -25,7 +25,13 @@ from spine.domain.capabilities.extract_requirements import (
     RequirementsExtractionOutcome,
     RequirementsExtractionOutput,
 )
-from spine.domain.workflows import ClientRequestV1, Requirement, RequirementState, WorkflowRun
+from spine.domain.workflows import (
+    ClientRequestV1,
+    Requirement,
+    RequirementState,
+    RequirementV2,
+    WorkflowRun,
+)
 from spine.domain.workflows.runs import WorkflowRunState
 
 
@@ -320,8 +326,7 @@ async def test_transcript_requirement_persists_as_version_two_artifact() -> None
         workspace_id=UUID(int=1), environment_id=UUID(int=2),
         workflow_run_id=UUID(int=3), work_item_id=UUID(int=5),
         outcome=RequirementsExtractionOutcome.SUCCESS,
-        requirements=(Requirement(
-            schema_version="requirement:v2",
+        requirements=(RequirementV2(
             requirement_id=UUID(int=30),
             category="schedule",
             statement="Launch by 20 December",

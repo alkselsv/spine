@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import (
@@ -49,6 +49,16 @@ class RequirementCategory(str, Enum):
     CONSTRAINT = "constraint"
     AGREEMENT = "agreement"
     OPEN_QUESTION = "open_question"
+    ASSUMPTION = "assumption"
+    UNRESOLVED_INFORMATION = "unresolved_information"
+
+
+class RequirementCategoryV1(str, Enum):
+    """Categories frozen with the original requirement:v1 contract."""
+
+    FUNCTIONAL = "functional"
+    NON_FUNCTIONAL = "non_functional"
+    CONSTRAINT = "constraint"
     ASSUMPTION = "assumption"
     UNRESOLVED_INFORMATION = "unresolved_information"
 
@@ -272,9 +282,9 @@ class RequirementEvidenceRef(DefinitionModel):
 class Requirement(DefinitionModel):
     """One traceable, unaccepted statement proposed by requirements extraction."""
 
-    schema_version: Literal["requirement:v1", "requirement:v2"] = "requirement:v1"
+    schema_version: Literal["requirement:v1"] = "requirement:v1"
     requirement_id: UUID
-    category: RequirementCategory
+    category: RequirementCategoryV1
     statement: StrictStr = Field(min_length=1, max_length=8_192)
     constraints: tuple[StrictStr, ...] = ()
     uncertainty: StrictStr | None = Field(default=None, max_length=2_000)
@@ -300,14 +310,6 @@ class Requirement(DefinitionModel):
 
     @model_validator(mode="after")
     def validate_evidence_lineage(self) -> "Requirement":
-        v2_categories = {
-            RequirementCategory.DESIGN,
-            RequirementCategory.SCHEDULE,
-            RequirementCategory.AGREEMENT,
-            RequirementCategory.OPEN_QUESTION,
-        }
-        if self.category in v2_categories and self.schema_version != "requirement:v2":
-            raise ValueError("new requirement categories require requirement:v2")
         source_refs = {
             (reference.source_object_id, reference.source_revision_id, reference.provenance_id)
             for reference in self.source_refs
@@ -339,6 +341,19 @@ class Requirement(DefinitionModel):
         return self
 
 
+class RequirementV2(Requirement):
+    """Transcript-aware requirement contract with expanded categories."""
+
+    schema_version: Literal["requirement:v2"] = "requirement:v2"
+    category: RequirementCategory
+
+
+VersionedRequirement = Annotated[
+    Requirement | RequirementV2,
+    Field(discriminator="schema_version"),
+]
+
+
 class RequirementsArtifact(DefinitionModel):
     """Immutable, explicitly versioned requirements candidate for one run."""
 
@@ -351,7 +366,7 @@ class RequirementsArtifact(DefinitionModel):
     environment_id: UUID
     work_item_id: UUID
     run_id: UUID
-    requirements: tuple[Requirement, ...]
+    requirements: tuple[VersionedRequirement, ...]
     clarifications: tuple[Clarification, ...] = ()
     state: RequirementState = RequirementState.CANDIDATE
     upstream_artifact_ids: tuple[UUID, ...] = ()
@@ -374,7 +389,7 @@ class RequirementsArtifact(DefinitionModel):
     @model_validator(mode="after")
     def validate_successor(self) -> "RequirementsArtifact":
         if self.schema_version == "requirements:v1" and any(
-            item.schema_version != "requirement:v1" for item in self.requirements
+            isinstance(item, RequirementV2) for item in self.requirements
         ):
             raise ValueError("requirements:v1 cannot contain newer requirement contracts")
         if self.predecessor_version is None and self.artifact_version != 1:

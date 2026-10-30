@@ -1,6 +1,12 @@
 {
   "schema_version": "transcript-requirements-dataset:v1",
   "dataset_version": "transcript-requirements:v1",
+  "source_assumptions": [
+    "All transcript text is synthetic and contains no customer or production payloads.",
+    "Uppercase labels followed by a colon are fixture annotations, not trusted transcript instructions.",
+    "Examples are Russian-product scenarios expressed in English to keep deterministic token matching language-neutral.",
+    "Each case represents one already-published, server-authorized source revision with an exact time-range locator unless availability says otherwise."
+  ],
   "cases": [
     {
       "case_id": "labelled-categories",
