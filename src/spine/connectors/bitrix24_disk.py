@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from datetime import datetime
 import hashlib
 import json
 import random
+from collections.abc import Awaitable, Callable
+from datetime import datetime
 from typing import Literal, Protocol
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, StrictBytes, StrictFloat, StrictInt, field_validator, model_validator
+from pydantic import (
+    ConfigDict,
+    Field,
+    StrictBytes,
+    StrictFloat,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 from spine.connectors.observations import ConnectorCoverage
 from spine.connectors.observations_v2 import (
@@ -31,7 +39,6 @@ from spine.domain.connections.provider import (
     ProviderConnection,
     ProviderKind,
 )
-
 
 BITRIX24_DISK_EXTERNAL_NAMESPACE = "bitrix24-disk"
 BITRIX24_DISK_EXTERNAL_GENERATION = "bitrix24-disk-object:v1"
@@ -148,13 +155,17 @@ class Bitrix24DiskFile(DefinitionModel):
         if value is None:
             return None
         if isinstance(value, bool) or not isinstance(value, (str, int)):
-            raise ValueError("Bitrix24 provider identifiers must be strings or integers")
+            raise ValueError(
+                "Bitrix24 provider identifiers must be strings or integers"
+            )
         return str(value)
 
     @model_validator(mode="after")
     def validate_file_metadata(self) -> "Bitrix24DiskFile":
         for value in (self.create_time, self.update_time):
-            if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            if value is not None and (
+                value.tzinfo is None or value.utcoffset() is None
+            ):
                 raise ValueError("Bitrix24 Disk timestamps must be timezone-aware")
         if self.type == "file" and (
             self.global_content_version is None
@@ -192,7 +203,9 @@ class Bitrix24DiskReadProfile(DefinitionModel):
     def validate_backoff(self) -> "Bitrix24DiskReadProfile":
         values = self.backoff_seconds
         if values is None:
-            values = tuple(0.25 * (2**attempt) for attempt in range(self.max_attempts - 1))
+            values = tuple(
+                0.25 * (2**attempt) for attempt in range(self.max_attempts - 1)
+            )
             object.__setattr__(self, "backoff_seconds", values)
         if len(values) != self.max_attempts - 1:
             raise ValueError("backoff_seconds must cover every retry")
@@ -270,7 +283,6 @@ def bitrix24_disk_capabilities(
     )
     unsupported = (
         ProviderCapabilityKind.TABULAR_READ,
-        ProviderCapabilityKind.STRUCTURED_READ,
         ProviderCapabilityKind.INCREMENTAL_CHANGE_DISCOVERY,
         ProviderCapabilityKind.FULL_RECONCILIATION,
         ProviderCapabilityKind.LIFECYCLE_EVIDENCE,
@@ -283,27 +295,46 @@ def bitrix24_disk_capabilities(
                 status=ProviderCapabilityStatus.SUPPORTED,
                 qualification_reference=crm_qualification_reference,
             ),
+            ProviderCapability(
+                kind=ProviderCapabilityKind.STRUCTURED_READ,
+                status=ProviderCapabilityStatus.SUPPORTED,
+                qualification_reference=crm_qualification_reference,
+            ),
         )
         if crm_qualification_reference is not None
-        else (ProviderCapability(kind=ProviderCapabilityKind.CRM, status=ProviderCapabilityStatus.UNQUALIFIED),)
-    )
-    return tuple(
-        ProviderCapability(
-            kind=kind,
-            status=ProviderCapabilityStatus.SUPPORTED,
-            qualification_reference=qualification_reference,
+        else (
+            ProviderCapability(
+                kind=ProviderCapabilityKind.CRM,
+                status=ProviderCapabilityStatus.UNQUALIFIED,
+            ),
+            ProviderCapability(
+                kind=ProviderCapabilityKind.STRUCTURED_READ,
+                status=ProviderCapabilityStatus.UNSUPPORTED,
+            ),
         )
-        for kind in supported
-    ) + tuple(
-        ProviderCapability(kind=kind, status=ProviderCapabilityStatus.UNSUPPORTED)
-        for kind in unsupported
-        if kind is not ProviderCapabilityKind.CRM
-    ) + (
-        ProviderCapability(
-            kind=ProviderCapabilityKind.HEALTH_DIAGNOSTICS,
-            status=ProviderCapabilityStatus.UNQUALIFIED,
-        ),
-    ) + crm
+    )
+    return (
+        tuple(
+            ProviderCapability(
+                kind=kind,
+                status=ProviderCapabilityStatus.SUPPORTED,
+                qualification_reference=qualification_reference,
+            )
+            for kind in supported
+        )
+        + tuple(
+            ProviderCapability(kind=kind, status=ProviderCapabilityStatus.UNSUPPORTED)
+            for kind in unsupported
+            if kind is not ProviderCapabilityKind.CRM
+        )
+        + (
+            ProviderCapability(
+                kind=ProviderCapabilityKind.HEALTH_DIAGNOSTICS,
+                status=ProviderCapabilityStatus.UNQUALIFIED,
+            ),
+        )
+        + crm
+    )
 
 
 def _default_retry_jitter(backoff: float) -> float:
@@ -335,14 +366,18 @@ class Bitrix24DiskProviderAdapter:
             raise Bitrix24DiskContractError()
         if command.resource_object_reference is None:
             raise Bitrix24DiskResourceNotFoundError()
-        if set(command.required_capabilities) != set(BITRIX24_DISK_REQUIRED_CAPABILITIES):
+        if set(command.required_capabilities) != set(
+            BITRIX24_DISK_REQUIRED_CAPABILITIES
+        ):
             raise Bitrix24DiskContractError()
         if any(
             not connection.supports(capability)
             for capability in BITRIX24_DISK_REQUIRED_CAPABILITIES
         ):
             raise Bitrix24DiskContractError()
-        acting_principal_id = command.acting_subject_id or connection.service_principal_id
+        acting_principal_id = (
+            command.acting_subject_id or connection.service_principal_id
+        )
         if acting_principal_id.int == 0:
             raise Bitrix24DiskContractError()
         for attempt in range(1, self._profile.max_attempts + 1):
@@ -435,7 +470,10 @@ class Bitrix24DiskProviderAdapter:
                 page_size=self._profile.page_size,
                 acting_principal_id=acting_principal_id,
             )
-            if len(page.items) > self._profile.page_size or page.total > self._profile.max_items:
+            if (
+                len(page.items) > self._profile.page_size
+                or page.total > self._profile.max_items
+            ):
                 raise Bitrix24DiskContractError()
             listed_items += len(page.items)
             if listed_items > self._profile.max_items:
@@ -601,9 +639,7 @@ def _provider_payload_digest(file: Bitrix24DiskFile) -> str:
 def _provider_payload(file: Bitrix24DiskFile) -> dict[str, str | int | None]:
     """Retain a bounded raw metadata snapshot without credentials or signed URLs."""
 
-    payload = file.model_dump(
-        mode="json", by_alias=True, exclude={"download_url"}
-    )
+    payload = file.model_dump(mode="json", by_alias=True, exclude={"download_url"})
     return payload
 
 

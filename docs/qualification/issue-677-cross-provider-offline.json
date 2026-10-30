@@ -1,0 +1,321 @@
+{
+  "schema_version": "issue-677-cross-provider-offline:v1",
+  "ticket": 677,
+  "status": "offline_pass",
+  "qualification_boundary": "provider-admission-canonical-outbox-authorized-retrieval",
+  "verification": {
+    "focused_command": "uv run pytest -q tests/qualification/test_issue677_cross_provider_offline.py tests/qualification/test_issue614_google_offline_qualification.py tests/application/test_connector_ingestion.py tests/application/test_provider_read_admission.py tests/application/test_authorized_context_broker.py tests/connectors/test_yandex_disk.py tests/application/test_yandex_disk_reconciliation.py tests/connectors/test_bitrix24_disk.py tests/connectors/test_bitrix24_crm_material.py tests/application/test_bitrix24_crm_material_service.py tests/connectors/files/test_mounted_filesystem.py tests/application/test_mounted_filesystem_reconciliation.py tests/application/test_google_drive_reader.py tests/application/test_google_drive_snapshot.py tests/application/test_google_drive_changes.py tests/application/test_google_drive_reconciliation.py tests/application/test_google_drive_lifecycle.py tests/application/test_google_sheets_reader.py tests/application/test_google_sheets_reconciliation.py tests/application/test_google_sheets_lifecycle.py tests/application/test_google_read_admission.py tests/application/test_google_sync_diagnostics.py tests/application/test_register_associations.py",
+    "focused_result": "299 passed, 0 skipped, 0 failed",
+    "repository_command": "TMPDIR=/private/tmp uv run pytest -q",
+    "repository_result": "5003 passed, 7 skipped, 0 failed",
+    "repository_prerequisite": "Docker access for the mandatory PostgreSQL postgres:17.6-bookworm gate",
+    "repository_warning": "One existing Pydantic serializer warning in tests/domain/storage/test_recovery_integrity.py::test_unknown_event_kind_is_rejected",
+    "compileall_command": "uv run python -m compileall -q src tests",
+    "compileall_result": "passed"
+  },
+  "privacy": {
+    "synthetic_fakes_only": true,
+    "credentials_recorded": false,
+    "signed_urls_recorded": false,
+    "provider_payloads_recorded": false,
+    "customer_content_recorded": false,
+    "raw_provider_errors_recorded": false
+  },
+  "required_scenarios": [
+    "common_envelope_and_provider_provenance",
+    "authorized_canonical_retrieval",
+    "workspace_isolation_and_pre_provider_denial",
+    "replay_duplicates_pagination_and_partial_failure",
+    "durable_cursor_or_scan_commit",
+    "rename_move_identity",
+    "deletion_and_access_loss",
+    "reappearance",
+    "revocation",
+    "outage",
+    "large_files",
+    "google_regression_qualification"
+  ],
+  "providers": {
+    "google_compatibility": {
+      "capabilities": {
+        "binary": "supported",
+        "tabular": "supported",
+        "structured_relationship": "unqualified",
+        "incremental": "supported",
+        "full_reconciliation": "supported",
+        "path_scoped_identity": "unsupported"
+      },
+      "offline_result": "PASS",
+      "live_result": "NOT_VERIFIED",
+      "live_prerequisites": [
+        "Security and Data Owner approval for an isolated Google tenant, OAuth mode and scopes",
+        "approved synthetic Drive, Shared Drive and Sheets resources",
+        "Operations-approved quota, pagination, retry and cleanup bounds"
+      ],
+      "scenarios": {
+        "common_envelope_and_provider_provenance": "PASS",
+        "authorized_canonical_retrieval": "PASS",
+        "workspace_isolation_and_pre_provider_denial": "PASS",
+        "replay_duplicates_pagination_and_partial_failure": "PASS",
+        "durable_cursor_or_scan_commit": "PASS",
+        "rename_move_identity": "PASS",
+        "deletion_and_access_loss": "PASS",
+        "reappearance": "PASS",
+        "revocation": "PASS",
+        "outage": "PASS",
+        "large_files": "NOT_APPLICABLE",
+        "google_regression_qualification": "PASS"
+      },
+      "evidence": {
+        "common_envelope_and_provider_provenance": [
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_provider_binary_runs_through_real_adapter_and_admission",
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_equivalent_provider_bytes_produce_equivalent_canonical_content",
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_typed_representations_keep_one_common_canonical_retrieval_contract"
+        ],
+        "authorized_canonical_retrieval": [
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_authorized_retrieval_preserves_exact_ingested_lineage"
+        ],
+        "workspace_isolation_and_pre_provider_denial": [
+          "tests/application/test_provider_read_admission.py::test_cross_workspace_read_is_denied_before_provider_call_without_leakage"
+        ],
+        "replay_duplicates_pagination_and_partial_failure": [
+          "tests/qualification/test_issue614_google_offline_qualification.py::test_issue614_traceability_matrix_covers_required_scenarios",
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_provider_replay_has_one_canonical_outbox_effect"
+        ],
+        "durable_cursor_or_scan_commit": [
+          "tests/qualification/test_issue614_google_offline_qualification.py::test_issue614_traceability_matrix_covers_required_scenarios"
+        ],
+        "google_regression_qualification": [
+          "tests/qualification/test_issue614_google_offline_qualification.py::test_issue614_traceability_matrix_covers_required_scenarios",
+          "tests/qualification/test_issue614_google_offline_qualification.py::test_issue614_report_records_live_provider_prerequisites_and_metadata_only_policy"
+        ],
+        "rename_move_identity": [
+          "tests/qualification/test_issue614_google_offline_qualification.py::test_issue614_traceability_matrix_covers_required_scenarios"
+        ],
+        "deletion_and_access_loss": [
+          "tests/qualification/test_issue614_google_offline_qualification.py::test_issue614_traceability_matrix_covers_required_scenarios"
+        ],
+        "reappearance": [
+          "tests/qualification/test_issue614_google_offline_qualification.py::test_issue614_traceability_matrix_covers_required_scenarios"
+        ],
+        "revocation": [
+          "tests/qualification/test_issue614_google_offline_qualification.py::test_issue614_traceability_matrix_covers_required_scenarios"
+        ],
+        "outage": [
+          "tests/qualification/test_issue614_google_offline_qualification.py::test_issue614_traceability_matrix_covers_required_scenarios"
+        ],
+        "large_files": []
+      }
+    },
+    "yandex_disk": {
+      "capabilities": {
+        "binary": "supported",
+        "tabular": "unsupported",
+        "structured_relationship": "unsupported",
+        "incremental": "unqualified",
+        "full_reconciliation": "supported",
+        "path_scoped_identity": "supported"
+      },
+      "offline_result": "PASS",
+      "live_result": "NOT_VERIFIED",
+      "live_prerequisites": [
+        "Security and Data Owner approval for an isolated Yandex Disk account and OAuth scopes",
+        "approved synthetic folder with rename, deletion, access-loss and large-file fixtures",
+        "Operations-approved scan, retry, throttling and cleanup bounds"
+      ],
+      "scenarios": {
+        "common_envelope_and_provider_provenance": "PASS",
+        "authorized_canonical_retrieval": "PASS",
+        "workspace_isolation_and_pre_provider_denial": "PASS",
+        "replay_duplicates_pagination_and_partial_failure": "PASS",
+        "durable_cursor_or_scan_commit": "PASS",
+        "rename_move_identity": "PASS",
+        "deletion_and_access_loss": "PASS",
+        "reappearance": "PASS",
+        "revocation": "PASS",
+        "outage": "PASS",
+        "large_files": "PASS",
+        "google_regression_qualification": "NOT_APPLICABLE"
+      },
+      "evidence": {
+        "common_envelope_and_provider_provenance": [
+          "tests/connectors/test_yandex_disk.py::test_reader_preserves_official_metadata_exact_bytes_and_path_scoped_identity",
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_typed_representations_keep_one_common_canonical_retrieval_contract",
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_provider_binary_runs_through_real_adapter_and_admission",
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_equivalent_provider_bytes_produce_equivalent_canonical_content"
+        ],
+        "authorized_canonical_retrieval": [
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_authorized_retrieval_preserves_exact_ingested_lineage"
+        ],
+        "workspace_isolation_and_pre_provider_denial": [
+          "tests/connectors/test_yandex_disk.py::test_wrong_scope_and_workspace_are_denied_before_provider_content_read"
+        ],
+        "replay_duplicates_pagination_and_partial_failure": [
+          "tests/application/test_yandex_disk_reconciliation.py::test_interrupted_page_replays_with_stable_item_identity_and_keeps_prior_checkpoint",
+          "tests/application/test_yandex_disk_reconciliation.py::test_duplicate_page_item_reuses_accepted_effect_and_emits_one_lifecycle_record",
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_provider_replay_has_one_canonical_outbox_effect"
+        ],
+        "durable_cursor_or_scan_commit": [
+          "tests/application/test_yandex_disk_reconciliation.py::test_pages_commit_opaque_checkpoint_only_after_canonical_effects_are_accepted"
+        ],
+        "google_regression_qualification": [],
+        "rename_move_identity": [
+          "tests/application/test_yandex_disk_reconciliation.py::test_complete_scope_rename_records_new_path_and_tombstones_old_path_without_continuity"
+        ],
+        "deletion_and_access_loss": [
+          "tests/application/test_yandex_disk_reconciliation.py::test_complete_absence_without_deletion_policy_remains_ambiguous",
+          "tests/application/test_yandex_disk_reconciliation.py::test_incomplete_and_provider_failures_record_distinct_state_without_tombstone"
+        ],
+        "reappearance": [
+          "tests/application/test_yandex_disk_reconciliation.py::test_path_scoped_reappearance_creates_new_source_and_records_non_equivalence"
+        ],
+        "revocation": [
+          "tests/connectors/test_yandex_disk.py::test_size_limit_and_provider_revocation_fail_before_observation"
+        ],
+        "outage": [
+          "tests/connectors/test_yandex_disk.py::test_transient_outage_uses_bounded_backoff_and_jitter"
+        ],
+        "large_files": [
+          "tests/connectors/test_yandex_disk.py::test_size_limit_and_provider_revocation_fail_before_observation"
+        ]
+      }
+    },
+    "bitrix24": {
+      "capabilities": {
+        "binary": "supported",
+        "tabular": "unsupported",
+        "structured_relationship": "supported",
+        "incremental": "unqualified",
+        "full_reconciliation": "unsupported",
+        "path_scoped_identity": "unsupported"
+      },
+      "offline_result": "PASS",
+      "live_result": "NOT_VERIFIED",
+      "live_prerequisites": [
+        "Security and Data Owner approval for an isolated Bitrix24 portal, acting user and disk/crm scopes",
+        "approved synthetic Disk file, CRM entity, activity and attachment relationship",
+        "Operations-approved pagination, overload, retry and signed-link cleanup bounds"
+      ],
+      "scenarios": {
+        "common_envelope_and_provider_provenance": "PASS",
+        "authorized_canonical_retrieval": "PASS",
+        "workspace_isolation_and_pre_provider_denial": "PASS",
+        "replay_duplicates_pagination_and_partial_failure": "PASS",
+        "durable_cursor_or_scan_commit": "NOT_APPLICABLE",
+        "rename_move_identity": "NOT_APPLICABLE",
+        "deletion_and_access_loss": "NOT_APPLICABLE",
+        "reappearance": "NOT_APPLICABLE",
+        "revocation": "PASS",
+        "outage": "PASS",
+        "large_files": "PASS",
+        "google_regression_qualification": "NOT_APPLICABLE"
+      },
+      "evidence": {
+        "common_envelope_and_provider_provenance": [
+          "tests/connectors/test_bitrix24_disk.py::test_reader_preserves_disk_object_version_exact_bytes_and_omits_signed_url",
+          "tests/connectors/test_bitrix24_crm_material.py::test_crm_activity_attachment_preserves_exact_binding_and_disk_revision",
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_typed_representations_keep_one_common_canonical_retrieval_contract",
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_provider_binary_runs_through_real_adapter_and_admission",
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_equivalent_provider_bytes_produce_equivalent_canonical_content"
+        ],
+        "authorized_canonical_retrieval": [
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_authorized_retrieval_preserves_exact_ingested_lineage"
+        ],
+        "workspace_isolation_and_pre_provider_denial": [
+          "tests/connectors/test_bitrix24_disk.py::test_scope_workspace_and_revocation_are_denied_before_provider_read",
+          "tests/connectors/test_bitrix24_crm_material.py::test_crm_reader_rejects_cross_workspace_before_provider_access"
+        ],
+        "replay_duplicates_pagination_and_partial_failure": [
+          "tests/connectors/test_bitrix24_disk.py::test_pagination_duplicate_entries_and_throttle_are_bounded_and_replayable",
+          "tests/connectors/test_bitrix24_disk.py::test_partial_download_and_concurrent_revision_never_emit_observation",
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_provider_replay_has_one_canonical_outbox_effect"
+        ],
+        "durable_cursor_or_scan_commit": [],
+        "google_regression_qualification": [],
+        "rename_move_identity": [],
+        "deletion_and_access_loss": [],
+        "reappearance": [],
+        "revocation": [
+          "tests/connectors/test_bitrix24_disk.py::test_scope_workspace_and_revocation_are_denied_before_provider_read"
+        ],
+        "outage": [
+          "tests/connectors/test_bitrix24_disk.py::test_typed_provider_failures_never_leak_provider_payload"
+        ],
+        "large_files": [
+          "tests/connectors/test_bitrix24_disk.py::test_partial_download_and_concurrent_revision_never_emit_observation"
+        ]
+      }
+    },
+    "mounted_filesystem": {
+      "capabilities": {
+        "binary": "supported",
+        "tabular": "unsupported",
+        "structured_relationship": "unsupported",
+        "incremental": "unsupported",
+        "full_reconciliation": "supported",
+        "path_scoped_identity": "supported"
+      },
+      "offline_result": "PASS",
+      "live_result": "NOT_VERIFIED",
+      "live_prerequisites": [
+        "Operations and Data Owner approval for one isolated read-only mounted root and mount identity policy",
+        "approved synthetic mount fixtures and a controlled mount-loss/recovery procedure",
+        "approved file-size, read-stability, scan and cleanup bounds"
+      ],
+      "scenarios": {
+        "common_envelope_and_provider_provenance": "PASS",
+        "authorized_canonical_retrieval": "PASS",
+        "workspace_isolation_and_pre_provider_denial": "PASS",
+        "replay_duplicates_pagination_and_partial_failure": "PASS",
+        "durable_cursor_or_scan_commit": "PASS",
+        "rename_move_identity": "PASS",
+        "deletion_and_access_loss": "PASS",
+        "reappearance": "PASS",
+        "revocation": "NOT_APPLICABLE",
+        "outage": "PASS",
+        "large_files": "PASS",
+        "google_regression_qualification": "NOT_APPLICABLE"
+      },
+      "evidence": {
+        "common_envelope_and_provider_provenance": [
+          "tests/connectors/files/test_mounted_filesystem.py::test_allowed_file_read_returns_path_scoped_v2_observation",
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_typed_representations_keep_one_common_canonical_retrieval_contract",
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_provider_binary_runs_through_real_adapter_and_admission",
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_equivalent_provider_bytes_produce_equivalent_canonical_content"
+        ],
+        "authorized_canonical_retrieval": [
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_authorized_retrieval_preserves_exact_ingested_lineage"
+        ],
+        "workspace_isolation_and_pre_provider_denial": [
+          "tests/connectors/files/test_mounted_filesystem.py::test_cross_workspace_request_is_denied_before_filesystem_read"
+        ],
+        "replay_duplicates_pagination_and_partial_failure": [
+          "tests/application/test_mounted_filesystem_reconciliation.py::test_recovery_and_repeated_scan_create_one_logical_effect_per_revision",
+          "tests/application/test_mounted_filesystem_reconciliation.py::test_unstable_read_is_retried_then_quarantined_without_absence_effect",
+          "tests/qualification/test_issue677_cross_provider_offline.py::test_provider_replay_has_one_canonical_outbox_effect"
+        ],
+        "durable_cursor_or_scan_commit": [
+          "tests/application/test_mounted_filesystem_reconciliation.py::test_changed_verification_snapshot_keeps_generation_incomplete"
+        ],
+        "google_regression_qualification": [],
+        "rename_move_identity": [
+          "tests/application/test_mounted_filesystem_reconciliation.py::test_path_scoped_rename_is_old_absence_plus_new_observation"
+        ],
+        "deletion_and_access_loss": [
+          "tests/application/test_mounted_filesystem_reconciliation.py::test_complete_generation_distinguishes_created_changed_and_confirmed_absent",
+          "tests/application/test_mounted_filesystem_reconciliation.py::test_missing_root_marks_connection_unavailable_without_mass_tombstone"
+        ],
+        "reappearance": [
+          "tests/application/test_mounted_filesystem_reconciliation.py::test_reappeared_path_uses_new_occurrence_without_claiming_continuity"
+        ],
+        "revocation": [],
+        "outage": [
+          "tests/application/test_mounted_filesystem_reconciliation.py::test_missing_root_marks_connection_unavailable_without_mass_tombstone"
+        ],
+        "large_files": [
+          "tests/connectors/files/test_mounted_filesystem.py::test_large_file_is_read_in_bounded_chunks"
+        ]
+      }
+    }
+  }
+}

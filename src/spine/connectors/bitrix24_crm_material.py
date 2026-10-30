@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 import hashlib
 import json
 from collections.abc import Callable
+from datetime import datetime
 from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import ConfigDict, Field, StrictInt, field_validator, model_validator
 
+from spine.connectors.observations import ConnectorCoverage
+from spine.connectors.observations_v2 import (
+    ExternalIdentityAssurance,
+    NormalizedExternalObservationV2,
+    ProviderExternalIdentity,
+    ProviderStructuredObjectKey,
+    StructuredObservationRepresentation,
+)
 from spine.domain.common import DefinitionModel
-from spine.domain.sources import Bitrix24CrmMaterialClaim
 from spine.domain.connections.provider import (
     OpaqueProviderReference,
     ProviderCapability,
@@ -21,7 +28,7 @@ from spine.domain.connections.provider import (
     ProviderConnection,
     ProviderKind,
 )
-
+from spine.domain.sources import Bitrix24CrmMaterialClaim
 
 BITRIX24_CRM_EXTERNAL_GENERATION = "bitrix24-crm-activity-attachment:v1"
 BITRIX24_CRM_REQUIRED_CAPABILITIES = (
@@ -30,6 +37,7 @@ BITRIX24_CRM_REQUIRED_CAPABILITIES = (
     ProviderCapabilityKind.BINARY_READ,
     ProviderCapabilityKind.STABLE_IDENTITY,
     ProviderCapabilityKind.CRM,
+    ProviderCapabilityKind.STRUCTURED_READ,
 )
 
 
@@ -66,7 +74,9 @@ class Bitrix24CrmActivity(DefinitionModel):
     entity_type: str = Field(alias="OWNER_TYPE_ID", min_length=1, max_length=128)
     entity_id: str = Field(alias="OWNER_ID", min_length=1, max_length=128)
     updated_at: datetime = Field(alias="LAST_UPDATED")
-    activity_revision: str = Field(alias="ACTIVITY_REVISION", min_length=1, max_length=128)
+    activity_revision: str = Field(
+        alias="ACTIVITY_REVISION", min_length=1, max_length=128
+    )
 
     @field_validator("activity_id", "entity_type", "entity_id", "activity_revision")
     @classmethod
@@ -93,7 +103,9 @@ class Bitrix24CrmAttachment(DefinitionModel):
     entity_type: str = Field(alias="OWNER_TYPE_ID", min_length=1, max_length=128)
     entity_id: str = Field(alias="OWNER_ID", min_length=1, max_length=128)
     disk_file_id: str = Field(alias="DISK_FILE_ID", min_length=1, max_length=128)
-    disk_file_revision: str = Field(alias="DISK_FILE_REVISION", min_length=1, max_length=128)
+    disk_file_revision: str = Field(
+        alias="DISK_FILE_REVISION", min_length=1, max_length=128
+    )
     relationship_revision: str = Field(
         alias="RELATIONSHIP_REVISION", min_length=1, max_length=128
     )
@@ -246,11 +258,18 @@ def bitrix24_crm_capability(
     approved entity scope have been configured.
     """
 
-    if not approved_entity_types or any(not value.strip() for value in approved_entity_types):
+    if not approved_entity_types or any(
+        not value.strip() for value in approved_entity_types
+    ):
         raise ValueError("supported CRM capability requires an approved entity scope")
     return (
         ProviderCapability(
             kind=ProviderCapabilityKind.CRM,
+            status=ProviderCapabilityStatus.SUPPORTED,
+            qualification_reference=qualification_reference,
+        ),
+        ProviderCapability(
+            kind=ProviderCapabilityKind.STRUCTURED_READ,
             status=ProviderCapabilityStatus.SUPPORTED,
             qualification_reference=qualification_reference,
         ),
@@ -289,6 +308,60 @@ def bitrix24_crm_claim_from_observation(
     )
 
 
+def bitrix24_crm_normalized_observation(
+    observation: Bitrix24CrmMaterialObservation,
+    *,
+    authorization_generation: int,
+    configuration_generation: int,
+) -> NormalizedExternalObservationV2:
+    """Map qualified CRM relationship evidence to the shared connector envelope."""
+
+    payload = observation.model_dump_json().encode()
+    return NormalizedExternalObservationV2(
+        workspace_id=observation.workspace_id,
+        environment_id=observation.environment_id,
+        connection_id=observation.connection_id,
+        connection_version_id=observation.connection_version_id,
+        provider_kind=ProviderKind.BITRIX24,
+        resource_scope_reference=OpaqueProviderReference(
+            value=observation.resource_scope_reference
+        ),
+        authorization_generation=authorization_generation,
+        configuration_generation=configuration_generation,
+        source_kind="relationship",
+        external_identity=ProviderExternalIdentity(
+            external_namespace="bitrix24-crm-relationship",
+            external_generation=BITRIX24_CRM_EXTERNAL_GENERATION,
+            external_object_id=(
+                f"activity-{observation.crm_activity_id}-"
+                f"attachment-{observation.crm_attachment_id}"
+            ),
+            provider_key=ProviderStructuredObjectKey(
+                connection_id=observation.connection_id,
+                object_type="crm_activity_attachment",
+                provider_object_id=(
+                    f"{observation.crm_activity_id}:" f"{observation.crm_attachment_id}"
+                ),
+            ),
+            assurance=ExternalIdentityAssurance.PROVIDER_STABLE,
+            assurance_evidence_reference="bitrix24-crm-binding:v1",
+        ),
+        representation=StructuredObservationRepresentation(
+            original_bytes=payload,
+            media_type="application/json",
+            extraction_profile="bitrix24-crm-material:v1",
+            locator_contract_version="locator:bitrix24-crm-binding:v1",
+        ),
+        coverage=ConnectorCoverage.COMPLETE,
+        producer_reference="bitrix24-crm-material-adapter",
+        event_identity=f"bitrix24-crm:{observation.binding_evidence_digest[:48]}",
+        event_digest=hashlib.sha256(payload).hexdigest(),
+        observer_service="connector-worker",
+        received_at=observation.observed_at,
+        observed_at=observation.observed_at,
+    )
+
+
 class Bitrix24CrmMaterialAdapter:
     def __init__(
         self,
@@ -309,7 +382,9 @@ class Bitrix24CrmMaterialAdapter:
         if len(command.approved_entity_types) > self._profile.max_entity_types:
             raise Bitrix24CrmMaterialContractError()
         self._validate_admission(connection, command)
-        acting_principal_id = command.acting_subject_id or connection.service_principal_id
+        acting_principal_id = (
+            command.acting_subject_id or connection.service_principal_id
+        )
         await self._service.authorize_read(
             connection,
             command.resource_scope_reference,
@@ -401,18 +476,32 @@ class Bitrix24CrmMaterialAdapter:
             or connection.authorization_generation != command.authorization_generation
             or connection.configuration_generation != command.configuration_generation
         ):
-            raise ValueError("Bitrix24 CRM read is outside the trusted connection scope")
-        if command.resource_scope_reference not in connection.approved_resource_scope_references:
+            raise ValueError(
+                "Bitrix24 CRM read is outside the trusted connection scope"
+            )
+        if (
+            command.resource_scope_reference
+            not in connection.approved_resource_scope_references
+        ):
             raise ValueError("Bitrix24 CRM resource scope is not approved")
         if not connection.approved_crm_entity_types:
             raise ValueError("Bitrix24 CRM entity scope is not configured")
-        if set(command.approved_entity_types) != set(connection.approved_crm_entity_types):
-            raise ValueError("Bitrix24 CRM approved entity scope does not match the connection")
+        if set(command.approved_entity_types) != set(
+            connection.approved_crm_entity_types
+        ):
+            raise ValueError(
+                "Bitrix24 CRM approved entity scope does not match the connection"
+            )
         if command.entity_type.lower() not in connection.approved_crm_entity_types:
-            raise ValueError("Bitrix24 CRM entity type is not in the approved entity scope")
+            raise ValueError(
+                "Bitrix24 CRM entity type is not in the approved entity scope"
+            )
         if tuple(command.required_capabilities) != BITRIX24_CRM_REQUIRED_CAPABILITIES:
             raise Bitrix24CrmMaterialContractError()
-        if any(not connection.supports(capability) for capability in command.required_capabilities):
+        if any(
+            not connection.supports(capability)
+            for capability in command.required_capabilities
+        ):
             raise Bitrix24CrmMaterialContractError()
 
 
@@ -433,4 +522,5 @@ __all__ = [
     "Bitrix24CrmMaterialService",
     "bitrix24_crm_capability",
     "bitrix24_crm_claim_from_observation",
+    "bitrix24_crm_normalized_observation",
 ]
