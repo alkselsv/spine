@@ -112,7 +112,7 @@ def test_transcript_publication_is_tenant_scoped_and_pins_projection_lineage() -
         constraint.name == "fk_transcript_publications_source_revision"
         for constraint in transcript_publications.foreign_key_constraints
     )
-    assert any(
+    assert not any(
         constraint.name == "fk_transcript_publications_artifact"
         for constraint in transcript_publications.foreign_key_constraints
     )
@@ -164,3 +164,11 @@ def test_transcript_reviews_are_immutable_and_corrections_pin_their_predecessors
     assert "FORCE ROW LEVEL SECURITY" in source
     assert "GRANT SELECT, INSERT" in source
     assert "REVOKE UPDATE, DELETE" in source
+
+    corrected_publications = (
+        PROJECT_ROOT
+        / "migrations/versions/20261215_83_corrected_transcript_publication.py"
+    ).read_text(encoding="utf-8")
+    assert 'revision = "20261215_83"' in corrected_publications
+    assert 'down_revision = "20261214_82"' in corrected_publications
+    assert 'op.drop_constraint(' in corrected_publications

@@ -6,7 +6,12 @@ import type { Scope } from '../../app/scope';
 import { apiQueryOptions } from '../../api/query';
 import type { TranscriptTimeRangeLocator } from './transcript-inspection';
 import { inspectTranscriptEvidence } from './transcript-inspection';
-import { reviewTranscript, type TranscriptReviewDecision, type TranscriptReviewResult } from './transcript-review';
+import {
+  inspectTranscriptForReview,
+  reviewTranscript,
+  type TranscriptReviewDecision,
+  type TranscriptReviewResult,
+} from './transcript-review';
 
 export function TranscriptEvidenceInspector({
   client,
@@ -21,6 +26,7 @@ export function TranscriptEvidenceInspector({
 }) {
   const [open, setOpen] = useState(false);
   const [reviewResult, setReviewResult] = useState<TranscriptReviewResult | null>(null);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const query = useQuery({
     ...apiQueryOptions({
       load: (signal) => inspectTranscriptEvidence(client, scope, locator, signal),
@@ -35,6 +41,20 @@ export function TranscriptEvidenceInspector({
   });
 
   const result = query.error ? undefined : query.data;
+  const reviewInspectionQuery = useQuery({
+    ...apiQueryOptions({
+      load: (signal) => inspectTranscriptForReview(client, scope, {
+        artifactId: locator.transcript_artifact_id,
+        artifactDigest: locator.transcript_artifact_digest,
+      }, signal),
+      queryKey: [
+        'transcript-review-inspection', scope.workspaceId, scope.environmentId,
+        locator.transcript_artifact_id, locator.transcript_artifact_digest,
+      ],
+    }),
+    enabled: open && reviewOpen && canInspectReviewState(result?.status),
+    staleTime: 0,
+  });
   return (
     <section aria-label="Проверка фрагмента расшифровки">
       <button type="button" onClick={() => setOpen((value) => !value)}>
@@ -76,16 +96,61 @@ export function TranscriptEvidenceInspector({
               scope={scope}
               artifactId={locator.transcript_artifact_id}
               artifactDigest={locator.transcript_artifact_digest}
-              startMs={locator.start_ms}
-              endMs={locator.end_ms}
-              text={result.text ?? ''}
+              segments={[{ startMs: locator.start_ms, endMs: locator.end_ms, text: result.text ?? '' }]}
               onReviewed={setReviewResult}
             />
           ) : null}
         </div>
       ) : null}
       {open && result && result.status !== 'current' ? (
-        <p role="status">{statusLabel(result.status)}</p>
+        <>
+          <p role="status">{statusLabel(result.status)}</p>
+          {canInspectReviewState(result.status) ? (
+            <>
+              <button type="button" onClick={() => setReviewOpen(true)}>
+                {result.status === 'review_required'
+                  ? 'Открыть полную расшифровку для проверки'
+                  : 'Проверить статус версии'}
+              </button>
+              {reviewOpen && reviewInspectionQuery.isPending ? <p role="status">Загрузка версии ASR…</p> : null}
+              {reviewOpen && reviewInspectionQuery.error ? <p role="alert">Не удалось проверить доступ к исходной расшифровке.</p> : null}
+              {reviewInspectionQuery.data?.status === 'review_required' && reviewInspectionQuery.data.artifact ? (
+                <TranscriptReviewControls
+                  key={reviewInspectionQuery.data.artifact.artifact_id}
+                  client={client}
+                  scope={scope}
+                  artifactId={reviewInspectionQuery.data.artifact.artifact_id}
+                  artifactDigest={reviewInspectionQuery.data.artifact.artifact_digest}
+                  segments={reviewInspectionQuery.data.artifact.segments.map((segment) => ({
+                    startMs: segment.start_ms,
+                    endMs: segment.end_ms,
+                    text: segment.text,
+                  }))}
+                  onReviewed={setReviewResult}
+                />
+              ) : null}
+              {reviewInspectionQuery.data && reviewInspectionQuery.data.status !== 'review_required' ? (
+                <div role="status">
+                  <p>{reviewInspectionStatusLabel(reviewInspectionQuery.data.status)}</p>
+                  {reviewInspectionQuery.data.status === 'superseded' && reviewInspectionQuery.data.corrected_artifact ? (
+                    <section aria-label="Исправленная версия расшифровки">
+                      <h3>Исправленная версия</h3>
+                      <p>Артефакт {reviewInspectionQuery.data.corrected_artifact.artifact_id}</p>
+                      <ol>
+                        {reviewInspectionQuery.data.corrected_artifact.segments.map((segment) => (
+                          <li key={segment.segment_id}>
+                            <time>{formatTime(segment.start_ms)}–{formatTime(segment.end_ms)}</time>{' '}
+                            {segment.text}
+                          </li>
+                        ))}
+                      </ol>
+                    </section>
+                  ) : null}
+                </div>
+              ) : null}
+            </>
+          ) : null}
+        </>
       ) : null}
     </section>
   );
@@ -96,22 +161,18 @@ function TranscriptReviewControls({
   scope,
   artifactId,
   artifactDigest,
-  startMs,
-  endMs,
-  text,
+  segments,
   onReviewed,
 }: {
   client: Pick<ScopedApiClient, 'POST'>;
   scope: Scope;
   artifactId: string;
   artifactDigest: string;
-  startMs: number;
-  endMs: number;
-  text: string;
+  segments: { startMs: number; endMs: number; text: string }[];
   onReviewed: (result: TranscriptReviewResult) => void;
 }) {
   const [rationale, setRationale] = useState('Проверено по исходной записи.');
-  const [correction, setCorrection] = useState(text);
+  const [corrections, setCorrections] = useState(segments);
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState(false);
   const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
@@ -126,7 +187,7 @@ function TranscriptReviewControls({
         decision,
         rationale,
         idempotencyKey,
-        correctedSegment: decision === 'correct' ? { startMs, endMs, text: correction } : undefined,
+        correctedSegments: decision === 'correct' ? corrections : undefined,
       });
       onReviewed(result);
       setIdempotencyKey(crypto.randomUUID());
@@ -140,10 +201,17 @@ function TranscriptReviewControls({
   return (
     <form aria-label="Решение по расшифровке" onSubmit={(event) => event.preventDefault()}>
       <h3>Проверка версии ASR</h3>
-      <label>
-        Исправление фрагмента
-        <textarea value={correction} onChange={(event) => setCorrection(event.target.value)} />
-      </label>
+      {corrections.map((segment, index) => (
+        <label key={`${segment.startMs}:${segment.endMs}`}>
+          Исправление фрагмента {formatTime(segment.startMs)}–{formatTime(segment.endMs)}
+          <textarea
+            value={segment.text}
+            onChange={(event) => setCorrections((current) => current.map((item, itemIndex) => (
+              itemIndex === index ? { ...item, text: event.target.value } : item
+            )))}
+          />
+        </label>
+      ))}
       <label>
         Обоснование решения
         <textarea value={rationale} onChange={(event) => setRationale(event.target.value)} />
@@ -152,7 +220,7 @@ function TranscriptReviewControls({
       <button type="button" disabled={pending || !rationale.trim()} onClick={() => void submit('approve')}>
         Одобрить
       </button>
-      <button type="button" disabled={pending || !rationale.trim() || !correction.trim()} onClick={() => void submit('correct')}>
+      <button type="button" disabled={pending || !rationale.trim() || corrections.some((segment) => !segment.text.trim())} onClick={() => void submit('correct')}>
         Исправить и сохранить
       </button>
       <button type="button" disabled={pending || !rationale.trim()} onClick={() => void submit('reject')}>
@@ -187,4 +255,20 @@ function reviewStatusLabel(decision: TranscriptReviewDecision): string {
     case 'correct': return 'Создана исправленная версия';
     case 'reject': return 'Версия ASR отклонена';
   }
+}
+
+function reviewInspectionStatusLabel(status: string): string {
+  switch (status) {
+    case 'approved': return 'Эта версия уже одобрена.';
+    case 'corrected':
+    case 'superseded': return 'Версия уже заменена исправленным транскриптом.';
+    case 'rejected': return 'Эта версия отклонена.';
+    case 'stale': return 'Версия устарела. Обновите страницу и проверьте актуальную запись.';
+    case 'permission_denied': return 'Доступ к записи отозван или запрещён.';
+    default: return 'Версия транскрипта временно недоступна.';
+  }
+}
+
+function canInspectReviewState(status: string | undefined): boolean {
+  return status === 'review_required' || status === 'degraded' || status === 'superseded';
 }

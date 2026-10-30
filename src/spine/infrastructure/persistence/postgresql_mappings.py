@@ -802,15 +802,6 @@ transcript_publications = Table(
         ],
         name="fk_transcript_publications_source_revision",
     ),
-    ForeignKeyConstraint(
-        ["workspace_id", "environment_id", "transcript_artifact_id"],
-        [
-            "spine.transcription_artifacts.workspace_id",
-            "spine.transcription_artifacts.environment_id",
-            "spine.transcription_artifacts.artifact_id",
-        ],
-        name="fk_transcript_publications_artifact",
-    ),
     CheckConstraint(
         "state IN ('active', 'revoked', 'superseded', 'stale')",
         name=conv("ck_transcript_publications_state"),

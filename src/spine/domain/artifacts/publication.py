@@ -14,6 +14,9 @@ from pydantic import Field, StrictBool, StrictInt, model_validator
 from spine.domain.common import DefinitionModel, VersionIdentifier
 
 from .transcription import TranscriptSegment, TranscriptionArtifact
+from .transcript_review import CorrectedTranscriptArtifact
+
+TranscriptPublicationArtifact = TranscriptionArtifact | CorrectedTranscriptArtifact
 
 
 _DIGEST = r"^[0-9a-f]{64}$"
@@ -55,7 +58,7 @@ class TimeRangeLocator(DefinitionModel):
     def from_segment(
         cls,
         *,
-        artifact: TranscriptionArtifact,
+        artifact: TranscriptPublicationArtifact,
         segment: TranscriptSegment,
         projection_version: VersionIdentifier = "transcript-projection:v1",
     ) -> "TimeRangeLocator":
@@ -153,7 +156,7 @@ class TranscriptProjectionSegment(DefinitionModel):
     def from_segment(
         cls,
         *,
-        artifact: TranscriptionArtifact,
+        artifact: TranscriptPublicationArtifact,
         segment: TranscriptSegment,
         projection_version: VersionIdentifier = "transcript-projection:v1",
     ) -> "TranscriptProjectionSegment":
@@ -249,7 +252,7 @@ class TranscriptPublication(DefinitionModel):
     def create(
         cls,
         *,
-        artifact: TranscriptionArtifact,
+        artifact: TranscriptPublicationArtifact,
         policy_reference: str,
         approval_id: UUID | None,
         partial_allowed: bool = False,

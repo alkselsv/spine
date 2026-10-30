@@ -857,6 +857,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/transcript-reviews/inspect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Transcript.Review.Inspect */
+        post: operations["transcript.review.inspect"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ask": {
         parameters: {
             query?: never;
@@ -2132,6 +2149,31 @@ export interface components {
              */
             workspace_id: string;
         };
+        /** ApiResponseEnvelope[TranscriptReviewInspection] */
+        ApiResponseEnvelope_TranscriptReviewInspection_: {
+            data: components["schemas"]["TranscriptReviewInspection"];
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
         /** ApiResponseEnvelope[TranscriptReviewResponse] */
         ApiResponseEnvelope_TranscriptReviewResponse_: {
             data: components["schemas"]["TranscriptReviewResponse"];
@@ -2284,6 +2326,52 @@ export interface components {
             question: string;
             /** Raw Count */
             raw_count: number;
+        };
+        /**
+         * AudioChunkBoundary
+         * @description One deterministic window on the original recording timeline.
+         */
+        AudioChunkBoundary: {
+            /** End Ms */
+            end_ms: number;
+            /** Ordinal */
+            ordinal: number;
+            /** Overlap Before Ms */
+            overlap_before_ms: number;
+            /**
+             * Schema Version
+             * @default audio-chunk-boundary:v1
+             * @constant
+             */
+            schema_version: "audio-chunk-boundary:v1";
+            /** Start Ms */
+            start_ms: number;
+        };
+        /**
+         * AudioMediaInspection
+         * @description Decoder-independent facts observed from the media payload.
+         */
+        AudioMediaInspection: {
+            /** Audio Stream Count */
+            audio_stream_count: number;
+            /** Byte Length */
+            byte_length: number;
+            /** Codec */
+            codec: string;
+            /** Container */
+            container: string;
+            /** Duration Ms */
+            duration_ms: number;
+            /** Inspected Media Type */
+            inspected_media_type: string;
+            /**
+             * Schema Version
+             * @default audio-media-inspection:v1
+             * @constant
+             */
+            schema_version: "audio-media-inspection:v1";
+            /** Silent */
+            silent: boolean;
         };
         /** AuthorizedAskRequest */
         AuthorizedAskRequest: {
@@ -2836,6 +2924,9 @@ export interface components {
              * Format: uuid
              */
             original_artifact_id: string;
+            outcome: components["schemas"]["TranscriptionArtifactOutcome"];
+            /** Recording Duration Ms */
+            recording_duration_ms: number;
             /**
              * Review Id
              * Format: uuid
@@ -5842,10 +5933,43 @@ export interface components {
          */
         TranscriptInspectionStatus: "current" | "stale" | "superseded" | "review_required" | "partial" | "degraded" | "permission_denied";
         /**
+         * TranscriptReviewArtifactStatus
+         * @enum {string}
+         */
+        TranscriptReviewArtifactStatus: "review_required" | "approved" | "corrected" | "superseded" | "rejected" | "stale" | "permission_denied" | "unavailable";
+        /**
          * TranscriptReviewDecision
          * @enum {string}
          */
         TranscriptReviewDecision: "approve" | "correct" | "reject";
+        /** TranscriptReviewInspection */
+        TranscriptReviewInspection: {
+            artifact?: components["schemas"]["TranscriptionArtifact"] | null;
+            corrected_artifact?: components["schemas"]["CorrectedTranscriptArtifact"] | null;
+            review?: components["schemas"]["TranscriptReviewRecord"] | null;
+            /**
+             * Schema Version
+             * @default transcript-review-inspection:v1
+             */
+            schema_version: string;
+            status: components["schemas"]["TranscriptReviewArtifactStatus"];
+        };
+        /** TranscriptReviewInspectionRequest */
+        TranscriptReviewInspectionRequest: {
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Transcript Artifact Digest */
+            transcript_artifact_digest: string;
+            /**
+             * Transcript Artifact Id
+             * Format: uuid
+             */
+            transcript_artifact_id: string;
+        };
         /**
          * TranscriptReviewRecord
          * @description Append-only decision against one exact ASR artifact version.
@@ -5990,6 +6114,142 @@ export interface components {
             start_ms: number;
             /** Text */
             text: string;
+        };
+        /**
+         * TranscriptionArtifact
+         * @description Immutable ASR output pinned to one exact audio revision and configuration.
+         */
+        TranscriptionArtifact: {
+            /** Adapter Reference */
+            adapter_reference: string;
+            /** Artifact Digest */
+            artifact_digest: string;
+            /**
+             * Artifact Id
+             * Format: uuid
+             */
+            artifact_id: string;
+            /**
+             * Chunk Receipts
+             * @default []
+             */
+            chunk_receipts: components["schemas"]["TranscriptionChunkReceipt"][];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at?: string;
+            /** Decoded Sha256 */
+            decoded_sha256?: string | null;
+            /** Decoder Reference */
+            decoder_reference?: string | null;
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            failure?: components["schemas"]["TranscriptionFailureProvenance"] | null;
+            /** Language */
+            language?: string | null;
+            media_inspection?: components["schemas"]["AudioMediaInspection"] | null;
+            /** Model Config Reference */
+            model_config_reference: string;
+            /** Original Sha256 */
+            original_sha256: string;
+            /** @default completed */
+            outcome: components["schemas"]["TranscriptionArtifactOutcome"];
+            /**
+             * Processing Job Id
+             * Format: uuid
+             */
+            processing_job_id: string;
+            /** Processing Profile Reference */
+            processing_profile_reference: string;
+            /** Reassembly Reference */
+            reassembly_reference?: string | null;
+            /** Recording Duration Ms */
+            recording_duration_ms: number;
+            /**
+             * Schema Version
+             * @default transcription-artifact:v1
+             * @enum {string}
+             */
+            schema_version: "transcription-artifact:v1" | "transcription-artifact:v2";
+            /** Segments */
+            segments: components["schemas"]["TranscriptSegment"][];
+            /**
+             * Source Object Id
+             * Format: uuid
+             */
+            source_object_id: string;
+            /** Source Revision Digest */
+            source_revision_digest: string;
+            /**
+             * Source Revision Id
+             * Format: uuid
+             */
+            source_revision_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /**
+         * TranscriptionArtifactOutcome
+         * @enum {string}
+         */
+        TranscriptionArtifactOutcome: "completed" | "partial";
+        /**
+         * TranscriptionChunkReceipt
+         * @description Immutable proof of one completed deterministic model window.
+         */
+        TranscriptionChunkReceipt: {
+            boundary: components["schemas"]["AudioChunkBoundary"];
+            /**
+             * Chunk Id
+             * Format: uuid
+             */
+            chunk_id: string;
+            /** Model Attempts */
+            model_attempts: number;
+            /**
+             * Schema Version
+             * @default transcription-chunk-receipt:v1
+             * @constant
+             */
+            schema_version: "transcription-chunk-receipt:v1";
+            /**
+             * State
+             * @default completed
+             * @constant
+             */
+            state: "completed";
+        };
+        /**
+         * TranscriptionFailureProvenance
+         * @description Disclosure-safe exact reason why a bounded artifact stopped early.
+         */
+        TranscriptionFailureProvenance: {
+            /** Cause Code */
+            cause_code?: ("transient_unavailable" | "permanent_model_error" | "policy_denied" | "unsupported_media" | "corrupt_media" | "resource_limit_exceeded" | "no_speech" | "retry_exhausted" | "cancelled" | "invalid_adapter_output") | null;
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "transient_unavailable" | "permanent_model_error" | "policy_denied" | "unsupported_media" | "corrupt_media" | "resource_limit_exceeded" | "no_speech" | "retry_exhausted" | "cancelled" | "invalid_adapter_output";
+            /** Failed Chunk Ordinal */
+            failed_chunk_ordinal?: number | null;
+            /** Model Attempts */
+            model_attempts: number;
+            /** Retryable */
+            retryable: boolean;
+            /**
+             * Schema Version
+             * @default transcription-failure-provenance:v1
+             * @constant
+             */
+            schema_version: "transcription-failure-provenance:v1";
         };
         /** ValidationError */
         ValidationError: {
@@ -11742,6 +12002,114 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope_TranscriptReviewResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "transcript.review.inspect": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TranscriptReviewInspectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope_TranscriptReviewInspection_"];
                 };
             };
             /** @description Safe request error. */

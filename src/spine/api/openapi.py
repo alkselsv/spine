@@ -87,6 +87,7 @@ from spine.api.transcript_evidence import TranscriptEvidenceInspectorService
 from spine.api.transcript_reviews import TranscriptReviewCommandService
 from spine.application.transcript_review import (
     ReviewTranscriptCommand,
+    TranscriptReviewInspection,
     TranscriptReviewResult,
 )
 from spine.application.transcript_inspection import TranscriptInspectionResult
@@ -452,8 +453,12 @@ class _UnavailableTranscriptEvidenceInspectorService:
 
 
 class _UnavailableTranscriptReviewService:
-    async def review(self, command: ReviewTranscriptCommand) -> TranscriptReviewResult:
-        del command
+    async def review(self, command: ReviewTranscriptCommand, **kwargs) -> TranscriptReviewResult:
+        del command, kwargs
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+    async def inspect(self, **kwargs) -> TranscriptReviewInspection:
+        del kwargs
         raise RuntimeError("The OpenAPI composition is not executable.")
 
 

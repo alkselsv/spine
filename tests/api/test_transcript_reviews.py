@@ -138,3 +138,42 @@ async def test_transcript_review_api_rejects_stale_version_with_safe_conflict() 
     assert response.status_code == 409
     assert response.json()["code"] == "spine.request.rejected"
     assert "ASR текст" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_transcript_review_inspection_returns_exact_unreviewed_artifact() -> None:
+    artifact = transcript()
+
+    class Artifacts:
+        async def get_artifact(self, **kwargs):
+            return artifact if kwargs["artifact_id"] == artifact.artifact_id else None
+
+    app = authorized_app([])
+    install_transcript_review_routes(
+        app,
+        service=TranscriptReviewService(
+            repository=InMemoryTranscriptReviewRepository(Artifacts()),
+            policy=ExplicitTranscriptReviewPolicy(
+                policy_reference="review-policy:v1",
+                outcome=TranscriptReviewPolicyOutcome.REQUIRE,
+            ),
+        ),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/v1/transcript-reviews/inspect",
+            headers=headers(),
+            json={
+                "schema_version": 1,
+                "transcript_artifact_id": str(artifact.artifact_id),
+                "transcript_artifact_digest": artifact.artifact_digest,
+            },
+        )
+
+    assert response.status_code == 200
+    result = response.json()["data"]
+    assert result["status"] == "review_required"
+    assert result["artifact"]["artifact_digest"] == artifact.artifact_digest
+    assert result["artifact"]["segments"][0]["text"] == "ASR текст"

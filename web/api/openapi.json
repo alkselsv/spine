@@ -2095,6 +2095,43 @@
         "title": "ApiResponseEnvelope[TranscriptInspectionResult]",
         "type": "object"
       },
+      "ApiResponseEnvelope_TranscriptReviewInspection_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/TranscriptReviewInspection"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "trace_id",
+          "data"
+        ],
+        "title": "ApiResponseEnvelope[TranscriptReviewInspection]",
+        "type": "object"
+      },
       "ApiResponseEnvelope_TranscriptReviewResponse_": {
         "additionalProperties": false,
         "properties": {
@@ -2460,6 +2497,108 @@
           "raw_count"
         ],
         "title": "AskResponse",
+        "type": "object"
+      },
+      "AudioChunkBoundary": {
+        "additionalProperties": false,
+        "description": "One deterministic window on the original recording timeline.",
+        "properties": {
+          "end_ms": {
+            "exclusiveMinimum": 0.0,
+            "title": "End Ms",
+            "type": "integer"
+          },
+          "ordinal": {
+            "exclusiveMinimum": 0.0,
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "overlap_before_ms": {
+            "minimum": 0.0,
+            "title": "Overlap Before Ms",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": "audio-chunk-boundary:v1",
+            "default": "audio-chunk-boundary:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "start_ms": {
+            "minimum": 0.0,
+            "title": "Start Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ordinal",
+          "start_ms",
+          "end_ms",
+          "overlap_before_ms"
+        ],
+        "title": "AudioChunkBoundary",
+        "type": "object"
+      },
+      "AudioMediaInspection": {
+        "additionalProperties": false,
+        "description": "Decoder-independent facts observed from the media payload.",
+        "properties": {
+          "audio_stream_count": {
+            "maximum": 32.0,
+            "minimum": 0.0,
+            "title": "Audio Stream Count",
+            "type": "integer"
+          },
+          "byte_length": {
+            "minimum": 0.0,
+            "title": "Byte Length",
+            "type": "integer"
+          },
+          "codec": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z0-9_.+-]+$",
+            "title": "Codec",
+            "type": "string"
+          },
+          "container": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z0-9_.+-]+$",
+            "title": "Container",
+            "type": "string"
+          },
+          "duration_ms": {
+            "minimum": 0.0,
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "inspected_media_type": {
+            "pattern": "^audio/[a-z0-9.+-]+$",
+            "title": "Inspected Media Type",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "audio-media-inspection:v1",
+            "default": "audio-media-inspection:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "silent": {
+            "title": "Silent",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "inspected_media_type",
+          "container",
+          "codec",
+          "byte_length",
+          "duration_ms",
+          "audio_stream_count",
+          "silent"
+        ],
+        "title": "AudioMediaInspection",
         "type": "object"
       },
       "AuthorizedAskRequest": {
@@ -3563,6 +3702,14 @@
             "title": "Original Artifact Id",
             "type": "string"
           },
+          "outcome": {
+            "$ref": "#/components/schemas/TranscriptionArtifactOutcome"
+          },
+          "recording_duration_ms": {
+            "exclusiveMinimum": 0.0,
+            "title": "Recording Duration Ms",
+            "type": "integer"
+          },
           "review_id": {
             "format": "uuid",
             "title": "Review Id",
@@ -3610,6 +3757,8 @@
           "source_object_id",
           "source_revision_id",
           "source_revision_digest",
+          "recording_duration_ms",
+          "outcome",
           "original_artifact_id",
           "original_artifact_digest",
           "review_id",
@@ -10947,6 +11096,20 @@
         "title": "TranscriptInspectionStatus",
         "type": "string"
       },
+      "TranscriptReviewArtifactStatus": {
+        "enum": [
+          "review_required",
+          "approved",
+          "corrected",
+          "superseded",
+          "rejected",
+          "stale",
+          "permission_denied",
+          "unavailable"
+        ],
+        "title": "TranscriptReviewArtifactStatus",
+        "type": "string"
+      },
       "TranscriptReviewDecision": {
         "enum": [
           "approve",
@@ -10955,6 +11118,81 @@
         ],
         "title": "TranscriptReviewDecision",
         "type": "string"
+      },
+      "TranscriptReviewInspection": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptionArtifact"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "corrected_artifact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CorrectedTranscriptArtifact"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptReviewRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "schema_version": {
+            "default": "transcript-review-inspection:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TranscriptReviewArtifactStatus"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "TranscriptReviewInspection",
+        "type": "object"
+      },
+      "TranscriptReviewInspectionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "transcript_artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Transcript Artifact Digest",
+            "type": "string"
+          },
+          "transcript_artifact_id": {
+            "format": "uuid",
+            "title": "Transcript Artifact Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "transcript_artifact_id",
+          "transcript_artifact_digest"
+        ],
+        "title": "TranscriptReviewInspectionRequest",
+        "type": "object"
       },
       "TranscriptReviewRecord": {
         "additionalProperties": false,
@@ -11255,6 +11493,332 @@
           "text"
         ],
         "title": "TranscriptSegment",
+        "type": "object"
+      },
+      "TranscriptionArtifact": {
+        "additionalProperties": false,
+        "description": "Immutable ASR output pinned to one exact audio revision and configuration.",
+        "properties": {
+          "adapter_reference": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Adapter Reference",
+            "type": "string"
+          },
+          "artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Artifact Digest",
+            "type": "string"
+          },
+          "artifact_id": {
+            "format": "uuid",
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "chunk_receipts": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/TranscriptionChunkReceipt"
+            },
+            "title": "Chunk Receipts",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decoded_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decoded Sha256"
+          },
+          "decoder_reference": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decoder Reference"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "failure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptionFailureProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "language": {
+            "anyOf": [
+              {
+                "maxLength": 35,
+                "minLength": 2,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "media_inspection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AudioMediaInspection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model_config_reference": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Model Config Reference",
+            "type": "string"
+          },
+          "original_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Original Sha256",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/TranscriptionArtifactOutcome",
+            "default": "completed"
+          },
+          "processing_job_id": {
+            "format": "uuid",
+            "title": "Processing Job Id",
+            "type": "string"
+          },
+          "processing_profile_reference": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Processing Profile Reference",
+            "type": "string"
+          },
+          "reassembly_reference": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reassembly Reference"
+          },
+          "recording_duration_ms": {
+            "exclusiveMinimum": 0.0,
+            "title": "Recording Duration Ms",
+            "type": "integer"
+          },
+          "schema_version": {
+            "default": "transcription-artifact:v1",
+            "enum": [
+              "transcription-artifact:v1",
+              "transcription-artifact:v2"
+            ],
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "segments": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptSegment"
+            },
+            "title": "Segments",
+            "type": "array"
+          },
+          "source_object_id": {
+            "format": "uuid",
+            "title": "Source Object Id",
+            "type": "string"
+          },
+          "source_revision_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Revision Digest",
+            "type": "string"
+          },
+          "source_revision_id": {
+            "format": "uuid",
+            "title": "Source Revision Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "artifact_digest",
+          "workspace_id",
+          "environment_id",
+          "source_object_id",
+          "source_revision_id",
+          "source_revision_digest",
+          "original_sha256",
+          "processing_job_id",
+          "processing_profile_reference",
+          "adapter_reference",
+          "model_config_reference",
+          "recording_duration_ms",
+          "segments"
+        ],
+        "title": "TranscriptionArtifact",
+        "type": "object"
+      },
+      "TranscriptionArtifactOutcome": {
+        "enum": [
+          "completed",
+          "partial"
+        ],
+        "title": "TranscriptionArtifactOutcome",
+        "type": "string"
+      },
+      "TranscriptionChunkReceipt": {
+        "additionalProperties": false,
+        "description": "Immutable proof of one completed deterministic model window.",
+        "properties": {
+          "boundary": {
+            "$ref": "#/components/schemas/AudioChunkBoundary"
+          },
+          "chunk_id": {
+            "format": "uuid",
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "model_attempts": {
+            "exclusiveMinimum": 0.0,
+            "title": "Model Attempts",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": "transcription-chunk-receipt:v1",
+            "default": "transcription-chunk-receipt:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "state": {
+            "const": "completed",
+            "default": "completed",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chunk_id",
+          "boundary",
+          "model_attempts"
+        ],
+        "title": "TranscriptionChunkReceipt",
+        "type": "object"
+      },
+      "TranscriptionFailureProvenance": {
+        "additionalProperties": false,
+        "description": "Disclosure-safe exact reason why a bounded artifact stopped early.",
+        "properties": {
+          "cause_code": {
+            "anyOf": [
+              {
+                "enum": [
+                  "transient_unavailable",
+                  "permanent_model_error",
+                  "policy_denied",
+                  "unsupported_media",
+                  "corrupt_media",
+                  "resource_limit_exceeded",
+                  "no_speech",
+                  "retry_exhausted",
+                  "cancelled",
+                  "invalid_adapter_output"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cause Code"
+          },
+          "code": {
+            "enum": [
+              "transient_unavailable",
+              "permanent_model_error",
+              "policy_denied",
+              "unsupported_media",
+              "corrupt_media",
+              "resource_limit_exceeded",
+              "no_speech",
+              "retry_exhausted",
+              "cancelled",
+              "invalid_adapter_output"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "failed_chunk_ordinal": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failed Chunk Ordinal"
+          },
+          "model_attempts": {
+            "minimum": 0.0,
+            "title": "Model Attempts",
+            "type": "integer"
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "schema_version": {
+            "const": "transcription-failure-provenance:v1",
+            "default": "transcription-failure-provenance:v1",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "model_attempts",
+          "retryable"
+        ],
+        "title": "TranscriptionFailureProvenance",
         "type": "object"
       },
       "ValidationError": {
@@ -20085,6 +20649,149 @@
           }
         ],
         "summary": "Transcript.Review.Decide"
+      }
+    },
+    "/api/v1/transcript-reviews/inspect": {
+      "post": {
+        "operationId": "transcript.review.inspect",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranscriptReviewInspectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseEnvelope_TranscriptReviewInspection_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Transcript.Review.Inspect"
       }
     },
     "/ask": {

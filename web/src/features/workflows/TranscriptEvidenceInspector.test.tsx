@@ -88,6 +88,29 @@ describe('TranscriptEvidenceInspector', () => {
     expect(screen.queryByRole('button', { name: 'Перейти к фрагменту записи' })).toBeNull();
   });
 
+  it('shows_the_persisted_rejected_decision_for_a_revoked_publication', async () => {
+    const post = vi.fn()
+      .mockResolvedValueOnce({ data: {
+        schema_version: 1, workspace_id: scope.workspaceId, environment_id: scope.environmentId,
+        trace_id: '80000000-0000-4000-8000-000000000001',
+        data: { schema_version: 'transcript-inspection-result:v1', status: 'degraded' },
+      } })
+      .mockResolvedValueOnce({ data: {
+        schema_version: 1, workspace_id: scope.workspaceId, environment_id: scope.environmentId,
+        trace_id: '80000000-0000-4000-8000-000000000001',
+        data: { schema_version: 'transcript-review-inspection:v1', status: 'rejected', review: { decision: 'reject' } },
+      } });
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <TranscriptEvidenceInspector client={{ POST: post } as never} locator={locator} scope={scope} />
+    </QueryClientProvider>);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Открыть фрагмент расшифровки' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Проверить статус версии' }));
+
+    expect(await screen.findByText('Эта версия отклонена.')).toBeVisible();
+    expect(screen.queryByText('Сегмент расшифровки.')).toBeNull();
+  });
+
   it('hides_cached_transcript_text_when_access_is_revoked_on_recheck', async () => {
     const post = vi.fn()
       .mockResolvedValueOnce({ data: {
@@ -153,8 +176,8 @@ describe('TranscriptEvidenceInspector', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Открыть фрагмент расшифровки' }));
     await screen.findByRole('status');
-    await userEvent.clear(screen.getByLabelText('Исправление фрагмента'));
-    await userEvent.type(screen.getByLabelText('Исправление фрагмента'), 'Исправленная фраза');
+    await userEvent.clear(screen.getByLabelText(/Исправление фрагмента/));
+    await userEvent.type(screen.getByLabelText(/Исправление фрагмента/), 'Исправленная фраза');
     await userEvent.click(screen.getByRole('button', { name: 'Исправить и сохранить' }));
 
     expect(await screen.findByText('Создана исправленная версия расшифровки.')).toBeVisible();

@@ -16,6 +16,7 @@ from spine.domain.artifacts.transcription import (
     SpeechToTextSegment,
     TranscriptSegment,
     TranscriptionArtifact,
+    TranscriptionArtifactOutcome,
 )
 
 
@@ -152,6 +153,7 @@ class CorrectedTranscriptArtifact(DefinitionModel):
     source_revision_id: UUID
     source_revision_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     recording_duration_ms: StrictInt = Field(gt=0)
+    outcome: TranscriptionArtifactOutcome
     original_artifact_id: UUID
     original_artifact_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     review_id: UUID
@@ -201,6 +203,7 @@ class CorrectedTranscriptArtifact(DefinitionModel):
             source_revision_id=self.source_revision_id,
             source_revision_digest=self.source_revision_digest,
             recording_duration_ms=self.recording_duration_ms,
+            outcome=self.outcome,
             original_artifact_id=self.original_artifact_id,
             original_artifact_digest=self.original_artifact_digest,
             review_id=self.review_id,
@@ -245,6 +248,7 @@ class CorrectedTranscriptArtifact(DefinitionModel):
             source_revision_id=original.source_revision_id,
             source_revision_digest=original.source_revision_digest,
             recording_duration_ms=original.recording_duration_ms,
+            outcome=original.outcome,
             original_artifact_id=original.artifact_id,
             original_artifact_digest=original.artifact_digest,
             review_id=review_id,
@@ -261,6 +265,7 @@ class CorrectedTranscriptArtifact(DefinitionModel):
             source_revision_id=original.source_revision_id,
             source_revision_digest=original.source_revision_digest,
             recording_duration_ms=original.recording_duration_ms,
+            outcome=original.outcome,
             original_artifact_id=original.artifact_id,
             original_artifact_digest=original.artifact_digest,
             review_id=review_id,

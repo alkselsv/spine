@@ -78,6 +78,23 @@ class PostgreSQLTranscriptReviewRepository(TranscriptReviewRepository):
                 )
         return _review_from_row(row) if row is not None else None
 
+    async def get_corrected_artifact(
+        self, *, workspace_id: UUID, environment_id: UUID, artifact_id: UUID
+    ) -> CorrectedTranscriptArtifact | None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                await self._bind_scope(session, workspace_id, environment_id)
+                row = (
+                    await session.execute(
+                        select(corrected_transcript_artifacts.c.artifact).where(
+                            corrected_transcript_artifacts.c.workspace_id == workspace_id,
+                            corrected_transcript_artifacts.c.environment_id == environment_id,
+                            corrected_transcript_artifacts.c.artifact_id == artifact_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+        return CorrectedTranscriptArtifact.model_validate(row) if row is not None else None
+
     async def create_or_replay(
         self,
         *,

@@ -4,6 +4,27 @@ import type { Scope } from '../../app/scope';
 
 export type TranscriptReviewDecision = components['schemas']['TranscriptReviewDecision'];
 export type TranscriptReviewResult = components['schemas']['TranscriptReviewResponse'];
+export type TranscriptReviewInspection = components['schemas']['TranscriptReviewInspection'];
+
+export async function inspectTranscriptForReview(
+  client: Pick<ScopedApiClient, 'POST'>,
+  scope: Scope,
+  input: { artifactId: string; artifactDigest: string },
+  signal?: AbortSignal,
+): Promise<TranscriptReviewInspection> {
+  const { data, error } = await client.POST('/api/v1/transcript-reviews/inspect', {
+    body: {
+      schema_version: 1,
+      transcript_artifact_id: input.artifactId,
+      transcript_artifact_digest: input.artifactDigest,
+    },
+    signal,
+  });
+  if (error || !data || data.workspace_id !== scope.workspaceId || data.environment_id !== scope.environmentId) {
+    throw new Error('Не удалось открыть расшифровку для проверки.');
+  }
+  return data.data;
+}
 
 export async function reviewTranscript(
   client: Pick<ScopedApiClient, 'POST'>,
@@ -14,7 +35,7 @@ export async function reviewTranscript(
     decision: TranscriptReviewDecision;
     rationale: string;
     idempotencyKey: string;
-    correctedSegment?: { startMs: number; endMs: number; text: string };
+    correctedSegments?: { startMs: number; endMs: number; text: string; signals?: [] }[];
   },
 ): Promise<TranscriptReviewResult> {
   const { data, error } = await client.POST('/api/v1/transcript-reviews/decide', {
@@ -25,14 +46,12 @@ export async function reviewTranscript(
       decision: input.decision,
       rationale: input.rationale,
       idempotency_key: input.idempotencyKey,
-      corrected_segments: input.correctedSegment
-        ? [{
-            start_ms: input.correctedSegment.startMs,
-            end_ms: input.correctedSegment.endMs,
-            text: input.correctedSegment.text,
-            signals: [],
-          }]
-        : [],
+      corrected_segments: input.correctedSegments?.map((segment) => ({
+        start_ms: segment.startMs,
+        end_ms: segment.endMs,
+        text: segment.text,
+        signals: segment.signals ?? [],
+      })) ?? [],
     },
   });
   if (

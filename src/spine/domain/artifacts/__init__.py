@@ -46,6 +46,7 @@ from .transcript_review import (
 )
 from .publication import (
     TimeRangeLocator,
+    TranscriptPublicationArtifact,
     TranscriptProjectionSegment,
     TranscriptProjectionState,
     TranscriptPublication,
@@ -93,6 +94,7 @@ __all__ = [
     "TranscriptionTimeRangeLocator",
     "audio_chunk_id",
     "TimeRangeLocator",
+    "TranscriptPublicationArtifact",
     "TranscriptProjectionSegment",
     "TranscriptProjectionState",
     "TranscriptPublication",

@@ -14,11 +14,11 @@ from pydantic import Field, model_validator
 
 from spine.domain.artifacts import (
     TranscriptPublication,
+    TranscriptPublicationArtifact,
     TranscriptPublicationApproval,
     TranscriptPublicationState,
     TranscriptProjectionSegment,
     TranscriptProjectionState,
-    TranscriptionArtifact,
     TranscriptionArtifactOutcome,
     TimeRangeLocator,
 )
@@ -92,7 +92,7 @@ class TranscriptPublicationPolicy(Protocol):
     async def decide(
         self,
         *,
-        artifact: TranscriptionArtifact,
+        artifact: TranscriptPublicationArtifact,
         approval: TranscriptPublicationApproval | None,
     ) -> TranscriptPublicationDecision: ...
 
@@ -108,7 +108,7 @@ class ExplicitTranscriptPublicationPolicy:
     async def decide(
         self,
         *,
-        artifact: TranscriptionArtifact,
+        artifact: TranscriptPublicationArtifact,
         approval: TranscriptPublicationApproval | None,
     ) -> TranscriptPublicationDecision:
         if artifact.outcome is TranscriptionArtifactOutcome.PARTIAL and not self.allow_partial:
@@ -156,7 +156,7 @@ class ExplicitTranscriptPublicationPolicy:
 class TranscriptArtifactRepository(Protocol):
     async def get_artifact(
         self, *, workspace_id: UUID, environment_id: UUID, artifact_id: UUID
-    ) -> TranscriptionArtifact | None: ...
+    ) -> TranscriptPublicationArtifact | None: ...
 
 
 class TranscriptPublicationRepository(TranscriptArtifactRepository, Protocol):
@@ -210,7 +210,7 @@ class InMemoryTranscriptPublicationRepository:
         self._current: dict[tuple[UUID, UUID, UUID], TranscriptPublication] = {}
         self._history: list[TranscriptPublication] = []
 
-    async def get_artifact(self, **kwargs: object) -> TranscriptionArtifact | None:
+    async def get_artifact(self, **kwargs: object) -> TranscriptPublicationArtifact | None:
         return await self._artifacts.get_artifact(**kwargs)  # type: ignore[arg-type]
 
     async def create_or_replay(
@@ -587,7 +587,8 @@ class TranscriptContextBroker:
 
 
 def _authorization_matches(
-    authorization: TranscriptAuthorizationSnapshot, artifact: TranscriptionArtifact
+    authorization: TranscriptAuthorizationSnapshot,
+    artifact: TranscriptPublicationArtifact,
 ) -> bool:
     return bool(
         authorization.allowed
