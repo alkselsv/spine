@@ -12,8 +12,9 @@ import random
 from typing import Literal, Protocol, TypeVar
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, StrictBytes, StrictFloat, StrictInt, model_validator
+from pydantic import ConfigDict, Field, SecretStr, StrictBytes, StrictFloat, StrictInt, model_validator
 
+from spine.auth import ExternalSecretReference
 from spine.application.yandex_disk_scan import (
     YandexDiskAuthorizationRevokedError,
     YandexDiskConcurrentModificationError,
@@ -168,6 +169,18 @@ class YandexDiskService(Protocol):
         *,
         path: str,
     ) -> YandexDiskResource: ...
+
+
+class YandexDiskCredentialResolver(Protocol):
+    """Resolve credential material only after tenant-scoped admission."""
+
+    async def resolve(
+        self,
+        reference: ExternalSecretReference,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+    ) -> SecretStr: ...
 
 
 class YandexDiskReadCommand(Protocol):
@@ -659,6 +672,7 @@ def _decode_scan_checkpoint(checkpoint: str | None) -> dict[str, object]:
 
 __all__ = [
     "YandexDiskConcurrentModificationError",
+    "YandexDiskCredentialResolver",
     "YandexDiskAuthorizationRevokedError",
     "YandexDiskContractError",
     "YandexDiskFileContent",

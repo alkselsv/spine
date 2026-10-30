@@ -86,6 +86,7 @@ from spine.connectors.google_api import (
 from spine.connectors.yandex_disk import (
     YandexDiskAuthorizationRevokedError,
     YandexDiskConcurrentModificationError,
+    YandexDiskCredentialResolver,
     YandexDiskContractError,
     YandexDiskFileContent,
     YandexDiskFileTooLargeError,
@@ -221,6 +222,7 @@ __all__ = [
     "HttpxGoogleApiTransport",
     "ReferenceGoogleCredentialResolver",
     "YandexDiskConcurrentModificationError",
+    "YandexDiskCredentialResolver",
     "YandexDiskAuthorizationRevokedError",
     "YandexDiskContractError",
     "YandexDiskFileContent",
