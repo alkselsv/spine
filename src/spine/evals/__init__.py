@@ -1,5 +1,20 @@
 """Datasets and runners used by Spine evaluation suites."""
 
+from spine.evals.asr_candidate_qualification import (
+    ASR_CANDIDATE_QUALIFICATION_SCHEMA,
+    CandidateConfiguration,
+    CandidateProfile,
+    CandidateQualificationReport,
+    Coverage,
+    GateResult,
+    HostEvidence,
+    MetricObservation,
+    PrerequisiteCheck,
+    QualificationStatus,
+    candidate_profiles,
+    run_offline_candidate_qualification,
+)
+
 from spine.evals.qa_r1 import (
     QADataset,
     QA_R1_CASE_SCHEMA_VERSION,
@@ -144,6 +159,18 @@ from spine.evals.unauthorized_retrieval import (
 )
 
 __all__ = [
+    "ASR_CANDIDATE_QUALIFICATION_SCHEMA",
+    "CandidateConfiguration",
+    "CandidateProfile",
+    "CandidateQualificationReport",
+    "Coverage",
+    "GateResult",
+    "HostEvidence",
+    "MetricObservation",
+    "PrerequisiteCheck",
+    "QualificationStatus",
+    "candidate_profiles",
+    "run_offline_candidate_qualification",
     "QADataset",
     "QA_R1_CASE_SCHEMA_VERSION",
     "QA_R1_SCHEMA_VERSION",
