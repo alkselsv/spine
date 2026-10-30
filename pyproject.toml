@@ -57,6 +57,7 @@ spine-outbox-worker = "spine.workers.runtime:main"
 spine-qa-worker = "spine.workers.qa_runtime:main"
 spine-api = "spine.api.runtime:main"
 spine-google-live-qualification = "spine.scripts.google_live_qualification:main"
+spine-yandex-identity-preflight = "spine.scripts.yandex_identity_preflight:main"
 
 [build-system]
 requires = ["hatchling"]

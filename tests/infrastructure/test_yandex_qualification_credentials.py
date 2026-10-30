@@ -91,6 +91,32 @@ async def test_exact_active_binding_resolves_secret_without_repr_disclosure(
 
 
 @pytest.mark.asyncio
+async def test_approved_qualification_settings_can_share_the_private_file(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env.qualification"
+    _write_env(
+        env_file,
+        extra="\n".join(
+            (
+                "SPINE_QUALIFICATION_AUTHORITY_EXPIRES_AT=2026-11-07T21:00:00Z",
+                "SPINE_COGNEE_QUALIFICATION_RUN_ID=synthetic-run",
+                "SPINE_INGESTION_FAULT_PROFILE_JSON=",
+            )
+        ),
+    )
+    resolver = LocalYandexQualificationCredentialResolver(
+        env_file=env_file,
+        binding=_binding(),
+        clock=lambda: NOW,
+    )
+
+    secret = await _resolve(resolver)
+
+    assert secret.get_secret_value() == TOKEN
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("workspace_id", "environment_id", "reference"),
     (
@@ -155,7 +181,7 @@ async def test_cross_scope_or_reference_request_is_denied_before_file_read(
             0o600,
             "SPINE_YANDEX_QUALIFICATION_OAUTH_TOKEN=second-synthetic-token",
         ),
-        (0o600, "SPINE_UNAPPROVED_SETTING=value"),
+        (0o600, "SPINE_YANDEX_QUALIFICATION_UNAPPROVED_SETTING=value"),
     ),
 )
 async def test_unsafe_permissions_duplicate_or_extra_configuration_is_denied(

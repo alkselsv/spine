@@ -29,6 +29,7 @@ _TOKEN_KEY = "SPINE_YANDEX_QUALIFICATION_OAUTH_TOKEN"
 _REQUIRED_KEYS = frozenset(
     (_CLIENT_ID_KEY, _SCOPE_KEY, _ROOT_KEY, _REFERENCE_KEY, _TOKEN_KEY)
 )
+_YANDEX_QUALIFICATION_PREFIX = "SPINE_YANDEX_QUALIFICATION_"
 _MAXIMUM_FILE_BYTES = 16 * 1024
 _MAXIMUM_VALUE_CHARACTERS = 8 * 1024
 
@@ -183,9 +184,12 @@ def _parse_exact_environment(content: str) -> dict[str, str]:
             if "=" not in line:
                 raise YandexQualificationCredentialDeniedError()
             name, value = line.split("=", 1)
+            if name not in _REQUIRED_KEYS:
+                if name.startswith(_YANDEX_QUALIFICATION_PREFIX):
+                    raise YandexQualificationCredentialDeniedError()
+                continue
             if (
-                name not in _REQUIRED_KEYS
-                or name in values
+                name in values
                 or value != value.strip()
                 or not value
                 or len(value) > _MAXIMUM_VALUE_CHARACTERS

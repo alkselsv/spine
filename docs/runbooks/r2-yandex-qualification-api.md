@@ -56,8 +56,35 @@ and the qualification composition's fixed limits.
 
 ## Live boundary
 
-No live call is part of #741. Real endpoint availability, the acting account ID,
-the issued token's actual Disk scope, shared-folder behavior and provider rate
-limits remain `NOT_VERIFIED` until a separately approved live qualification run.
-The local `.env.qualification` token must never be committed or copied into a
-report. Production, customer and personal data remain forbidden.
+No live call was part of #741. No Disk API call is part of the later identity
+preflight. Real Disk endpoint
+availability, the issued token's actual Disk scope, shared-folder behavior and
+provider rate limits remain `NOT_VERIFIED` until the separately approved live
+qualification run. The local `.env.qualification` token must never be committed
+or copied into a report. Production, customer and personal data remain
+forbidden.
+
+### Identity-only preflight
+
+`spine-yandex-identity-preflight` is the only approved bootstrap path for the
+private acting-user binding. It has two independent gates: `opt_in: true` in a
+strict configuration document and
+`SPINE_YANDEX_IDENTITY_PREFLIGHT_OPT_IN=1` in the invoking process. It resolves
+only `local-env:yandex-disk-qa:v1` and can issue exactly one request to
+`GET https://login.yandex.ru/info?format=json`; it has no Disk operation or
+configurable provider endpoint.
+
+The command checks the returned `client_id` against the approved ClientID. On
+success it creates, without replacement, a mode-`0600` identity-candidate file
+containing the private Yandex User ID. Its separate mode-`0600` report contains
+only a SHA-256 identity fingerprint, counts of one identity request and zero
+Disk requests, and content-free status fields. It explicitly records that the
+raw identity is absent from the report and present only in the private candidate.
+If report creation fails, the CLI removes the newly created candidate so the
+operator can retry without manual recovery. Neither file may be committed or
+attached to GitHub; `.env.qualification.*` is ignored for that reason.
+
+The operator must inspect the candidate locally and explicitly approve that
+identity before it is promoted into the runtime API binding. Until that approval
+is recorded, no `cloud-api.yandex.net` request is permitted and #678 remains
+`NOT_VERIFIED` for Disk behavior.
