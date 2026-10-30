@@ -16,7 +16,9 @@ from spine.application.transcript_publication import (
 )
 from spine.domain.artifacts import (
     AdapterSignal,
+    CorrectedTranscriptArtifact,
     SpeechToTextSegment,
+    TranscriptPublicationArtifact,
     TranscriptProjectionState,
     TranscriptPublicationState,
     TranscriptRecognitionQuality,
@@ -66,7 +68,7 @@ def artifact(
     )
 
 
-def approval(transcript: TranscriptionArtifact):
+def approval(transcript: TranscriptPublicationArtifact):
     from spine.domain.artifacts import TranscriptPublicationApproval
 
     return TranscriptPublicationApproval(
@@ -79,6 +81,21 @@ def approval(transcript: TranscriptionArtifact):
         approved=True,
         approver_id=APPROVER,
         decided_at=NOW,
+    )
+
+
+def corrected_artifact(original: TranscriptionArtifact) -> CorrectedTranscriptArtifact:
+    return CorrectedTranscriptArtifact.create(
+        original=original,
+        review_id=UUID("65000000-0000-0000-0000-000000000001"),
+        segments=(
+            SpeechToTextSegment(
+                start_ms=1_000,
+                end_ms=2_500,
+                text="corrected transcript",
+            ),
+        ),
+        created_at=NOW,
     )
 
 
@@ -137,6 +154,41 @@ async def published_fixture(*, authorization: Authorization | None = None):
         )
     )
     return transcript, repository, source_authorization, result.publication
+
+
+async def published_corrected_fixture():
+    original = artifact()
+    corrected = corrected_artifact(original)
+
+    class Artifacts:
+        async def get_artifact(self, **kwargs: object):
+            if (
+                kwargs["workspace_id"] == corrected.workspace_id
+                and kwargs["environment_id"] == corrected.environment_id
+                and kwargs["artifact_id"] == corrected.artifact_id
+            ):
+                return corrected
+            return None
+
+    repository = InMemoryTranscriptPublicationRepository(Artifacts())
+    authorization = Authorization()
+    result = await TranscriptPublicationService(
+        repository=repository,
+        policy=ExplicitTranscriptPublicationPolicy(
+            policy_reference="transcript-review:v1",
+            require_human_approval=True,
+        ),
+        authorization=authorization,
+        clock=lambda: NOW,
+    ).publish(
+        PublishTranscriptCommand(
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+            transcript_artifact_id=corrected.artifact_id,
+            approval=approval(corrected),
+        )
+    )
+    return corrected, repository, authorization, result.publication
 
 
 @pytest.mark.asyncio
@@ -202,6 +254,29 @@ async def test_context_broker_returns_authorized_timestamped_segments() -> None:
     assert response.segments[0].locator.transcript_artifact_id == transcript.artifact_id
     assert response.segments[0].locator.start_ms == 1_000
     assert authorization.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_context_broker_returns_corrected_transcript_segment() -> None:
+    corrected, repository, authorization, publication = (
+        await published_corrected_fixture()
+    )
+
+    response = await TranscriptContextBroker(
+        repository=repository,
+        authorization=authorization,
+    ).retrieve(
+        TranscriptContextRequest(
+            request_id=UUID("80000000-0000-0000-0000-000000000009"),
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+            locator=publication.segments[0].locator,
+        )
+    )
+
+    assert response.outcome is TranscriptContextOutcome.ALLOWED
+    assert response.segments[0].text == "corrected transcript"
+    assert response.segments[0].locator.transcript_artifact_id == corrected.artifact_id
 
 
 @pytest.mark.asyncio

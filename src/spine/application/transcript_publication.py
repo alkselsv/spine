@@ -14,6 +14,7 @@ from pydantic import Field, model_validator
 
 from spine.domain.artifacts import (
     AdapterSignal,
+    CorrectedTranscriptArtifact,
     TranscriptPublication,
     TranscriptPublicationArtifact,
     TranscriptPublicationApproval,
@@ -24,6 +25,7 @@ from spine.domain.artifacts import (
     TranscriptProjectionState,
     TranscriptionArtifactOutcome,
     TimeRangeLocator,
+    transcript_artifact_language,
 )
 from spine.domain.common import DefinitionModel, VersionIdentifier
 
@@ -675,7 +677,7 @@ class TranscriptContextBroker:
             TranscriptContextSegment.from_projection(
                 projection=segment,
                 source=source_by_id[segment.segment_id],
-                language=artifact.language,
+                language=transcript_artifact_language(artifact),
             )
             for segment in projected_segments
         )

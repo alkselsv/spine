@@ -23,9 +23,8 @@ from spine.domain.artifacts import (
     TranscriptPublication,
     TranscriptPublicationState,
     TranscriptProjectionState,
-    TranscriptionArtifact,
     TranscriptionArtifactOutcome,
-    TranscriptionTimeRangeLocator,
+    validate_transcript_artifact_locator,
 )
 from spine.domain.common import DefinitionModel
 
@@ -225,7 +224,7 @@ class TranscriptEvidenceInspector:
         ):
             return TranscriptInspectionResult(status=TranscriptInspectionStatus.STALE)
         try:
-            artifact.validate_time_range_locator(_artifact_locator(locator, artifact))
+            validate_transcript_artifact_locator(artifact, locator)
         except ValueError:
             return TranscriptInspectionResult(status=TranscriptInspectionStatus.STALE)
         partial = artifact.outcome is TranscriptionArtifactOutcome.PARTIAL
@@ -296,25 +295,6 @@ def _publication_matches_locator(
         and publication.transcript_artifact_schema_version
         == locator.transcript_artifact_schema_version
         and publication.projection_version == locator.projection_version
-    )
-
-
-def _artifact_locator(
-    locator: TimeRangeLocator, artifact: TranscriptionArtifact
-) -> TranscriptionTimeRangeLocator:
-    """Map the publication locator to the artifact's independently checked locator."""
-    return TranscriptionTimeRangeLocator(
-        workspace_id=artifact.workspace_id,
-        environment_id=artifact.environment_id,
-        source_object_id=locator.source_object_id,
-        source_revision_id=locator.source_revision_id,
-        source_revision_digest=locator.source_revision_digest,
-        original_sha256=artifact.original_sha256,
-        artifact_id=locator.transcript_artifact_id,
-        artifact_digest=locator.transcript_artifact_digest,
-        artifact_schema_version=locator.transcript_artifact_schema_version,
-        start_ms=locator.start_ms,
-        end_ms=locator.end_ms,
     )
 
 
