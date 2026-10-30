@@ -14,6 +14,7 @@ from spine.domain.capabilities import (
     RequirementsExtractionReason,
     RequirementsExtractionReasonCode,
     TranscriptRequirementsEvidence,
+    TranscriptRecognitionQuality,
     upgrade_extract_requirements_input,
 )
 from spine.domain.artifacts import ArtifactRef, PhysicalLineLocator, TimeRangeLocator
@@ -146,6 +147,33 @@ def test_extract_requirements_input_rejects_discriminator_reference_mismatch() -
         TranscriptRequirementsEvidence(
             reference=parsed_reference,
             text="FUNCTIONAL: Export the proposal as PDF.",
+        )
+
+
+def test_transcript_recognition_conclusion_requires_policy_lineage() -> None:
+    source = AcceptedSourceRevisionRef(
+        source_object_id=uid(10), source_revision_id=uid(11), provenance_id=uid(12)
+    )
+    with pytest.raises(ValidationError, match="policy reference"):
+        TranscriptRequirementsEvidence(
+            reference={
+                "source_ref": source,
+                "segment_id": uid(15),
+                "segment_digest": "b" * 64,
+                "transcript_locator": TimeRangeLocator(
+                    source_object_id=source.source_object_id,
+                    source_revision_id=source.source_revision_id,
+                    source_revision_digest="c" * 64,
+                    transcript_artifact_id=uid(16),
+                    transcript_artifact_digest="d" * 64,
+                    transcript_artifact_schema_version="transcription-artifact:v1",
+                    start_ms=1_200,
+                    end_ms=2_800,
+                    segment_ids=(uid(15),),
+                ),
+            },
+            text="FUNCTIONAL: Export the proposal as PDF.",
+            recognition_quality=TranscriptRecognitionQuality.WEAK,
         )
 
 

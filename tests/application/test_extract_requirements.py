@@ -59,6 +59,7 @@ from spine.domain.capabilities import (
     RequirementsEvidenceAvailability,
     RequirementsExtractionOutcome,
     RequirementsExtractionOutput,
+    RequirementsExtractionOutputV1,
     TranscriptRequirementsEvidence,
     TranscriptRecognitionQuality,
 )
@@ -159,6 +160,7 @@ def transcript_evidence(
         language="ru",
         anonymous_speaker_label=speaker,
         recognition_quality=recognition_quality,
+        recognition_policy_reference="transcript-recognition-quality:v1",
     )
 
 
@@ -500,12 +502,14 @@ class ArtifactService:
 def boundary(
     *,
     input_model: ExtractRequirementsInput | ExtractRequirementsInputV1 | None = None,
-    output_model: RequirementsExtractionOutput | None = None,
+    output_model: RequirementsExtractionOutput | RequirementsExtractionOutputV1 | None = None,
     evidence_revalidator=None,
     input_schema=None,
+    capability=None,
+    version=None,
 ) -> tuple[RequirementsExtractionExecutionBoundary, Runtime, ArtifactService]:
-    capability = extract_requirements_capability()
-    version = extract_requirements_agent_version()
+    capability = capability or extract_requirements_capability()
+    version = version or extract_requirements_agent_version()
     registry = HandlerRegistry()
     registry.register_handler(
         registration=AgentImplementationRegistration.from_version(
@@ -608,9 +612,21 @@ async def test_existing_v1_input_artifact_rehydrates_in_current_execution_bounda
         work_item_id=WORK_ITEM,
         client_request=ClientRequestV1(message="Prepare proposal requirements"),
     )
+    legacy_output = RequirementsExtractionOutputV1(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        workflow_run_id=RUN,
+        work_item_id=WORK_ITEM,
+        outcome=RequirementsExtractionOutcome.ABSTAINED,
+        reason={"code": "insufficient_information"},
+    )
+    legacy_capability = extract_requirements_capability_v1()
     execution, _, _ = boundary(
         input_model=legacy,
-        input_schema=extract_requirements_capability_v1().input_schema,
+        output_model=legacy_output,
+        input_schema=legacy_capability.input_schema,
+        capability=legacy_capability,
+        version=extract_requirements_agent_version_v1(),
     )
 
     result = await execution.execute(

@@ -59,6 +59,7 @@ from spine.domain.capabilities import (
     TranscriptRequirementsEvidence,
     TranscriptRecognitionQuality,
     upgrade_extract_requirements_input,
+    upgrade_extract_requirements_output,
 )
 from spine.domain.common import ActorRef, EnvironmentKind, SchemaRef, ValidatedDefinitionModel
 from spine.domain.workflows import (
@@ -395,6 +396,9 @@ class AuthorizedTranscriptRequirementsInputBuilder:
                         language=segment.language,
                         anonymous_speaker_label=segment.anonymous_speaker_label,
                         recognition_quality=segment.recognition_quality,
+                        recognition_policy_reference=(
+                            segment.recognition_policy_reference
+                        ),
                     ))
                 continue
             for segment_id in locator.segment_ids:
@@ -462,6 +466,9 @@ class AuthorizedTranscriptRequirementsInputBuilder:
                     "language": matching.language,
                     "anonymous_speaker_label": matching.anonymous_speaker_label,
                     "recognition_quality": matching.recognition_quality,
+                    "recognition_policy_reference": (
+                        matching.recognition_policy_reference
+                    ),
                 }))
                 continue
             availability = (
@@ -680,13 +687,28 @@ class RequirementsExtractionExecutionBoundary:
                 or output_artifact.produced_by_agent_version_id != resolved.agent_version.id
             ):
                 raise ValueError
-            if input_artifact.artifact_schema == extract_requirements_capability_v1().input_schema:
-                normalized_input = upgrade_extract_requirements_input(
-                    ExtractRequirementsInputV1.model_validate(input_artifact.content)
-                )
-            else:
-                normalized_input = ExtractRequirementsInput.model_validate(
+            legacy_capability = extract_requirements_capability_v1()
+            if self._capability.output_schema == legacy_capability.output_schema:
+                legacy_input = ExtractRequirementsInputV1.model_validate(
                     input_artifact.content
+                )
+                legacy_output = RequirementsExtractionOutputV1.model_validate(
+                    output_artifact.content
+                )
+                _validate_handoff_v1(legacy_input, legacy_output)
+                extraction = upgrade_extract_requirements_output(legacy_output)
+                normalized_input = upgrade_extract_requirements_input(legacy_input)
+            else:
+                if input_artifact.artifact_schema == legacy_capability.input_schema:
+                    normalized_input = upgrade_extract_requirements_input(
+                        ExtractRequirementsInputV1.model_validate(input_artifact.content)
+                    )
+                else:
+                    normalized_input = ExtractRequirementsInput.model_validate(
+                        input_artifact.content
+                    )
+                extraction = RequirementsExtractionOutput.model_validate(
+                    output_artifact.content
                 )
             if any(
                 isinstance(item, TranscriptRequirementsEvidence)
@@ -698,12 +720,12 @@ class RequirementsExtractionExecutionBoundary:
                 normalized_input = await self._evidence_revalidator.revalidate(
                     normalized_input
                 )
-            extraction = RequirementsExtractionOutput.model_validate(output_artifact.content)
-            _validate_handoff(
-                capability=self._capability,
-                request=normalized_input,
-                output=extraction,
-            )
+            if self._capability.output_schema != legacy_capability.output_schema:
+                _validate_handoff(
+                    capability=self._capability,
+                    request=normalized_input,
+                    output=extraction,
+                )
         except Exception:
             raise RequirementsExecutionError(RequirementsExecutionErrorCode.OUTPUT_INVALID) from None
 
@@ -1129,6 +1151,13 @@ def _validate_runtime_handoff_v1(
         output_model, RequirementsExtractionOutputV1
     ):
         raise ValueError("requirements extraction v1 handoff is invalid")
+    _validate_handoff_v1(input_model, output_model)
+
+
+def _validate_handoff_v1(
+    input_model: ExtractRequirementsInputV1,
+    output_model: RequirementsExtractionOutputV1,
+) -> None:
     if (
         input_model.workspace_id != output_model.workspace_id
         or input_model.environment_id != output_model.environment_id

@@ -162,6 +162,7 @@ from spine.domain.capabilities.extract_requirements import (
     TranscriptRequirementsEvidence,
     TranscriptRecognitionQuality,
     upgrade_extract_requirements_input,
+    upgrade_extract_requirements_output,
 )
 from spine.domain.capabilities.semantic_support import (
     SEMANTIC_SUPPORT_ASSESSMENT_SCHEMA,
@@ -266,6 +267,7 @@ __all__ = [
     "TranscriptRequirementsEvidence",
     "TranscriptRecognitionQuality",
     "upgrade_extract_requirements_input",
+    "upgrade_extract_requirements_output",
     "Citation",
     "CitationValidationReasonCode",
     "CitationValidationStatus",

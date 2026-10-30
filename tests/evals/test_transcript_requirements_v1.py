@@ -103,6 +103,7 @@ async def test_versioned_transcript_requirements_dataset_passes_deterministic_ev
             ),
             anonymous_speaker_label="speaker-1" if case.speaker_known else None,
             recognition_quality=TranscriptRecognitionQuality(case.recognition_quality),
+            recognition_policy_reference="transcript-recognition-quality:v1",
         )
         value = ExtractRequirementsInput(
             workspace_id=uid(1), environment_id=uid(2),

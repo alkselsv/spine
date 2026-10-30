@@ -143,11 +143,20 @@ class TranscriptRequirementsEvidence(_RequirementsEvidence):
         default=None, min_length=1, max_length=128
     )
     recognition_quality: TranscriptRecognitionQuality = TranscriptRecognitionQuality.UNKNOWN
+    recognition_policy_reference: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+    )
 
     @model_validator(mode="after")
     def validate_transcript_reference(self) -> TranscriptRequirementsEvidence:
         if self.reference.transcript_locator is None:
             raise ValueError("transcript evidence requires a time-range reference")
+        if (
+            self.recognition_quality is not TranscriptRecognitionQuality.UNKNOWN
+            and self.recognition_policy_reference is None
+        ):
+            raise ValueError("observed recognition quality requires its policy reference")
         return self
 
 
@@ -340,6 +349,16 @@ def upgrade_extract_requirements_input(
     return ExtractRequirementsInput.model_validate(payload)
 
 
+def upgrade_extract_requirements_output(
+    value: RequirementsExtractionOutputV1,
+) -> RequirementsExtractionOutput:
+    """Rehydrate a validated v1 result into the current persistence contract."""
+
+    payload = value.model_dump(mode="python")
+    payload["schema_version"] = EXTRACT_REQUIREMENTS_OUTPUT_SCHEMA
+    return RequirementsExtractionOutput.model_validate(payload)
+
+
 # Descriptive aliases used by composition roots that name the boundary by its
 # capability rather than its implementation detail.
 ExtractRequirementsResult = RequirementsExtractionOutput
@@ -368,4 +387,5 @@ __all__ = [
     "TranscriptRequirementsEvidence",
     "TranscriptRecognitionQuality",
     "upgrade_extract_requirements_input",
+    "upgrade_extract_requirements_output",
 ]
