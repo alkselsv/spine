@@ -39,6 +39,11 @@ from .transcription import (
     TranscriptionTimeRangeLocator,
     audio_chunk_id,
 )
+from .transcript_review import (
+    CorrectedTranscriptArtifact,
+    TranscriptReviewDecision,
+    TranscriptReviewRecord,
+)
 from .publication import (
     TimeRangeLocator,
     TranscriptProjectionSegment,
@@ -76,6 +81,9 @@ __all__ = [
     "SpeechToTextSegment",
     "TranscriptSegment",
     "TranscriptionArtifact",
+    "CorrectedTranscriptArtifact",
+    "TranscriptReviewDecision",
+    "TranscriptReviewRecord",
     "TranscriptionChunkCheckpoint",
     "TranscriptionChunkReceipt",
     "TranscriptionArtifactOutcome",

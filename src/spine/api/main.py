@@ -44,6 +44,10 @@ from spine.api.transcript_evidence import (
     TranscriptEvidenceInspectorService,
     install_transcript_evidence_routes,
 )
+from spine.api.transcript_reviews import (
+    TranscriptReviewCommandService,
+    install_transcript_review_routes,
+)
 from spine.api.provider_connections import install_provider_connection_routes
 from spine.api.qa_stream import (
     QAStreamDisclosureAuthorizer,
@@ -269,6 +273,7 @@ def create_app(
     requirements_review_service: RequirementsReviewService | None = None,
     requirements_evidence_service: RequirementsEvidenceValidationService | None = None,
     transcript_evidence_inspector_service: TranscriptEvidenceInspectorService | None = None,
+    transcript_review_service: TranscriptReviewCommandService | None = None,
     provider_connection_service: ProviderConnectionManager | None = None,
     provider_connection_cursor_secret: bytes | None = None,
     workflow_version_resolver: WorkflowVersionResolver | None = None,
@@ -585,6 +590,10 @@ def create_app(
             application,
             service=transcript_evidence_inspector_service,
         )
+    if transcript_review_service is not None:
+        if type(authorization_runtime) is not ApiAuthorizationRuntime:
+            raise RuntimeError("Transcript review routes require an authorization runtime.")
+        install_transcript_review_routes(application, service=transcript_review_service)
     if provider_connection_service is not None:
         if type(authorization_runtime) is not ApiAuthorizationRuntime:
             raise RuntimeError("Provider connection routes require an authorization runtime.")

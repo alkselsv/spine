@@ -269,6 +269,42 @@
         "title": "ActorRef",
         "type": "object"
       },
+      "AdapterSignal": {
+        "additionalProperties": false,
+        "description": "One optional signal actually emitted by the selected STT adapter.",
+        "properties": {
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_.:-]{0,127}$",
+            "title": "Name",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "name",
+          "value"
+        ],
+        "title": "AdapterSignal",
+        "type": "object"
+      },
       "AddContextCommandV1": {
         "additionalProperties": false,
         "description": "Protected conversational context added to one existing run.",
@@ -2059,6 +2095,43 @@
         "title": "ApiResponseEnvelope[TranscriptInspectionResult]",
         "type": "object"
       },
+      "ApiResponseEnvelope_TranscriptReviewResponse_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/TranscriptReviewResponse"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "trace_id",
+          "data"
+        ],
+        "title": "ApiResponseEnvelope[TranscriptReviewResponse]",
+        "type": "object"
+      },
       "ArtifactRef": {
         "additionalProperties": false,
         "properties": {
@@ -3454,6 +3527,96 @@
           "bundle_digest"
         ],
         "title": "ContextBundleRef",
+        "type": "object"
+      },
+      "CorrectedTranscriptArtifact": {
+        "additionalProperties": false,
+        "description": "Immutable human correction that preserves the original ASR artifact.",
+        "properties": {
+          "artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Artifact Digest",
+            "type": "string"
+          },
+          "artifact_id": {
+            "format": "uuid",
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "original_artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Original Artifact Digest",
+            "type": "string"
+          },
+          "original_artifact_id": {
+            "format": "uuid",
+            "title": "Original Artifact Id",
+            "type": "string"
+          },
+          "review_id": {
+            "format": "uuid",
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "human-corrected-transcript:v1",
+            "default": "human-corrected-transcript:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "segments": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptSegment"
+            },
+            "title": "Segments",
+            "type": "array"
+          },
+          "source_object_id": {
+            "format": "uuid",
+            "title": "Source Object Id",
+            "type": "string"
+          },
+          "source_revision_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Revision Digest",
+            "type": "string"
+          },
+          "source_revision_id": {
+            "format": "uuid",
+            "title": "Source Revision Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "artifact_digest",
+          "workspace_id",
+          "environment_id",
+          "source_object_id",
+          "source_revision_id",
+          "source_revision_digest",
+          "original_artifact_id",
+          "original_artifact_digest",
+          "review_id",
+          "segments",
+          "created_at"
+        ],
+        "title": "CorrectedTranscriptArtifact",
         "type": "object"
       },
       "CorrelationCoverageState": {
@@ -10255,6 +10418,55 @@
         "title": "SourceLifecycleOperationResponse",
         "type": "object"
       },
+      "SpeechToTextSegment": {
+        "additionalProperties": false,
+        "description": "Transient provider-neutral segment on the original recording timeline.",
+        "properties": {
+          "anonymous_speaker_label": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anonymous Speaker Label"
+          },
+          "end_ms": {
+            "exclusiveMinimum": 0.0,
+            "title": "End Ms",
+            "type": "integer"
+          },
+          "signals": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AdapterSignal"
+            },
+            "title": "Signals",
+            "type": "array"
+          },
+          "start_ms": {
+            "minimum": 0.0,
+            "title": "Start Ms",
+            "type": "integer"
+          },
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start_ms",
+          "end_ms",
+          "text"
+        ],
+        "title": "SpeechToTextSegment",
+        "type": "object"
+      },
       "StableLocatorSnapshot": {
         "additionalProperties": false,
         "properties": {
@@ -10735,6 +10947,242 @@
         "title": "TranscriptInspectionStatus",
         "type": "string"
       },
+      "TranscriptReviewDecision": {
+        "enum": [
+          "approve",
+          "correct",
+          "reject"
+        ],
+        "title": "TranscriptReviewDecision",
+        "type": "string"
+      },
+      "TranscriptReviewRecord": {
+        "additionalProperties": false,
+        "description": "Append-only decision against one exact ASR artifact version.",
+        "properties": {
+          "actor_authority": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Actor Authority",
+            "type": "string"
+          },
+          "actor_id": {
+            "format": "uuid",
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "corrected_artifact_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Corrected Artifact Id"
+          },
+          "correlation_id": {
+            "format": "uuid",
+            "title": "Correlation Id",
+            "type": "string"
+          },
+          "decided_at": {
+            "format": "date-time",
+            "title": "Decided At",
+            "type": "string"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/TranscriptReviewDecision"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "input_artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Input Artifact Digest",
+            "type": "string"
+          },
+          "input_artifact_id": {
+            "format": "uuid",
+            "title": "Input Artifact Id",
+            "type": "string"
+          },
+          "input_artifact_schema_version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Input Artifact Schema Version",
+            "type": "string"
+          },
+          "policy_reference": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Policy Reference",
+            "type": "string"
+          },
+          "publication_eligible": {
+            "title": "Publication Eligible",
+            "type": "boolean"
+          },
+          "rationale": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Rationale",
+            "type": "string"
+          },
+          "review_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Review Digest",
+            "type": "string"
+          },
+          "review_id": {
+            "format": "uuid",
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "transcript-review:v1",
+            "default": "transcript-review:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_object_id": {
+            "format": "uuid",
+            "title": "Source Object Id",
+            "type": "string"
+          },
+          "source_revision_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Revision Digest",
+            "type": "string"
+          },
+          "source_revision_id": {
+            "format": "uuid",
+            "title": "Source Revision Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "review_digest",
+          "idempotency_key",
+          "workspace_id",
+          "environment_id",
+          "source_object_id",
+          "source_revision_id",
+          "source_revision_digest",
+          "input_artifact_id",
+          "input_artifact_digest",
+          "input_artifact_schema_version",
+          "decision",
+          "rationale",
+          "actor_id",
+          "actor_authority",
+          "policy_reference",
+          "publication_eligible",
+          "correlation_id",
+          "decided_at"
+        ],
+        "title": "TranscriptReviewRecord",
+        "type": "object"
+      },
+      "TranscriptReviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "corrected_segments": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/SpeechToTextSegment"
+            },
+            "title": "Corrected Segments",
+            "type": "array"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/TranscriptReviewDecision"
+          },
+          "idempotency_key": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "rationale": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Rationale",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "transcript_artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Transcript Artifact Digest",
+            "type": "string"
+          },
+          "transcript_artifact_id": {
+            "format": "uuid",
+            "title": "Transcript Artifact Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "transcript_artifact_id",
+          "transcript_artifact_digest",
+          "decision",
+          "rationale",
+          "idempotency_key"
+        ],
+        "title": "TranscriptReviewRequest",
+        "type": "object"
+      },
+      "TranscriptReviewResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "corrected_artifact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CorrectedTranscriptArtifact"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "replay": {
+            "title": "Replay",
+            "type": "boolean"
+          },
+          "review": {
+            "$ref": "#/components/schemas/TranscriptReviewRecord"
+          }
+        },
+        "required": [
+          "review",
+          "replay"
+        ],
+        "title": "TranscriptReviewResponse",
+        "type": "object"
+      },
       "TranscriptReviewState": {
         "enum": [
           "approved",
@@ -10742,6 +11190,72 @@
         ],
         "title": "TranscriptReviewState",
         "type": "string"
+      },
+      "TranscriptSegment": {
+        "additionalProperties": false,
+        "properties": {
+          "anonymous_speaker_label": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anonymous Speaker Label"
+          },
+          "end_ms": {
+            "exclusiveMinimum": 0.0,
+            "title": "End Ms",
+            "type": "integer"
+          },
+          "ordinal": {
+            "exclusiveMinimum": 0.0,
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": "transcript-segment:v1",
+            "default": "transcript-segment:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "segment_id": {
+            "format": "uuid",
+            "title": "Segment Id",
+            "type": "string"
+          },
+          "signals": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AdapterSignal"
+            },
+            "title": "Signals",
+            "type": "array"
+          },
+          "start_ms": {
+            "minimum": 0.0,
+            "title": "Start Ms",
+            "type": "integer"
+          },
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "segment_id",
+          "ordinal",
+          "start_ms",
+          "end_ms",
+          "text"
+        ],
+        "title": "TranscriptSegment",
+        "type": "object"
       },
       "ValidationError": {
         "properties": {
@@ -19428,6 +19942,149 @@
           }
         ],
         "summary": "Transcript.Evidence.Inspect"
+      }
+    },
+    "/api/v1/transcript-reviews/decide": {
+      "post": {
+        "operationId": "transcript.review.decide",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranscriptReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseEnvelope_TranscriptReviewResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Transcript.Review.Decide"
       }
     },
     "/ask": {

@@ -121,4 +121,50 @@ describe('TranscriptEvidenceInspector', () => {
     expect(screen.queryByText('Сегмент расшифровки.')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Перейти к фрагменту записи' })).toBeNull();
   });
+
+  it('submits_an_immutable_correction_for_the_exact_asr_artifact', async () => {
+    const post = vi.fn()
+      .mockResolvedValueOnce({ data: {
+        schema_version: 1, workspace_id: scope.workspaceId, environment_id: scope.environmentId,
+        trace_id: '80000000-0000-4000-8000-000000000001',
+        data: {
+          schema_version: 'transcript-inspection-result:v1', status: 'current', locator,
+          source_object_id: locator.source_object_id,
+          source_revision_id: locator.source_revision_id,
+          transcript_artifact_id: locator.transcript_artifact_id,
+          transcript_artifact_digest: locator.transcript_artifact_digest,
+          transcript_artifact_schema_version: locator.transcript_artifact_schema_version,
+          publication_id: '70000000-0000-4000-8000-000000000001', publication_state: 'active',
+          review_state: 'not_required', partial: false, recording_duration_ms: 10_000,
+          text: 'Сегмент расшифровки.',
+        },
+      } })
+      .mockResolvedValueOnce({ data: {
+        schema_version: 1, workspace_id: scope.workspaceId, environment_id: scope.environmentId,
+        trace_id: '80000000-0000-4000-8000-000000000001',
+        data: { review: {
+          decision: 'correct', input_artifact_id: locator.transcript_artifact_id,
+          input_artifact_digest: locator.transcript_artifact_digest, publication_eligible: true,
+        }, corrected_artifact: { original_artifact_id: locator.transcript_artifact_id } },
+      } });
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <TranscriptEvidenceInspector client={{ POST: post } as never} locator={locator} scope={scope} />
+    </QueryClientProvider>);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Открыть фрагмент расшифровки' }));
+    await screen.findByRole('status');
+    await userEvent.clear(screen.getByLabelText('Исправление фрагмента'));
+    await userEvent.type(screen.getByLabelText('Исправление фрагмента'), 'Исправленная фраза');
+    await userEvent.click(screen.getByRole('button', { name: 'Исправить и сохранить' }));
+
+    expect(await screen.findByText('Создана исправленная версия расшифровки.')).toBeVisible();
+    expect(post).toHaveBeenNthCalledWith(2, '/api/v1/transcript-reviews/decide', expect.objectContaining({
+      body: expect.objectContaining({
+        transcript_artifact_id: locator.transcript_artifact_id,
+        transcript_artifact_digest: locator.transcript_artifact_digest,
+        decision: 'correct',
+        corrected_segments: [{ start_ms: locator.start_ms, end_ms: locator.end_ms, text: 'Исправленная фраза', signals: [] }],
+      }),
+    }));
+  });
 });

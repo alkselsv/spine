@@ -61,6 +61,11 @@ from spine.application.requirements_evidence import (
     RequirementsEvidenceValidationService,
 )
 from spine.application.transcript_inspection import TranscriptEvidenceInspector
+from spine.application.transcript_review import (
+    ExplicitTranscriptReviewPolicy,
+    TranscriptReviewPolicyOutcome,
+    TranscriptReviewService,
+)
 from spine.application.persistence.context import (
     EnvironmentScope,
     PersistenceOperation,
@@ -118,6 +123,9 @@ from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
 from spine.infrastructure.persistence.transcription import PostgreSQLTranscriptionRepository
 from spine.infrastructure.persistence.transcript_publication import (
     PostgreSQLTranscriptPublicationRepository,
+)
+from spine.infrastructure.persistence.transcript_review import (
+    PostgreSQLTranscriptReviewRepository,
 )
 from spine.infrastructure.qa_observation_capture import (
     CaptureAuthorizer,
@@ -394,6 +402,18 @@ def create_production_app(
             decision_audit=parsed_content_decision_audit,
         ),
     )
+    transcript_review_service = TranscriptReviewService(
+        repository=PostgreSQLTranscriptReviewRepository(
+            session_factory=sessions,
+            artifact_repository=transcript_artifacts,
+            context_factory=transcript_context_factory,
+            context_verifier=request_boundary,
+        ),
+        policy=ExplicitTranscriptReviewPolicy(
+            policy_reference="transcript-review:v1",
+            outcome=TranscriptReviewPolicyOutcome.REQUIRE,
+        ),
+    )
     application = create_app(
         authorization_runtime=authorization,
         diagnostic_registry=diagnostic_registry,
@@ -469,6 +489,7 @@ def create_production_app(
         ),
         requirements_evidence_service=requirements_evidence_service,
         transcript_evidence_inspector_service=transcript_evidence_inspector,
+        transcript_review_service=transcript_review_service,
         provider_connection_service=provider_connections,
         provider_connection_cursor_secret=(
             resolved_api.cursor_secret.get_secret_value().encode("utf-8")
