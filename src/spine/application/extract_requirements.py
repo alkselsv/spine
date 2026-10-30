@@ -41,9 +41,14 @@ from spine.domain.agents import (
 from spine.domain.artifacts import Artifact
 from spine.domain.capabilities import (
     ExtractRequirementsInput,
+    RequirementsClarification,
+    RequirementsEvidenceAvailability,
     RequirementsExecutionConfiguration,
     RequirementsExtractionOutcome,
     RequirementsExtractionOutput,
+    RequirementsExtractionReason,
+    RequirementsExtractionReasonCode,
+    TranscriptRequirementsEvidence,
     CapabilityDefinition,
 )
 from spine.domain.common import ActorRef, EnvironmentKind, SchemaRef, ValidatedDefinitionModel
@@ -52,6 +57,9 @@ from spine.domain.workflows import (
     ClarificationAnswer,
     Requirement,
     RequirementCategory,
+    RequirementEvidenceRef,
+    RequirementEvidenceRelationship,
+    RequirementEvidenceStatus,
     RequirementState,
     RequirementsArtifact,
 )
@@ -477,6 +485,8 @@ async def deterministic_extract_requirements(
     value = request.input
     if not isinstance(value, ExtractRequirementsInput):
         raise TypeError("requirements extraction input is invalid")
+    if value.evidence:
+        return _extract_labelled_evidence(value)
     message = value.client_request.message.strip()
     requirement_id = uuid5(value.workflow_run_id, "requirements:1")
     if len(message.split()) < 3:
@@ -499,8 +509,6 @@ async def deterministic_extract_requirements(
                 ),
             ),
         )
-    from spine.domain.workflows import Requirement, RequirementCategory, RequirementEvidenceStatus
-
     return RequirementsExtractionOutput(
         workspace_id=value.workspace_id,
         environment_id=value.environment_id,
@@ -518,6 +526,175 @@ async def deterministic_extract_requirements(
             ),
         ),
     )
+
+
+_LABELLED_REQUIREMENT_CATEGORIES = {
+    "FUNCTIONAL": RequirementCategory.FUNCTIONAL,
+    "NON_FUNCTIONAL": RequirementCategory.NON_FUNCTIONAL,
+    "DESIGN": RequirementCategory.DESIGN,
+    "SCHEDULE": RequirementCategory.SCHEDULE,
+    "CONSTRAINT": RequirementCategory.CONSTRAINT,
+    "AGREEMENT": RequirementCategory.AGREEMENT,
+    "OPEN_QUESTION": RequirementCategory.OPEN_QUESTION,
+}
+
+
+def _extract_labelled_evidence(
+    value: ExtractRequirementsInput,
+) -> RequirementsExtractionOutput:
+    """Extract deterministic labelled fixtures without granting content authority."""
+
+    current = tuple(
+        item
+        for item in value.evidence
+        if item.availability is RequirementsEvidenceAvailability.CURRENT
+    )
+    if not current:
+        denied = any(
+            item.availability is RequirementsEvidenceAvailability.DENIED
+            for item in value.evidence
+        )
+        return RequirementsExtractionOutput(
+            workspace_id=value.workspace_id,
+            environment_id=value.environment_id,
+            workflow_run_id=value.workflow_run_id,
+            work_item_id=value.work_item_id,
+            outcome=RequirementsExtractionOutcome.ABSTAINED,
+            reason=RequirementsExtractionReason(
+                code=(
+                    RequirementsExtractionReasonCode.AUTHORIZATION_DENIED
+                    if denied
+                    else RequirementsExtractionReasonCode.NO_USABLE_SOURCE
+                )
+            ),
+        )
+
+    requirements: list[Requirement] = []
+    clarifications: list[RequirementsClarification] = []
+    for evidence in current:
+        if evidence.text is None:
+            raise ValueError("current requirements evidence is missing protected text")
+        for line_number, raw_line in enumerate(evidence.text.splitlines(), start=1):
+            parsed = _parse_labelled_candidate(raw_line)
+            if parsed is None:
+                continue
+            category, statement, contradiction = parsed
+            if len(requirements) >= value.execution.max_requirements:
+                break
+            markers: list[str] = []
+            uncertainty: list[str] = []
+            if isinstance(evidence, TranscriptRequirementsEvidence):
+                if _has_weak_recognition(evidence):
+                    markers.append("weak_recognition")
+                    uncertainty.append("Transcript recognition is weak and requires review.")
+                if evidence.anonymous_speaker_label is None:
+                    markers.append("unknown_speaker")
+                    uncertainty.append("The transcript speaker is unknown and requires clarification.")
+            if contradiction:
+                markers.append("contradiction")
+                uncertainty.append("The evidence contradicts another candidate and requires clarification.")
+            if category is RequirementCategory.OPEN_QUESTION:
+                markers.append("open_question")
+                uncertainty.append("The transcript contains an open question, not a confirmed requirement.")
+
+            reference = evidence.reference.model_copy(
+                update={
+                    "relationship": (
+                        RequirementEvidenceRelationship.CONTRADICTS
+                        if contradiction
+                        else RequirementEvidenceRelationship.SUPPORTS
+                    )
+                }
+            )
+            requirement_id = uuid5(
+                value.workflow_run_id,
+                f"requirements:evidence:{reference.segment_id}:{line_number}:{category.value}",
+            )
+            partial = bool(markers)
+            requirements.append(
+                Requirement(
+                    requirement_id=requirement_id,
+                    category=category,
+                    statement=statement,
+                    uncertainty=" ".join(uncertainty) or None,
+                    ambiguous_markers=tuple(markers),
+                    missing_markers=tuple(markers),
+                    state=RequirementState.PARTIAL if partial else RequirementState.CANDIDATE,
+                    source_refs=(reference.source_ref,),
+                    evidence_refs=(reference,),
+                    evidence_status=RequirementEvidenceStatus.REFERENCED,
+                )
+            )
+            if partial and len(clarifications) < value.execution.max_clarifications:
+                clarifications.append(
+                    RequirementsClarification(
+                        clarification_id=uuid5(
+                            value.workflow_run_id,
+                            f"requirements:clarification:{requirement_id}",
+                        ),
+                        prompt=f"Clarify the candidate supported at {reference.segment_id}.",
+                        missing_markers=tuple(markers),
+                    )
+                )
+
+    if not requirements:
+        return RequirementsExtractionOutput(
+            workspace_id=value.workspace_id,
+            environment_id=value.environment_id,
+            workflow_run_id=value.workflow_run_id,
+            work_item_id=value.work_item_id,
+            outcome=RequirementsExtractionOutcome.ABSTAINED,
+            reason=RequirementsExtractionReason(
+                code=RequirementsExtractionReasonCode.NO_USABLE_SOURCE
+            ),
+        )
+    partial = any(item.state is RequirementState.PARTIAL for item in requirements)
+    return RequirementsExtractionOutput(
+        workspace_id=value.workspace_id,
+        environment_id=value.environment_id,
+        workflow_run_id=value.workflow_run_id,
+        work_item_id=value.work_item_id,
+        outcome=(
+            RequirementsExtractionOutcome.PARTIAL
+            if partial
+            else RequirementsExtractionOutcome.SUCCESS
+        ),
+        requirements=tuple(requirements),
+        clarifications=tuple(clarifications),
+    )
+
+
+def _parse_labelled_candidate(
+    raw_line: str,
+) -> tuple[RequirementCategory, str, bool] | None:
+    line = raw_line.strip()
+    contradiction = False
+    if line.upper().startswith("CONTRADICTS "):
+        contradiction = True
+        line = line[len("CONTRADICTS ") :].lstrip()
+    label, separator, statement = line.partition(":")
+    category = _LABELLED_REQUIREMENT_CATEGORIES.get(label.strip().upper())
+    if not separator or category is None or not statement.strip():
+        return None
+    return category, statement.strip(), contradiction
+
+
+def _has_weak_recognition(evidence: TranscriptRequirementsEvidence) -> bool:
+    for signal in evidence.signals:
+        if signal.name in {"recognition_confidence", "confidence"}:
+            if isinstance(signal.value, (int, float)) and not isinstance(signal.value, bool):
+                if float(signal.value) < 0.65:
+                    return True
+        if signal.name in {"recognition_quality", "recognition_state"}:
+            if isinstance(signal.value, str) and signal.value.lower() in {
+                "weak",
+                "uncertain",
+                "noisy",
+            }:
+                return True
+        if signal.name == "recognition_weak" and signal.value is True:
+            return True
+    return False
 
 
 def revalidate_clarified_requirement(
@@ -645,6 +822,11 @@ def _validate_handoff(
         (item.source_object_id, item.source_revision_id, item.provenance_id)
         for item in request.authorized_source_refs
     }
+    allowed_evidence = {
+        _requirement_evidence_identity(item.reference)
+        for item in request.evidence
+        if item.availability is RequirementsEvidenceAvailability.CURRENT
+    }
     for requirement in output.requirements:
         for source in requirement.source_refs:
             key = (source.source_object_id, source.source_revision_id, source.provenance_id)
@@ -658,6 +840,21 @@ def _validate_handoff(
             )
             if key not in allowed:
                 raise ValueError("requirements extraction cited unauthorized evidence")
+            if _requirement_evidence_identity(evidence) not in allowed_evidence:
+                raise ValueError(
+                    "requirements extraction cited fabricated or unavailable evidence"
+                )
+
+
+def _requirement_evidence_identity(reference: object) -> str:
+    if not isinstance(reference, RequirementEvidenceRef):
+        raise TypeError("requirements evidence reference is invalid")
+    return _digest(
+        reference.model_dump(
+            mode="json",
+            exclude={"relationship", "validation"},
+        )
+    )
 
 
 def _agent_version_digest(version: AgentVersion) -> str:

@@ -44,7 +44,11 @@ class RequirementReviewState(str, Enum):
 class RequirementCategory(str, Enum):
     FUNCTIONAL = "functional"
     NON_FUNCTIONAL = "non_functional"
+    DESIGN = "design"
+    SCHEDULE = "schedule"
     CONSTRAINT = "constraint"
+    AGREEMENT = "agreement"
+    OPEN_QUESTION = "open_question"
     ASSUMPTION = "assumption"
     UNRESOLVED_INFORMATION = "unresolved_information"
 

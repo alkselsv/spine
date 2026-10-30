@@ -5242,7 +5242,7 @@ export interface components {
          * RequirementCategory
          * @enum {string}
          */
-        RequirementCategory: "functional" | "non_functional" | "constraint" | "assumption" | "unresolved_information";
+        RequirementCategory: "functional" | "non_functional" | "design" | "schedule" | "constraint" | "agreement" | "open_question" | "assumption" | "unresolved_information";
         /**
          * RequirementEvidenceRef
          * @description An exact source revision and parsed or time-based evidence segment.

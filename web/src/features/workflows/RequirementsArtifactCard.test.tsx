@@ -320,4 +320,61 @@ describe('RequirementsArtifactCard', () => {
     expect(await screen.findByText(new RegExp(status))).toBeVisible();
     expect(screen.queryByText('protected text')).toBeNull();
   });
+
+  it('opens_exact_transcript_time_evidence_from_the_existing_run_card', async () => {
+    const locator = {
+      schema_version: 'time-range-locator:v1',
+      source_object_id: '80000000-0000-4000-8000-000000000001',
+      source_revision_id: '80000000-0000-4000-8000-000000000002',
+      source_revision_digest: 'a'.repeat(64),
+      transcript_artifact_id: '80000000-0000-4000-8000-000000000004',
+      transcript_artifact_digest: 'b'.repeat(64),
+      transcript_artifact_schema_version: 'transcription-artifact:v1',
+      projection_version: 'transcript-projection:v1',
+      start_ms: 1_250,
+      end_ms: 2_750,
+      segment_ids: ['80000000-0000-4000-8000-000000000005'],
+    } as const;
+    const artifact = {
+      artifact_id: '60000000-0000-4000-8000-000000000001', artifact_version: 1,
+      schema_version: 'requirements:v1', production_identity: 'requirements-extraction-v1',
+      production_digest: 'a'.repeat(64), workspace_id: '10000000-0000-4000-8000-000000000001',
+      environment_id: '20000000-0000-4000-8000-000000000001', work_item_id: '40000000-0000-4000-8000-000000000001',
+      run_id: '30000000-0000-4000-8000-000000000001', state: 'candidate', upstream_artifact_ids: [],
+      predecessor_version: null, clarifications: [], requirements: [{ requirement_id: '70000000-0000-4000-8000-000000000001',
+        schema_version: 'requirement:v1', category: 'schedule', statement: 'Launch by 20 December', constraints: [], uncertainty: null,
+        ambiguous_markers: [], missing_markers: [], state: 'candidate', review_state: 'needs_review', confidence: null,
+        source_refs: [{ source_object_id: locator.source_object_id, source_revision_id: locator.source_revision_id,
+          provenance_id: '80000000-0000-4000-8000-000000000003' }],
+        evidence_refs: [{ source_ref: { source_object_id: locator.source_object_id, source_revision_id: locator.source_revision_id,
+          provenance_id: '80000000-0000-4000-8000-000000000003' }, parsed_artifact_ref: null,
+          transcript_locator: locator, segment_id: locator.segment_ids[0], segment_digest: 'c'.repeat(64),
+          locator_contract_version: 'time-range-locator:v1', locator: null, relationship: 'supports', validation: null }],
+        evidence_status: 'referenced', upstream_artifact_ids: [] }],
+    } as const;
+    get.mockResolvedValue({ data: artifact });
+    post.mockResolvedValue({ data: {
+      workspace_id: artifact.workspace_id, environment_id: artifact.environment_id,
+      data: { schema_version: 'transcript-inspection-result:v1', status: 'current', locator,
+        source_object_id: locator.source_object_id, source_revision_id: locator.source_revision_id,
+        transcript_artifact_id: locator.transcript_artifact_id,
+        transcript_artifact_digest: locator.transcript_artifact_digest,
+        transcript_artifact_schema_version: locator.transcript_artifact_schema_version,
+        publication_id: '90000000-0000-4000-8000-000000000001', publication_state: 'active',
+        review_state: 'approved', partial: false, recording_duration_ms: 10_000,
+        text: 'Launch by 20 December' },
+    } });
+
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <RequirementsArtifactCard client={{ GET: get, POST: post }} queryKey={['workspace', 'run']}
+        runId={artifact.run_id} scope={{ workspaceId: artifact.workspace_id, environmentId: artifact.environment_id }} />
+    </QueryClientProvider>);
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Открыть фрагмент расшифровки' }));
+    expect(await screen.findByText('Launch by 20 December')).toBeVisible();
+    expect(screen.getByText('00:01.250–00:02.750')).toBeVisible();
+    expect(post).toHaveBeenCalledWith('/api/v1/transcript-evidence/inspect', expect.objectContaining({
+      body: { schema_version: 1, locator },
+    }));
+  });
 });

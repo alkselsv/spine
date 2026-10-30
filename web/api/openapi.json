@@ -9433,7 +9433,11 @@
         "enum": [
           "functional",
           "non_functional",
+          "design",
+          "schedule",
           "constraint",
+          "agreement",
+          "open_question",
           "assumption",
           "unresolved_information"
         ],
