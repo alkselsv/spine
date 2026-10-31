@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -234,6 +235,41 @@ async def test_reauthorization_is_idempotent_and_repository_rejects_stale_succes
         await use_case.execute(current, stale_command, context)
 
 
+@pytest.mark.asyncio
+async def test_reauthorization_exact_approval_mismatch_is_rejected_by_repository() -> None:
+    current = _connection()
+    command = _command()
+    wrong_approval = _successor_approval(command).model_copy(
+        update={"grant_reference": OpaqueGoogleReference(value=_id(48))}
+    )
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=_id(49), secret=b"google-reauth-approval-test-secret"
+    )
+    context = boundary.interactive(
+        scope=EnvironmentScope(workspace_id=_id(4), environment_id=_id(5)),
+        purpose=PersistencePurpose("google_connector"),
+        operation=PersistenceOperation("google_connection_register"),
+        acting_subject_id=_id(50),
+        trace_id=_id(51),
+    )
+    repository = InMemoryGoogleConnectionRepository(
+        context_verifier=boundary,
+        approvals=(_approval(current), wrong_approval),
+    )
+    await repository.register(
+        GoogleConnectionCommand(
+            connection=current,
+            idempotency_key="initial-google-connection",
+            audit_event_id=_id(52),
+            occurred_at=NOW,
+        ),
+        context,
+    )
+
+    with pytest.raises(GoogleConnectionConflictError):
+        await GoogleManualReauthorization(repository).execute(current, command, context)
+
+
 class ConsentFake:
     def __init__(self, result: GoogleConsentResult) -> None:
         self.result = result
@@ -242,6 +278,12 @@ class ConsentFake:
     async def authorize(self, *, client_configuration: SecretStr) -> GoogleConsentResult:
         self.calls += 1
         return self.result
+
+
+class CancellingConsent:
+    async def authorize(self, *, client_configuration: SecretStr) -> GoogleConsentResult:
+        del client_configuration
+        raise asyncio.CancelledError()
 
 
 @pytest.mark.asyncio
@@ -260,6 +302,14 @@ async def test_manual_consent_uses_fakeable_port_without_secret_disclosure() -> 
 
     assert fake.calls == 1
     assert secret not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_manual_consent_propagates_cancellation() -> None:
+    with pytest.raises(asyncio.CancelledError):
+        await GoogleManualConsent(CancellingConsent()).authorize(
+            client_configuration=SecretStr("synthetic-client-config")
+        )
 
 
 class CredentialFake:
@@ -287,6 +337,12 @@ class RevocationFake:
     async def revoke(self, *, refresh_token: SecretStr) -> bool:
         self.tokens.append(refresh_token.get_secret_value())
         return self.result
+
+
+class CancellingCredentials(CredentialFake):
+    async def read_refresh_token(self, reference: OpaqueGoogleReference) -> SecretStr:
+        del reference
+        raise asyncio.CancelledError()
 
 
 @pytest.mark.asyncio
@@ -318,3 +374,19 @@ async def test_unverified_remote_revocation_keeps_local_credential() -> None:
 
     assert result is False
     assert credentials.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_grant_lifecycle_propagates_cancellation_before_remote_revoke() -> None:
+    revocation = RevocationFake()
+    lifecycle = GoogleGrantLifecycle(
+        credentials=CancellingCredentials(), revocation=revocation
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await lifecycle.revoke_and_delete(
+            OpaqueGoogleReference(value=_id(33)),
+            OpaqueGoogleReference(value=_id(34)),
+        )
+
+    assert revocation.tokens == []
