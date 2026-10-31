@@ -9,6 +9,10 @@ from spine.application.connections.google import (
     GoogleConnectionConflictError,
     is_valid_google_connection_successor,
 )
+from spine.application.google_manual_authorization import (
+    GoogleManualReauthorization,
+    GoogleReauthorizationCommand,
+)
 from spine.application.persistence import (
     EnvironmentScope,
     PersistenceOperation,
@@ -116,6 +120,38 @@ async def test_in_memory_unfenced_successor_conflicts() -> None:
 @pytest.mark.asyncio
 async def test_in_memory_fenced_successor_becomes_current() -> None:
     await assert_google_connection_successor_contract(_scenario)
+
+
+@pytest.mark.asyncio
+async def test_worker_cannot_read_or_reauthorize_manual_google_connection() -> None:
+    scenario = await _scenario()
+    await scenario.repository.register(
+        GoogleConnectionCommand(
+            connection=scenario.initial,
+            idempotency_key="worker-test-initial",
+            audit_event_id=_id(70),
+            occurred_at=OCCURRED_AT,
+        ),
+        scenario.context,
+    )
+    command = GoogleReauthorizationCommand(
+        connection_id=scenario.initial.connection_id,
+        expected_current_version_id=scenario.initial.connection_version_id,
+        approval_id=scenario.successor.approval_id,
+        credential_reference=scenario.successor.credential_reference,
+        grant_reference=scenario.successor.grant_reference,
+        approved_resource_scope_references=scenario.successor.approved_resource_scope_references,
+        authorization_generation=scenario.successor.authorization_generation,
+        configuration_generation=scenario.successor.configuration_generation,
+        idempotency_key="worker-manual-reauthorization",
+        audit_event_id=_id(71),
+        occurred_at=OCCURRED_AT,
+    )
+
+    with pytest.raises(GoogleConnectionConflictError):
+        await GoogleManualReauthorization(scenario.repository).execute(
+            scenario.initial, command, scenario.context
+        )
 
 
 def test_reauthorization_advances_exactly_one_generation_and_keeps_connection_identity() -> None:

@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
+from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
@@ -124,6 +125,49 @@ class PostgreSQLGoogleConnectionRepository:
     ) -> None:
         self._session_factory = session_factory
         self._context_verifier = context_verifier
+
+    async def get_current(
+        self,
+        connection_id: UUID,
+        context: TrustedPersistenceContext,
+    ) -> GoogleConnection:
+        try:
+            trusted = self._context_verifier.verify(context)
+            if (
+                trusted.origin is not ContextOrigin.INTERACTIVE
+                or not isinstance(trusted.scope, EnvironmentScope)
+                or trusted.purpose.value != "google_connector"
+                or trusted.operation.value != "google_connection_register"
+            ):
+                raise GoogleConnectionConflictError()
+            parameters = _scope_parameters(trusted.scope)
+            async with self._session_factory() as session:
+                async with session.begin():
+                    await session.execute(_BIND_SCOPE, parameters)
+                    row = (
+                        await session.execute(
+                            select(google_connection_versions)
+                            .where(
+                                google_connection_versions.c.workspace_id
+                                == trusted.scope.workspace_id,
+                                google_connection_versions.c.environment_id
+                                == trusted.scope.environment_id,
+                                google_connection_versions.c.connection_id
+                                == connection_id,
+                            )
+                            .order_by(google_connection_versions.c.version.desc())
+                            .limit(1)
+                        )
+                    ).mappings().one_or_none()
+                    if row is None:
+                        raise GoogleConnectionConflictError()
+                    return _connection_from_row(row)
+        except asyncio.CancelledError:
+            raise
+        except GoogleConnectionConflictError:
+            raise
+        except Exception:
+            raise GoogleConnectionConflictError() from None
 
     async def register(
         self,

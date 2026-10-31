@@ -168,6 +168,12 @@ class GoogleReadCommand:
 
 
 class GoogleConnectionRepository(Protocol):
+    async def get_current(
+        self,
+        connection_id: UUID,
+        context: TrustedPersistenceContext,
+    ) -> GoogleConnection: ...
+
     async def register(
         self,
         command: GoogleConnectionCommand,

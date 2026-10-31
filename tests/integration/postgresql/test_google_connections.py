@@ -299,6 +299,23 @@ def _context(
     )
 
 
+def _interactive_context(
+    boundary: TrustedContextBoundary,
+    *,
+    workspace_id: UUID = WORKSPACE_ID,
+    environment_id: UUID = ENVIRONMENT_ID,
+):
+    return boundary.interactive(
+        scope=EnvironmentScope(
+            workspace_id=workspace_id, environment_id=environment_id
+        ),
+        purpose=PersistencePurpose("google_connector"),
+        operation=PersistenceOperation("google_connection_register"),
+        acting_subject_id=_id(8801),
+        trace_id=_id(8802),
+    )
+
+
 async def _scenario(
     database: GoogleDatabase, *, case: int
 ) -> GoogleConnectionRepositoryScenario:
@@ -387,6 +404,36 @@ async def test_postgresql_provider_revocation_appends_suspended_successor(
     assert result.connection.authorization_generation == scenario.initial.authorization_generation
     assert result.connection.status is GoogleConnectionStatus.SUSPENDED
     assert result.audit.payload_json() == {"command_type": "google_connection_suspension"}
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_get_current_requires_interactive_scoped_context(
+    google_database: GoogleDatabase,
+) -> None:
+    scenario = await _scenario(google_database, case=8)
+    await scenario.repository.register(
+        GoogleConnectionCommand(
+            connection=scenario.initial,
+            idempotency_key="get-current-google-connection",
+            audit_event_id=_id(8803),
+            occurred_at=OCCURRED_AT,
+        ),
+        scenario.context,
+    )
+    interactive = _interactive_context(_boundary())
+
+    assert await scenario.repository.get_current(
+        scenario.initial.connection_id, interactive
+    ) == scenario.initial
+    with pytest.raises(GoogleConnectionConflictError):
+        await scenario.repository.get_current(
+            scenario.initial.connection_id, scenario.context
+        )
+    with pytest.raises(GoogleConnectionConflictError):
+        await scenario.repository.get_current(
+            scenario.initial.connection_id,
+            _interactive_context(_boundary(), workspace_id=OTHER_WORKSPACE_ID),
+        )
 
 
 @pytest.mark.asyncio(loop_scope="session")
