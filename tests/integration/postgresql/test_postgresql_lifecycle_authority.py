@@ -226,6 +226,7 @@ async def _prepare_scope_authority(
         scope=(child_case.source.workspace_id, child_case.source.environment_id),
         source_object=root_source,
         create_scope=False,
+        provenance_event="event-2",
     )
     root_observation = _observation(root_case, base + 1).model_copy(
         update={
@@ -475,6 +476,7 @@ async def test_postgresql_withdrawal_serializes_after_inflight_canonical_accepta
         scope=(case.source.workspace_id, case.source.environment_id),
         source_object=unbound_source,
         create_scope=False,
+        provenance_event="event-3",
     )
     with pytest.raises(CanonicalEligibilityError):
         async with postgresql_adapter.uow_factory(unbound_case.context) as uow:
