@@ -157,7 +157,12 @@ class PostgreSQLBitrix24DiskPolicyRepository:
                 )
                 current = current_result.mappings().one_or_none()
                 actual = None if current is None else (current.current_version, current.current_digest)
-                if actual != (expected_version, expected_digest):
+                expected = (
+                    None
+                    if expected_version is None
+                    else (expected_version, expected_digest)
+                )
+                if actual != expected:
                     raise Bitrix24DiskPolicyConflict()
                 generation = 1 if current is None else current.generation + 1
                 await uow._execute(  # type: ignore[attr-defined]

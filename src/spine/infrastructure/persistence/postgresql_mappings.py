@@ -447,7 +447,7 @@ source_revision_provenance = Table(
     Column("observer_service", Text, nullable=False),
     Column("received_at", DateTime(timezone=True), nullable=False),
     Column("observed_at", DateTime(timezone=True), nullable=False),
-    Column("bitrix24_disk_membership", JSONB),
+    Column("bitrix24_disk_membership", JSONB(none_as_null=True)),
 )
 
 register_link_claims = Table(

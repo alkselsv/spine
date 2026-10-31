@@ -20,6 +20,7 @@ from spine.domain.common import DefinitionModel
 from spine.domain.connections.bitrix24_disk_scope import (
     Bitrix24DiskMembershipEvidence,
     Bitrix24DiskRootPolicy,
+    Bitrix24DiskScopeAdmission,
     Bitrix24DiskStorageClass,
 )
 from spine.domain.connections.provider import OpaqueProviderReference, ProviderConnection
@@ -97,14 +98,15 @@ class Bitrix24DiskRootTraversal:
     async def scan(
         self,
         connection: ProviderConnection,
-        policy: Bitrix24DiskRootPolicy,
+        admission: Bitrix24DiskScopeAdmission,
         *,
         pinned_grant: Bitrix24PinnedGrant,
         authorize_folder: AuthorizeFolder,
     ) -> Bitrix24DiskTraversalResult:
+        policy = admission.root_policy
         acting_principal_id = UUID(pinned_grant.acting_user_id)
         if acting_principal_id.int == 0 or acting_principal_id == connection.service_principal_id:
-            return self._incomplete("acting_user_authority_required")
+            return self.incomplete("acting_user_authority_required")
         if (
             policy.workspace_id,
             policy.environment_id,
@@ -116,9 +118,17 @@ class Bitrix24DiskRootTraversal:
             connection.connection_id,
             connection.connection_version_id,
         ):
-            return self._incomplete("scope_mismatch")
+            return self.incomplete("scope_mismatch")
         if policy.resource_scope_reference not in connection.approved_resource_scope_references:
-            return self._incomplete("scope_mismatch")
+            return self.incomplete("scope_mismatch")
+        content = admission.content_policy
+        if (
+            content.allowed_formats == ()
+            or content.policy_id != policy.content_policy_id
+            or content.version != policy.content_policy_version
+            or content.digest != policy.content_policy_digest
+        ):
+            return self.incomplete("content_policy_unavailable")
         try:
             storage = await self._service.get_storage(
                 connection,
@@ -127,22 +137,22 @@ class Bitrix24DiskRootTraversal:
                 pinned_grant=pinned_grant,
             )
         except Bitrix24DiskReadError:
-            return self._incomplete("storage_identity_unverified")
+            return self.incomplete("storage_identity_unverified")
         if (
             storage.storage_id != policy.storage_id
             or storage.storage_class is not policy.storage_class
             or storage.storage_root_object_id != policy.storage_root_object_id
             or storage.group_entity_id != policy.group_entity_id
         ):
-            return self._incomplete("storage_identity_mismatch")
+            return self.incomplete("storage_identity_mismatch")
         root_chain = await self._folder_chain(
             connection, policy, policy.approved_root_folder_id,
             pinned_grant=pinned_grant,
         )
         if root_chain is None:
-            return self._incomplete("root_ancestry_unverified")
+            return self.incomplete("root_ancestry_unverified")
         if root_chain[-1] != policy.storage_root_object_id:
-            return self._incomplete("root_outside_storage")
+            return self.incomplete("root_outside_storage")
 
         pending: deque[tuple[str, int]] = deque([(policy.approved_root_folder_id, 0)])
         visited: set[str] = set()
@@ -301,7 +311,7 @@ class Bitrix24DiskRootTraversal:
             current = folder.parent_id
         return None
 
-    def _incomplete(self, reason: str) -> Bitrix24DiskTraversalResult:
+    def incomplete(self, reason: str) -> Bitrix24DiskTraversalResult:
         return self._result({}, False, reason, 0, 0)
 
     @staticmethod

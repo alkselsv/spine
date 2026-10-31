@@ -161,6 +161,41 @@ class Bitrix24DiskMembershipEvidence(DefinitionModel):
         return self
 
 
+class Bitrix24DiskScopeAdmission(DefinitionModel):
+    """Exact current root/content snapshots resolved by application authority."""
+
+    root_policy: Bitrix24DiskRootPolicy
+    content_policy: Bitrix24DiskContentPolicy
+
+    @model_validator(mode="after")
+    def validate_policy_binding(self) -> "Bitrix24DiskScopeAdmission":
+        root = self.root_policy
+        content = self.content_policy
+        if (
+            root.content_policy_id,
+            root.content_policy_version,
+            root.content_policy_digest,
+            root.workspace_id,
+            root.environment_id,
+            root.connection_id,
+            root.connection_version_id,
+            root.resource_scope_reference,
+        ) != (
+            content.policy_id,
+            content.version,
+            content.digest,
+            content.workspace_id,
+            content.environment_id,
+            content.connection_id,
+            content.connection_version_id,
+            content.resource_scope_reference,
+        ):
+            raise ValueError("root and content policies must have the same exact scope")
+        if not content.allowed_formats:
+            raise ValueError("an empty content policy denies admission")
+        return self
+
+
 def _digest(model: DefinitionModel, excluded: frozenset[str]) -> str:
     payload = model.model_dump(mode="json", exclude=excluded)
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -178,6 +213,7 @@ __all__ = [
     "Bitrix24DiskContentPolicy",
     "Bitrix24DiskMembershipEvidence",
     "Bitrix24DiskRootPolicy",
+    "Bitrix24DiskScopeAdmission",
     "Bitrix24DiskStorageClass",
     "bitrix24_content_policy_digest",
     "bitrix24_root_policy_digest",

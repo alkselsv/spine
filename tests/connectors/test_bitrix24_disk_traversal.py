@@ -10,7 +10,12 @@ from spine.connectors.bitrix24_disk_traversal import (
     Bitrix24DiskStorageIdentity,
     Bitrix24DiskTraversalProfile,
 )
-from spine.domain.connections.bitrix24_disk_scope import Bitrix24DiskRootPolicy, Bitrix24DiskStorageClass
+from spine.domain.connections.bitrix24_disk_scope import (
+    Bitrix24DiskContentPolicy,
+    Bitrix24DiskRootPolicy,
+    Bitrix24DiskScopeAdmission,
+    Bitrix24DiskStorageClass,
+)
 from spine.domain.connections.provider import (
     OpaqueProviderReference,
     ProviderConnection,
@@ -101,6 +106,21 @@ def policy(**updates: object) -> Bitrix24DiskRootPolicy:
     return Bitrix24DiskRootPolicy(**values)
 
 
+def admission(**updates: object) -> Bitrix24DiskScopeAdmission:
+    content = Bitrix24DiskContentPolicy(
+        policy_id=ident(11),
+        version="v1",
+        workspace_id=ident(4),
+        environment_id=ident(5),
+        connection_id=ident(2),
+        connection_version_id=ident(1),
+        resource_scope_reference=OpaqueProviderReference(value=ident(9)),
+        allowed_formats=("pdf",),
+    )
+    root = policy(content_policy_digest=content.digest, **updates)
+    return Bitrix24DiskScopeAdmission(root_policy=root, content_policy=content)
+
+
 class FakeDisk:
     def __init__(self, pages: dict[str, tuple[Bitrix24DiskFilePage, ...]]) -> None:
         self.pages = pages
@@ -136,7 +156,7 @@ async def test_scan_returns_exact_membership_for_positive_member_even_when_other
         service=service,
         profile=Bitrix24DiskTraversalProfile(),
     ).scan(
-        connection(), policy(), pinned_grant=pinned_grant(), authorize_folder=allow,
+        connection(), admission(), pinned_grant=pinned_grant(), authorize_folder=allow,
     )
     assert result.complete is True
     assert len(result.memberships) == 1
@@ -159,7 +179,7 @@ async def test_incomplete_listing_does_not_prove_non_membership() -> None:
         service=service,
         profile=Bitrix24DiskTraversalProfile(page_size=1),
     ).scan(
-        connection(), policy(), pinned_grant=pinned_grant(), authorize_folder=allow,
+        connection(), admission(), pinned_grant=pinned_grant(), authorize_folder=allow,
     )
     assert result.complete is False
     assert result.reason_code == "page_drift"
@@ -173,7 +193,7 @@ async def test_service_principal_cannot_be_used_as_acting_user() -> None:
         service=service,
         profile=Bitrix24DiskTraversalProfile(),
     ).scan(
-        connection(), policy(), pinned_grant=pinned_grant(ident(6)), authorize_folder=allow,
+        connection(), admission(), pinned_grant=pinned_grant(ident(6)), authorize_folder=allow,
     )
     assert result.complete is False
     assert result.reason_code == "acting_user_authority_required"
@@ -194,7 +214,7 @@ async def test_nested_membership_requires_matching_parent_chain_and_independent_
         profile=Bitrix24DiskTraversalProfile(),
     ).scan(
         connection(),
-        policy(recurse=True, future_discovery=True, manifest_object_ids=()),
+        admission(recurse=True, future_discovery=True, manifest_object_ids=()),
         pinned_grant=pinned_grant(),
         authorize_folder=allow,
     )
@@ -216,7 +236,7 @@ async def test_permission_filtered_provider_failure_stays_incomplete() -> None:
         service=FailedDisk({"approved-root": ()}),
         profile=Bitrix24DiskTraversalProfile(),
     ).scan(
-        connection(), policy(), pinned_grant=pinned_grant(), authorize_folder=allow,
+        connection(), admission(), pinned_grant=pinned_grant(), authorize_folder=allow,
     )
     assert result.complete is False
     assert result.reason_code == "provider_read_incomplete"

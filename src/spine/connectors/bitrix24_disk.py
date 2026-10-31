@@ -565,12 +565,15 @@ class Bitrix24DiskProviderAdapter:
         observed_at = self._clock()
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("Bitrix24 Disk reader clock must be timezone-aware")
+        membership = getattr(command, "membership_evidence", None)
+        event_evidence = {
+            "revision": revision_evidence.model_dump(mode="json"),
+            "scope_membership": (
+                None if membership is None else membership.model_dump(mode="json")
+            ),
+        }
         event_digest = hashlib.sha256(
-            json.dumps(
-                revision_evidence.model_dump(mode="json"),
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
+            json.dumps(event_evidence, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         identity_digest = hashlib.sha256(
             f"{connection.connection_id}|{metadata.id}".encode()
@@ -619,7 +622,7 @@ class Bitrix24DiskProviderAdapter:
             provider_media_type=content.media_type,
             provider_version_before=metadata.global_content_version,
             provider_version_after=metadata.global_content_version,
-            scope_membership=getattr(command, "membership_evidence", None),
+            scope_membership=membership,
         )
 
     @staticmethod

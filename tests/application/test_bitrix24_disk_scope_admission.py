@@ -1,11 +1,16 @@
 from uuid import UUID
+from types import SimpleNamespace
 
 import pytest
 
 from spine.application.bitrix24_disk_scope_admission import (
     Bitrix24DiskScopeAdmissionService,
     Bitrix24DiskScopeDenied,
+    Bitrix24DiskTraversalCoordinator,
 )
+from spine.application.connections.bitrix24_oauth import Bitrix24PinnedGrant, SecretTokenPair
+from spine.connectors.bitrix24_disk import Bitrix24DiskFilePage
+from spine.connectors.bitrix24_disk_traversal import Bitrix24DiskRootTraversal, Bitrix24DiskTraversalProfile
 from spine.domain.connections.bitrix24_disk_scope import (
     Bitrix24DiskContentPolicy,
     Bitrix24DiskRootPolicy,
@@ -99,6 +104,43 @@ class PolicyFake:
         return self.content
 
 
+class EmptyDisk:
+    async def get_storage(self, connection, scope, *, storage_id, pinned_grant):
+        return SimpleNamespace(
+            storage_id=storage_id,
+            storage_class=Bitrix24DiskStorageClass.COMMON,
+            storage_root_object_id="root-1",
+            group_entity_id=None,
+        )
+
+    async def get_folder(self, connection, scope, *, folder_id, pinned_grant):
+        return SimpleNamespace(id=folder_id, type="folder", storage_id="storage-1", parent_id="root-1")
+
+    async def list_children(self, connection, scope, *, folder_id, start, page_size, pinned_grant):
+        return Bitrix24DiskFilePage(result=(), total=0)
+
+
+class GrantFake:
+    def __init__(self, grants: tuple[Bitrix24PinnedGrant, ...]) -> None:
+        self.grants = grants
+        self.authorizations = []
+
+    async def resolve(self, connection, authorization):
+        del connection
+        self.authorizations.append(authorization)
+        return self.grants[min(len(self.authorizations) - 1, len(self.grants) - 1)]
+
+
+def grant(epoch: int = 1) -> Bitrix24PinnedGrant:
+    return Bitrix24PinnedGrant(
+        binding_id=ident(50),
+        acting_user_id=str(ident(51)),
+        token_epoch=epoch,
+        security_fence=0,
+        tokens=SecretTokenPair(access_token=f"access-{epoch}", refresh_token=f"refresh-{epoch}"),
+    )
+
+
 @pytest.mark.asyncio
 async def test_admission_resolves_exact_current_tenant_scoped_policy_versions() -> None:
     content = content_policy()
@@ -145,3 +187,32 @@ async def test_admission_denies_empty_content_allowlist() -> None:
             connection(), root_policy_id=root.policy_id,
             root_policy_version=root.version, root_policy_digest=root.digest,
         )
+
+
+@pytest.mark.asyncio
+async def test_traversal_coordinator_rechecks_scope_and_s1_grant_after_scan() -> None:
+    content = content_policy()
+    root = root_policy(content)
+    policy_repository = PolicyFake(root, content)
+    grant_repository = GrantFake((grant(), grant()))
+    coordinator = Bitrix24DiskTraversalCoordinator(
+        scope_admission=Bitrix24DiskScopeAdmissionService(policy_repository),
+        grant_admission=grant_repository,
+        traversal=Bitrix24DiskRootTraversal(
+            service=EmptyDisk(), profile=Bitrix24DiskTraversalProfile()
+        ),
+    )
+    result = await coordinator.scan(
+        connection(),
+        root_policy_id=root.policy_id,
+        root_policy_version=root.version,
+        root_policy_digest=root.digest,
+        authorize_folder=lambda _: _allow(),
+    )
+    assert result.complete is True
+    assert len(grant_repository.authorizations) == 2
+    assert all(item.required_scope.value == "disk" for item in grant_repository.authorizations)
+
+
+async def _allow() -> bool:
+    return True

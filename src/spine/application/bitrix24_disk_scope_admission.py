@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
 from spine.domain.connections.bitrix24_disk_scope import (
     Bitrix24DiskContentPolicy,
     Bitrix24DiskRootPolicy,
+    Bitrix24DiskScopeAdmission,
 )
 from spine.domain.connections.provider import ProviderConnection
+from spine.application.connections.bitrix24_oauth import (
+    Bitrix24GrantAdmission,
+    Bitrix24OAuthError,
+    Bitrix24ReadAuthorization,
+    Bitrix24ReadMethod,
+)
+from spine.domain.connections.bitrix24_oauth import Bitrix24Scope
+from spine.connectors.bitrix24_disk_traversal import (
+    AuthorizeFolder,
+    Bitrix24DiskRootTraversal,
+    Bitrix24DiskTraversalResult,
+)
 
 
 class Bitrix24DiskPolicyRepository(Protocol):
@@ -23,14 +35,91 @@ class Bitrix24DiskPolicyRepository(Protocol):
     ) -> Bitrix24DiskContentPolicy | None: ...
 
 
-@dataclass(frozen=True, slots=True)
-class Bitrix24DiskScopeAdmission:
-    root_policy: Bitrix24DiskRootPolicy
-    content_policy: Bitrix24DiskContentPolicy
-
-
 class Bitrix24DiskScopeDenied(RuntimeError):
     """Content-free fail-closed policy resolution error."""
+
+
+class Bitrix24DiskTraversalCoordinator:
+    """Resolve current root policy and S1 actor grant around each bounded scan."""
+
+    def __init__(
+        self,
+        *,
+        scope_admission: "Bitrix24DiskScopeAdmissionService",
+        grant_admission: Bitrix24GrantAdmission,
+        traversal: Bitrix24DiskRootTraversal,
+    ) -> None:
+        self._scope_admission = scope_admission
+        self._grant_admission = grant_admission
+        self._traversal = traversal
+
+    async def scan(
+        self,
+        connection: ProviderConnection,
+        *,
+        root_policy_id: UUID,
+        root_policy_version: str,
+        root_policy_digest: str,
+        authorize_folder: AuthorizeFolder,
+    ) -> Bitrix24DiskTraversalResult:
+        try:
+            current = await self._scope_admission.resolve_current(
+                connection,
+                root_policy_id=root_policy_id,
+                root_policy_version=root_policy_version,
+                root_policy_digest=root_policy_digest,
+            )
+            grant = await self._grant_admission.resolve(
+                connection,
+                Bitrix24ReadAuthorization(
+                    method=Bitrix24ReadMethod.DISK_READ,
+                    required_scope=Bitrix24Scope.DISK,
+                ),
+            )
+        except (Bitrix24DiskScopeDenied, Bitrix24OAuthError):
+            return self._traversal.incomplete("current_authority_unavailable")
+
+        result = await self._traversal.scan(
+            connection,
+            current,
+            pinned_grant=grant,
+            authorize_folder=authorize_folder,
+        )
+        if not result.complete and not result.memberships:
+            return result
+        try:
+            current_after = await self._scope_admission.resolve_current(
+                connection,
+                root_policy_id=root_policy_id,
+                root_policy_version=root_policy_version,
+                root_policy_digest=root_policy_digest,
+            )
+            grant_after = await self._grant_admission.resolve(
+                connection,
+                Bitrix24ReadAuthorization(
+                    method=Bitrix24ReadMethod.DISK_READ,
+                    required_scope=Bitrix24Scope.DISK,
+                ),
+            )
+        except (Bitrix24DiskScopeDenied, Bitrix24OAuthError):
+            return self._traversal.incomplete("authority_superseded_during_scan")
+        if (
+            current_after != current
+            or (
+                grant_after.binding_id,
+                grant_after.acting_user_id,
+                grant_after.token_epoch,
+                grant_after.security_fence,
+            )
+            != (
+                grant.binding_id,
+                grant.acting_user_id,
+                grant.token_epoch,
+                grant.security_fence,
+            )
+        ):
+            return self._traversal.incomplete("authority_superseded_during_scan")
+        return result
 
 
 class Bitrix24DiskScopeAdmissionService:
@@ -81,7 +170,10 @@ class Bitrix24DiskScopeAdmissionService:
             or not content.allowed_formats
         ):
             raise Bitrix24DiskScopeDenied("content_policy_stale_or_mismatched")
-        return Bitrix24DiskScopeAdmission(root_policy=root, content_policy=content)
+        try:
+            return Bitrix24DiskScopeAdmission(root_policy=root, content_policy=content)
+        except ValueError:
+            raise Bitrix24DiskScopeDenied("policy_binding_mismatch") from None
 
 
 __all__ = [
@@ -89,4 +181,5 @@ __all__ = [
     "Bitrix24DiskScopeAdmission",
     "Bitrix24DiskScopeAdmissionService",
     "Bitrix24DiskScopeDenied",
+    "Bitrix24DiskTraversalCoordinator",
 ]

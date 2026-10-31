@@ -11,6 +11,7 @@ from spine.domain.connections.bitrix24_disk_scope import (
     Bitrix24DiskMembershipEvidence,
     Bitrix24DiskRootPolicy,
     Bitrix24DiskStorageClass,
+    Bitrix24DiskScopeAdmission,
     bitrix24_content_policy_digest,
     bitrix24_root_policy_digest,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "Bitrix24DiskMembershipEvidence",
     "Bitrix24DiskRootPolicy",
     "Bitrix24DiskStorageClass",
+    "Bitrix24DiskScopeAdmission",
     "bitrix24_content_policy_digest",
     "bitrix24_root_policy_digest",
     "GoogleConnection",
