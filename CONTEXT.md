@@ -118,6 +118,23 @@ The Source Revision selected by PostgreSQL as the Source Object's canonical
 current state. It does not imply that the revision has been projected or served.
 _Avoid_: Active revision, indexed revision, latest upload
 
+**Lifecycle Observation**:
+An immutable, content-free record of qualified or uncertain evidence about one
+Source Object in an exact Provider Connection and approved scope. It is evidence,
+not a governance decision, a Source Revision or deletion authority.
+_Avoid_: Provider event payload, deletion command, current lifecycle state
+
+**Lifecycle Decision**:
+An append-only, authorized governance outcome for one Source Object, bound to
+its exact observation, authority and expected current lifecycle decision.
+_Avoid_: Latest observation, mutable status row, Access Policy change
+
+**Current Lifecycle Eligibility**:
+The current governed read, disclosure, retention and identity-continuity
+disposition for a Source Object, resolved through its current authority pointer.
+It is independent from Canonical Acceptance and Access Policy.
+_Avoid_: Latest observation, canonical currentness, content permission
+
 **Canonical Boundary**:
 A durable, commit-consistent cut of accepted-current source state for one
 workspace and environment, with a server-recorded boundary time.

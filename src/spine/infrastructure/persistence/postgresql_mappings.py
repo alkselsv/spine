@@ -1199,6 +1199,78 @@ google_sheets_removal_decisions = Table(
     Column("decided_at", DateTime(timezone=True), nullable=False),
 )
 
+lifecycle_observations = Table(
+    "lifecycle_observations",
+    metadata,
+    Column("observation_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("connection_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("connection_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("scope_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("scope_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("scope_digest", String(64), nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("evidence_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("observed_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "source_object_id", "observation_id",
+        name="uq_lifecycle_observations_scope_id",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "source_object_id", "observation_id",
+        "connection_id", "connection_version_id", "scope_reference", "scope_version_id",
+        "scope_digest", name="uq_lifecycle_observations_exact_binding",
+    ),
+)
+
+lifecycle_decisions = Table(
+    "lifecycle_decisions",
+    metadata,
+    Column("decision_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("observation_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("connection_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("connection_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("scope_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("scope_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("scope_digest", String(64), nullable=False),
+    Column("effect", Text, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("authority_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("authority_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("actor_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("audit_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("outbox_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("decided_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "source_object_id", "decision_id", "generation",
+        name="uq_lifecycle_decisions_scope_generation",
+    ),
+)
+
+current_lifecycle_authorities = Table(
+    "current_lifecycle_authorities",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("current_decision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("predecessor_decision_id", PostgreSQLUUID(as_uuid=True)),
+    Column("generation", Integer, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "source_object_id",
+        name="pk_current_lifecycle_authorities",
+    ),
+)
+
 ingestion_warnings = Table(
     "ingestion_warnings", metadata,
     Column("ingestion_warning_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("ingestion_run_source_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("attempt", Integer, nullable=False), Column("stage", Text, nullable=False), Column("code", Text, nullable=False), Column("retryable", Boolean, nullable=False), Column("safe_detail_schema", Text, nullable=False), Column("safe_detail", JSONB, nullable=False), Column("safe_detail_digest", String(64), nullable=False), Column("opaque_detail_ref", PostgreSQLUUID(as_uuid=True)), Column("occurred_at", DateTime(timezone=True), nullable=False),
