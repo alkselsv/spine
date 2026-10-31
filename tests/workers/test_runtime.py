@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -207,8 +208,13 @@ def test_worker_temporal_queue_matches_compose_qa_queue() -> None:
     ],
 )
 def test_worker_settings_reject_unsafe_dispatch_bounds(
-    overrides: dict[str, float], message: str
+    overrides: dict[str, float],
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    for variable in tuple(os.environ):
+        if variable.startswith("SPINE_WORKER_"):
+            monkeypatch.delenv(variable)
     with pytest.raises(ValueError, match=message):
         OutboxWorkerSettings(service_principal_id=UUID(int=500), **overrides)
 

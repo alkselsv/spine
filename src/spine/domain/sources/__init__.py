@@ -75,6 +75,12 @@ from .trusted_content import (
     VerificationCleanupOutcome,
     assert_exact_revision_receipt_binding,
 )
+from .retention import (
+    RetentionApplicability,
+    RetentionArtifactClass,
+    RetentionAuthorityKind,
+    RetentionTargetKind,
+)
 from .errors import RevisionDigestMismatchError, SourceInvariantError
 from .canonicalization import (
     REVISION_PROFILE,
@@ -160,6 +166,10 @@ __all__ = [
     "SourceRevision",
     "SourceRevisionProvenance",
     "SourceRevisionReceiptAssociation",
+    "RetentionApplicability",
+    "RetentionArtifactClass",
+    "RetentionAuthorityKind",
+    "RetentionTargetKind",
     "TrustedContentFormat",
     "TrustedContentVerificationEvidence",
     "TrustedContentVerificationOutcome",
