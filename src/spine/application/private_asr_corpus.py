@@ -44,6 +44,10 @@ class CorpusVerificationError(Exception):
     """Source or authority changed during a permitted content verification."""
 
 
+class CorpusRecheckUnavailable(Exception):
+    """A current authority check could not be completed safely."""
+
+
 class PrivacySanitizationError(Exception):
     """A candidate aggregate is not safe for the requested report boundary."""
 
@@ -545,11 +549,49 @@ class TwoStageSourceAdmission:
             await self._staging.discard(staging_ref)
             raise
 
+    async def recheck_current(
+        self,
+        admitted: AdmittedSourceRevision,
+        *,
+        context: TrustedPersistenceContext,
+    ) -> bool:
+        """Fence a later operation with current actor, expiry, rights and revision."""
+
+        now = self._now()
+        if now >= admitted.authority.expires_at:
+            return False
+        try:
+            trusted = self._trusted_context(
+                context,
+                workspace_id=admitted.workspace_id,
+                environment_id=admitted.environment_id,
+                actor_id=admitted.actor_id,
+            )
+        except CorpusAdmissionDenied:
+            return False
+        try:
+            if not await self._authority.recheck(admitted, evaluated_at=now):
+                return False
+            if not await self._revisions.is_exact_revision_current(admitted):
+                return False
+            await self._require_current_policy(admitted, context=trusted)
+        except CorpusAdmissionDenied:
+            return False
+        except Exception:
+            # Cancellation remains a BaseException and propagates.
+            raise CorpusRecheckUnavailable("current admission could not be rechecked") from None
+        return True
+
     async def _require_current_policy(
         self, admitted: AdmittedSourceRevision, *, context: TrustedPersistenceContext
     ) -> None:
         current = await self._policies.current_for(admitted.source_object, context=context)
-        if current.access_policy_version_id != admitted.access_policy_version:
+        if (
+            current.source_object_id != admitted.source_object.source_object_id
+            or current.workspace_id != admitted.workspace_id
+            or current.environment_id != admitted.environment_id
+            or current.access_policy_version_id != admitted.access_policy_version
+        ):
             raise CorpusAdmissionDenied("access policy changed since admission")
 
     def _now(self) -> datetime:
