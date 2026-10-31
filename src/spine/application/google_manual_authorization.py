@@ -18,6 +18,8 @@ from spine.application.connections.google import (
     GoogleConnectionConflictError,
     GoogleConnectionMutationResult,
     GoogleConnectionRepository,
+    confirmed_google_revocation_successor,
+    revoked_connection_successor,
 )
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.domain.connections.google import (
@@ -65,7 +67,14 @@ class GoogleReauthorizationCommand:
             raise ValueError("Google connection generations must be positive")
         if self.occurred_at.tzinfo is None or self.occurred_at.utcoffset() is None:
             raise ValueError("occurred_at must be timezone-aware")
-        if not self.approved_resource_scope_references:
+        if (
+            not isinstance(self.approved_resource_scope_references, tuple)
+            or not self.approved_resource_scope_references
+            or any(
+                not isinstance(reference, OpaqueGoogleReference)
+                for reference in self.approved_resource_scope_references
+            )
+        ):
             raise ValueError("approved resource scopes are required")
         if len({item.value for item in self.approved_resource_scope_references}) != len(
             self.approved_resource_scope_references
@@ -187,7 +196,7 @@ class GoogleManualConsent:
 
 
 class GoogleGrantLifecycle:
-    """Revoke a remote grant, then verify local removal before reporting success."""
+    """Perform explicit remote revocation and separately verify local cleanup."""
 
     def __init__(
         self,
@@ -198,15 +207,21 @@ class GoogleGrantLifecycle:
         self._credentials = credentials
         self._revocation = revocation
 
-    async def revoke_and_delete(
+    async def revoke_remote(self, grant_reference: OpaqueGoogleReference) -> bool:
+        try:
+            token = await self._credentials.read_refresh_token(grant_reference)
+            return await self._revocation.revoke(refresh_token=token)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return False
+
+    async def delete_local(
         self,
         credential_reference: OpaqueGoogleReference,
         grant_reference: OpaqueGoogleReference,
     ) -> bool:
         try:
-            token = await self._credentials.read_refresh_token(grant_reference)
-            if not await self._revocation.revoke(refresh_token=token):
-                return False
             return await self._credentials.delete(credential_reference, grant_reference)
         except asyncio.CancelledError:
             raise
@@ -214,14 +229,95 @@ class GoogleGrantLifecycle:
             return False
 
 
+@dataclass(frozen=True, slots=True)
+class GoogleGrantCleanupResult:
+    remote_revocation_confirmed: bool
+    local_cleanup_verified: bool
+
+
+@dataclass(frozen=True, slots=True)
+class GoogleManualRevocationResult:
+    connection: GoogleConnection
+    remote_revocation_confirmed: bool
+    local_cleanup_verified: bool
+    replay: bool
+
+
+class GoogleManualRevocation:
+    """Suspend canonical admission before explicit remote revoke and local cleanup."""
+
+    def __init__(
+        self,
+        *,
+        repository: GoogleConnectionRepository,
+        grant_lifecycle: GoogleGrantLifecycle,
+    ) -> None:
+        self._repository = repository
+        self._grant_lifecycle = grant_lifecycle
+
+    async def execute(
+        self,
+        current: GoogleConnection,
+        context: TrustedPersistenceContext,
+        *,
+        occurred_at: datetime,
+    ) -> GoogleManualRevocationResult:
+        admitted_connection = current
+        replay = False
+        if current.status is GoogleConnectionStatus.ACTIVE:
+            mutation = await self._repository.register(
+                revoked_connection_successor(current, occurred_at=occurred_at), context
+            )
+            admitted_connection = mutation.connection
+            replay = mutation.replay
+        elif current.status is GoogleConnectionStatus.SUSPENDED:
+            pass
+        elif current.status is not GoogleConnectionStatus.REVOKED:
+            raise GoogleConnectionConflictError()
+
+        remote_confirmed = current.status is GoogleConnectionStatus.REVOKED
+        if not remote_confirmed:
+            remote_confirmed = await self._grant_lifecycle.revoke_remote(
+                current.grant_reference
+            )
+            if not remote_confirmed:
+                return GoogleManualRevocationResult(
+                    connection=admitted_connection,
+                    remote_revocation_confirmed=False,
+                    local_cleanup_verified=False,
+                    replay=replay,
+                )
+            revoked = await self._repository.register(
+                confirmed_google_revocation_successor(
+                    admitted_connection, occurred_at=occurred_at
+                ),
+                context,
+            )
+            admitted_connection = revoked.connection
+            replay = replay or revoked.replay
+
+        cleanup_verified = await self._grant_lifecycle.delete_local(
+            current.credential_reference, current.grant_reference
+        )
+        return GoogleManualRevocationResult(
+            connection=admitted_connection,
+            remote_revocation_confirmed=remote_confirmed,
+            local_cleanup_verified=cleanup_verified,
+            replay=replay,
+        )
+
+
 __all__ = [
     "GoogleConsentResult",
     "GoogleCredentialStoragePort",
     "GoogleDesktopConsentPort",
     "GoogleGrantLifecycle",
+    "GoogleGrantCleanupResult",
     "GoogleGrantRevocationPort",
     "GoogleManualAuthorizationError",
     "GoogleManualConsent",
     "GoogleManualReauthorization",
+    "GoogleManualRevocation",
+    "GoogleManualRevocationResult",
     "GoogleReauthorizationCommand",
 ]

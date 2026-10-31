@@ -17,6 +17,7 @@ from spine.application.google_manual_authorization import (
     GoogleGrantLifecycle,
     GoogleManualConsent,
     GoogleManualReauthorization,
+    GoogleManualRevocation,
     GoogleReauthorizationCommand,
 )
 from spine.application.persistence import (
@@ -94,6 +95,33 @@ def _context():
     boundary = TrustedContextBoundary.for_testing(
         issuer_id=_id(20), secret=b"google-manual-reauth-test-secret"
     )
+
+
+async def _registered_connection_repository():
+    current = _connection()
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=_id(60), secret=b"google-manual-revocation-test-secret"
+    )
+    context = boundary.interactive(
+        scope=EnvironmentScope(workspace_id=_id(4), environment_id=_id(5)),
+        purpose=PersistencePurpose("google_connector"),
+        operation=PersistenceOperation("google_connection_register"),
+        acting_subject_id=_id(61),
+        trace_id=_id(62),
+    )
+    repository = InMemoryGoogleConnectionRepository(
+        context_verifier=boundary, approvals=(_approval(current),)
+    )
+    await repository.register(
+        GoogleConnectionCommand(
+            connection=current,
+            idempotency_key="initial-google-connection",
+            audit_event_id=_id(63),
+            occurred_at=NOW,
+        ),
+        context,
+    )
+    return current, context, repository
     return boundary.interactive(
         scope=EnvironmentScope(workspace_id=_id(4), environment_id=_id(5)),
         purpose=PersistencePurpose("google_connector"),
@@ -346,33 +374,40 @@ class CancellingCredentials(CredentialFake):
 
 
 @pytest.mark.asyncio
-async def test_grant_lifecycle_deletes_only_after_verified_remote_revocation() -> None:
-    reference = OpaqueGoogleReference(value=_id(30))
+async def test_manual_revocation_persists_denied_state_before_local_cleanup() -> None:
+    current, context, repository = await _registered_connection_repository()
     credentials = CredentialFake()
     revocation = RevocationFake()
-    credential_reference = OpaqueGoogleReference(value=_id(29))
 
-    result = await GoogleGrantLifecycle(
-        credentials=credentials, revocation=revocation
-    ).revoke_and_delete(credential_reference, reference)
+    result = await GoogleManualRevocation(
+        repository=repository,
+        grant_lifecycle=GoogleGrantLifecycle(credentials=credentials, revocation=revocation),
+    ).execute(current, context, occurred_at=NOW)
 
-    assert result is True
-    assert credentials.deleted == [(credential_reference, reference)]
+    assert result.connection.status is GoogleConnectionStatus.REVOKED
+    assert result.connection.version == 3
+    assert result.remote_revocation_confirmed is True
+    assert result.local_cleanup_verified is True
+    assert credentials.deleted == [(current.credential_reference, current.grant_reference)]
     assert revocation.tokens == ["synthetic-refresh-token"]
 
 
 @pytest.mark.asyncio
-async def test_unverified_remote_revocation_keeps_local_credential() -> None:
+async def test_unverified_remote_revocation_keeps_connection_suspended_and_secret_files() -> None:
+    current, context, repository = await _registered_connection_repository()
     credentials = CredentialFake()
-    lifecycle = GoogleGrantLifecycle(
-        credentials=credentials, revocation=RevocationFake(result=False)
+    lifecycle = GoogleManualRevocation(
+        repository=repository,
+        grant_lifecycle=GoogleGrantLifecycle(
+            credentials=credentials, revocation=RevocationFake(result=False)
+        ),
     )
 
-    result = await lifecycle.revoke_and_delete(
-        OpaqueGoogleReference(value=_id(31)), OpaqueGoogleReference(value=_id(32))
-    )
+    result = await lifecycle.execute(current, context, occurred_at=NOW)
 
-    assert result is False
+    assert result.connection.status is GoogleConnectionStatus.SUSPENDED
+    assert result.remote_revocation_confirmed is False
+    assert result.local_cleanup_verified is False
     assert credentials.deleted == []
 
 
@@ -384,9 +419,6 @@ async def test_grant_lifecycle_propagates_cancellation_before_remote_revoke() ->
     )
 
     with pytest.raises(asyncio.CancelledError):
-        await lifecycle.revoke_and_delete(
-            OpaqueGoogleReference(value=_id(33)),
-            OpaqueGoogleReference(value=_id(34)),
-        )
+        await lifecycle.revoke_remote(OpaqueGoogleReference(value=_id(34)))
 
     assert revocation.tokens == []

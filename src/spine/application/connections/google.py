@@ -347,7 +347,8 @@ def connection_matches_approval(
             approval.status == connection.status
             or (
                 approval.status is GoogleConnectionStatus.ACTIVE
-                and connection.status is GoogleConnectionStatus.SUSPENDED
+                and connection.status
+                in {GoogleConnectionStatus.SUSPENDED, GoogleConnectionStatus.REVOKED}
             )
         )
     )
@@ -398,7 +399,8 @@ def is_valid_google_connection_successor(
             candidate.authorization_generation > current.authorization_generation
             or candidate.configuration_generation > current.configuration_generation
             or (
-                candidate.status is GoogleConnectionStatus.SUSPENDED
+                candidate.status
+                in {GoogleConnectionStatus.SUSPENDED, GoogleConnectionStatus.REVOKED}
                 and candidate.authorization_generation
                 == current.authorization_generation
                 and candidate.configuration_generation
@@ -434,6 +436,38 @@ def revoked_connection_successor(
         audit_event_id=uuid5(
             NAMESPACE_URL,
             f"spine:google-connection-revocation-audit:v1:"
+            f"{connection.connection_id}:{connection.authorization_generation}",
+        ),
+        occurred_at=occurred_at,
+    )
+
+
+def confirmed_google_revocation_successor(
+    connection: GoogleConnection, *, occurred_at: datetime
+) -> GoogleConnectionCommand:
+    """Build an idempotent canonical successor after remote revocation confirms."""
+
+    successor = connection.model_copy(
+        update={
+            "connection_version_id": uuid5(
+                NAMESPACE_URL,
+                f"spine:google-connection-revocation-confirmed:v1:"
+                f"{connection.connection_id}:{connection.authorization_generation}",
+            ),
+            "version": connection.version + 1,
+            "predecessor_version_id": connection.connection_version_id,
+            "status": GoogleConnectionStatus.REVOKED,
+        }
+    )
+    return GoogleConnectionCommand(
+        connection=successor,
+        idempotency_key=(
+            f"google-revocation-confirmed:{connection.connection_id}:"
+            f"{connection.authorization_generation}"
+        ),
+        audit_event_id=uuid5(
+            NAMESPACE_URL,
+            f"spine:google-revocation-confirmed-audit:v1:"
             f"{connection.connection_id}:{connection.authorization_generation}",
         ),
         occurred_at=occurred_at,
@@ -493,4 +527,5 @@ __all__ = [
     "context_allows_google_connection_registration",
     "is_valid_google_connection_successor",
     "revoked_connection_successor",
+    "confirmed_google_revocation_successor",
 ]
