@@ -724,7 +724,7 @@ async def test_postgresql_current_eligibility_uses_tombstone_and_exact_decision_
     )
     observation = _observation(case, 73410)
     decision = _decision(case, observation, context, 73420)
-    await _accept_canonical_tombstone(postgresql_adapter, case, 73430)
+    await _accept_canonical_tombstone(postgresql_adapter, case, observation, 73430)
     await repository.record_observation(observation, context)
     async with postgresql_adapter.uow_factory(case.context) as uow:
         await uow.canonical.accept(case.command)
