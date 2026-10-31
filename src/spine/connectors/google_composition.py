@@ -120,6 +120,7 @@ def compose_google_api_readers(
         drive_incremental_reader=GoogleDriveIncrementalReader(
             connection_repository=connection_repository,
             service=service,
+            admission=drive_admission,
         ),
         sheets_reconciliation_reader=GoogleSheetsAdmittedPageReader(sheets_admission),
     )

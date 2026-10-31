@@ -23,6 +23,7 @@ from spine.application.lifecycle import (
     LifecycleAuthorityError,
     LifecycleEligibilityQuery,
     require_current_read_eligibility,
+    lifecycle_query_for_source,
 )
 from spine.application.connections.provider import (
     ProviderCapabilityUnavailableError,
@@ -336,10 +337,7 @@ class AuthorizedMountedFilesystemScanner:
         context: TrustedPersistenceContext,
     ) -> MountedFilesystemScanSnapshot:
         query = command.lifecycle_query
-        if query is None:
-            if self.lifecycle_reader is not None:
-                raise ProviderReadDeniedError()
-        elif self.lifecycle_reader is None:
+        if query is None or self.lifecycle_reader is None:
             raise ProviderReadDeniedError()
         else:
             try:
@@ -398,7 +396,7 @@ class AuthorizedMountedFilesystemScanner:
             snapshot = await self.provider.scan(
                 connection, request.resource_scope_reference
             )
-        if query is not None and self.lifecycle_reader is not None:
+        if query is not None:
             try:
                 await require_current_read_eligibility(self.lifecycle_reader, query, context)
             except LifecycleAuthorityError:
@@ -971,6 +969,22 @@ def _item_command(
     identity = hashlib.sha256(
         f"{item.provider_object_reference}\0{item.read_token}\0{occurrence}".encode()
     ).hexdigest()
+    lifecycle_query = None
+    if command.lifecycle_query is not None:
+        generation = f"mounted-path:v2:{command.connection_version_id.hex}"
+        identity_material = (
+            f"{command.resource_scope_reference}:{item.provider_object_reference}"
+        )
+        if occurrence is not None:
+            identity_material += f"|occurrence:{occurrence}"
+        external_object_id = hashlib.sha256(identity_material.encode("utf-8")).hexdigest()
+        lifecycle_query = lifecycle_query_for_source(
+            command.lifecycle_query,
+            provider_object_reference=item.provider_object_reference,
+            external_namespace="mounted_filesystem",
+            external_generation=generation,
+            external_object_id=external_object_id,
+        )
     return ConnectorIngestionCommand(
         workspace_id=command.workspace_id,
         environment_id=command.environment_id,
@@ -984,6 +998,7 @@ def _item_command(
         external_identity_occurrence=occurrence,
         expected_provider_revision=item.read_token,
         access_policy_version_id=command.access_policy_version_id,
+        lifecycle_query=lifecycle_query,
     )
 
 

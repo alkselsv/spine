@@ -38,6 +38,7 @@ from spine.application.connections.provider import (
     ProviderCapabilityUnavailableError,
     ProviderReadDeniedError,
 )
+from spine.application.lifecycle import LifecycleEligibilityQuery
 from spine.domain.connections.provider import (
     OpaqueProviderReference,
     ProviderCapability,
@@ -48,6 +49,10 @@ from spine.domain.connections.provider import (
     ProviderKind,
 )
 from spine.domain.sources import RevisionKind
+from spine.domain.sources.lifecycle import (
+    CurrentLifecycleEligibility,
+    LifecycleEligibilityStatus,
+)
 
 
 NOW = datetime(2026, 10, 29, 15, tzinfo=timezone.utc)
@@ -78,7 +83,39 @@ def command() -> YandexDiskReconciliationCommand:
         access_policy_version_id=ACCESS_POLICY,
         command_identity="yandex-reconciliation-670",
         idempotency_key="issue670-yandex-reconciliation",
+        lifecycle_query=LifecycleEligibilityQuery(
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+            source_object_id=_id("root-source"),
+            connection_id=CONNECTION,
+            connection_version_id=CONNECTION_VERSION,
+            scope_reference=SCOPE,
+            scope_version_id=_id("approval"),
+            scope_digest="a" * 64,
+            provider_object_reference=str(SCOPE),
+            source_external_namespace="yandex-disk",
+            source_external_generation="yandex-disk-path:v1",
+            source_external_object_id="root",
+        ),
     )
+
+
+class _LifecycleReader:
+    async def current_eligibility(self, query, context):
+        return CurrentLifecycleEligibility(
+            workspace_id=query.workspace_id,
+            environment_id=query.environment_id,
+            source_object_id=query.source_object_id,
+            connection_id=query.connection_id,
+            connection_version_id=query.connection_version_id,
+            scope_reference=query.scope_reference,
+            scope_version_id=query.scope_version_id,
+            scope_digest=query.scope_digest,
+            current_decision_id=_id("eligible-decision"),
+            generation=1,
+            status=LifecycleEligibilityStatus.ELIGIBLE,
+            legal_hold_active=False,
+        )
 
 
 def policy(*, authorize_absence: bool = True) -> YandexDiskRemovalPolicy:
@@ -639,6 +676,7 @@ async def test_scan_admission_rejects_unqualified_full_reconciliation_before_pro
     scanner = AuthorizedYandexDiskScanner(
         repository=ConnectionRepository(connection(full_reconciliation=False)),
         provider=provider,
+        lifecycle_reader=_LifecycleReader(),
     )
 
     with pytest.raises(ProviderCapabilityUnavailableError) as error:
@@ -654,6 +692,7 @@ async def test_scan_admission_maps_qualified_provider_page_without_interpreting_
     scanner = AuthorizedYandexDiskScanner(
         repository=ConnectionRepository(connection()),
         provider=provider,
+        lifecycle_reader=_LifecycleReader(),
     )
 
     result = await scanner.read_page(command(), "opaque-input", SimpleNamespace())

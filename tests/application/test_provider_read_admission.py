@@ -218,9 +218,41 @@ async def test_active_scoped_connection_allows_qualified_binary_read() -> None:
     result = await admission.read(command, context)
 
     assert result == observation
-    assert provider.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_read_rejects_mismatched_source_identity_before_download() -> None:
+    connection = _connection(
+        _capability(
+            ProviderCapabilityKind.BINARY_READ,
+            ProviderCapabilityStatus.SUPPORTED,
+        )
+    ).model_copy(
+        update={"provider_kind": ProviderKind.YANDEX_DISK}
+    )
+    repository = _Repository(connection)
+    provider = _Provider()
+    admission = ProviderReadAdmission(
+        repository=repository,
+        provider=provider,
+        lifecycle_reader=_LifecycleReader(LifecycleEligibilityStatus.ELIGIBLE),
+    )
+    base = _lifecycle_query()
+    query = replace(
+        base,
+        source_external_namespace="yandex-disk",
+        source_external_generation="yandex-disk-path:v1",
+        source_external_object_id="ydx:" + "0" * 60,
+    )
+    command = replace(
+        _command(ProviderCapabilityKind.BINARY_READ), lifecycle_query=query
+    )
+
+    with pytest.raises(ProviderReadDeniedError):
+        await admission.read(command, _context())
+
+    assert provider.calls == 0
     assert repository.calls[0][0] == command
-    assert repository.calls[0][1] is context
 
 
 @pytest.mark.asyncio

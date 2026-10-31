@@ -12,6 +12,7 @@ from spine.application.connections.provider import (
     ProviderReadAdmission,
 )
 from spine.application.lifecycle import CurrentLifecycleEligibilityReader
+from spine.application.yandex_disk_reconciliation import AuthorizedYandexDiskScanner
 from spine.connectors.yandex_disk import (
     YandexDiskCredentialResolver,
     YandexDiskProviderAdapter,
@@ -31,6 +32,7 @@ class YandexQualificationReaderComposition:
     """One adapter graph for qualification reads and full reconciliation scans."""
 
     admission: ProviderReadAdmission
+    reconciliation_scanner: AuthorizedYandexDiskScanner
     provider: YandexDiskProviderAdapter
     service: YandexDiskApiService
     read_profile: YandexDiskReadProfile
@@ -89,6 +91,11 @@ def compose_yandex_qualification_reader(
         )
     return YandexQualificationReaderComposition(
         admission=ProviderReadAdmission(
+            repository=connection_repository,
+            provider=provider,
+            lifecycle_reader=lifecycle_reader,
+        ),
+        reconciliation_scanner=AuthorizedYandexDiskScanner(
             repository=connection_repository,
             provider=provider,
             lifecycle_reader=lifecycle_reader,

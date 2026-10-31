@@ -11,6 +11,7 @@ from spine.application.google_drive_snapshot import (
     DriveInitialSnapshotCommand,
     DriveInitialSnapshotCoordinator,
 )
+from spine.application.lifecycle import LifecycleEligibilityQuery
 from spine.application.connections.google import (
     GoogleProviderAuthorizationError,
     GoogleProviderQuotaError,
@@ -21,6 +22,7 @@ from spine.application.persistence.drive_sync import (
     InMemoryDriveSyncRepository,
 )
 from spine.connectors.google_drive import DriveSnapshotItem, DriveSnapshotPage
+from spine.domain.sources.google import GoogleDriveFileKey, google_source_identity
 
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -79,12 +81,14 @@ class FakeIngestion:
     def __init__(self, *, fail_file_id: str | None = None) -> None:
         self.fail_file_id = fail_file_id
         self.calls: list[str] = []
+        self.requests = []
         self.revisions: dict[str, UUID] = {}
 
     async def ingest(self, request):
         file_id = request.resource_object_reference
         assert file_id is not None
         self.calls.append(file_id)
+        self.requests.append(request)
         if file_id == self.fail_file_id:
             self.fail_file_id = None
             raise RuntimeError("provider detail must not escape")
@@ -301,3 +305,45 @@ async def test_replay_after_canonical_effect_before_item_checkpoint_reuses_stabl
     assert resumed.state is DriveSnapshotRunState.SUCCEEDED
     assert ingestion.calls == ["file-a", "file-a"]
     assert resumed.pages[0].items[0].outcome_revision_id == UUID(int=100)
+
+
+@pytest.mark.asyncio
+async def test_snapshot_derives_each_file_fence_from_the_exact_root_authority():
+    root_query = LifecycleEligibilityQuery(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        source_object_id=UUID("77777777-7777-4777-8777-777777777777"),
+        connection_id=CONNECTION,
+        connection_version_id=UUID("88888888-8888-4888-8888-888888888888"),
+        scope_reference=SCOPE,
+        scope_version_id=UUID("99999999-9999-4999-8999-999999999999"),
+        scope_digest="a" * 64,
+        provider_object_reference=str(SCOPE),
+        source_external_namespace="google",
+        source_external_generation="google-source-key:v1",
+        source_external_object_id="gsk1:" + "a" * 52,
+    )
+    request = command().model_copy(update={"lifecycle_query": root_query})
+    ingestion = FakeIngestion()
+    result = await coordinator(
+        FakeReader(
+            {
+                None: DriveSnapshotPage(
+                    page_token=None,
+                    next_page_token=None,
+                    incomplete_search=False,
+                    items=(item("drive-file-1"),),
+                )
+            }
+        ),
+        ingestion,
+    ).run(request)
+
+    identity = google_source_identity(
+        GoogleDriveFileKey(connection_id=CONNECTION, file_id="drive-file-1")
+    )
+    query = ingestion.requests[0].lifecycle_query
+    assert result.state is DriveSnapshotRunState.SUCCEEDED
+    assert query.provider_object_reference == "drive-file-1"
+    assert query.source_external_object_id == identity.external_object_id
+    assert query.scope_digest == root_query.scope_digest

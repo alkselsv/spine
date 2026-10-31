@@ -33,7 +33,9 @@ from spine.application.persistence.drive_sync import (
     DriveSnapshotPageState,
     DriveSyncRepository,
 )
+from spine.application.lifecycle import LifecycleEligibilityQuery, lifecycle_query_for_source
 from spine.connectors.google_drive import DriveSnapshotPage
+from spine.domain.sources.google import GoogleDriveFileKey, google_source_identity
 
 
 class DriveInitialSnapshotCommand(BaseModel):
@@ -50,6 +52,7 @@ class DriveInitialSnapshotCommand(BaseModel):
     command_identity: str = Field(min_length=1, max_length=128)
     idempotency_key: str = Field(min_length=1, max_length=255)
     last_committed_cursor: str | None = Field(default=None, max_length=4096)
+    lifecycle_query: LifecycleEligibilityQuery | None = None
 
     @model_validator(mode="after")
     def validate_ids(self) -> "DriveInitialSnapshotCommand":
@@ -63,6 +66,15 @@ class DriveInitialSnapshotCommand(BaseModel):
         ):
             if getattr(self, name).int == 0:
                 raise ValueError(f"{name} must be a non-zero UUID")
+        query = self.lifecycle_query
+        if query is not None and (
+            query.workspace_id != self.workspace_id
+            or query.environment_id != self.environment_id
+            or query.connection_id != self.connection_id
+            or query.scope_reference != self.resource_scope_reference
+            or query.provider_object_reference != str(self.resource_scope_reference)
+        ):
+            raise ValueError("lifecycle query must bind the exact Drive root scope")
         return self
 
 
@@ -332,6 +344,18 @@ def _item_command(
     item_key = f"{command.idempotency_key}:item:{digest}"
     if len(item_key) > 255:
         item_key = f"drive-snapshot-item:{hashlib.sha256(item_key.encode()).hexdigest()}"
+    lifecycle_query = None
+    if command.lifecycle_query is not None:
+        identity = google_source_identity(
+            GoogleDriveFileKey(connection_id=command.connection_id, file_id=file_id)
+        )
+        lifecycle_query = lifecycle_query_for_source(
+            command.lifecycle_query,
+            provider_object_reference=file_id,
+            external_namespace=identity.external_namespace,
+            external_generation=identity.external_generation,
+            external_object_id=identity.external_object_id,
+        )
     return ConnectorIngestionCommand(
         workspace_id=command.workspace_id,
         environment_id=command.environment_id,
@@ -343,6 +367,7 @@ def _item_command(
         authorization_generation=command.authorization_generation,
         configuration_generation=command.configuration_generation,
         access_policy_version_id=command.access_policy_version_id,
+        lifecycle_query=lifecycle_query,
     )
 
 

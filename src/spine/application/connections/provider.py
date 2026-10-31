@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Protocol
@@ -20,6 +21,7 @@ from spine.domain.connections.provider import (
     ProviderCapabilityKind,
     ProviderConnection,
     ProviderConnectionStatus,
+    ProviderKind,
 )
 from spine.domain.connections.bitrix24_disk_scope import Bitrix24DiskMembershipEvidence
 
@@ -138,6 +140,7 @@ class ProviderReadAdmission:
             self._validate_connection(command, connection)
             self._require_capabilities(connection, command.required_capabilities)
             await self._require_lifecycle_eligibility(command, context)
+            self._validate_requested_source_identity(command, connection)
             observation = await self._provider.read(connection, command)
             self._validate_observation(command, connection, observation)
             self._require_capabilities(connection, observation.required_capabilities())
@@ -243,6 +246,61 @@ class ProviderReadAdmission:
                 )
             ):
                 raise ProviderReadDeniedError()
+
+    @staticmethod
+    def _validate_requested_source_identity(
+        command: ProviderReadCommand,
+        connection: ProviderConnection,
+    ) -> None:
+        """Bind lifecycle identity claims to the requested path before provider I/O."""
+
+        query = command.lifecycle_query
+        if query is None:
+            return
+        reference = command.resource_object_reference
+        if reference is None:
+            raise ProviderReadDeniedError()
+        if connection.provider_kind is ProviderKind.YANDEX_DISK:
+            external_object_id = "ydx:" + hashlib.sha256(
+                f"{connection.connection_id}|{reference}".encode()
+            ).hexdigest()[:60]
+            expected = (
+                "yandex-disk",
+                "yandex-disk-path:v1",
+                external_object_id,
+            )
+        elif connection.provider_kind is ProviderKind.MOUNTED_FILESYSTEM:
+            external_object_id = hashlib.sha256(
+                f"{command.resource_scope_reference.value}:{reference}".encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            if command.external_identity_occurrence is not None:
+                external_object_id = hashlib.sha256(
+                    (
+                        f"{command.resource_scope_reference.value}:{reference}"
+                        f"|occurrence:{command.external_identity_occurrence}"
+                    ).encode("utf-8")
+                ).hexdigest()
+            expected = (
+                "mounted_filesystem",
+                f"mounted-path:v2:{connection.connection_version_id.hex}",
+                external_object_id,
+            )
+        else:
+            # Provider adapters with structured IDs validate their exact mapping
+            # at their own boundary before issuing the read.
+            return
+        if (
+            query.provider_object_reference != reference
+            or (
+                query.source_external_namespace,
+                query.source_external_generation,
+                query.source_external_object_id,
+            )
+            != expected
+        ):
+            raise ProviderReadDeniedError()
 
     @staticmethod
     def _require_capabilities(

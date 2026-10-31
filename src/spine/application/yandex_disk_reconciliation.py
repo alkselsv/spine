@@ -27,6 +27,7 @@ from spine.application.lifecycle import (
     LifecycleAuthorityError,
     LifecycleEligibilityQuery,
     require_current_read_eligibility,
+    lifecycle_query_for_source,
 )
 from spine.application.persistence.context import (
     PersistenceOperation,
@@ -352,10 +353,7 @@ class AuthorizedYandexDiskScanner:
         context: TrustedPersistenceContext,
     ) -> YandexDiskScanPage:
         query = command.lifecycle_query
-        if query is None:
-            if self.lifecycle_reader is not None:
-                raise ProviderReadDeniedError()
-        elif self.lifecycle_reader is None:
+        if query is None or self.lifecycle_reader is None:
             raise ProviderReadDeniedError()
         else:
             try:
@@ -394,7 +392,7 @@ class AuthorizedYandexDiskScanner:
                 read_command.resource_scope_reference,
                 checkpoint=checkpoint,
             )
-        if query is not None and self.lifecycle_reader is not None:
+        if query is not None:
             try:
                 await require_current_read_eligibility(
                     self.lifecycle_reader, query, context
@@ -950,6 +948,18 @@ def _item_command(
     digest = hashlib.sha256(
         f"{item.provider_object_reference}\0{item.provider_revision}".encode()
     ).hexdigest()
+    lifecycle_query = None
+    if command.lifecycle_query is not None:
+        external_object_id = "ydx:" + hashlib.sha256(
+            f"{command.connection_id}|{item.provider_object_reference}".encode()
+        ).hexdigest()[:60]
+        lifecycle_query = lifecycle_query_for_source(
+            command.lifecycle_query,
+            provider_object_reference=item.provider_object_reference,
+            external_namespace="yandex-disk",
+            external_generation="yandex-disk-path:v1",
+            external_object_id=external_object_id,
+        )
     return ConnectorIngestionCommand(
         workspace_id=command.workspace_id,
         environment_id=command.environment_id,
@@ -967,6 +977,7 @@ def _item_command(
             else None
         ),
         access_policy_version_id=command.access_policy_version_id,
+        lifecycle_query=lifecycle_query,
     )
 
 

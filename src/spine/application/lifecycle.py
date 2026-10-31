@@ -294,6 +294,40 @@ class LifecycleEligibilityQuery:
         )
 
 
+def lifecycle_query_for_source(
+    template: LifecycleEligibilityQuery,
+    *,
+    provider_object_reference: str,
+    external_namespace: str,
+    external_generation: str,
+    external_object_id: str,
+) -> LifecycleEligibilityQuery:
+    """Derive an exact child-source fence while preserving approved scope authority."""
+
+    source_object_id = connector_source_object_id(
+        template.workspace_id,
+        template.environment_id,
+        template.connection_id,
+        external_namespace,
+        external_generation,
+        external_object_id,
+    )
+    return LifecycleEligibilityQuery(
+        workspace_id=template.workspace_id,
+        environment_id=template.environment_id,
+        source_object_id=source_object_id,
+        connection_id=template.connection_id,
+        connection_version_id=template.connection_version_id,
+        scope_reference=template.scope_reference,
+        scope_version_id=template.scope_version_id,
+        scope_digest=template.scope_digest,
+        provider_object_reference=provider_object_reference,
+        source_external_namespace=external_namespace,
+        source_external_generation=external_generation,
+        source_external_object_id=external_object_id,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class InMemoryLifecycleAuthorityRepository(LifecycleAuthorityRepository):
     """Deterministic adapter for application and contract tests."""

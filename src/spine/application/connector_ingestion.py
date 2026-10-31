@@ -338,7 +338,12 @@ class ConnectorIngestionOrchestrator:
         if (
             command.lifecycle_query is not None
             and command.lifecycle_query.source_object_id
-            != _source_object_id(command, observation)
+            != _source_object_id(
+                command,
+                observation.external_identity.external_namespace,
+                observation.external_identity.external_generation,
+                observation.external_identity.external_object_id,
+            )
         ):
             raise ValueError("Lifecycle query does not bind the observed source.")
         read_context = self.read_context_factory(

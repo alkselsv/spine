@@ -18,6 +18,7 @@ from pydantic import ConfigDict, Field, StrictBool, StrictBytes, StrictInt, Stri
 
 from spine.application.connections.google import (
     GoogleProvider,
+    GoogleProviderPolicyError,
     GoogleConnectionRepository,
     GoogleReadAdmission,
     GoogleReadCommand,
@@ -544,10 +545,12 @@ class GoogleDriveInitialSnapshotReader:
 
     async def get_start_page_token(self, command, context) -> str:
         try:
+            await self._require_lifecycle(command, context)
             async with self._admit(command, context) as connection:
                 token = await self.service.get_start_page_token(
                     connection, OpaqueGoogleReference(value=command.resource_scope_reference)
                 )
+            await self._require_lifecycle(command, context)
         except GoogleDriveAccessOutcomeError:
             raise
         except Exception as error:
@@ -561,12 +564,14 @@ class GoogleDriveInitialSnapshotReader:
 
     async def list_page(self, command, page_token, context) -> DriveSnapshotPage:
         try:
+            await self._require_lifecycle(command, context)
             async with self._admit(command, context) as connection:
                 page = await self.service.list_page(
                     connection,
                     OpaqueGoogleReference(value=command.resource_scope_reference),
                     page_token,
                 )
+            await self._require_lifecycle(command, context)
         except GoogleDriveAccessOutcomeError:
             raise
         except Exception as error:
@@ -606,6 +611,29 @@ class GoogleDriveInitialSnapshotReader:
             context,
         )
 
+    async def _require_lifecycle(self, command, context) -> None:
+        query = getattr(command, "lifecycle_query", None)
+        method = getattr(self.admission, "require_lifecycle_eligibility", None)
+        if not callable(method):
+            if query is not None:
+                raise GoogleProviderPolicyError()
+            return
+        await method(
+            GoogleReadCommand(
+                connection_id=command.connection_id,
+                resource_scope_reference=OpaqueGoogleReference(
+                    value=command.resource_scope_reference
+                ),
+                authorization_generation=command.authorization_generation,
+                configuration_generation=command.configuration_generation,
+                resource_object_reference=(
+                    query.provider_object_reference if query is not None else None
+                ),
+                lifecycle_query=query,
+            ),
+            context,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class GoogleDriveIncrementalReader:
@@ -613,15 +641,18 @@ class GoogleDriveIncrementalReader:
 
     connection_repository: GoogleConnectionRepository
     service: GoogleDriveChangeService
+    admission: GoogleReadAdmission[object] | None = None
 
     async def list_changes(self, command, page_token, context) -> DriveChangePage:
         try:
+            await self._require_lifecycle(command, context)
             async with self._admit(command, context) as connection:
                 page = await self.service.list_changes(
                     connection,
                     OpaqueGoogleReference(value=command.resource_scope_reference),
                     page_token,
                 )
+            await self._require_lifecycle(command, context)
         except GoogleDriveAccessOutcomeError:
             raise
         except Exception as error:
@@ -640,6 +671,34 @@ class GoogleDriveIncrementalReader:
                 ),
                 authorization_generation=command.authorization_generation,
                 configuration_generation=command.configuration_generation,
+            ),
+            context,
+        )
+
+    async def _require_lifecycle(self, command, context) -> None:
+        query = getattr(command, "lifecycle_query", None)
+        method = getattr(self.service, "require_lifecycle_eligibility", None)
+        # The incremental reader's admission is supplied as a reader, not a service;
+        # resolve it from the service-bound repository adapter when available.
+        admission = getattr(self, "admission", None)
+        if admission is not None:
+            method = getattr(admission, "require_lifecycle_eligibility", None)
+        if not callable(method):
+            if query is not None:
+                raise GoogleProviderPolicyError()
+            return
+        await method(
+            GoogleReadCommand(
+                connection_id=command.connection_id,
+                resource_scope_reference=OpaqueGoogleReference(
+                    value=command.resource_scope_reference
+                ),
+                authorization_generation=command.authorization_generation,
+                configuration_generation=command.configuration_generation,
+                resource_object_reference=(
+                    query.provider_object_reference if query is not None else None
+                ),
+                lifecycle_query=query,
             ),
             context,
         )

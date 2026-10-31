@@ -19,6 +19,10 @@ from spine.application.connector_ingestion import (
 from spine.application.connections.google import GoogleReadCommand
 from spine.application.connections.provider import ProviderReadAdmission
 from spine.application.lifecycle import LifecycleAuthorityError, LifecycleEligibilityQuery
+from spine.domain.sources.lifecycle import (
+    CurrentLifecycleEligibility,
+    LifecycleEligibilityStatus,
+)
 from spine.application.google_sheets_reconciliation import (
     ConnectorGoogleSheetsCanonicalIngestion,
     GoogleSheetsAdmittedPageReader,
@@ -539,7 +543,8 @@ def _orchestrator(observation=None, *, reader=None, lifecycle_reader=None):
             read_context_factory=context_factory,
             context_factory=context_factory,
             canonical_command_factory=lambda **kwargs: SimpleNamespace(
-                revision=kwargs["revision"]
+                revision=kwargs["revision"],
+                lifecycle_query=kwargs["command"].lifecycle_query,
             ),
             outbox_events=OutboxEventRegistry(),
             audit_events=AuditEventRegistry.with_default_families(),
@@ -1320,6 +1325,26 @@ async def test_yandex_reconciliation_recovers_through_canonical_ingestion_and_ou
             assert read_command.environment_id == ENVIRONMENT
             yield connection
 
+    class LifecycleReader:
+        async def current_eligibility(self, query, context):
+            del context
+            return CurrentLifecycleEligibility(
+                workspace_id=query.workspace_id,
+                environment_id=query.environment_id,
+                source_object_id=query.source_object_id,
+                connection_id=query.connection_id,
+                connection_version_id=query.connection_version_id,
+                scope_reference=query.scope_reference,
+                scope_version_id=query.scope_version_id,
+                scope_digest=query.scope_digest,
+                current_decision_id=_id("issue670-eligible"),
+                generation=1,
+                status=LifecycleEligibilityStatus.ELIGIBLE,
+                legal_hold_active=False,
+            )
+
+    lifecycle_reader = LifecycleReader()
+
     orchestrator, _, _, _, uow = _orchestrator()
     admitted_ingestion = replace(
         orchestrator,
@@ -1327,6 +1352,7 @@ async def test_yandex_reconciliation_recovers_through_canonical_ingestion_and_ou
             admission=ProviderReadAdmission(
                 repository=Repository(),
                 provider=provider,
+                lifecycle_reader=lifecycle_reader,
             ),
             connection_version_id=connection_version,
             required_capabilities=(
@@ -1337,6 +1363,7 @@ async def test_yandex_reconciliation_recovers_through_canonical_ingestion_and_ou
         ),
         read_operation=PersistenceOperation("provider_connection_read"),
         admission_reference_type="provider_read_admission",
+        lifecycle_reader=lifecycle_reader,
     )
 
     old_source = _lifecycle_source(identity="issue670-old-path")
@@ -1430,6 +1457,7 @@ async def test_yandex_reconciliation_recovers_through_canonical_ingestion_and_ou
         scanner=AuthorizedYandexDiskScanner(
             repository=Repository(),
             provider=provider,
+            lifecycle_reader=lifecycle_reader,
         ),
         ingestion=admitted_ingestion,
         sources=Sources(),
@@ -1453,6 +1481,20 @@ async def test_yandex_reconciliation_recovers_through_canonical_ingestion_and_ou
         access_policy_version_id=POLICY,
         command_identity="issue670.public-seam",
         idempotency_key="issue670-public-seam",
+        lifecycle_query=LifecycleEligibilityQuery(
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+            source_object_id=_id("issue670-root-source"),
+            connection_id=CONNECTION,
+            connection_version_id=connection_version,
+            scope_reference=SCOPE,
+            scope_version_id=connection.approval_id,
+            scope_digest="a" * 64,
+            provider_object_reference=str(SCOPE),
+            source_external_namespace="yandex-disk",
+            source_external_generation="yandex-disk-path:v1",
+            source_external_object_id="ydx:" + "a" * 60,
+        ),
     )
     interrupted = await coordinator.run(reconciliation_command, removal_policy)
     recovered = await coordinator.run(reconciliation_command, removal_policy)

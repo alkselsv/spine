@@ -10,6 +10,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import ConfigDict, Field, model_validator
 
+from spine.application.lifecycle import LifecycleEligibilityQuery
 from spine.application.google_drive_changes import (
     DriveChangeCommand,
     DriveChangeResult,
@@ -56,6 +57,7 @@ class DriveFullReconciliationCommand(DefinitionModel):
     idempotency_key: str = Field(min_length=1, max_length=255)
     last_committed_cursor: str | None = Field(default=None, max_length=4096)
     reconciliation_max_pages: int = Field(default=100, gt=0, le=10_000)
+    lifecycle_query: LifecycleEligibilityQuery | None = None
 
     @model_validator(mode="after")
     def validate_ids(self) -> "DriveFullReconciliationCommand":
@@ -65,6 +67,15 @@ class DriveFullReconciliationCommand(DefinitionModel):
         ):
             if getattr(self, name).int == 0:
                 raise ValueError(f"{name} must be a non-zero UUID")
+        query = self.lifecycle_query
+        if query is not None and (
+            query.workspace_id != self.workspace_id
+            or query.environment_id != self.environment_id
+            or query.connection_id != self.connection_id
+            or query.scope_reference != self.resource_scope_reference
+            or query.provider_object_reference != str(self.resource_scope_reference)
+        ):
+            raise ValueError("lifecycle query must bind the exact Drive root scope")
         return self
 
 
@@ -102,6 +113,7 @@ class DriveFullReconciliationCoordinator:
             command_identity=_subcommand(command.command_identity, "snapshot", 128),
             idempotency_key=_subcommand(command.idempotency_key, "snapshot"),
             last_committed_cursor=command.last_committed_cursor,
+            lifecycle_query=command.lifecycle_query,
         )
         snapshot = await self.snapshots.run(snapshot_command)
         if snapshot.state is not DriveSnapshotRunState.SUCCEEDED:
@@ -123,6 +135,7 @@ class DriveFullReconciliationCoordinator:
             idempotency_key=_subcommand(command.idempotency_key, "changes"),
             last_committed_cursor=snapshot.proposed_start_page_token,
             reconciliation_max_pages=command.reconciliation_max_pages,
+            lifecycle_query=command.lifecycle_query,
         )
         changes = await self.changes.run(change_command)
         if changes.state is not DriveChangeRunState.SUCCEEDED:

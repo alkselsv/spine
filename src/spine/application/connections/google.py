@@ -239,6 +239,16 @@ class GoogleReadAdmission(Generic[ProviderResultT]):
         self._clock = clock
         self._lifecycle_reader = lifecycle_reader
 
+    async def require_lifecycle_eligibility(
+        self,
+        command: GoogleReadCommand,
+        context: TrustedPersistenceContext,
+    ) -> None:
+        """Expose the same fail-closed fence to snapshot/change enumeration reads."""
+
+        async with self._repository.admit_read(command, context) as connection:
+            await self._require_lifecycle_eligibility(command, connection, context)
+
     async def read(
         self,
         command: GoogleReadCommand,
