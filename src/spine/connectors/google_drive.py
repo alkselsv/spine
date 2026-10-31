@@ -23,6 +23,7 @@ from spine.application.connections.google import (
     GoogleReadCommand,
 )
 from spine.application.persistence.context import TrustedPersistenceContext
+from spine.application.lifecycle import connector_source_object_id
 from spine.connectors.observations import (
     ConnectorCoverage,
     NormalizedConnectorObservation,
@@ -260,11 +261,14 @@ class GoogleDriveService(Protocol):
 
 
 class _ConnectorReadCommand(Protocol):
+    workspace_id: UUID
+    environment_id: UUID
     connection_id: UUID
     resource_scope_reference: UUID
     authorization_generation: int
     configuration_generation: int
     resource_object_reference: str | None
+    lifecycle_query: object | None
 
 
 class GoogleDriveObservation(DefinitionModel):
@@ -475,6 +479,7 @@ class GoogleDriveObservationReader:
         command: _ConnectorReadCommand,
         context: TrustedPersistenceContext,
     ) -> NormalizedConnectorObservation:
+        _validate_drive_lifecycle_query(command)
         observation = await self.admission.read(
             GoogleReadCommand(
                 connection_id=command.connection_id,
@@ -489,6 +494,44 @@ class GoogleDriveObservationReader:
             context,
         )
         return observation.to_normalized_observation()
+
+
+def _validate_drive_lifecycle_query(command: object) -> None:
+    query = getattr(command, "lifecycle_query", None)
+    if query is None:
+        return
+    file_id = getattr(command, "resource_object_reference", None)
+    if not isinstance(file_id, str):
+        raise ValueError("Drive lifecycle query has no requested file identity")
+    identity = google_source_identity(
+        GoogleDriveFileKey(
+            connection_id=getattr(command, "connection_id"),
+            file_id=file_id,
+        )
+    )
+    expected_source_id = connector_source_object_id(
+        getattr(command, "workspace_id"),
+        getattr(command, "environment_id"),
+        getattr(command, "connection_id"),
+        identity.external_namespace,
+        identity.external_generation,
+        identity.external_object_id,
+    )
+    if (
+        query.provider_object_reference != file_id
+        or query.source_object_id != expected_source_id
+        or (
+            query.source_external_namespace,
+            query.source_external_generation,
+            query.source_external_object_id,
+        )
+        != (
+            identity.external_namespace,
+            identity.external_generation,
+            identity.external_object_id,
+        )
+    ):
+        raise ValueError("Drive lifecycle query does not bind the requested file")
 
 
 @dataclass(frozen=True, slots=True)
@@ -534,6 +577,7 @@ class GoogleDriveInitialSnapshotReader:
         return page
 
     async def read(self, command: _ConnectorReadCommand, context) -> NormalizedConnectorObservation:
+        _validate_drive_lifecycle_query(command)
         observation = await self.admission.read(
             GoogleReadCommand(
                 connection_id=command.connection_id,

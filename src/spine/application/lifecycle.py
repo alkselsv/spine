@@ -6,7 +6,7 @@ import asyncio
 import re
 from dataclasses import dataclass, field
 from typing import Protocol
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -25,6 +25,32 @@ class LifecycleAuthorityError(RuntimeError):
 
     def __init__(self) -> None:
         super().__init__("Lifecycle authority is unavailable.")
+
+
+def connector_source_object_id(
+    workspace_id: UUID,
+    environment_id: UUID,
+    connection_id: UUID,
+    external_namespace: str,
+    external_generation: str,
+    external_object_id: str,
+) -> UUID:
+    """Derive the canonical connector source ID from its exact stable identity."""
+
+    parts = (
+        workspace_id,
+        environment_id,
+        connection_id,
+        external_namespace,
+        external_generation,
+        external_object_id,
+    )
+    return uuid5(
+        NAMESPACE_URL,
+        ":".join(
+            ("spine:connector-ingestion:source:v1", *(str(part) for part in parts))
+        ),
+    )
 
 
 class LifecycleConflictError(LifecycleAuthorityError):
