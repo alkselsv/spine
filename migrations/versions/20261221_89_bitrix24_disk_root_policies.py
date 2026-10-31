@@ -30,10 +30,10 @@ def _tenant_policy(name: str, *, mutable: bool) -> None:
         "AND environment_id = nullif(current_setting('spine.environment_id', true), '')::uuid"
     )
     op.execute(
-        f"CREATE POLICY pol_{name}_tenant ON {SCHEMA}.{name} FOR ALL TO {runtime} "
+        f"CREATE POLICY pol_{name}_tenant_isolation ON {SCHEMA}.{name} FOR ALL TO {runtime} "
         f"USING ({predicate}) WITH CHECK ({predicate})"
     )
-    op.execute(f"CREATE POLICY pol_{name}_migration ON {SCHEMA}.{name} FOR ALL TO {migration} USING (true) WITH CHECK (true)")
+    op.execute(f"CREATE POLICY pol_{name}_migration_maintenance ON {SCHEMA}.{name} FOR ALL TO {migration} USING (true) WITH CHECK (true)")
     op.execute(f"GRANT {'SELECT, INSERT, UPDATE' if mutable else 'SELECT, INSERT'} ON TABLE {SCHEMA}.{name} TO {runtime}")
     op.execute(f"REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE {SCHEMA}.{name} FROM {runtime}")
 

@@ -1003,6 +1003,7 @@ async def test_source_observation_catalog_and_runtime_security_contract(
             ("source_revision_provenance", "observer_service"): "text",
             ("source_revision_provenance", "received_at"): "timestamp with time zone",
             ("source_revision_provenance", "observed_at"): "timestamp with time zone",
+            ("source_revision_provenance", "bitrix24_disk_membership"): "jsonb",
         }
 
         constraints = set(
@@ -1034,6 +1035,7 @@ async def test_source_observation_catalog_and_runtime_security_contract(
             "fk_source_revision_provenance_revision", "uq_source_revision_provenance_event",
             "ck_source_revision_provenance_order_pair", "ck_source_revision_provenance_digest",
             "ck_source_revision_provenance_fields",
+            "ck_source_provenance_b24_membership_record",
         }
         missing_source_constraints = {
             expected
@@ -1047,6 +1049,7 @@ async def test_source_observation_catalog_and_runtime_security_contract(
                     "ck_source_revision_provenance_order_pair",
                     "ck_source_revision_provenance_digest",
                     "ck_source_revision_provenance_fields",
+                    "ck_source_provenance_b24_membership_record",
                 }
                 and any(
                     actual.startswith("ck_source_revision_provenance_")
@@ -1061,7 +1064,7 @@ async def test_source_observation_catalog_and_runtime_security_contract(
                 for name in constraints
                 if name.startswith("ck_source_revision_provenance_")
             ]
-        ) == 3
+        ) == 4
 
         indexes = set(
             (
@@ -1323,6 +1326,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "google_connection_approvals",
         "provider_connection_versions",
         "provider_connection_approvals",
+        "bitrix24_disk_content_policy_versions",
+        "current_bitrix24_disk_content_policies",
+        "bitrix24_disk_root_policy_versions",
+        "current_bitrix24_disk_root_policies",
         "bitrix24_grant_bindings",
         "bitrix24_grant_authorities",
         "bitrix24_oauth_attempts",
@@ -1357,6 +1364,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                     "'qa_agent_artifacts','qa_agent_results',"
                     "'google_connection_versions','google_connection_approvals',"
                     "'provider_connection_versions','provider_connection_approvals',"
+                    "'bitrix24_disk_content_policy_versions','current_bitrix24_disk_content_policies',"
+                    "'bitrix24_disk_root_policy_versions','current_bitrix24_disk_root_policies',"
                     "'bitrix24_grant_bindings','bitrix24_grant_authorities',"
                     "'bitrix24_oauth_attempts','bitrix24_oauth_callback_receipts',"
                     "'lifecycle_observations','lifecycle_decisions','current_lifecycle_authorities'))"
@@ -1374,6 +1383,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                      "'qa_agent_artifacts','qa_agent_results',"
                      "'google_connection_versions','google_connection_approvals',"
                      "'provider_connection_versions','provider_connection_approvals',"
+                     "'bitrix24_disk_content_policy_versions','current_bitrix24_disk_content_policies',"
+                     "'bitrix24_disk_root_policy_versions','current_bitrix24_disk_root_policies',"
                      "'bitrix24_grant_bindings','bitrix24_grant_authorities',"
                      "'bitrix24_oauth_attempts','bitrix24_oauth_callback_receipts',"
                      "'lifecycle_observations','lifecycle_decisions','current_lifecycle_authorities')")
@@ -1741,6 +1752,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_source_revision_provenance_order_pair",
         "ck_source_revision_provenance_digest",
         "ck_source_revision_provenance_fields",
+        "ck_source_provenance_b24_membership_record",
         "pk_source_receipt_associations",
         "uq_source_receipt_associations_receipt",
         "uq_source_receipt_associations_provenance",
@@ -2157,6 +2169,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                 "ck_source_revision_provenance_order_pair",
                 "ck_source_revision_provenance_digest",
                 "ck_source_revision_provenance_fields",
+                "ck_source_provenance_b24_membership_record",
             }
             and any(
                 actual.startswith("ck_source_revision_provenance_")
@@ -2674,7 +2687,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "outbox_deliveries",
     }
     assert set(policies) == {
-        (table_name, f"pol_{table_name}_{policy_kind}")
+        (table_name, f"pol_{table_name}_{policy_kind}"[:63])
         for table_name in standard_tenant_rls_tables
         for policy_kind in ("tenant_isolation", "migration_maintenance")
     } | {
@@ -2959,7 +2972,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "JOIN pg_namespace AS source_namespace "
                         "ON source_namespace.oid = relation.relnamespace "
                         "WHERE source_namespace.nspname = 'spine' AND relation.relname IN "
-                            "('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
+                            "('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                          "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', 'ingestion_runs', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -3000,7 +3013,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "column_default FROM information_schema.columns "
                         "WHERE table_schema = 'spine' "
                         "AND table_name NOT LIKE 'source_canonical%' "
-                            "AND table_name NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
+                            "AND table_name NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                             "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -3034,7 +3047,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "SELECT indexname FROM pg_indexes "
                         "WHERE schemaname = 'spine' "
                         "AND indexname NOT LIKE 'pk_source_canonical%' "
-                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
+                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                          "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -3067,7 +3080,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                     text(
                         "SELECT tablename FROM pg_tables WHERE schemaname = 'spine' "
                         "AND tablename NOT LIKE 'source_canonical%' "
-                            "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
+                            "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                          "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -3786,7 +3799,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                             "'bitrix24_grant_bindings', 'bitrix24_grant_authorities', "
                             "'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', "
                         "'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', "
-                        "'bitrix24_crm_material_revocations', "
+                            "'bitrix24_crm_material_revocations', 'bitrix24_disk_content_policy_versions', "
+                        "'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', "
+                        "'current_bitrix24_disk_root_policies', "
                         "'admission_decisions', "
                         "'source_objects', 'source_revisions', "
                          "'source_revision_provenance', 'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
@@ -3881,6 +3896,10 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "google_connection_versions": (True, True),
         "google_connection_approvals": (True, True),
         "provider_connection_versions": (True, True),
+        "bitrix24_disk_content_policy_versions": (True, True),
+        "current_bitrix24_disk_content_policies": (True, True),
+        "bitrix24_disk_root_policy_versions": (True, True),
+        "current_bitrix24_disk_root_policies": (True, True),
         "provider_connection_approvals": (True, True),
         "bitrix24_grant_bindings": (True, True),
         "bitrix24_grant_authorities": (True, True),
@@ -3951,6 +3970,10 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "bitrix24_crm_material_revocations": (True, True),
         "provider_connection_approvals": (True, True),
         "provider_connection_versions": (True, True),
+        "bitrix24_disk_content_policy_versions": (True, True),
+        "current_bitrix24_disk_content_policies": (True, True),
+        "bitrix24_disk_root_policy_versions": (True, True),
+        "current_bitrix24_disk_root_policies": (True, True),
             "register_link_claims": (True, True),
             "register_association_acceptances": (True, True),
             "original_upload_records": (True, True),
@@ -3959,7 +3982,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         }
     standard_tables = set(tables) - {"outbox_deliveries"}
     assert set(policies) == {
-        (table_name, f"pol_{table_name}_{policy_kind}")
+        (table_name, f"pol_{table_name}_{policy_kind}"[:63])
         for table_name in standard_tables
         for policy_kind in ("tenant_isolation", "migration_maintenance")
     } | {
@@ -3970,7 +3993,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
     }
     for table_name in standard_tables:
         roles, using_expression, check_expression = policies[
-            (table_name, f"pol_{table_name}_tenant_isolation")
+            (table_name, f"pol_{table_name}_tenant_isolation"[:63])
         ]
         assert roles == [RUNTIME_ROLE]
         assert using_expression is not None
@@ -3992,7 +4015,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             if check_expression is not None:
                 assert "spine.workspace_id" in check_expression
         maintenance = policies[
-            (table_name, f"pol_{table_name}_migration_maintenance")
+            (table_name, f"pol_{table_name}_migration_maintenance"[:63])
         ]
         assert maintenance == ([MIGRATION_ROLE], "true", "true")
     assert policies[("outbox_intents", "pol_outbox_intents_dispatcher_read")][0] == [
