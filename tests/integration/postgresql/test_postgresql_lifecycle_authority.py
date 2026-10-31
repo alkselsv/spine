@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from dataclasses import replace
 
 import pytest
 from sqlalchemy import insert, select
@@ -11,6 +12,9 @@ from spine.application.lifecycle import (
     LifecycleConflictError,
     LifecycleEligibilityQuery,
 )
+from spine.application.persistence.canonical import CanonicalAcceptanceCommand
+from spine.application.persistence.idempotency import IdempotencyKey
+from spine.application.persistence.repositories import SourceObservationCommand
 from spine.domain.sources.lifecycle import (
     LifecycleAuthorityKind,
     LifecycleDecision,
@@ -36,7 +40,16 @@ from tests.integration.postgresql.test_postgresql_unit_of_work import (
     prepare_canonical_case,
     synthetic_uuid,
 )
-from tests.contracts.persistence.test_source_observation_contract import connector_source
+from tests.contracts.persistence.test_canonical_acceptance_contract import (
+    _audit as canonical_audit,
+    _canonical_outbox,
+)
+from tests.contracts.persistence.test_source_observation_contract import (
+    NOW,
+    connector_source,
+    provenance as source_provenance,
+    tombstone,
+)
 
 
 pytestmark = [pytest.mark.postgresql, pytest.mark.asyncio(loop_scope="session")]
@@ -189,6 +202,65 @@ async def _prepare_lifecycle_case(adapter: PersistenceAdapter, number: int):
     return await prepare_canonical_case(adapter, number, source_object=source)
 
 
+async def _accept_canonical_tombstone(adapter: PersistenceAdapter, case, number: int) -> None:
+    async with adapter.uow_factory(case.context) as uow:
+        await uow.canonical.accept(case.command)
+        await uow.commit()
+
+    revision = tombstone(case.source, synthetic_uuid(number + 1))
+    provenance = source_provenance(case.source, revision.revision_id, "tombstone-event-2")
+    source_context = adapter.source_context(
+        case.source.workspace_id, case.source.environment_id
+    )
+    source_command = SourceObservationCommand.create(
+        source=case.source,
+        revision=revision,
+        provenance=provenance,
+        idempotency_key=IdempotencyKey(f"lifecycle-tombstone-observation-{number}"),
+    )
+    async with adapter.uow_factory(source_context) as uow:
+        await uow.sources.record_observation(source_command)
+        await uow.commit()
+    acceptance_id = synthetic_uuid(number + 2)
+    audit_id = synthetic_uuid(number + 3)
+    outbox_id = synthetic_uuid(number + 4)
+    audit = canonical_audit(
+        context=case.context,
+        source_revision_id=revision.revision_id,
+        event_id=audit_id,
+        reason="source_tombstoned",
+        transition="source.tombstoned",
+    )
+    outbox = _canonical_outbox(
+        adapter,
+        context=case.context,
+        source_object_id=case.source.source_object_id,
+        source_revision_id=revision.revision_id,
+        acceptance_id=acceptance_id,
+        generation=2,
+        audit_event_id=audit_id,
+        event_id=outbox_id,
+        transition="source.tombstoned",
+    )
+    command = CanonicalAcceptanceCommand.create(
+        source=case.source,
+        revision=revision,
+        provenance=provenance,
+        expected_current_revision_id=case.revision.revision_id,
+        idempotency_key=IdempotencyKey(f"lifecycle-tombstone-{number}"),
+        canonical_acceptance_id=acceptance_id,
+        audit_event_id=audit_id,
+        outbox_event_id=outbox_id,
+        accepted_at=NOW,
+        audit_event=audit,
+        outbox_intent=outbox,
+        operation=case.context.operation,
+    )
+    async with adapter.uow_factory(case.context) as uow:
+        await uow.canonical.accept(command)
+        await uow.commit()
+
+
 @pytest.mark.asyncio(loop_scope="session")
 async def test_postgresql_lifecycle_authority_persists_current_scoped_decision(
     postgresql_adapter: PersistenceAdapter,
@@ -303,3 +375,41 @@ async def test_postgresql_lifecycle_effect_failure_rolls_back_audit_and_authorit
         assert pointer.current_decision_id is None
         assert audit_result.scalar_one_or_none() is None
         await uow.rollback()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_current_eligibility_uses_tombstone_and_exact_decision_scope(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await _prepare_lifecycle_case(postgresql_adapter, 73400)
+    context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id, case.source.environment_id, "lifecycle_decision"
+    )
+    repository = PostgreSQLLifecycleAuthorityRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        observation_authority=_AllowObservationAuthority(),
+        decision_authority=_AllowAuthority(),
+        decision_effects=_DecisionEffects(),
+    )
+    observation = _observation(case, 73410)
+    decision = _decision(case, observation, context, 73420)
+    await repository.record_observation(observation, context)
+    await repository.record_decision(decision, context)
+    await _accept_canonical_tombstone(postgresql_adapter, case, 73430)
+
+    current = await repository.current_eligibility(_query(case, observation), context)
+    stale_scope = await repository.current_eligibility(
+        replace(_query(case, observation), scope_digest="d" * 64), context
+    )
+    stale_connection_version = await repository.current_eligibility(
+        replace(
+            _query(case, observation),
+            connection_version_id=synthetic_uuid(73419),
+        ),
+        context,
+    )
+
+    assert current.current_decision_id == decision.decision_id
+    assert current.status is LifecycleEligibilityStatus.TOMBSTONED
+    assert stale_scope.status is LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE
+    assert stale_connection_version.status is LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE

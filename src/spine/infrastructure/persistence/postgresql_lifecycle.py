@@ -18,6 +18,8 @@ from spine.application.lifecycle import (
     LifecycleDecisionEffectsWriter,
     LifecycleEligibilityQuery,
     LifecycleObservationAuthority,
+    lifecycle_context_actor,
+    validate_lifecycle_context,
 )
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -30,10 +32,13 @@ from spine.domain.sources.lifecycle import (
     LifecycleEligibilityStatus,
     LifecycleObservation,
 )
+from spine.domain.sources.models import RevisionKind
 from spine.infrastructure.persistence.postgresql_mappings import (
     current_lifecycle_authorities,
+    current_source_heads,
     lifecycle_decisions,
     lifecycle_observations,
+    source_objects,
 )
 
 
@@ -58,7 +63,7 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
         observation: LifecycleObservation,
         context: TrustedPersistenceContext,
     ) -> LifecycleObservation:
-        _validate_context(context, observation.workspace_id, observation.environment_id)
+        validate_lifecycle_context(context, observation.workspace_id, observation.environment_id)
         try:
             async with self._uow_factory(context) as uow:
                 existing_result = await uow._execute(  # type: ignore[attr-defined]
@@ -104,8 +109,8 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
         decision: LifecycleDecision,
         context: TrustedPersistenceContext,
     ) -> LifecycleDecision:
-        _validate_context(context, decision.workspace_id, decision.environment_id)
-        if _context_actor(context) != decision.actor_id:
+        validate_lifecycle_context(context, decision.workspace_id, decision.environment_id)
+        if lifecycle_context_actor(context) != decision.actor_id:
             raise LifecycleAuthorityError()
         try:
             async with self._uow_factory(context) as uow:
@@ -203,32 +208,77 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
         query: LifecycleEligibilityQuery,
         context: TrustedPersistenceContext,
     ) -> CurrentLifecycleEligibility:
-        _validate_context(context, query.workspace_id, query.environment_id)
+        validate_lifecycle_context(context, query.workspace_id, query.environment_id)
         async with self._uow_factory(context) as uow:
             result = await uow._execute(  # type: ignore[attr-defined]
-                select(lifecycle_decisions).join(
-                    current_lifecycle_authorities,
-                    (current_lifecycle_authorities.c.current_decision_id
-                     == lifecycle_decisions.c.decision_id)
-                    & (current_lifecycle_authorities.c.workspace_id
-                       == lifecycle_decisions.c.workspace_id)
-                    & (current_lifecycle_authorities.c.environment_id
-                       == lifecycle_decisions.c.environment_id)
-                    & (current_lifecycle_authorities.c.source_object_id
-                       == lifecycle_decisions.c.source_object_id)
-                    & (current_lifecycle_authorities.c.generation
-                       == lifecycle_decisions.c.generation),
-                ).where(
-                    current_lifecycle_authorities.c.workspace_id == query.workspace_id,
-                    current_lifecycle_authorities.c.environment_id == query.environment_id,
-                    current_lifecycle_authorities.c.source_object_id == query.source_object_id,
+                select(
+                    source_objects.c.connection_id.label("canonical_connection_id"),
+                    current_source_heads.c.current_revision_kind,
+                    lifecycle_decisions,
+                )
+                .select_from(
+                    source_objects
+                    .outerjoin(
+                        current_source_heads,
+                        (current_source_heads.c.source_object_id
+                         == source_objects.c.source_object_id)
+                        & (current_source_heads.c.workspace_id == source_objects.c.workspace_id)
+                        & (current_source_heads.c.environment_id == source_objects.c.environment_id),
+                    )
+                    .outerjoin(
+                        current_lifecycle_authorities,
+                        (current_lifecycle_authorities.c.workspace_id
+                         == source_objects.c.workspace_id)
+                        & (current_lifecycle_authorities.c.environment_id
+                           == source_objects.c.environment_id)
+                        & (current_lifecycle_authorities.c.source_object_id
+                           == source_objects.c.source_object_id),
+                    )
+                    .outerjoin(
+                        lifecycle_decisions,
+                        (lifecycle_decisions.c.decision_id
+                         == current_lifecycle_authorities.c.current_decision_id)
+                        & (lifecycle_decisions.c.workspace_id
+                           == current_lifecycle_authorities.c.workspace_id)
+                        & (lifecycle_decisions.c.environment_id
+                           == current_lifecycle_authorities.c.environment_id)
+                        & (lifecycle_decisions.c.source_object_id
+                           == current_lifecycle_authorities.c.source_object_id)
+                        & (lifecycle_decisions.c.generation
+                           == current_lifecycle_authorities.c.generation),
+                    )
+                )
+                .where(
+                    source_objects.c.workspace_id == query.workspace_id,
+                    source_objects.c.environment_id == query.environment_id,
+                    source_objects.c.source_object_id == query.source_object_id,
                 )
             )
             row = result.mappings().one_or_none()
             await uow.rollback()  # type: ignore[attr-defined]
-        decision = _decision(row) if row is not None else None
-        if decision is None or not query.matches_decision(decision):
-            return _unavailable(query)
+            if (
+                row is None
+                or row["canonical_connection_id"] != query.connection_id
+            ):
+                return _unavailable(query)
+            decision = _decision(row) if row["decision_id"] is not None else None
+            if decision is None or not query.matches_decision(decision):
+                return _unavailable(query)
+            if row["current_revision_kind"] == RevisionKind.TOMBSTONE.value:
+                return CurrentLifecycleEligibility(
+                    workspace_id=decision.workspace_id,
+                    environment_id=decision.environment_id,
+                    source_object_id=decision.source_object_id,
+                    connection_id=decision.connection_id,
+                    connection_version_id=decision.connection_version_id,
+                    scope_reference=decision.scope_reference,
+                    scope_version_id=decision.scope_version_id,
+                    scope_digest=decision.scope_digest,
+                    current_decision_id=decision.decision_id,
+                    generation=decision.generation,
+                    status=LifecycleEligibilityStatus.TOMBSTONED,
+                    legal_hold_active=decision.legal_hold_active,
+                )
         return CurrentLifecycleEligibility(
             workspace_id=decision.workspace_id,
             environment_id=decision.environment_id,
@@ -259,25 +309,6 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
         if row is None:
             raise LifecycleAuthorityError()
         return _observation(row)
-
-
-def _validate_context(
-    context: TrustedPersistenceContext, workspace_id: UUID, environment_id: UUID
-) -> None:
-    context.validate_shape()
-    if not isinstance(context.scope, EnvironmentScope) or (
-        context.scope.workspace_id,
-        context.scope.environment_id,
-    ) != (workspace_id, environment_id):
-        raise LifecycleAuthorityError()
-
-
-def _context_actor(context: TrustedPersistenceContext) -> UUID | None:
-    return (
-        context.acting_subject_id
-        if context.origin.value == "interactive"
-        else context.service_principal_id
-    )
 
 
 def _observation_columns(observation: LifecycleObservation) -> dict[str, object]:

@@ -197,7 +197,7 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "status IN ('eligible', 'read_withdrawn', 'disclosure_review_required', "
             "'disclosure_held', 'retention_applicability_unresolved', 'retention_ineligible', "
-            "'tombstoned', 'authority_unavailable', 'identity_continuity_unproven')",
+            "'authority_unavailable', 'identity_continuity_unproven')",
             name="ck_lifecycle_decisions_status",
         ),
         sa.CheckConstraint("generation >= 1", name="ck_lifecycle_decisions_generation"),

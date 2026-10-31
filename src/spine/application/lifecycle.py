@@ -169,6 +169,9 @@ class InMemoryLifecycleAuthorityRepository(LifecycleAuthorityRepository):
     current: dict[tuple[UUID, UUID, UUID], LifecycleDecision] = field(
         init=False, default_factory=dict, repr=False, compare=False
     )
+    canonical_tombstones: set[tuple[UUID, UUID, UUID]] = field(
+        init=False, default_factory=set, repr=False, compare=False
+    )
     _lock: asyncio.Lock = field(init=False, default_factory=asyncio.Lock, repr=False, compare=False)
 
     async def record_observation(
@@ -176,7 +179,7 @@ class InMemoryLifecycleAuthorityRepository(LifecycleAuthorityRepository):
         observation: LifecycleObservation,
         context: TrustedPersistenceContext,
     ) -> LifecycleObservation:
-        _validate_context(context, observation.workspace_id, observation.environment_id)
+        validate_lifecycle_context(context, observation.workspace_id, observation.environment_id)
         key = observation.observation_id
         async with self._lock:
             existing = self.observations.get(key)
@@ -193,8 +196,8 @@ class InMemoryLifecycleAuthorityRepository(LifecycleAuthorityRepository):
         decision: LifecycleDecision,
         context: TrustedPersistenceContext,
     ) -> LifecycleDecision:
-        _validate_context(context, decision.workspace_id, decision.environment_id)
-        if _context_actor(context) != decision.actor_id:
+        validate_lifecycle_context(context, decision.workspace_id, decision.environment_id)
+        if lifecycle_context_actor(context) != decision.actor_id:
             raise LifecycleAuthorityError()
         key = (decision.workspace_id, decision.environment_id, decision.source_object_id)
         async with self._lock:
@@ -229,7 +232,7 @@ class InMemoryLifecycleAuthorityRepository(LifecycleAuthorityRepository):
         query: LifecycleEligibilityQuery,
         context: TrustedPersistenceContext,
     ) -> CurrentLifecycleEligibility:
-        _validate_context(context, query.workspace_id, query.environment_id)
+        validate_lifecycle_context(context, query.workspace_id, query.environment_id)
         decision = self.current.get(
             (query.workspace_id, query.environment_id, query.source_object_id)
         )
@@ -248,6 +251,10 @@ class InMemoryLifecycleAuthorityRepository(LifecycleAuthorityRepository):
                 status=LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE,
                 legal_hold_active=False,
             )
+        if (query.workspace_id, query.environment_id, query.source_object_id) in self.canonical_tombstones:
+            status = LifecycleEligibilityStatus.TOMBSTONED
+        else:
+            status = decision.status
         return CurrentLifecycleEligibility(
             workspace_id=decision.workspace_id,
             environment_id=decision.environment_id,
@@ -259,12 +266,12 @@ class InMemoryLifecycleAuthorityRepository(LifecycleAuthorityRepository):
             scope_digest=decision.scope_digest,
             current_decision_id=decision.decision_id,
             generation=decision.generation,
-            status=decision.status,
+            status=status,
             legal_hold_active=decision.legal_hold_active,
         )
 
 
-def _validate_context(
+def validate_lifecycle_context(
     context: TrustedPersistenceContext, workspace_id: UUID, environment_id: UUID
 ) -> None:
     context.validate_shape()
@@ -275,7 +282,7 @@ def _validate_context(
         raise LifecycleAuthorityError()
 
 
-def _context_actor(context: TrustedPersistenceContext) -> UUID | None:
+def lifecycle_context_actor(context: TrustedPersistenceContext) -> UUID | None:
     if context.origin.value == "interactive":
         return context.acting_subject_id
     return context.service_principal_id
@@ -292,4 +299,6 @@ __all__ = [
     "LifecycleEligibilityQuery",
     "LifecycleObservationRecorder",
     "LifecycleObservationAuthority",
+    "lifecycle_context_actor",
+    "validate_lifecycle_context",
 ]

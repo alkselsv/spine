@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from dataclasses import replace
 from uuid import UUID
 
 import pytest
@@ -177,6 +178,29 @@ async def test_current_eligibility_follows_cas_pointer_not_observation_time() ->
     assert current.current_decision_id == decision.decision_id
     assert current.generation == 1
     assert current.status is LifecycleEligibilityStatus.READ_WITHDRAWN
+
+
+@pytest.mark.asyncio
+async def test_canonical_tombstone_overrides_lifecycle_status_only_for_exact_scope() -> None:
+    repository = InMemoryLifecycleAuthorityRepository(
+        _AllowExactObservation(), _AllowExactAuthority()
+    )
+    context = _context()
+    observation = _observation()
+    decision = _decision()
+    await repository.record_observation(observation, context)
+    await repository.record_decision(decision, context)
+    repository.canonical_tombstones.add((decision.workspace_id, decision.environment_id, decision.source_object_id))
+
+    current = await repository.current_eligibility(_query(), context)
+    stale = await repository.current_eligibility(
+        replace(_query(), scope_digest="d" * 64),
+        context,
+    )
+
+    assert current.current_decision_id == decision.decision_id
+    assert current.status is LifecycleEligibilityStatus.TOMBSTONED
+    assert stale.status is LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE
 
 
 @pytest.mark.asyncio
