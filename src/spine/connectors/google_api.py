@@ -132,13 +132,12 @@ class GoogleApiRequestPolicy(DefinitionModel):
                 "backoff_ceiling_seconds must define every bounded retry delay"
             )
         approved_ceilings = (1.0, 2.0, 4.0)
-        if any(
-            not math.isfinite(value)
-            or value < 0
-            or value > approved_ceilings[index]
-            for index, value in enumerate(self.backoff_ceiling_seconds)
+        if (
+            any(not math.isfinite(value) for value in self.backoff_ceiling_seconds)
+            or self.backoff_ceiling_seconds
+            != approved_ceilings[: self.max_attempts - 1]
         ):
-            raise ValueError("retry backoff ceilings exceed the approved policy")
+            raise ValueError("retry backoff ceilings must match the approved schedule")
         return self
 
 

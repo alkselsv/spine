@@ -126,7 +126,7 @@ def _service(
             max_attempts=2,
             max_requests_per_run=max_requests_per_run,
             max_concurrent_requests=2,
-            backoff_ceiling_seconds=(0.25,),
+            backoff_ceiling_seconds=(1.0,),
             drive_page_size=100,
             sheets_page_size=sheets_page_size,
         ),
@@ -825,7 +825,7 @@ async def test_transient_provider_failure_retries_with_configured_backoff() -> N
     )
 
     assert result.version == "1"
-    assert delays == [0.25]
+    assert delays == [1.0]
 
 
 @pytest.mark.asyncio
@@ -1019,7 +1019,7 @@ async def test_full_jitter_source_controls_retry_delay() -> None:
         jitter=lambda low, high: low + (high - low) / 2,
     ).get_metadata_for_file(_connection(), RESOURCE_SCOPE, "file-1")
 
-    assert delays == [0.125]
+    assert delays == [0.5]
 
 
 @pytest.mark.asyncio
@@ -1560,6 +1560,17 @@ def test_google_request_policy_requires_explicit_bounded_controls() -> None:
             max_requests_per_run=500,
             max_concurrent_requests=2,
             backoff_ceiling_seconds=(1.0, 2.0, 4.0, 4.0),
+            drive_page_size=100,
+            sheets_page_size=200,
+        )
+
+    with pytest.raises(ValueError):
+        GoogleApiRequestPolicy(
+            timeout_seconds=30.0,
+            max_attempts=4,
+            max_requests_per_run=500,
+            max_concurrent_requests=2,
+            backoff_ceiling_seconds=(1.0, 0.5, 4.0),
             drive_page_size=100,
             sheets_page_size=200,
         )
