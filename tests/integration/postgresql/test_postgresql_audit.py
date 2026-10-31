@@ -543,6 +543,7 @@ async def test_audit_catalog_has_named_append_only_tenant_contract(
         "fk_audit_events_scope_environments",
         "fk_audit_events_workspace_id_workspaces",
         "pk_audit_events",
+        "uq_audit_events_tenant_event",
     }
     assert indexes == {
         "ix_audit_events_tenant_appended_at",
@@ -551,6 +552,7 @@ async def test_audit_catalog_has_named_append_only_tenant_contract(
         "pk_audit_events",
         "uq_audit_events_environment_producer",
         "uq_audit_events_workspace_producer",
+        "uq_audit_events_tenant_event",
     }
     assert policies == {
         "pol_audit_events_migration_maintenance": "*",
