@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from typing import Any, Protocol
 
 from sqlalchemy import and_, insert, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.engine import Result
 from sqlalchemy.exc import IntegrityError
 
 from spine.application.persistence.context import EnvironmentScope, TrustedPersistenceContext
 from spine.application.persistence.errors import ConstraintConflictError
+from spine.application.persistence.unit_of_work import UnitOfWork
 from spine.application.retention import (
     RetentionApplicabilityAuthority,
     RetentionApplicabilityConflictError,
@@ -27,11 +29,25 @@ from spine.infrastructure.persistence.postgresql_mappings import (
 )
 
 
+class PostgreSQLRetentionUnitOfWork(UnitOfWork, Protocol):
+    async def execute_statement(
+        self, statement: object, parameters: object | None = None
+    ) -> Result[Any]: ...
+
+    async def __aenter__(self) -> "PostgreSQLRetentionUnitOfWork": ...
+
+
+class PostgreSQLRetentionUnitOfWorkFactory(Protocol):
+    def __call__(
+        self, context: TrustedPersistenceContext
+    ) -> PostgreSQLRetentionUnitOfWork: ...
+
+
 class PostgreSQLRetentionApplicabilityRepository:
     def __init__(
         self,
         *,
-        uow_factory: Callable[[TrustedPersistenceContext], object],
+        uow_factory: PostgreSQLRetentionUnitOfWorkFactory,
         authority: RetentionApplicabilityAuthority,
         effects: RetentionApplicabilityEffectsWriter,
     ) -> None:
@@ -50,7 +66,7 @@ class PostgreSQLRetentionApplicabilityRepository:
             raise RetentionApplicabilityError()
         try:
             async with self._uow_factory(context) as uow:
-                existing_result = await uow._execute(
+                existing_result = await uow.execute_statement(
                     select(retention_applicabilities).where(
                         retention_applicabilities.c.applicability_id
                         == applicability.applicability_id,
@@ -69,7 +85,7 @@ class PostgreSQLRetentionApplicabilityRepository:
                     return existing
 
                 await self._authority.verify(applicability, context, uow)
-                pointer_result = await uow._execute(
+                pointer_result = await uow.execute_statement(
                     select(current_retention_applicabilities)
                     .where(
                         current_retention_applicabilities.c.workspace_id
@@ -100,7 +116,7 @@ class PostgreSQLRetentionApplicabilityRepository:
                     applicability.outbox_event_id,
                 ):
                     raise RetentionApplicabilityError()
-                await uow._execute(
+                await uow.execute_statement(
                     insert(retention_applicabilities).values(
                         **_binding_columns(applicability)
                     )
@@ -138,7 +154,7 @@ class PostgreSQLRetentionApplicabilityRepository:
                         )
                     ),
                 ).returning(current_retention_applicabilities.c.current_applicability_id)
-                result = await uow._execute(statement)
+                result = await uow.execute_statement(statement)
                 if result.scalar_one_or_none() != applicability.applicability_id:
                     raise RetentionApplicabilityConflictError()
                 await uow.commit()
@@ -156,7 +172,7 @@ class PostgreSQLRetentionApplicabilityRepository:
             return ()
         _validate_context(context, scope.workspace_id, scope.environment_id)
         async with self._uow_factory(context) as uow:
-            lineage_result = await uow._execute(
+            lineage_result = await uow.execute_statement(
                 select(source_objects.c.source_kind)
                 .select_from(
                     source_objects.join(
@@ -179,7 +195,7 @@ class PostgreSQLRetentionApplicabilityRepository:
             if lineage_result.scalar_one_or_none() is None:
                 await uow.rollback()
                 return ()
-            result = await uow._execute(
+            result = await uow.execute_statement(
                 select(retention_applicabilities)
                 .select_from(
                     current_retention_applicabilities.join(
@@ -268,4 +284,8 @@ def _binding(row: object) -> RetentionApplicability:
     return RetentionApplicability.model_validate_json(json.dumps(record))
 
 
-__all__ = ["PostgreSQLRetentionApplicabilityRepository"]
+__all__ = [
+    "PostgreSQLRetentionApplicabilityRepository",
+    "PostgreSQLRetentionUnitOfWork",
+    "PostgreSQLRetentionUnitOfWorkFactory",
+]

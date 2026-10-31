@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal, Protocol
@@ -15,6 +14,7 @@ from spine.application.persistence.context import (
     EnvironmentScope,
     TrustedPersistenceContext,
 )
+from spine.application.persistence.unit_of_work import UnitOfWork
 from spine.domain.common import DefinitionModel
 from spine.domain.sources.retention import (
     RetentionApplicability,
@@ -46,24 +46,28 @@ class RetentionSourceLineage(DefinitionModel):
         return self
 
 
-@dataclass(frozen=True, slots=True)
-class RetentionEligibilityQuery:
+class RetentionArtifactRef(DefinitionModel):
+    """Exact immutable source-bearing artifact whose lineage must be resolved."""
+
     workspace_id: UUID
     environment_id: UUID
     artifact_class: RetentionArtifactClass
-    source_lineage: tuple[RetentionSourceLineage, ...]
+    artifact_id: UUID
+    artifact_version: int = Field(ge=1)
+    artifact_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
-    def __post_init__(self) -> None:
-        if self.workspace_id.int == 0 or self.environment_id.int == 0:
-            raise ValueError("retention query scope must be non-zero")
-        if not self.source_lineage:
-            raise ValueError("retention query requires exact source lineage")
-        identities = tuple(
-            (item.source_object_id, item.source_revision_id)
-            for item in self.source_lineage
-        )
-        if len(set(identities)) != len(identities):
-            raise ValueError("retention source lineage must be unique")
+    @model_validator(mode="after")
+    def validate_identity(self) -> "RetentionArtifactRef":
+        if any(
+            value.int == 0
+            for value in (self.workspace_id, self.environment_id, self.artifact_id)
+        ):
+            raise ValueError("retention artifact identifiers must be non-zero")
+        return self
+
+
+class RetentionEligibilityQuery(DefinitionModel):
+    artifact: RetentionArtifactRef
 
 
 class RetentionSourceDecision(DefinitionModel):
@@ -98,7 +102,12 @@ class RetentionEligibility(DefinitionModel):
     @model_validator(mode="after")
     def validate_outcome(self) -> "RetentionEligibility":
         if not self.source_decisions:
-            raise ValueError("retention eligibility requires source decisions")
+            if self.status not in {
+                RetentionEligibilityStatus.LINEAGE_UNAVAILABLE,
+                RetentionEligibilityStatus.AUTHORITY_UNAVAILABLE,
+            }:
+                raise ValueError("retention eligibility requires source decisions")
+            return self
         all_eligible = all(
             item.status is RetentionEligibilityStatus.ELIGIBLE
             for item in self.source_decisions
@@ -116,6 +125,16 @@ class CurrentRetentionApplicabilityCandidates(Protocol):
         source: RetentionSourceLineage,
         context: TrustedPersistenceContext,
     ) -> tuple[RetentionApplicability, ...]: ...
+
+
+class RetentionArtifactLineageResolver(Protocol):
+    """Resolve complete, canonical lineage for one immutable artifact version."""
+
+    async def resolve_artifact_lineage(
+        self,
+        artifact: RetentionArtifactRef,
+        context: TrustedPersistenceContext,
+    ) -> tuple[RetentionSourceLineage, ...]: ...
 
 
 class RetentionApplicabilityError(RuntimeError):
@@ -136,8 +155,14 @@ class RetentionApplicabilityAuthority(Protocol):
         self,
         applicability: RetentionApplicability,
         context: TrustedPersistenceContext,
-        transaction: object,
+        transaction: UnitOfWork,
     ) -> None: ...
+
+    async def is_current(
+        self,
+        applicability: RetentionApplicability,
+        context: TrustedPersistenceContext,
+    ) -> bool: ...
 
 
 class RetentionApplicabilityEffectsWriter(Protocol):
@@ -147,8 +172,75 @@ class RetentionApplicabilityEffectsWriter(Protocol):
         self,
         applicability: RetentionApplicability,
         context: TrustedPersistenceContext,
-        transaction: object,
+        transaction: UnitOfWork,
     ) -> tuple[UUID, UUID]: ...
+
+
+class RetentionPolicyApprovalReader(Protocol):
+    async def policy_is_current(
+        self,
+        applicability: RetentionApplicability,
+        context: TrustedPersistenceContext,
+        transaction: UnitOfWork | None,
+    ) -> bool: ...
+
+
+class RetentionBindingApprovalReader(Protocol):
+    async def binding_is_approved(
+        self,
+        applicability: RetentionApplicability,
+        context: TrustedPersistenceContext,
+        transaction: UnitOfWork | None,
+    ) -> bool: ...
+
+
+class ApprovedRetentionApplicabilityAuthority:
+    """Verify separate policy and applicability approvals without inferring either."""
+
+    def __init__(
+        self,
+        *,
+        policies: RetentionPolicyApprovalReader,
+        bindings: RetentionBindingApprovalReader,
+    ) -> None:
+        self._policies = policies
+        self._bindings = bindings
+
+    async def verify(
+        self,
+        applicability: RetentionApplicability,
+        context: TrustedPersistenceContext,
+        transaction: UnitOfWork,
+    ) -> None:
+        if not await self._verify(applicability, context, transaction):
+            raise RetentionApplicabilityError()
+
+    async def is_current(
+        self,
+        applicability: RetentionApplicability,
+        context: TrustedPersistenceContext,
+    ) -> bool:
+        try:
+            return await self._verify(applicability, context, None)
+        except Exception:
+            return False
+
+    async def _verify(
+        self,
+        applicability: RetentionApplicability,
+        context: TrustedPersistenceContext,
+        transaction: UnitOfWork | None,
+    ) -> bool:
+        if not _scope_matches_binding(applicability, context):
+            return False
+        policy_current = await self._policies.policy_is_current(
+            applicability, context, transaction
+        )
+        if not policy_current:
+            return False
+        return await self._bindings.binding_is_approved(
+            applicability, context, transaction
+        )
 
 
 class RetentionApplicabilityRepository(
@@ -168,9 +260,13 @@ class RetentionEligibilityReader:
         self,
         *,
         candidates: CurrentRetentionApplicabilityCandidates,
+        lineages: RetentionArtifactLineageResolver,
+        authority: RetentionApplicabilityAuthority,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._candidates = candidates
+        self._lineages = lineages
+        self._authority = authority
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     async def resolve(
@@ -179,24 +275,45 @@ class RetentionEligibilityReader:
         context: TrustedPersistenceContext,
     ) -> RetentionEligibility:
         if not _context_matches(query, context):
-            return _uniform_result(query, RetentionEligibilityStatus.AUTHORITY_UNAVAILABLE)
+            return _empty_result(query, RetentionEligibilityStatus.AUTHORITY_UNAVAILABLE)
         now = self._clock()
         if now.tzinfo is None or now.utcoffset() is None:
-            return _uniform_result(query, RetentionEligibilityStatus.AUTHORITY_UNAVAILABLE)
+            return _empty_result(query, RetentionEligibilityStatus.AUTHORITY_UNAVAILABLE)
         decisions: list[RetentionSourceDecision] = []
         try:
-            for source in query.source_lineage:
+            source_lineage = await self._lineages.resolve_artifact_lineage(
+                query.artifact, context
+            )
+            if not source_lineage or len(
+                {(item.source_object_id, item.source_revision_id) for item in source_lineage}
+            ) != len(source_lineage):
+                return _empty_result(
+                    query, RetentionEligibilityStatus.LINEAGE_UNAVAILABLE
+                )
+            for source in source_lineage:
                 bindings = await self._candidates.list_current_applicabilities(
                     source, context
                 )
+                authority_current = True
+                for binding in bindings:
+                    if not await self._authority.is_current(binding, context):
+                        authority_current = False
+                        break
+                if bindings and not authority_current:
+                    decisions.append(
+                        _source_result(
+                            source, RetentionEligibilityStatus.AUTHORITY_UNAVAILABLE
+                        )
+                    )
+                    continue
                 decisions.append(_decide_source(query, source, bindings, now))
         except Exception:
-            return _uniform_result(query, RetentionEligibilityStatus.AUTHORITY_UNAVAILABLE)
+            return _empty_result(query, RetentionEligibilityStatus.AUTHORITY_UNAVAILABLE)
         status = _aggregate_status(decisions)
         return RetentionEligibility(
-            workspace_id=query.workspace_id,
-            environment_id=query.environment_id,
-            artifact_class=query.artifact_class,
+            workspace_id=query.artifact.workspace_id,
+            environment_id=query.artifact.environment_id,
+            artifact_class=query.artifact.artifact_class,
             status=status,
             source_decisions=tuple(decisions),
         )
@@ -211,9 +328,9 @@ def _decide_source(
     matches = tuple(
         binding
         for binding in bindings
-        if binding.workspace_id == query.workspace_id
-        and binding.environment_id == query.environment_id
-        and query.artifact_class in binding.artifact_classes
+        if binding.workspace_id == query.artifact.workspace_id
+        and binding.environment_id == query.artifact.environment_id
+        and query.artifact.artifact_class in binding.artifact_classes
         and (
             (
                 binding.target_kind is RetentionTargetKind.EXACT_SOURCE
@@ -289,39 +406,60 @@ def _context_matches(
     return isinstance(context.scope, EnvironmentScope) and (
         context.scope.workspace_id,
         context.scope.environment_id,
-    ) == (query.workspace_id, query.environment_id)
+    ) == (query.artifact.workspace_id, query.artifact.environment_id)
 
 
-def _uniform_result(
+def _empty_result(
     query: RetentionEligibilityQuery, status: RetentionEligibilityStatus
 ) -> RetentionEligibility:
     return RetentionEligibility(
-        workspace_id=query.workspace_id,
-        environment_id=query.environment_id,
-        artifact_class=query.artifact_class,
+        workspace_id=query.artifact.workspace_id,
+        environment_id=query.artifact.environment_id,
+        artifact_class=query.artifact.artifact_class,
         status=status,
-        source_decisions=tuple(
-            RetentionSourceDecision(
-                source_object_id=item.source_object_id,
-                source_revision_id=item.source_revision_id,
-                status=status,
-            )
-            for item in query.source_lineage
-        ),
+        source_decisions=(),
     )
 
 
+def _source_result(
+    source: RetentionSourceLineage, status: RetentionEligibilityStatus
+) -> RetentionSourceDecision:
+    return RetentionSourceDecision(
+        source_object_id=source.source_object_id,
+        source_revision_id=source.source_revision_id,
+        status=status,
+    )
+
+
+def _scope_matches_binding(
+    applicability: RetentionApplicability, context: TrustedPersistenceContext
+) -> bool:
+    try:
+        context.validate_shape()
+    except Exception:
+        return False
+    return isinstance(context.scope, EnvironmentScope) and (
+        context.scope.workspace_id,
+        context.scope.environment_id,
+    ) == (applicability.workspace_id, applicability.environment_id)
+
+
 __all__ = [
+    "ApprovedRetentionApplicabilityAuthority",
     "CurrentRetentionApplicabilityCandidates",
+    "RetentionArtifactLineageResolver",
+    "RetentionArtifactRef",
     "RetentionApplicabilityAuthority",
     "RetentionApplicabilityConflictError",
     "RetentionApplicabilityEffectsWriter",
     "RetentionApplicabilityError",
     "RetentionApplicabilityRepository",
+    "RetentionBindingApprovalReader",
     "RetentionEligibility",
     "RetentionEligibilityQuery",
     "RetentionEligibilityReader",
     "RetentionEligibilityStatus",
+    "RetentionPolicyApprovalReader",
     "RetentionSourceDecision",
     "RetentionSourceLineage",
 ]

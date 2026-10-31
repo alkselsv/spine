@@ -46,10 +46,13 @@ class _Authority:
         assert transaction is not None
         assert applicability.actor_id == context.service_principal_id
 
+    async def is_current(self, applicability, context) -> bool:
+        return applicability.actor_id == context.service_principal_id
+
 
 class _Effects:
     async def persist(self, applicability, context, transaction):
-        await transaction._execute(
+        await transaction.execute_statement(
             insert(audit_events).values(
                 audit_event_id=applicability.audit_event_id,
                 workspace_id=applicability.workspace_id,
@@ -73,7 +76,7 @@ class _Effects:
                 payload={"generation": applicability.generation},
             )
         )
-        await transaction._execute(
+        await transaction.execute_statement(
             insert(outbox_intents).values(
                 event_id=applicability.outbox_event_id,
                 workspace_id=applicability.workspace_id,
@@ -161,7 +164,7 @@ async def test_postgresql_retention_applicability_persists_immutable_current_bin
     with pytest.raises(RetentionApplicabilityError):
         await repository.record_applicability(foreign_source, context)
     async with postgresql_adapter.uow_factory(context) as uow:
-        rolled_back_audit = await uow._execute(
+        rolled_back_audit = await uow.execute_statement(
             select(audit_events.c.audit_event_id).where(
                 audit_events.c.audit_event_id == foreign_source.audit_event_id
             )
@@ -181,12 +184,12 @@ async def test_postgresql_retention_applicability_persists_immutable_current_bin
 
     assert candidates == (applicability,)
     async with postgresql_adapter.uow_factory(context) as uow:
-        pointer = await uow._execute(
+        pointer = await uow.execute_statement(
             select(current_retention_applicabilities.c.current_applicability_id)
         )
         assert pointer.scalar_one() == applicability.applicability_id
         with pytest.raises(DBAPIError):
-            await uow._execute(
+            await uow.execute_statement(
                 update(retention_applicabilities)
                 .where(
                     retention_applicabilities.c.applicability_id
@@ -223,7 +226,7 @@ async def test_postgresql_retention_reader_enforces_revision_lineage_and_tenant_
         "retention_applicability",
     )
     async with postgresql_adapter.uow_factory(foreign_context) as uow:
-        hidden = await uow._execute(
+        hidden = await uow.execute_statement(
             select(retention_applicabilities.c.applicability_id).where(
                 retention_applicabilities.c.applicability_id
                 == applicability.applicability_id
@@ -231,6 +234,8 @@ async def test_postgresql_retention_reader_enforces_revision_lineage_and_tenant_
         )
         assert hidden.scalar_one_or_none() is None
         await uow.rollback()
+
+    assert wrong_revision == ()
 
 
 async def test_postgresql_retention_applicability_cas_allows_one_current_winner(
@@ -254,14 +259,3 @@ async def test_postgresql_retention_applicability_cas_allows_one_current_winner(
     assert sum(
         isinstance(item, RetentionApplicabilityConflictError) for item in results
     ) == 1
-    async with postgresql_adapter.uow_factory(foreign_context) as uow:
-        rows = await uow._execute(
-            select(retention_applicabilities.c.applicability_id).where(
-                retention_applicabilities.c.applicability_id
-                == applicability.applicability_id
-            )
-        )
-        assert rows.scalar_one_or_none() is None
-        await uow.rollback()
-
-    assert wrong_revision == ()

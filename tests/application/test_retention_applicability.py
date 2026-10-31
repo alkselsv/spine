@@ -13,6 +13,8 @@ from spine.application.persistence.context import (
     TrustedPersistenceContext,
 )
 from spine.application.retention import (
+    ApprovedRetentionApplicabilityAuthority,
+    RetentionArtifactRef,
     RetentionEligibilityQuery,
     RetentionEligibilityReader,
     RetentionEligibilityStatus,
@@ -99,6 +101,38 @@ class _Candidates:
         return self.values.get(source.source_object_id, ())
 
 
+class _Lineages:
+    def __init__(self, values: tuple[RetentionSourceLineage, ...]) -> None:
+        self.values = values
+        self.calls: list[RetentionArtifactRef] = []
+
+    async def resolve_artifact_lineage(self, artifact, context):
+        self.calls.append(artifact)
+        return self.values
+
+
+class _Authority:
+    def __init__(self, current: bool = True) -> None:
+        self.current = current
+
+    async def verify(self, applicability, context, transaction) -> None:
+        if not self.current:
+            raise RuntimeError
+
+    async def is_current(self, applicability, context) -> bool:
+        return self.current
+
+
+class _PolicyApprovals:
+    async def policy_is_current(self, applicability, context, transaction) -> bool:
+        return applicability.retention_policy_digest == "2" * 64
+
+
+class _BindingApprovals:
+    async def binding_is_approved(self, applicability, context, transaction) -> bool:
+        return applicability.approving_authority_digest == "b" * 64
+
+
 def _context(workspace_id: UUID = _uuid(1), environment_id: UUID = _uuid(2)):
     return TrustedPersistenceContext(
         scope=EnvironmentScope(
@@ -123,12 +157,25 @@ def _source(value: int, source_class: str = "document") -> RetentionSourceLineag
     )
 
 
-def _query(*sources: RetentionSourceLineage) -> RetentionEligibilityQuery:
+def _query() -> RetentionEligibilityQuery:
     return RetentionEligibilityQuery(
-        workspace_id=_uuid(1),
-        environment_id=_uuid(2),
-        artifact_class=RetentionArtifactClass.PARSED_CONTENT,
-        source_lineage=sources,
+        artifact=RetentionArtifactRef(
+            workspace_id=_uuid(1),
+            environment_id=_uuid(2),
+            artifact_class=RetentionArtifactClass.PARSED_CONTENT,
+            artifact_id=_uuid(900),
+            artifact_version=1,
+            artifact_digest="f" * 64,
+        )
+    )
+
+
+def _reader(candidates: _Candidates, *sources: RetentionSourceLineage, authority=None):
+    return RetentionEligibilityReader(
+        candidates=candidates,
+        lineages=_Lineages(sources),
+        authority=authority or _Authority(),
+        clock=lambda: NOW,
     )
 
 
@@ -138,9 +185,12 @@ async def test_exact_current_binding_makes_source_artifact_eligible() -> None:
     candidates = _Candidates(
         {source.source_object_id: (_binding(applicability_id=100, source_object_id=source.source_object_id),)}
     )
-    reader = RetentionEligibilityReader(candidates=candidates, clock=lambda: NOW)
+    verifier = ApprovedRetentionApplicabilityAuthority(
+        policies=_PolicyApprovals(), bindings=_BindingApprovals()
+    )
+    reader = _reader(candidates, source, authority=verifier)
 
-    result = await reader.resolve(_query(source), _context())
+    result = await reader.resolve(_query(), _context())
 
     assert result.status is RetentionEligibilityStatus.ELIGIBLE
     assert result.eligible is True
@@ -183,12 +233,9 @@ async def test_missing_ambiguous_conflicting_or_expired_binding_denies(
     expected: RetentionEligibilityStatus,
 ) -> None:
     source = _source(10)
-    reader = RetentionEligibilityReader(
-        candidates=_Candidates({source.source_object_id: bindings}),
-        clock=lambda: NOW,
-    )
+    reader = _reader(_Candidates({source.source_object_id: bindings}), source)
 
-    result = await reader.resolve(_query(source), _context())
+    result = await reader.resolve(_query(), _context())
 
     assert result.status is expected
     assert result.eligible is False
@@ -198,8 +245,8 @@ async def test_missing_ambiguous_conflicting_or_expired_binding_denies(
 async def test_mixed_artifact_reports_ineligible_source_for_suppression_or_rebuild() -> None:
     first = _source(10)
     second = _source(20)
-    reader = RetentionEligibilityReader(
-        candidates=_Candidates(
+    reader = _reader(
+        _Candidates(
             {
                 first.source_object_id: (
                     _binding(applicability_id=160, source_object_id=first.source_object_id),
@@ -213,10 +260,11 @@ async def test_mixed_artifact_reports_ineligible_source_for_suppression_or_rebui
                 ),
             }
         ),
-        clock=lambda: NOW,
+        first,
+        second,
     )
 
-    result = await reader.resolve(_query(first, second), _context())
+    result = await reader.resolve(_query(), _context())
 
     assert result.status is RetentionEligibilityStatus.EXPIRED
     assert tuple(item.status for item in result.source_decisions) == (
@@ -231,9 +279,55 @@ async def test_cross_tenant_context_fails_closed_without_resolving_sources() -> 
     candidates = _Candidates(
         {source.source_object_id: (_binding(applicability_id=180, source_object_id=source.source_object_id),)}
     )
-    reader = RetentionEligibilityReader(candidates=candidates, clock=lambda: NOW)
+    lineages = _Lineages((source,))
+    reader = RetentionEligibilityReader(
+        candidates=candidates,
+        lineages=lineages,
+        authority=_Authority(),
+        clock=lambda: NOW,
+    )
 
-    result = await reader.resolve(_query(source), _context(workspace_id=_uuid(999)))
+    result = await reader.resolve(_query(), _context(workspace_id=_uuid(999)))
 
     assert result.status is RetentionEligibilityStatus.AUTHORITY_UNAVAILABLE
     assert candidates.calls == []
+    assert lineages.calls == []
+
+
+@pytest.mark.asyncio
+async def test_incomplete_or_untrusted_artifact_lineage_denies_before_binding_selection() -> None:
+    source = _source(10)
+    candidates = _Candidates(
+        {source.source_object_id: (_binding(applicability_id=190, source_object_id=source.source_object_id),)}
+    )
+    reader = _reader(candidates)
+
+    result = await reader.resolve(_query(), _context())
+
+    assert result.status is RetentionEligibilityStatus.LINEAGE_UNAVAILABLE
+    assert candidates.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("policy", "authority_digest"),
+    [(51, "b" * 64), (50, "c" * 64)],
+)
+async def test_missing_current_policy_or_binding_authority_denies(
+    policy: int, authority_digest: str
+) -> None:
+    source = _source(10)
+    binding = _binding(
+        applicability_id=200, source_object_id=source.source_object_id, policy=policy
+    ).model_copy(
+        update={"approving_authority_digest": authority_digest}
+    )
+    candidates = _Candidates({source.source_object_id: (binding,)})
+    verifier = ApprovedRetentionApplicabilityAuthority(
+        policies=_PolicyApprovals(), bindings=_BindingApprovals()
+    )
+    reader = _reader(candidates, source, authority=verifier)
+
+    result = await reader.resolve(_query(), _context())
+
+    assert result.status is RetentionEligibilityStatus.AUTHORITY_UNAVAILABLE

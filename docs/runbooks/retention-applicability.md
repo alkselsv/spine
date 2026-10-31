@@ -17,9 +17,11 @@ define a duration, authorize cleanup, create a tombstone, or grant disclosure.
    Legal/Compliance decisions. Missing bindings stay missing; timestamps,
    diagnostics and existing `retention_eligible` booleans are not authority.
 4. Enable readers before any writer or downstream enforcement. A reader must
-   return a single current, effective binding for every exact SourceRevision in
-   an artifact lineage. Missing, ambiguous, conflicting, not-yet-effective,
-   expired or unavailable authority fails closed.
+   identify an immutable artifact version and obtain its complete lineage from a
+   trusted canonical resolver. It must return a single current, effective binding
+   for every exact SourceRevision in that lineage. Missing, ambiguous,
+   conflicting, not-yet-effective, expired or unavailable lineage or authority
+   fails closed; callers cannot submit their own partial revision list.
 5. Downstream projection, retrieval, citation and final-disclosure integration
    remains a separate guarded rollout. Physical cache cleanup is never the
    authorization boundary.

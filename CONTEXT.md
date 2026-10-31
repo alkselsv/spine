@@ -118,6 +118,13 @@ The Source Revision selected by PostgreSQL as the Source Object's canonical
 current state. It does not imply that the revision has been projected or served.
 _Avoid_: Active revision, indexed revision, latest upload
 
+**Retention Applicability**:
+An immutable approved binding from an exact Source Object or approved source
+class and source-bearing artifact classes to one exact approved retention-policy
+version. Eligibility is read through the current binding and complete immutable
+Source Revision lineage; the binding defines neither duration nor deletion.
+_Avoid_: Retention duration, cleanup policy, `retention_eligible` flag
+
 **Lifecycle Observation**:
 An immutable, content-free record of qualified or uncertain evidence about one
 Source Object in an exact Provider Connection and approved scope. It is evidence,

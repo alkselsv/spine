@@ -15,6 +15,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from sqlalchemy import Table, and_, func, insert, null, or_, select, text, true, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.engine import Result
 
 from spine.application.diagnostics.audit import (
     AuditEventRegistry,
@@ -6899,6 +6900,18 @@ class PostgreSQLTenantUnitOfWork:
             return await self._session.execute(statement, parameters)
         except BaseException as error:
             await self._terminate(error)
+
+    async def execute_statement(
+        self, statement: object, parameters: object | None = None
+    ) -> Result[Any]:
+        """Execute adapter-owned SQL inside this unit of work.
+
+        Application code uses repository properties. This narrow public method
+        lets separately packaged PostgreSQL repositories share the transaction
+        without depending on the private execution primitive.
+        """
+
+        return await self._execute(statement, parameters)
 
     async def _execute_during_entry(
         self, statement: object, parameters: object | None = None
