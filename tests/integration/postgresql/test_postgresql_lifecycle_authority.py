@@ -56,6 +56,12 @@ from tests.contracts.persistence.test_source_observation_contract import (
 
 pytestmark = [pytest.mark.postgresql, pytest.mark.asyncio(loop_scope="session")]
 
+_LIFECYCLE_ID_OFFSET = 1_000_000_000
+
+
+def _lifecycle_id(number: int):
+    return synthetic_uuid(_LIFECYCLE_ID_OFFSET + number)
+
 
 class _AllowAuthority:
     async def authorize(self, decision, context, transaction) -> None:
@@ -134,20 +140,20 @@ class _DecisionEffects:
 def _observation(case, base: int) -> LifecycleObservation:
     assert case.source.connection_id is not None
     return LifecycleObservation(
-        observation_id=synthetic_uuid(base),
+        observation_id=_lifecycle_id(base),
         workspace_id=case.source.workspace_id,
         environment_id=case.source.environment_id,
         source_object_id=case.source.source_object_id,
         connection_id=case.source.connection_id,
-        connection_version_id=synthetic_uuid(base + 2),
+        connection_version_id=_lifecycle_id(base + 2),
         authorization_generation=1,
         configuration_generation=1,
-        scope_reference=synthetic_uuid(base + 3),
-        scope_version_id=synthetic_uuid(base + 4),
+        scope_reference=_lifecycle_id(base + 3),
+        scope_version_id=_lifecycle_id(base + 4),
         scope_digest="a" * 64,
-        provider_identity_reference=synthetic_uuid(base + 5),
+        provider_identity_reference=_lifecycle_id(base + 5),
         kind=LifecycleObservationKind.SCOPE_WITHDRAWN,
-        evidence_reference=synthetic_uuid(base + 6),
+        evidence_reference=_lifecycle_id(base + 6),
         evidence_digest="b" * 64,
         confidence=LifecycleObservationConfidence.QUALIFIED,
         reason_code=LifecycleReasonCode.SCOPE_WITHDRAWN,
@@ -157,7 +163,7 @@ def _observation(case, base: int) -> LifecycleObservation:
 
 def _decision(case, observation: LifecycleObservation, context, base: int) -> LifecycleDecision:
     return LifecycleDecision(
-        decision_id=synthetic_uuid(base),
+        decision_id=_lifecycle_id(base),
         workspace_id=case.source.workspace_id,
         environment_id=case.source.environment_id,
         source_object_id=case.source.source_object_id,
@@ -168,8 +174,8 @@ def _decision(case, observation: LifecycleObservation, context, base: int) -> Li
         scope_version_id=observation.scope_version_id,
         scope_digest=observation.scope_digest,
         effect=LifecycleDecisionEffect.READ_WITHDRAWN,
-        authority_reference=synthetic_uuid(base + 1),
-        authority_version_id=synthetic_uuid(base + 2),
+        authority_reference=_lifecycle_id(base + 1),
+        authority_version_id=_lifecycle_id(base + 2),
         authority_digest="c" * 64,
         authority_kind=LifecycleAuthorityKind.SOURCE_GOVERNANCE,
         status=LifecycleEligibilityStatus.READ_WITHDRAWN,
@@ -178,8 +184,8 @@ def _decision(case, observation: LifecycleObservation, context, base: int) -> Li
         expected_current_generation=0,
         generation=1,
         actor_id=context.service_principal_id,
-        audit_event_id=synthetic_uuid(base + 3),
-        outbox_event_id=synthetic_uuid(base + 4),
+        audit_event_id=_lifecycle_id(base + 3),
+        outbox_event_id=_lifecycle_id(base + 4),
         decided_at=datetime(2026, 10, 31, 1, tzinfo=timezone.utc),
     )
 
@@ -451,9 +457,24 @@ async def test_postgresql_withdrawal_serializes_after_inflight_canonical_accepta
     child_query = _bind_scope_authority(_query(case, observation), root_case)
 
     async with postgresql_adapter.uow_factory(case.context) as uow:
-        acceptance = await uow.canonical.accept(
-            replace(case.command, lifecycle_query=child_query)
+        acceptance_command = CanonicalAcceptanceCommand.create(
+            source=case.command.source,
+            revision=case.command.revision,
+            provenance=case.command.provenance,
+            admission_decision_id=case.command.admission_decision_id,
+            access_policy_version_id=case.command.access_policy_version_id,
+            expected_current_revision_id=case.command.expected_current_revision_id,
+            idempotency_key=case.command.idempotency_key,
+            canonical_acceptance_id=case.command.canonical_acceptance_id,
+            audit_event_id=case.command.audit_event_id,
+            outbox_event_id=case.command.outbox_event_id,
+            accepted_at=case.command.accepted_at,
+            audit_event=case.command.audit_event,
+            outbox_intent=case.command.outbox_intent,
+            lifecycle_query=child_query,
+            operation=case.command.digest.operation,
         )
+        acceptance = await uow.canonical.accept(acceptance_command)
         withdrawal = asyncio.create_task(repository.record_decision(root_decision, context))
         await asyncio.sleep(0.05)
         assert not withdrawal.done()
@@ -509,7 +530,7 @@ async def test_postgresql_new_source_is_eligible_before_its_first_lifecycle_deci
     )
     query = _bind_scope_authority(replace(
         _query(case, observation),
-        source_object_id=synthetic_uuid(73520),
+        source_object_id=_lifecycle_id(73520),
         source_external_object_id="provider-object:new-source",
     ), root_case)
 
