@@ -1356,6 +1356,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "crm_relationship_eligibility_heads",
         "crm_relationship_idempotency",
         "crm_relationship_v2_state",
+        "trusted_canonical_acceptance_selector_versions",
+        "current_trusted_canonical_acceptance_selectors",
     }
     tables = set(
         (
@@ -5508,13 +5510,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261223_91_disclosure_holds.py",
         "20261224_92_requirements_acceptance.py",
         "20261225_93_crm_relationship_v2.py",
+        "20261226_94_canonical_acceptance_selectors.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261226_94_injected_failure.py").write_text(
+    (target / "versions" / "20261227_95_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261226_94'\n"
-        "down_revision = '20261225_93'\n"
+        "revision = '20261227_95'\n"
+        "down_revision = '20261226_94'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
