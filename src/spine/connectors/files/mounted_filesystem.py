@@ -198,7 +198,7 @@ class MountedFilesystemObservationReader:
             ).encode()
         ).hexdigest()
         event_digest = hashlib.sha256(
-            f"{identity_digest}:{content_digest}".encode("ascii")
+            f"{identity.object_id}:{content_digest}".encode("ascii")
         ).hexdigest()
         media_type = mimetypes.guess_type(PurePosixPath(relative_path).name)[0]
         if media_type is None:
