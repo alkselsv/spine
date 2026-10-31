@@ -167,6 +167,37 @@ async def test_postgresql_policy_heads_are_tenant_scoped_immutable_and_cas_fence
         policy_id=root.policy_id,
     ) is None
 
+    async with oauth_database.runtime_engine.begin() as runtime:
+        await runtime.execute(
+            text(
+                "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                "set_config('spine.environment_id', :environment_id, true)"
+            ),
+            {
+                "workspace_id": str(connection.workspace_id),
+                "environment_id": str(connection.environment_id),
+            },
+        )
+        visible = await runtime.execute(
+            text(
+                "SELECT policy_id FROM spine.current_bitrix24_disk_root_policies "
+                "WHERE workspace_id = :workspace_id AND environment_id = :environment_id"
+            ),
+            {
+                "workspace_id": connection.workspace_id,
+                "environment_id": connection.environment_id,
+            },
+        )
+        hidden = await runtime.execute(
+            text(
+                "SELECT policy_id FROM spine.current_bitrix24_disk_root_policies "
+                "WHERE workspace_id = :workspace_id AND environment_id = :environment_id"
+            ),
+            {"workspace_id": _id(90), "environment_id": connection.environment_id},
+        )
+        assert visible.scalar_one() == root.policy_id
+        assert hidden.scalar_one_or_none() is None
+
     successor_a = _root_policy(connection, content, version="v2")
     successor_b = _root_policy(connection, content, version="v3")
     outcomes = await asyncio.gather(

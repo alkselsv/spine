@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
 from spine.domain.connections.bitrix24_disk_scope import (
     Bitrix24DiskContentPolicy,
+    Bitrix24DiskMembershipEvidence,
     Bitrix24DiskRootPolicy,
     Bitrix24DiskScopeAdmission,
 )
@@ -14,15 +17,35 @@ from spine.domain.connections.provider import ProviderConnection
 from spine.application.connections.bitrix24_oauth import (
     Bitrix24GrantAdmission,
     Bitrix24OAuthError,
+    Bitrix24PinnedGrant,
     Bitrix24ReadAuthorization,
     Bitrix24ReadMethod,
 )
 from spine.domain.connections.bitrix24_oauth import Bitrix24Scope
-from spine.connectors.bitrix24_disk_traversal import (
-    AuthorizeFolder,
-    Bitrix24DiskRootTraversal,
-    Bitrix24DiskTraversalResult,
-)
+
+AuthorizeFolder = Callable[[str], Awaitable[bool]]
+
+
+@dataclass(frozen=True, slots=True)
+class Bitrix24DiskTraversalResult:
+    memberships: tuple[Bitrix24DiskMembershipEvidence, ...]
+    complete: bool
+    reason_code: str
+    pages_read: int
+    items_read: int
+
+
+class Bitrix24DiskTraversalPort(Protocol):
+    async def scan(
+        self,
+        connection: ProviderConnection,
+        admission: Bitrix24DiskScopeAdmission,
+        *,
+        pinned_grant: Bitrix24PinnedGrant,
+        authorize_folder: AuthorizeFolder,
+    ) -> Bitrix24DiskTraversalResult: ...
+
+    def incomplete(self, reason_code: str) -> Bitrix24DiskTraversalResult: ...
 
 
 class Bitrix24DiskPolicyRepository(Protocol):
@@ -47,7 +70,7 @@ class Bitrix24DiskTraversalCoordinator:
         *,
         scope_admission: "Bitrix24DiskScopeAdmissionService",
         grant_admission: Bitrix24GrantAdmission,
-        traversal: Bitrix24DiskRootTraversal,
+        traversal: Bitrix24DiskTraversalPort,
     ) -> None:
         self._scope_admission = scope_admission
         self._grant_admission = grant_admission

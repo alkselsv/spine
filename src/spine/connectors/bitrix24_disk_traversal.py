@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
 from pydantic import Field, StrictInt
 
 from spine.application.connections.bitrix24_oauth import Bitrix24PinnedGrant
+from spine.application.bitrix24_disk_scope_admission import (
+    AuthorizeFolder,
+    Bitrix24DiskTraversalResult,
+)
 from spine.connectors.bitrix24_disk import (
     Bitrix24DiskFile,
     Bitrix24DiskFilePage,
@@ -69,18 +71,6 @@ class Bitrix24DiskTraversalService(Protocol):
         folder_id: str,
         pinned_grant: Bitrix24PinnedGrant,
     ) -> Bitrix24DiskFile: ...
-
-
-AuthorizeFolder = Callable[[str], Awaitable[bool]]
-
-
-@dataclass(frozen=True, slots=True)
-class Bitrix24DiskTraversalResult:
-    memberships: tuple[Bitrix24DiskMembershipEvidence, ...]
-    complete: bool
-    reason_code: str
-    pages_read: int
-    items_read: int
 
 
 class Bitrix24DiskRootTraversal:

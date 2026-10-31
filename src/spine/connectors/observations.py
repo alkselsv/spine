@@ -9,6 +9,7 @@ from uuid import UUID
 
 from pydantic import ConfigDict, Field, StrictBytes, StrictInt, model_validator
 
+from spine.domain.connections.bitrix24_disk_scope import Bitrix24DiskMembershipEvidence
 from spine.domain.common import DefinitionModel, VersionIdentifier
 from spine.domain.sources.google import GoogleSourceIdentity
 
@@ -59,6 +60,7 @@ class NormalizedConnectorObservation(DefinitionModel):
     provider_media_type: str | None = Field(default=None, max_length=255)
     provider_version_before: str | None = Field(default=None, min_length=1, max_length=128)
     provider_version_after: str | None = Field(default=None, min_length=1, max_length=128)
+    scope_membership: Bitrix24DiskMembershipEvidence | None = None
 
     @model_validator(mode="after")
     def validate_scope_and_provenance(self) -> "NormalizedConnectorObservation":
