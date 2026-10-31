@@ -29,6 +29,12 @@ from spine.application.diagnostics import (
 )
 from spine.application.persistence.context import EnvironmentScope
 from spine.application.persistence.context import TrustedPersistenceContext
+from spine.application.lifecycle import (
+    CurrentLifecycleEligibilityReader,
+    LifecycleAuthorityError,
+    LifecycleEligibilityQuery,
+    require_current_read_eligibility,
+)
 from spine.domain.common import ContextOrigin
 from spine.domain.connections.google import (
     GoogleConnection,
@@ -144,6 +150,7 @@ class GoogleReadCommand:
     a1_range: str | None = None
     provider_page_token: str | None = None
     sheet_id: int | None = None
+    lifecycle_query: LifecycleEligibilityQuery | None = None
 
     def __post_init__(self) -> None:
         if self.connection_id.int == 0:
@@ -165,6 +172,11 @@ class GoogleReadCommand:
             raise ValueError("provider_page_token is invalid")
         if self.sheet_id is not None and self.sheet_id < 0:
             raise ValueError("sheet_id is invalid")
+        if self.lifecycle_query is not None and (
+            self.lifecycle_query.connection_id != self.connection_id
+            or self.lifecycle_query.scope_reference != self.resource_scope_reference.value
+        ):
+            raise ValueError("lifecycle query must match the exact Google read scope")
 
 
 class GoogleConnectionRepository(Protocol):
@@ -214,12 +226,14 @@ class GoogleReadAdmission(Generic[ProviderResultT]):
         diagnostic_sink: DiagnosticSink,
         diagnostic_registry: DiagnosticEventRegistry,
         clock: Callable[[], datetime],
+        lifecycle_reader: CurrentLifecycleEligibilityReader | None = None,
     ) -> None:
         self._repository = repository
         self._provider = provider
         self._diagnostic_sink = diagnostic_sink
         self._diagnostic_registry = diagnostic_registry
         self._clock = clock
+        self._lifecycle_reader = lifecycle_reader
 
     async def read(
         self,
@@ -231,8 +245,13 @@ class GoogleReadAdmission(Generic[ProviderResultT]):
         try:
             async with self._repository.admit_read(command, context) as connection:
                 admitted_connection = connection
+                await self._require_lifecycle_eligibility(
+                    command,
+                    connection,
+                    context,
+                )
                 try:
-                    return await self._provider.read(connection, command)
+                    result = await self._provider.read(connection, command)
                 except asyncio.CancelledError:
                     raise
                 except GoogleProviderContractError:
@@ -257,6 +276,13 @@ class GoogleReadAdmission(Generic[ProviderResultT]):
                         authorization_error = classified
                     else:
                         raise classified from None
+                if authorization_error is None:
+                    await self._require_lifecycle_eligibility(
+                        command,
+                        connection,
+                        context,
+                    )
+                    return result
         except asyncio.CancelledError:
             raise
         except GoogleConnectionDeniedError:
@@ -277,6 +303,34 @@ class GoogleReadAdmission(Generic[ProviderResultT]):
                 )
                 raise GoogleConnectionSuspensionError() from None
             raise authorization_error
+
+    async def _require_lifecycle_eligibility(
+        self,
+        command: GoogleReadCommand,
+        connection: GoogleConnection,
+        context: TrustedPersistenceContext,
+    ) -> None:
+        query = command.lifecycle_query
+        if query is None:
+            return
+        if (
+            self._lifecycle_reader is None
+            or query.workspace_id != connection.workspace_id
+            or query.environment_id != connection.environment_id
+            or query.connection_version_id != connection.connection_version_id
+            or query.scope_version_id != connection.approval_id
+            or query.scope_reference
+            not in {scope.value for scope in connection.approved_resource_scope_references}
+        ):
+            raise GoogleConnectionDeniedError()
+        try:
+            await require_current_read_eligibility(
+                self._lifecycle_reader,
+                query,
+                context,
+            )
+        except LifecycleAuthorityError:
+            raise GoogleConnectionDeniedError() from None
 
     async def _emit_failure(
         self,

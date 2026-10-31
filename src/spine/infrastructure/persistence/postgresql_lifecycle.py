@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 from uuid import UUID
 
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
@@ -114,6 +114,14 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
             raise LifecycleAuthorityError()
         try:
             async with self._uow_factory(context) as uow:
+                lock_key = (
+                    f"{decision.workspace_id}:{decision.environment_id}:"
+                    f"{decision.source_object_id}"
+                )
+                await uow._execute(  # type: ignore[attr-defined]
+                    text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                    {"key": lock_key},
+                )
                 existing_result = await uow._execute(  # type: ignore[attr-defined]
                     select(lifecycle_decisions).where(
                         lifecycle_decisions.c.decision_id == decision.decision_id,

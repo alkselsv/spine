@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 from uuid import UUID
@@ -13,6 +14,7 @@ from spine.application.connections.provider import (
     ProviderReadCommand,
     ProviderReadDeniedError,
 )
+from spine.application.lifecycle import LifecycleEligibilityQuery
 from spine.application.persistence.context import (
     EnvironmentScope,
     PersistenceOperation,
@@ -40,6 +42,10 @@ from spine.domain.connections.provider import (
     ProviderKind,
 )
 from spine.domain.common import ContextOrigin
+from spine.domain.sources.lifecycle import (
+    CurrentLifecycleEligibility,
+    LifecycleEligibilityStatus,
+)
 
 
 def _id(value: int) -> UUID:
@@ -135,6 +141,31 @@ class _Provider:
         return self.observation
 
 
+class _LifecycleReader:
+    def __init__(self, *statuses: LifecycleEligibilityStatus) -> None:
+        self.statuses = list(statuses)
+        self.calls = 0
+
+    async def current_eligibility(self, query, context):
+        del context
+        self.calls += 1
+        status = self.statuses[min(self.calls - 1, len(self.statuses) - 1)]
+        return CurrentLifecycleEligibility(
+            workspace_id=query.workspace_id,
+            environment_id=query.environment_id,
+            source_object_id=query.source_object_id,
+            connection_id=query.connection_id,
+            connection_version_id=query.connection_version_id,
+            scope_reference=query.scope_reference,
+            scope_version_id=query.scope_version_id,
+            scope_digest=query.scope_digest,
+            current_decision_id=_id(100),
+            generation=1,
+            status=status,
+            legal_hold_active=False,
+        )
+
+
 def _command(
     *required: ProviderCapabilityKind,
     workspace_id: UUID = _id(4),
@@ -149,6 +180,19 @@ def _command(
         authorization_generation=2,
         configuration_generation=3,
         required_capabilities=required,
+    )
+
+
+def _lifecycle_query() -> LifecycleEligibilityQuery:
+    return LifecycleEligibilityQuery(
+        workspace_id=_id(4),
+        environment_id=_id(5),
+        source_object_id=_id(30),
+        connection_id=_id(2),
+        connection_version_id=_id(1),
+        scope_reference=_id(9),
+        scope_version_id=_id(3),
+        scope_digest="a" * 64,
     )
 
 
@@ -172,6 +216,53 @@ async def test_active_scoped_connection_allows_qualified_binary_read() -> None:
     assert provider.calls == 1
     assert repository.calls[0][0] == command
     assert repository.calls[0][1] is context
+
+
+@pytest.mark.asyncio
+async def test_withdrawn_source_is_denied_before_provider_read() -> None:
+    connection = _connection(
+        _capability(ProviderCapabilityKind.BINARY_READ, ProviderCapabilityStatus.SUPPORTED)
+    )
+    provider = _Provider(_observation(assurance=ExternalIdentityAssurance.UNPROVEN))
+    lifecycle = _LifecycleReader(LifecycleEligibilityStatus.READ_WITHDRAWN)
+    admission = ProviderReadAdmission(
+        repository=_Repository(connection),
+        provider=provider,
+        lifecycle_reader=lifecycle,
+    )
+    command = _command(ProviderCapabilityKind.BINARY_READ)
+    command = replace(command, lifecycle_query=_lifecycle_query())
+
+    with pytest.raises(ProviderReadDeniedError):
+        await admission.read(command, _context())
+
+    assert lifecycle.calls == 1
+    assert provider.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_withdrawal_after_download_discards_provider_observation() -> None:
+    connection = _connection(
+        _capability(ProviderCapabilityKind.BINARY_READ, ProviderCapabilityStatus.SUPPORTED)
+    )
+    provider = _Provider(_observation(assurance=ExternalIdentityAssurance.UNPROVEN))
+    lifecycle = _LifecycleReader(
+        LifecycleEligibilityStatus.ELIGIBLE,
+        LifecycleEligibilityStatus.READ_WITHDRAWN,
+    )
+    admission = ProviderReadAdmission(
+        repository=_Repository(connection),
+        provider=provider,
+        lifecycle_reader=lifecycle,
+    )
+    command = _command(ProviderCapabilityKind.BINARY_READ)
+    command = replace(command, lifecycle_query=_lifecycle_query())
+
+    with pytest.raises(ProviderReadDeniedError):
+        await admission.read(command, _context())
+
+    assert lifecycle.calls == 2
+    assert provider.calls == 1
 
 
 @pytest.mark.asyncio

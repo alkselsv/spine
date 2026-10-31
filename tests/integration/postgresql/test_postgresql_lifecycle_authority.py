@@ -290,6 +290,14 @@ async def test_postgresql_lifecycle_authority_persists_current_scoped_decision(
     assert current.current_decision_id == decision.decision_id
     assert current.generation == 1
     assert current.status is LifecycleEligibilityStatus.READ_WITHDRAWN
+    # A legacy acceptance command cannot bypass a current withdrawal simply by
+    # omitting the lifecycle binding from its request.
+    from spine.application.persistence.errors import CanonicalEligibilityError
+
+    with pytest.raises(CanonicalEligibilityError):
+        async with postgresql_adapter.uow_factory(case.context) as uow:
+            await uow.canonical.accept(case.command)
+            await uow.commit()
     async with postgresql_adapter.uow_factory(context) as uow:
         audit_result = await uow._execute(  # type: ignore[attr-defined]
             select(audit_events.c.audit_event_id).where(

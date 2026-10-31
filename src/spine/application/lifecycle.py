@@ -106,6 +106,82 @@ class LifecycleAuthorityRepository(
     ) -> LifecycleDecision: ...
 
 
+async def require_current_read_eligibility(
+    reader: CurrentLifecycleEligibilityReader,
+    query: "LifecycleEligibilityQuery",
+    context: TrustedPersistenceContext,
+) -> CurrentLifecycleEligibility:
+    """Fail closed unless the exact current S3 decision permits a source read."""
+
+    current = await reader.current_eligibility(query, context)
+    if (
+        current.workspace_id,
+        current.environment_id,
+        current.source_object_id,
+        current.connection_id,
+        current.connection_version_id,
+        current.scope_reference,
+        current.scope_version_id,
+        current.scope_digest,
+    ) != (
+        query.workspace_id,
+        query.environment_id,
+        query.source_object_id,
+        query.connection_id,
+        query.connection_version_id,
+        query.scope_reference,
+        query.scope_version_id,
+        query.scope_digest,
+    ) or (
+        current.current_decision_id is None
+        or current.status is not LifecycleEligibilityStatus.ELIGIBLE
+    ):
+        raise LifecycleAuthorityError()
+    return current
+
+
+@dataclass(frozen=True, slots=True)
+class ScopeWithdrawalCommand:
+    """A governance withdrawal bound to one source and exact approved scope."""
+
+    observation: LifecycleObservation
+    decision: LifecycleDecision
+
+    def __post_init__(self) -> None:
+        from spine.domain.sources.lifecycle import (
+            LifecycleDecisionEffect,
+            LifecycleObservationConfidence,
+            LifecycleObservationKind,
+        )
+
+        if (
+            self.observation.kind is not LifecycleObservationKind.SCOPE_WITHDRAWN
+            or self.observation.confidence is not LifecycleObservationConfidence.QUALIFIED
+            or self.decision.effect is not LifecycleDecisionEffect.READ_WITHDRAWN
+            or self.decision.status is not LifecycleEligibilityStatus.READ_WITHDRAWN
+        ):
+            raise LifecycleAuthorityError()
+        try:
+            self.decision.validate_observation(self.observation)
+        except ValueError:
+            raise LifecycleAuthorityError() from None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceScopeWithdrawal:
+    """Record evidence, then advance S3-1 current authority through its CAS."""
+
+    authority: LifecycleAuthorityRepository
+
+    async def execute(
+        self,
+        command: ScopeWithdrawalCommand,
+        context: TrustedPersistenceContext,
+    ) -> LifecycleDecision:
+        await self.authority.record_observation(command.observation, context)
+        return await self.authority.record_decision(command.decision, context)
+
+
 @dataclass(frozen=True, slots=True)
 class LifecycleEligibilityQuery:
     workspace_id: UUID
@@ -299,6 +375,9 @@ __all__ = [
     "LifecycleEligibilityQuery",
     "LifecycleObservationRecorder",
     "LifecycleObservationAuthority",
+    "ScopeWithdrawalCommand",
+    "SourceScopeWithdrawal",
     "lifecycle_context_actor",
+    "require_current_read_eligibility",
     "validate_lifecycle_context",
 ]

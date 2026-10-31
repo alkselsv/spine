@@ -18,6 +18,7 @@ from spine.application.connector_ingestion import (
 )
 from spine.application.connections.google import GoogleReadCommand
 from spine.application.connections.provider import ProviderReadAdmission
+from spine.application.lifecycle import LifecycleAuthorityError, LifecycleEligibilityQuery
 from spine.application.google_sheets_reconciliation import (
     ConnectorGoogleSheetsCanonicalIngestion,
     GoogleSheetsAdmittedPageReader,
@@ -520,7 +521,7 @@ class _Uow:
         return self.trace_id
 
 
-def _orchestrator(observation=None, *, reader=None):
+def _orchestrator(observation=None, *, reader=None, lifecycle_reader=None):
     reader = reader or _Reader(observation)
     uploader = _Uploader()
     ingestion = _Ingestion()
@@ -544,6 +545,7 @@ def _orchestrator(observation=None, *, reader=None):
             audit_events=AuditEventRegistry.with_default_families(),
             read_operation=PersistenceOperation("google_connection_read"),
             admission_reference_type="google_read_admission",
+            lifecycle_reader=lifecycle_reader,
             clock=lambda: NOW,
         ),
         reader,
@@ -551,6 +553,36 @@ def _orchestrator(observation=None, *, reader=None):
         ingestion,
         uow,
     )
+
+
+@pytest.mark.asyncio
+async def test_scope_withdrawal_blocks_connector_before_provider_read():
+    class _WithdrawnLifecycleReader:
+        async def current_eligibility(self, query, context):
+            del query, context
+            raise LifecycleAuthorityError()
+
+    observation = _observation()
+    lifecycle_query = LifecycleEligibilityQuery(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        source_object_id=_id("withdrawn-source"),
+        connection_id=CONNECTION,
+        connection_version_id=_id("connection-version"),
+        scope_reference=SCOPE,
+        scope_version_id=_id("scope-version"),
+        scope_digest="a" * 64,
+    )
+    command = _command().model_copy(update={"lifecycle_query": lifecycle_query})
+    orchestrator, reader, uploader, _, _ = _orchestrator(
+        observation, lifecycle_reader=_WithdrawnLifecycleReader()
+    )
+
+    with pytest.raises(LifecycleAuthorityError):
+        await orchestrator.ingest(command)
+
+    assert reader.calls == 0
+    assert uploader.calls == 0
 
 
 class _HandoffSheetsService:

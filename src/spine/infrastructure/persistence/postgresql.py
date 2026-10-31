@@ -304,6 +304,8 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     canonical_generation_counters as _CANONICAL_GENERATION_COUNTERS,
     canonical_acceptances as _CANONICAL_ACCEPTANCES,
     current_source_heads as _CURRENT_SOURCE_HEADS,
+    current_lifecycle_authorities as _CURRENT_LIFECYCLE_AUTHORITIES,
+    lifecycle_decisions as _LIFECYCLE_DECISIONS,
     canonical_boundaries as _CANONICAL_BOUNDARIES,
     canonical_boundary_members as _CANONICAL_BOUNDARY_MEMBERS,
     ontology_versions as _ONTOLOGY_VERSIONS,
@@ -419,6 +421,75 @@ class PostgreSQLTransactionStage(Enum):
 PostgreSQLTransactionProbe = Callable[
     [PostgreSQLTransactionStage], Awaitable[None]
 ]
+
+
+async def _lock_and_validate_lifecycle_eligibility(
+    uow: Any,
+    *,
+    workspace_id: UUID,
+    environment_id: UUID,
+    source_object_id: UUID,
+    query: Any | None,
+) -> None:
+    """Serialize a source write with withdrawal and require its exact current scope."""
+
+    lock_key = f"{workspace_id}:{environment_id}:{source_object_id}"
+    await uow._execute(
+        text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:key, 0))"),
+        {"key": lock_key},
+    )
+    result = await uow._execute(
+        select(
+            _CURRENT_LIFECYCLE_AUTHORITIES.c.current_decision_id,
+            _LIFECYCLE_DECISIONS.c.connection_id,
+            _LIFECYCLE_DECISIONS.c.connection_version_id,
+            _LIFECYCLE_DECISIONS.c.scope_reference,
+            _LIFECYCLE_DECISIONS.c.scope_version_id,
+            _LIFECYCLE_DECISIONS.c.scope_digest,
+            _LIFECYCLE_DECISIONS.c.status,
+        )
+        .select_from(
+            _CURRENT_LIFECYCLE_AUTHORITIES.join(
+                _LIFECYCLE_DECISIONS,
+                _LIFECYCLE_DECISIONS.c.decision_id
+                == _CURRENT_LIFECYCLE_AUTHORITIES.c.current_decision_id,
+            )
+        )
+        .where(
+            _CURRENT_LIFECYCLE_AUTHORITIES.c.workspace_id == workspace_id,
+            _CURRENT_LIFECYCLE_AUTHORITIES.c.environment_id == environment_id,
+            _CURRENT_LIFECYCLE_AUTHORITIES.c.source_object_id == source_object_id,
+        )
+    )
+    row = result.mappings().one_or_none()
+    if (row is None) != (query is None):
+        await uow._fail(
+            CanonicalEligibilityError("Current lifecycle eligibility is unavailable.")
+        )
+    if row is not None and (
+        query is None
+        or query.workspace_id != workspace_id
+        or query.environment_id != environment_id
+        or query.source_object_id != source_object_id
+        or (
+            row["connection_id"],
+            row["connection_version_id"],
+            row["scope_reference"],
+            row["scope_version_id"],
+            row["scope_digest"],
+        )
+        != (
+            query.connection_id,
+            query.connection_version_id,
+            query.scope_reference,
+            query.scope_version_id,
+            query.scope_digest,
+        )
+        or row["status"] != "eligible"
+    ):
+        await uow._fail(
+            CanonicalEligibilityError("Current lifecycle eligibility is unavailable.")
+        )
 
 
 def _label_table_columns(table: Table, prefix: str) -> tuple[Any, ...]:
@@ -2480,6 +2551,7 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                     "Canonical acceptance references are invalid."
                 )
             )
+
         claim = await self._uow.idempotency.claim(
             operation_schema_version=command.digest.operation_schema_version,
             key=command.idempotency_key,
@@ -2487,6 +2559,14 @@ class _PostgreSQLCanonicalAcceptanceRepository:
         )
         if isinstance(claim, IdempotencyReplay):
             return await self._replay(command, claim)
+
+        await _lock_and_validate_lifecycle_eligibility(
+            self._uow,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            source_object_id=command.source.source_object_id,
+            query=command.lifecycle_query,
+        )
 
         revision_row = (
             (
@@ -3478,6 +3558,13 @@ class _PostgreSQLIngestionRepository:
             return IngestionMutationResult(existing, True, claim, result)
         if command.observation.source.source_object_id != binding.source_object_id or command.observation.revision.revision_id != binding.source_revision_id:
             await self._uow._fail(ConstraintConflictError("Ingestion binding observation is invalid."))
+        await _lock_and_validate_lifecycle_eligibility(
+            self._uow,
+            workspace_id=command.item.workspace_id,
+            environment_id=command.item.environment_id,
+            source_object_id=binding.source_object_id,
+            query=command.lifecycle_query,
+        )
         from dataclasses import replace
         observation = replace(command.observation, digest=command.observation.expected_digest(PersistenceOperation("ingestion_binding")))
         observed = await self._uow.sources.record_observation(observation)

@@ -19,6 +19,7 @@ from spine.application.connections.google import (
     GoogleReadCommand,
 )
 from spine.application.diagnostics import DiagnosticEventRegistry
+from spine.application.lifecycle import LifecycleEligibilityQuery
 from spine.application.persistence import (
     EnvironmentScope,
     PersistenceOperation,
@@ -29,6 +30,10 @@ from spine.domain.connections.google import (
     GoogleConnectionApproval,
     GoogleConnectionStatus,
     OpaqueGoogleReference,
+)
+from spine.domain.sources.lifecycle import (
+    CurrentLifecycleEligibility,
+    LifecycleEligibilityStatus,
 )
 from spine.infrastructure.connections.google import InMemoryGoogleConnectionRepository
 from spine.infrastructure.diagnostics import RecordingDiagnosticSink
@@ -111,7 +116,7 @@ def _approval(connection: GoogleConnection) -> GoogleConnectionApproval:
     )
 
 
-def _admission(repository, provider):
+def _admission(repository, provider, lifecycle_reader=None):
     registry = DiagnosticEventRegistry.with_default_families()
     sink = RecordingDiagnosticSink(registry)
     return (
@@ -121,6 +126,7 @@ def _admission(repository, provider):
             diagnostic_sink=sink,
             diagnostic_registry=registry,
             clock=lambda: NOW,
+            lifecycle_reader=lifecycle_reader,
         ),
         sink,
     )
@@ -138,6 +144,44 @@ class RecordingGoogleProvider:
         if self._error is not None:
             raise self._error
         return {"provider_event_reference": "event:synthetic-v1"}
+
+
+class LifecycleReader:
+    def __init__(self, *statuses: LifecycleEligibilityStatus) -> None:
+        self.statuses = statuses
+        self.calls = 0
+
+    async def current_eligibility(self, query, context):
+        del context
+        self.calls += 1
+        status = self.statuses[min(self.calls - 1, len(self.statuses) - 1)]
+        return CurrentLifecycleEligibility(
+            workspace_id=query.workspace_id,
+            environment_id=query.environment_id,
+            source_object_id=query.source_object_id,
+            connection_id=query.connection_id,
+            connection_version_id=query.connection_version_id,
+            scope_reference=query.scope_reference,
+            scope_version_id=query.scope_version_id,
+            scope_digest=query.scope_digest,
+            current_decision_id=_id(300),
+            generation=1,
+            status=status,
+            legal_hold_active=False,
+        )
+
+
+def _lifecycle_query(connection: GoogleConnection) -> LifecycleEligibilityQuery:
+    return LifecycleEligibilityQuery(
+        workspace_id=connection.workspace_id,
+        environment_id=connection.environment_id,
+        source_object_id=_id(301),
+        connection_id=connection.connection_id,
+        connection_version_id=connection.connection_version_id,
+        scope_reference=RESOURCE_SCOPE.value,
+        scope_version_id=connection.approval_id,
+        scope_digest="a" * 64,
+    )
 
 
 async def _repository_with(connection: GoogleConnection):
@@ -194,6 +238,57 @@ async def test_active_connection_allows_one_provider_read() -> None:
     assert result == {"provider_event_reference": "event:synthetic-v1"}
     assert provider.calls == [(_connection(), command)]
     assert sink.events == ()
+
+
+@pytest.mark.asyncio
+async def test_withdrawn_google_source_is_denied_before_provider_call() -> None:
+    connection = _connection()
+    boundary, repository = await _repository_with(connection)
+    provider = RecordingGoogleProvider()
+    lifecycle = LifecycleReader(LifecycleEligibilityStatus.READ_WITHDRAWN)
+    admission, _ = _admission(repository, provider, lifecycle_reader=lifecycle)
+    command = replace(
+        GoogleReadCommand(
+            connection_id=CONNECTION_ID,
+            resource_scope_reference=RESOURCE_SCOPE,
+            authorization_generation=7,
+            configuration_generation=11,
+        ),
+        lifecycle_query=_lifecycle_query(connection),
+    )
+
+    with pytest.raises(GoogleConnectionDeniedError):
+        await admission.read(command, _context())
+
+    assert lifecycle.calls == 1
+    assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_google_download_is_discarded_when_scope_withdraws_during_read() -> None:
+    connection = _connection()
+    boundary, repository = await _repository_with(connection)
+    provider = RecordingGoogleProvider()
+    lifecycle = LifecycleReader(
+        LifecycleEligibilityStatus.ELIGIBLE,
+        LifecycleEligibilityStatus.READ_WITHDRAWN,
+    )
+    admission, _ = _admission(repository, provider, lifecycle_reader=lifecycle)
+    command = replace(
+        GoogleReadCommand(
+            connection_id=CONNECTION_ID,
+            resource_scope_reference=RESOURCE_SCOPE,
+            authorization_generation=7,
+            configuration_generation=11,
+        ),
+        lifecycle_query=_lifecycle_query(connection),
+    )
+
+    with pytest.raises(GoogleConnectionDeniedError):
+        await admission.read(command, _context())
+
+    assert lifecycle.calls == 2
+    assert len(provider.calls) == 1
 
 
 @pytest.mark.asyncio

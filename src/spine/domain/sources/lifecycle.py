@@ -264,6 +264,23 @@ class LifecycleDecision(DefinitionModel):
             LifecycleObservationKind.FILTERED_ABSENCE,
             LifecycleObservationKind.INCOMPLETE_SCAN,
         }
+        if observation.kind is LifecycleObservationKind.SCOPE_WITHDRAWN:
+            if (
+                self.effect is not LifecycleDecisionEffect.READ_WITHDRAWN
+                or self.status is not LifecycleEligibilityStatus.READ_WITHDRAWN
+                or observation.confidence is not LifecycleObservationConfidence.QUALIFIED
+            ):
+                raise ValueError("scope withdrawal requires read withdrawal")
+            if self.authority_kind not in {
+                LifecycleAuthorityKind.SOURCE_GOVERNANCE,
+                LifecycleAuthorityKind.PROVIDER_CONTROL_PLANE,
+            }:
+                raise ValueError("scope withdrawal requires governance authority")
+        if observation.kind in non_authorizing_observations and (
+            self.effect is LifecycleDecisionEffect.READ_WITHDRAWN
+            or self.status is LifecycleEligibilityStatus.READ_WITHDRAWN
+        ):
+            raise ValueError("uncertain provider evidence cannot persist a withdrawal")
         if observation.kind in non_authorizing_observations and (
             self.effect is LifecycleDecisionEffect.DISCLOSURE_HELD
             or self.status is LifecycleEligibilityStatus.DISCLOSURE_HELD
