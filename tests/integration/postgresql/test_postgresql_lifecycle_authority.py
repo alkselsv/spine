@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from dataclasses import replace
 
@@ -61,6 +62,29 @@ _LIFECYCLE_ID_OFFSET = 1_000_000_000
 
 def _lifecycle_id(number: int):
     return synthetic_uuid(_LIFECYCLE_ID_OFFSET + number)
+
+
+class _LockAttemptObservedUnitOfWork:
+    def __init__(self, unit_of_work, lock_attempted: asyncio.Event) -> None:
+        self._unit_of_work = unit_of_work
+        self._lock_attempted = lock_attempted
+
+    async def _execute(self, statement: object, parameters: object | None = None):
+        if "pg_advisory_xact_lock" in str(statement):
+            self._lock_attempted.set()
+        return await self._unit_of_work._execute(statement, parameters)
+
+    def __getattr__(self, name: str):
+        return getattr(self._unit_of_work, name)
+
+
+def _observe_lock_attempt(uow_factory, lock_attempted: asyncio.Event):
+    @asynccontextmanager
+    async def observed_uow_factory(context):
+        async with uow_factory(context) as uow:
+            yield _LockAttemptObservedUnitOfWork(uow, lock_attempted)
+
+    return observed_uow_factory
 
 
 class _AllowAuthority:
@@ -425,8 +449,11 @@ async def test_postgresql_withdrawal_serializes_after_inflight_canonical_accepta
         case.source.workspace_id, case.source.environment_id, "lifecycle_decision"
     )
     observation = _observation(case, 73250)
+    lock_attempted = asyncio.Event()
     repository = PostgreSQLLifecycleAuthorityRepository(
-        uow_factory=postgresql_adapter.uow_factory,
+        uow_factory=_observe_lock_attempt(
+            postgresql_adapter.uow_factory, lock_attempted
+        ),
         observation_authority=_AllowObservationAuthority(),
         decision_authority=_AllowAuthority(),
         decision_effects=_DecisionEffects(),
@@ -475,8 +502,15 @@ async def test_postgresql_withdrawal_serializes_after_inflight_canonical_accepta
             operation=case.command.digest.operation,
         )
         acceptance = await uow.canonical.accept(acceptance_command)
-        withdrawal = asyncio.create_task(repository.record_decision(root_decision, context))
-        await asyncio.sleep(0.05)
+        lock_attempted.clear()
+        withdrawal = asyncio.create_task(
+            repository.record_decision(root_decision, context)
+        )
+        lock_waiter = asyncio.create_task(lock_attempted.wait())
+        completed, _ = await asyncio.wait(
+            {withdrawal, lock_waiter}, return_when=asyncio.FIRST_COMPLETED
+        )
+        assert lock_waiter in completed
         assert not withdrawal.done()
         await uow.commit()
 
