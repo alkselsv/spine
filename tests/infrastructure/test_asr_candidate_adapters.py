@@ -161,12 +161,14 @@ class _Backend:
     def __init__(self, output: object) -> None:
         self.output = output
         self.loaded = False
+        self.transcription_calls = 0
 
     def load(self, manifest: CandidateRuntimeManifest, asset_root: Path) -> object:
         self.loaded = True
         return object()
 
     def transcribe(self, model: object, audio_path: Path, manifest: CandidateRuntimeManifest) -> object:
+        self.transcription_calls += 1
         return self.output
 
 
@@ -238,6 +240,36 @@ async def test_gigaam_adapter_maps_word_timestamps_through_the_port(tmp_path: Pa
     assert result.detected_language == "ru"
     assert result.timeline == "chunk"
     assert [(item.start_ms, item.end_ms, item.text) for item in result.segments] == [(100, 600, "Привет")]
+
+
+@pytest.mark.asyncio
+async def test_candidate_v1_request_is_rejected_before_audio_resolution(tmp_path: Path) -> None:
+    manifest = _runtime_manifest(tmp_path)
+    resolver_calls = 0
+
+    class CountingResolver:
+        async def resolve(self, request: SpeechToTextRequestV2) -> ResolvedAudioChunk:
+            nonlocal resolver_calls
+            resolver_calls += 1
+            raise AssertionError("v1 request must not enter chunk resolution")
+
+    request_v2 = _request(Path("unused"), b"synthetic audio identity")
+    request_v1 = SpeechToTextRequest(
+        recording=request_v2.recording,
+        processing_profile_reference=request_v2.processing_profile_reference,
+        adapter_reference=request_v2.adapter_reference,
+        model_config_reference=request_v2.model_config_reference,
+        language_hint=request_v2.language_hint,
+    )
+    backend = _Backend(SimpleNamespace(text="synthetic", words=()))
+    adapter = GigaAMV3RNNTAdapter(manifest, CountingResolver(), backend=backend)
+
+    with pytest.raises(SpeechToTextFailed) as failure:
+        await adapter.transcribe(request_v1)
+
+    assert failure.value.code.value == "unsupported_media"
+    assert resolver_calls == 0
+    assert backend.transcription_calls == 0
 
 
 @pytest.mark.asyncio
