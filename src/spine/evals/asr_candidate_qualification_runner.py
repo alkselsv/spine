@@ -1100,6 +1100,14 @@ def _evaluate_observations(
         name: MetricObservation(status=status, value=value, unit=unit, error_count=errors, coverage=coverage, detail="Computed from real candidate outputs; NOT_VERIFIED remains until coverage sufficiency is approved and met.")
         for name, (value, unit, errors, coverage, status) in metric_values.items()
     }
+    if "terminology_precision" in metrics:
+        metrics["terminology_precision"] = metrics["terminology_precision"].model_copy(update={
+            "detail": (
+                "Precision is scoped to the frozen qualification-set annotated-term vocabulary; "
+                "ASR term predictions outside that vocabulary are not scored. "
+                "Coverage and the #661 threshold remain independently required."
+            )
+        })
     for name, unit in _METRIC_DEFINITIONS:
         metrics.setdefault(name, MetricObservation(status=QualificationStatus.NOT_VERIFIED, value=None, unit=unit, error_count=None, coverage=Coverage(annotated=0, eligible=0), detail="Metric is not derivable from this observation contract."))
     observations_by_case_format = {(item.case_id, item.input_format): item for item in observations}
@@ -1142,11 +1150,9 @@ def _evaluate_observations(
         (case_id, case.audio.media_format.value) in observations_by_case_format
         for case_id, case in paired_cases.items()
     )
-    preprocessing_comparison_observed = bool(paired_cases) and all(
-        (case_id, asset.media_format.value) in observations_by_case_format
-        for case_id, case in paired_cases.items()
-        for asset in case.format_variants
-    )
+    # Codec variants are reported above, but #759 has no owner-approved second
+    # preprocessing profile for an actual before/after comparison.
+    preprocessing_comparison_observed = False
     long_form_cases = {
         case.case_id: case
         for case in references.values()
@@ -1265,8 +1271,8 @@ def _evaluate_observations(
             detail=(
                 "Long-form chunks and recovery expectations were checked from real synthetic inference outputs; recovery is an annotation-driven replay, not a production worker failure."
                 if gate_id == "long_form_chunking" and status is QualificationStatus.PASS
-                else "Preprocessing comparison uses real per-format transcriptions and byte-verified deterministic outputs."
-                if gate_id == "preprocessing_effects" and status is QualificationStatus.PASS
+                else "NOT_VERIFIED: per-format WER is reported, but there is no approved paired preprocessing profile for a before/after inference comparison."
+                if gate_id == "preprocessing_effects"
                 else "Independent #661 gate evaluated; missing or insufficient category coverage remains NOT_VERIFIED."
             ),
         ))
