@@ -1076,6 +1076,8 @@ class GoogleApiService:
                 await self._record_retry(connection, "provider", "transient", attempt)
                 await self.sleep(delay)
                 continue
+            if _is_terminal_provider_quota(response):
+                raise GoogleProviderQuotaError()
             if 200 <= response.status_code < 300:
                 if json_expected and response.json_body is None:
                     raise GoogleProviderContractError(
@@ -1102,8 +1104,6 @@ class GoogleApiService:
                 raise GoogleProviderNotFoundError()
             if response.status_code == 403:
                 reason = _provider_reason(response)
-                if reason in _TERMINAL_PROVIDER_QUOTA_REASONS:
-                    raise GoogleProviderQuotaError()
                 if reason in {
                     "ratelimitexceeded",
                     "userratelimitexceeded",
@@ -1114,8 +1114,6 @@ class GoogleApiService:
                 if not isinstance(failure, GoogleProviderQuotaError):
                     raise failure
             elif response.status_code == 429:
-                if _provider_reason(response) in _TERMINAL_PROVIDER_QUOTA_REASONS:
-                    raise GoogleProviderQuotaError()
                 failure = GoogleProviderQuotaError()
             elif response.status_code >= 500:
                 failure = GoogleProviderReadError()
@@ -1166,6 +1164,8 @@ class GoogleApiService:
                 # A timeout or transport error leaves the POST outcome unknown.
                 # Retrying could repeat a refresh whose response was lost.
                 raise GoogleProviderReadError() from None
+            if _is_terminal_provider_quota(response):
+                raise GoogleProviderQuotaError()
             if response is not None and 200 <= response.status_code < 300:
                 return response
             if response.status_code < 500:
@@ -1362,8 +1362,21 @@ def _retry_after_seconds(
 
 _MAX_RETRY_AFTER_SECONDS = 30.0
 _TERMINAL_PROVIDER_QUOTA_REASONS = frozenset(
-    {"quotaexceeded", "dailylimitexceeded", "dailylimitexceededunreg"}
+    {
+        "quotaexceeded",
+        "quota_exceeded",
+        "resource_exhausted",
+        "dailylimitexceeded",
+        "dailylimitexceededunreg",
+    }
 )
+
+
+def _is_terminal_provider_quota(response: GoogleApiResponse) -> bool:
+    return (
+        not 200 <= response.status_code < 300
+        and _provider_reason(response) in _TERMINAL_PROVIDER_QUOTA_REASONS
+    )
 
 def _required_string(payload: Mapping[str, Any], key: str) -> str:
     value = payload.get(key)

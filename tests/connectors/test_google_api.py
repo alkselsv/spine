@@ -1086,6 +1086,31 @@ async def test_ambiguous_oauth_transport_failure_is_not_retried() -> None:
 
 
 @pytest.mark.asyncio
+async def test_terminal_oauth_quota_is_not_retried() -> None:
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=429,
+                json_body={
+                    "error": {"errors": [{"reason": "dailyLimitExceeded"}]}
+                },
+            ),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "unexpected retry", "expires_in": 3600},
+            ),
+        ]
+    )
+
+    with pytest.raises(GoogleProviderQuotaError):
+        await _service(RecordingCredentialResolver(), transport).get_metadata_for_file(
+            _connection(), RESOURCE_SCOPE, "file-1"
+        )
+
+    assert len(transport.requests) == 1
+
+
+@pytest.mark.asyncio
 async def test_provider_unauthorized_invalidates_token_and_refreshes_once() -> None:
     resolver = RecordingCredentialResolver()
     transport = RecordingTransport(
