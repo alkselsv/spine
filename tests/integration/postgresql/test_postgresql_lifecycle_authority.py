@@ -113,13 +113,13 @@ async def _wait_for_postgresql_lock_wait(
         async with adapter.uow_factory(context) as uow:
             result = await uow.execute_statement(
                 text(
-                    "SELECT wait_event_type FROM pg_stat_activity WHERE pid = :pid"
+                    "SELECT cardinality(pg_blocking_pids(:pid)) > 0"
                 ),
                 {"pid": backend_pid},
             )
-            wait_event_type = result.scalar_one_or_none()
+            is_blocked = result.scalar_one_or_none()
             await uow.rollback()
-        if wait_event_type == "Lock":
+        if is_blocked:
             return True
         await asyncio.sleep(0)
     return False
