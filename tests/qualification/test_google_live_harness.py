@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, contextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,8 @@ import pytest
 from spine.connectors.google_api import (
     GoogleApiEndpoints,
     GoogleApiRequestPolicy,
+    GoogleApiResponse,
+    GoogleDesktopOAuthMaterial,
     GoogleResourceScope,
 )
 from spine.connectors.google_live_qualification import (
@@ -29,10 +32,26 @@ from spine.connectors.google_live_qualification import (
     compose_google_live_qualification_runner,
     write_google_live_report,
 )
-from spine.application.connections.google import GoogleReadCommand
+from spine.connectors.google_live_composition import (
+    GoogleLiveQualificationBindings,
+    make_google_live_qualification_factory,
+)
+from spine.scripts import google_live_qualification
+from spine.application.connections.google import (
+    GoogleConnectionDeniedError,
+    GoogleReadCommand,
+)
 from spine.connectors.google_execution_envelope import GoogleExecutionEnvelope
 from spine.connectors.google_sheets import GoogleSheetsColumn, GoogleSheetsReadProfile
 from spine.application.diagnostics import DiagnosticEventRegistry
+from spine.application.persistence.context import (
+    EnvironmentScope,
+    PersistenceOperation,
+    PersistencePurpose,
+    TrustedContextProvenance,
+    TrustedPersistenceContext,
+)
+from spine.domain.common import ContextOrigin
 from spine.infrastructure.diagnostics import RecordingDiagnosticSink
 from spine.domain.connections.google import (
     GoogleConnection,
@@ -43,6 +62,19 @@ from spine.domain.connections.google import (
 
 def _id(value: int) -> UUID:
     return UUID(f"00000000-0000-0000-0000-{value:012d}")
+
+
+def _trusted_context() -> TrustedPersistenceContext:
+    return TrustedPersistenceContext(
+        scope=EnvironmentScope(_id(4), _id(5)),
+        origin=ContextOrigin.INTERACTIVE,
+        purpose=PersistencePurpose("google_qualification"),
+        operation=PersistenceOperation("google_live_read"),
+        trace_id=_id(12),
+        acting_subject_id=_id(13),
+        service_principal_id=None,
+        provenance=TrustedContextProvenance(_id(14), b"synthetic-trusted-context"),
+    )
 
 
 SCOPE = OpaqueGoogleReference(value=_id(10))
@@ -613,3 +645,284 @@ async def test_shared_drive_fake_run_keeps_status_not_exercised() -> None:
 
     assert report.status == "passed"
     assert report.shared_drive_status == "NOT_EXERCISED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stale_field", ("connection_version", "authorization_generation", "configuration_generation")
+)
+async def test_offline_composition_fails_stale_admission_closed(
+    stale_field: str,
+) -> None:
+    config = _config(opt_in=True)
+    if stale_field == "connection_version":
+        updates = {
+            "connection_version_id": _id(101),
+            "version": 2,
+            "predecessor_version_id": config.connection.connection_version_id,
+        }
+    else:
+        updates = {
+            stale_field: getattr(config.connection, stale_field) + 1,
+        }
+    stale_connection = config.connection.model_copy(update=updates)
+    repository = CurrentConnectionRepository(stale_connection)
+    resolver_calls: list[tuple[object, object]] = []
+    transport_calls: list[object] = []
+
+    class Resolver:
+        async def resolve(self, credential_reference, grant_reference):
+            resolver_calls.append((credential_reference, grant_reference))
+            raise AssertionError("stale admission must not resolve credentials")
+
+    class Transport:
+        async def request(self, request):
+            transport_calls.append(request)
+            raise AssertionError("stale admission must not issue provider requests")
+
+    class RetryObserver:
+        async def record_retry(self, event):
+            raise AssertionError("no retry is expected")
+
+    registry = DiagnosticEventRegistry.with_default_families()
+    bindings = GoogleLiveQualificationBindings(
+        credential_resolver=Resolver(),  # type: ignore[arg-type]
+        transport=Transport(),  # type: ignore[arg-type]
+        retry_observer=RetryObserver(),  # type: ignore[arg-type]
+        connection_repository=repository,  # type: ignore[arg-type]
+        diagnostic_sink=RecordingDiagnosticSink(registry),
+        diagnostic_registry=registry,
+        clock=lambda: datetime(2026, 10, 29, tzinfo=timezone.utc),
+        sleep=lambda delay: asyncio.sleep(0),
+        context=_trusted_context(),
+        approval_verifier=ApprovedEnvelopeVerifier(),  # type: ignore[arg-type]
+    )
+
+    runner = bindings.build_runner(config)
+    deployment_factory = make_google_live_qualification_factory(bindings)
+    with pytest.raises(GoogleLiveQualificationRefused, match="unsupported"):
+        replace(bindings, credential_resolver=object()).build_runner(config)  # type: ignore[arg-type]
+    report = await runner.run(environment_opt_in=True)
+
+    assert runner.config is config
+    assert deployment_factory(config).config is config
+    assert report.failure_code == "provider_contract_rejected"
+    assert len(repository.commands) == 1
+    assert resolver_calls == []
+    assert transport_calls == []
+
+
+@pytest.mark.parametrize("mismatched_scope", ("workspace", "environment"))
+def test_offline_composition_rejects_mismatched_context_scope_before_runner_creation(
+    mismatched_scope: str,
+) -> None:
+    config = _config(opt_in=True)
+    registry = DiagnosticEventRegistry.with_default_families()
+    context = _trusted_context()
+    mismatched_context = replace(
+        context,
+        scope=EnvironmentScope(
+            _id(104)
+            if mismatched_scope == "workspace"
+            else config.connection.workspace_id,
+            _id(105)
+            if mismatched_scope == "environment"
+            else config.connection.environment_id,
+        ),
+    )
+    bindings = GoogleLiveQualificationBindings(
+        credential_resolver=type("Resolver", (), {"resolve": lambda *_: None})(),
+        transport=type("Transport", (), {"request": lambda *_: None})(),
+        retry_observer=type("RetryObserver", (), {"record_retry": lambda *_: None})(),
+        connection_repository=type("Repository", (), {"admit_read": lambda *_: None})(),
+        diagnostic_sink=RecordingDiagnosticSink(registry),
+        diagnostic_registry=registry,
+        clock=lambda: datetime(2026, 10, 29, tzinfo=timezone.utc),
+        sleep=lambda delay: asyncio.sleep(0),
+        context=mismatched_context,
+        approval_verifier=ApprovedEnvelopeVerifier(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(GoogleLiveQualificationRefused, match="context"):
+        bindings.build_runner(config)
+
+
+@pytest.mark.asyncio
+async def test_offline_composition_uses_injected_provider_ports_after_admission() -> None:
+    config = _config(opt_in=True)
+    config = config.model_copy(
+        update={
+            "request_policy": config.request_policy.model_copy(
+                update={"max_attempts": 2, "backoff_seconds": (0.25,)}
+            )
+        }
+    )
+    repository = CurrentConnectionRepository(config.connection)
+    resolver_calls: list[tuple[object, object]] = []
+    retry_events = []
+    sleep_delays: list[float] = []
+    clock_calls: list[datetime] = []
+    responses = [
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"access_token": "synthetic-access-token", "expires_in": 3600},
+        ),
+        GoogleApiResponse(status_code=503),
+        GoogleApiResponse(
+            status_code=200,
+            json_body={
+                "id": "synthetic-file",
+                "name": "Synthetic file.txt",
+                "mimeType": "text/plain",
+                "version": "1",
+            },
+        ),
+    ]
+
+    class Resolver:
+        async def resolve(self, credential_reference, grant_reference):
+            resolver_calls.append((credential_reference, grant_reference))
+            return GoogleDesktopOAuthMaterial(
+                client_id="synthetic-client",
+                client_secret="synthetic-client-secret",
+                refresh_token="synthetic-refresh-token",
+            )
+
+    class Transport:
+        async def request(self, request):
+            return responses.pop(0)
+
+    class RetryObserver:
+        async def record_retry(self, event):
+            retry_events.append(event)
+
+    registry = DiagnosticEventRegistry.with_default_families()
+    sink = RecordingDiagnosticSink(registry)
+
+    async def sleep(delay: float) -> None:
+        sleep_delays.append(delay)
+
+    def clock() -> datetime:
+        value = datetime(2026, 10, 29, tzinfo=timezone.utc)
+        clock_calls.append(value)
+        return value
+
+    bindings = GoogleLiveQualificationBindings(
+        credential_resolver=Resolver(),  # type: ignore[arg-type]
+        transport=Transport(),  # type: ignore[arg-type]
+        retry_observer=RetryObserver(),  # type: ignore[arg-type]
+        connection_repository=repository,  # type: ignore[arg-type]
+        diagnostic_sink=sink,
+        diagnostic_registry=registry,
+        clock=clock,
+        sleep=sleep,
+        context=_trusted_context(),
+        approval_verifier=ApprovedEnvelopeVerifier(),  # type: ignore[arg-type]
+    )
+
+    report = await bindings.build_runner(config).run(environment_opt_in=True)
+
+    assert report.status == "passed"
+    assert report.metadata_reads == 1
+    assert resolver_calls == [
+        (config.connection.credential_reference, config.connection.grant_reference)
+    ]
+    assert len(retry_events) == 1
+    assert retry_events[0].reason == "transient"
+    assert sleep_delays == [0.25]
+    assert clock_calls
+    assert sink.events == ()
+    assert responses == []
+
+
+@pytest.mark.asyncio
+async def test_offline_composition_uses_injected_sanitized_diagnostic_sink() -> None:
+    config = _config(opt_in=True)
+    registry = DiagnosticEventRegistry.with_default_families()
+    sink = RecordingDiagnosticSink(registry)
+
+    class DeniedRepository:
+        @asynccontextmanager
+        async def admit_read(self, command, context):
+            del command, context
+            raise GoogleConnectionDeniedError()
+            yield  # pragma: no cover
+
+    class Resolver:
+        async def resolve(self, credential_reference, grant_reference):
+            raise AssertionError("denied admission must not resolve credentials")
+
+    class Transport:
+        async def request(self, request):
+            raise AssertionError("denied admission must not issue provider requests")
+
+    class RetryObserver:
+        async def record_retry(self, event):
+            raise AssertionError("denied admission cannot trigger retries")
+
+    bindings = GoogleLiveQualificationBindings(
+        credential_resolver=Resolver(),  # type: ignore[arg-type]
+        transport=Transport(),  # type: ignore[arg-type]
+        retry_observer=RetryObserver(),  # type: ignore[arg-type]
+        connection_repository=DeniedRepository(),  # type: ignore[arg-type]
+        diagnostic_sink=sink,
+        diagnostic_registry=registry,
+        clock=lambda: datetime(2026, 10, 29, tzinfo=timezone.utc),
+        sleep=lambda delay: asyncio.sleep(0),
+        context=_trusted_context(),
+        approval_verifier=ApprovedEnvelopeVerifier(),  # type: ignore[arg-type]
+    )
+
+    report = await bindings.build_runner(config).run(environment_opt_in=True)
+
+    assert report.failure_code == "provider_contract_rejected"
+    assert len(sink.events) == 1
+    assert sink.events[0].payload_json() == {
+        "failure_code": "authorization.denied"
+    }
+
+
+def test_offline_composition_requires_a_shared_drive_preflight_binding() -> None:
+    config = _shared_drive_config()
+    registry = DiagnosticEventRegistry.with_default_families()
+    bindings = GoogleLiveQualificationBindings(
+        credential_resolver=object(),  # type: ignore[arg-type]
+        transport=object(),  # type: ignore[arg-type]
+        retry_observer=object(),  # type: ignore[arg-type]
+        connection_repository=object(),  # type: ignore[arg-type]
+        diagnostic_sink=RecordingDiagnosticSink(registry),
+        diagnostic_registry=registry,
+        clock=lambda: datetime(2026, 10, 29, tzinfo=timezone.utc),
+        sleep=lambda delay: asyncio.sleep(0),
+        context=object(),  # type: ignore[arg-type]
+        approval_verifier=object(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(GoogleLiveQualificationRefused, match="preflight"):
+        bindings.build_runner(config)
+
+
+@pytest.mark.asyncio
+async def test_cli_sanitizes_unavailable_deployment_factory_before_runner_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unavailable_factory(_config):
+        raise RuntimeError("secret-bearing deployment error")
+
+    monkeypatch.setattr(
+        google_live_qualification,
+        "_load_composition",
+        lambda reference: unavailable_factory,
+    )
+
+    with pytest.raises(GoogleLiveQualificationRefused) as error:
+        await google_live_qualification._run(
+            _config(opt_in=True),
+            tmp_path / "report.json",
+            environment_opt_in=True,
+            composition_reference="deployment:factory",
+        )
+
+    assert str(error.value) == "the approved live composition is unavailable"
+    assert error.value.__cause__ is None
+    assert not (tmp_path / "report.json").exists()
