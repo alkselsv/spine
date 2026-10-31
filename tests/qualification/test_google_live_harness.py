@@ -836,8 +836,7 @@ async def test_offline_composition_uses_injected_provider_ports_after_admission(
     ]
     assert len(retry_events) == 1
     assert retry_events[0].reason == "transient"
-    assert len(sleep_delays) == 1
-    assert 0 <= sleep_delays[0] <= 1.0
+    assert sleep_delays == [0.25]
     assert clock_calls
     assert sink.events == ()
     assert responses == []
