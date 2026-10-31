@@ -33,6 +33,14 @@ through `GoogleConnectionRepository.register`, which checks the trusted context,
 exact approval, optimistic predecessor and idempotent replay. A revoked
 connection cannot be revived.
 
+`GoogleDesktopLoopbackConsent` starts a short-lived listener bound only to
+`127.0.0.1`, opens a state-bound Desktop OAuth consent URL with offline access
+and an explicit consent prompt, and exchanges the callback code through an
+HTTP port. It accepts only Google's configured authorization/token endpoints
+and returns the refresh token as `SecretStr`. The listener has a bounded wait
+and sanitized errors. Calling this adapter performs OAuth network requests and
+is not part of ordinary tests or this offline qualification.
+
 Remote revoke and local cleanup are explicit operations behind ports. The local
 credential files are removed only after the revocation port confirms success;
 success is reported only when both file removals are verified. Cancellation is
