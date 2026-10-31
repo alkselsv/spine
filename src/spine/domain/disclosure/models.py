@@ -18,7 +18,6 @@ from pydantic import ConfigDict, Field, model_validator
 from spine.domain.common import DefinitionModel
 from spine.domain.context_bundles import ContextBundle
 
-
 _DIGEST = r"^[0-9a-f]{64}$"
 
 
@@ -64,6 +63,8 @@ class DisclosureRevalidationFailureCode(str, Enum):
     SOURCE_SUPERSEDED = "source_superseded"
     SOURCE_TOMBSTONED = "source_tombstoned"
     RETENTION_INELIGIBLE = "retention_ineligible"
+    DISCLOSURE_REVIEW_REQUIRED = "disclosure_review_required"
+    DISCLOSURE_HELD = "disclosure_held"
     SNAPSHOT_CHANGED = "snapshot_changed"
     BOUNDARY_CHANGED = "boundary_changed"
     AS_OF_CHANGED = "as_of_changed"
@@ -111,30 +112,18 @@ class DisclosureDependency(DefinitionModel):
     canonical_as_of_time: datetime
 
     @classmethod
-    def from_context_bundle(
-        cls, bundle: ContextBundle, *, source_object_id: UUID
-    ) -> "DisclosureDependency":
+    def from_context_bundle(cls, bundle: ContextBundle, *, source_object_id: UUID) -> "DisclosureDependency":
         references = tuple(
-            reference
-            for reference in bundle.evidence_references
-            if reference.source_object_id == source_object_id
+            reference for reference in bundle.evidence_references if reference.source_object_id == source_object_id
         )
         if not references:
             raise ValueError("context bundle has no evidence for the source")
         revisions = {reference.source_revision_id for reference in references}
-        digests = {
-            reference.revision_digest
-            for reference in references
-            if reference.revision_digest is not None
-        }
+        digests = {reference.revision_digest for reference in references if reference.revision_digest is not None}
         if len(revisions) != 1 or len(digests) != 1:
             raise ValueError("source dependency has conflicting revision identity")
         policy = next(
-            (
-                value
-                for value in bundle.policy_decision_generations
-                if value.source_object_id == source_object_id
-            ),
+            (value for value in bundle.policy_decision_generations if value.source_object_id == source_object_id),
             None,
         )
         seed = ":".join(
@@ -156,9 +145,7 @@ class DisclosureDependency(DefinitionModel):
             policy_generation=policy.policy_generation if policy else None,
             membership_generation=policy.membership_generation if policy else None,
             authority_generation=policy.authority_generation if policy else None,
-            service_authority_generation=(
-                policy.service_authority_generation if policy else None
-            ),
+            service_authority_generation=(policy.service_authority_generation if policy else None),
             projection_snapshot_id=bundle.projection_snapshot.projection_snapshot_id,
             activation_generation=bundle.activation_generation,
             canonical_boundary_id=bundle.canonical_boundary.boundary_id,
@@ -192,31 +179,21 @@ class DisclosureDependencySet(DefinitionModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["disclosure-dependency-set:v1"] = (
-        "disclosure-dependency-set:v1"
-    )
+    schema_version: Literal["disclosure-dependency-set:v1"] = "disclosure-dependency-set:v1"
     dependencies: tuple[DisclosureDependency, ...] = ()
 
     @classmethod
     def from_context_bundle(cls, bundle: ContextBundle) -> "DisclosureDependencySet":
-        source_ids = dict.fromkeys(
-            reference.source_object_id for reference in bundle.evidence_references
-        )
+        source_ids = dict.fromkeys(reference.source_object_id for reference in bundle.evidence_references)
         return cls(
             dependencies=tuple(
-                DisclosureDependency.from_context_bundle(
-                    bundle, source_object_id=source_id
-                )
-                for source_id in source_ids
+                DisclosureDependency.from_context_bundle(bundle, source_object_id=source_id) for source_id in source_ids
             )
         )
 
     def merge(self, other: "DisclosureDependencySet") -> "DisclosureDependencySet":
         if self.dependencies and other.dependencies:
-            scopes = {
-                (item.workspace_id, item.environment_id)
-                for item in (*self.dependencies, *other.dependencies)
-            }
+            scopes = {(item.workspace_id, item.environment_id) for item in (*self.dependencies, *other.dependencies)}
             if len(scopes) != 1:
                 raise ValueError("disclosure dependencies have mixed scopes")
         values = {item.dependency_id: item for item in self.dependencies}
@@ -259,6 +236,8 @@ class DisclosureDependencyObservation(DefinitionModel):
     superseded: bool = False
     tombstoned: bool = False
     retention_eligible: bool = False
+    lifecycle_disclosure_eligible: bool
+    active_disclosure_hold: bool
     historical_revision_available: bool = False
 
     @model_validator(mode="after")
@@ -301,12 +280,9 @@ class DisclosurePublicationObservation(DefinitionModel):
 
     @property
     def as_of_changed(self) -> bool:
-        return (
-            self.current_as_of_boundary_id is not None
-            and (
-                self.current_as_of_boundary_id != self.pinned_as_of_boundary_id
-                or self.current_as_of_generation != self.pinned_as_of_generation
-            )
+        return self.current_as_of_boundary_id is not None and (
+            self.current_as_of_boundary_id != self.pinned_as_of_boundary_id
+            or self.current_as_of_generation != self.pinned_as_of_generation
         )
 
     @model_validator(mode="after")
@@ -355,9 +331,7 @@ class DisclosureRevalidationRequest(DefinitionModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["stored-answer-disclosure-request:v1"] = (
-        "stored-answer-disclosure-request:v1"
-    )
+    schema_version: Literal["stored-answer-disclosure-request:v1"] = "stored-answer-disclosure-request:v1"
     request_id: UUID
     workspace_id: UUID
     environment_id: UUID
@@ -397,10 +371,7 @@ class DisclosureRevalidationRequest(DefinitionModel):
             if value is not None:
                 _id(value, name)
         for dependency in self.dependencies.dependencies:
-            if (
-                dependency.workspace_id != self.workspace_id
-                or dependency.environment_id != self.environment_id
-            ):
+            if dependency.workspace_id != self.workspace_id or dependency.environment_id != self.environment_id:
                 raise ValueError("disclosure request dependencies have a different scope")
         return self
 
@@ -410,9 +381,7 @@ class DisclosureValidationFact(DefinitionModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["disclosure-validation-fact:v1"] = (
-        "disclosure-validation-fact:v1"
-    )
+    schema_version: Literal["disclosure-validation-fact:v1"] = "disclosure-validation-fact:v1"
     validation_id: UUID
     request_id: UUID
     workspace_id: UUID
@@ -431,9 +400,7 @@ class DisclosureValidationFact(DefinitionModel):
     def create(cls, **values: object) -> "DisclosureValidationFact":
         payload = dict(values)
         payload.pop("fact_digest", None)
-        encoded = json.dumps(
-            _jsonable(payload), sort_keys=True, separators=(",", ":")
-        ).encode()
+        encoded = json.dumps(_jsonable(payload), sort_keys=True, separators=(",", ":")).encode()
         payload["fact_digest"] = hashlib.sha256(encoded).hexdigest()
         return cls(**payload)
 
@@ -491,9 +458,7 @@ class DisclosureRevalidationResult(DefinitionModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["stored-answer-disclosure-result:v1"] = (
-        "stored-answer-disclosure-result:v1"
-    )
+    schema_version: Literal["stored-answer-disclosure-result:v1"] = "stored-answer-disclosure-result:v1"
     request_id: UUID
     request_digest: str = Field(pattern=_DIGEST)
     workspace_id: UUID

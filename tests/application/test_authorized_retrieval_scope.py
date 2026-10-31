@@ -169,6 +169,16 @@ class _ProviderScopeSafety:
         return self.allowed
 
 
+class _DisclosureConstraint:
+    def __init__(self, allowed: bool) -> None:
+        self.allowed = allowed
+        self.calls = []
+
+    async def allows(self, context, member, evaluated_at) -> bool:
+        self.calls.append((context, member, evaluated_at))
+        return self.allowed
+
+
 def _context(
     mode: AuthorizationContextMode = AuthorizationContextMode.HUMAN_DISCLOSURE,
     *,
@@ -319,6 +329,7 @@ def _resolver(
         AuthorizedRetrievalScopeResolver(
             authorization=authorization,
             snapshot_members=_SnapshotMembers(members),
+            disclosure_constraint=_DisclosureConstraint(True),
             provider_scope_safety=safety,
             clock=lambda: NOW,
         ),
@@ -516,6 +527,40 @@ async def test_missing_provider_safety_proof_fails_closed() -> None:
     assert result.outcome is AuthorizedRetrievalScopeOutcome.UNSAFE
     assert result.reason is AuthorizedRetrievalScopeReason.UNSAFE_PROVIDER_NARROWING
     assert result.scope is None
+
+
+@pytest.mark.asyncio
+async def test_active_disclosure_constraint_denies_retrieval_before_provider_read() -> None:
+    member = _member(SOURCE_A, REVISION_A, 1)
+    repository = _AuthorizationRepository(
+        {
+            SOURCE_A: _authorization_snapshot(
+                SOURCE_A,
+                REVISION_A,
+                (_grant(80, PrincipalKind.HUMAN, HUMAN),),
+            )
+        }
+    )
+    constraint = _DisclosureConstraint(False)
+    resolver = AuthorizedRetrievalScopeResolver(
+        authorization=ContentAuthorizationDecisionService(
+            repository=repository,
+            identity_authority=_Identity(_context()),
+            clock=lambda: NOW,
+            decision_reference_factory=lambda: UUID(int=1100),
+        ),
+        snapshot_members=_SnapshotMembers((member,)),
+        provider_scope_safety=_ProviderScopeSafety(True),
+        disclosure_constraint=constraint,
+        clock=lambda: NOW,
+    )
+
+    result = await resolver.resolve(_request())
+
+    assert result.outcome is AuthorizedRetrievalScopeOutcome.UNAVAILABLE
+    assert result.reason is AuthorizedRetrievalScopeReason.SOURCE_UNAVAILABLE
+    assert repository.calls == []
+    assert constraint.calls == [(_context(), member, NOW)]
 
 
 @pytest.mark.asyncio

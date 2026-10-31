@@ -21,7 +21,6 @@ from spine.domain.disclosure import (
     DisclosureValidationFact,
 )
 
-
 if TYPE_CHECKING:
     from spine.application.qa_sessions import QASessionRequester
     from spine.domain.capabilities.answer_disclosure import AnswerDisclosureRecord
@@ -29,9 +28,7 @@ if TYPE_CHECKING:
 
 
 class DisclosureStateProvider(Protocol):
-    async def resolve(
-        self, request: DisclosureRevalidationRequest
-    ) -> DisclosureRevalidationObservation: ...
+    async def resolve(self, request: DisclosureRevalidationRequest) -> DisclosureRevalidationObservation: ...
 
 
 DisclosureValidationResultRepository = DisclosureValidationRepository
@@ -57,17 +54,13 @@ class InMemoryDisclosureValidationResultRepository:
     ) -> DisclosureRevalidationResult | None:
         return self._results.get((workspace_id, environment_id, request_id))
 
-    async def save(
-        self, result: DisclosureRevalidationResult
-    ) -> DisclosureRevalidationResult:
+    async def save(self, result: DisclosureRevalidationResult) -> DisclosureRevalidationResult:
         key = (result.workspace_id, result.environment_id, result.request_id)
         digest = _result_digest(result)
         current = self._results.get(key)
         if current is not None:
             if self._digests[key] != digest:
-                raise DisclosureIdempotencyConflict(
-                    "Disclosure validation request conflicts with an immutable result."
-                )
+                raise DisclosureIdempotencyConflict("Disclosure validation request conflicts with an immutable result.")
             return current
         self._results[key] = result
         self._digests[key] = digest
@@ -80,9 +73,7 @@ class DisclosureRevalidationService:
     result_repository: DisclosureValidationResultRepository
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 
-    async def revalidate(
-        self, request: DisclosureRevalidationRequest
-    ) -> DisclosureRevalidationResult:
+    async def revalidate(self, request: DisclosureRevalidationRequest) -> DisclosureRevalidationResult:
         existing = None
         if not request.force_fresh:
             existing = await self.result_repository.resolve(
@@ -131,8 +122,7 @@ class DisclosureRevalidationService:
             )
 
         if not observation.available or (
-            observation.workspace_id != request.workspace_id
-            or observation.environment_id != request.environment_id
+            observation.workspace_id != request.workspace_id or observation.environment_id != request.environment_id
         ):
             return await self._store(
                 _result(
@@ -149,9 +139,7 @@ class DisclosureRevalidationService:
         evaluated_at = self.clock()
         by_id = {item.dependency_id: item for item in observation.dependencies}
         missing = tuple(
-            dependency
-            for dependency in request.dependencies.dependencies
-            if dependency.dependency_id not in by_id
+            dependency for dependency in request.dependencies.dependencies if dependency.dependency_id not in by_id
         )
         failures: list[DisclosureRevalidationFailureCode] = []
         facts: list[DisclosureValidationFact] = []
@@ -198,6 +186,8 @@ class DisclosureRevalidationService:
                 DisclosureRevalidationFailureCode.CONTRIBUTOR_UNAUTHORIZED,
                 DisclosureRevalidationFailureCode.SOURCE_TOMBSTONED,
                 DisclosureRevalidationFailureCode.RETENTION_INELIGIBLE,
+                DisclosureRevalidationFailureCode.DISCLOSURE_REVIEW_REQUIRED,
+                DisclosureRevalidationFailureCode.DISCLOSURE_HELD,
                 DisclosureRevalidationFailureCode.REQUESTER_UNAUTHORIZED,
                 DisclosureRevalidationFailureCode.DEPENDENCY_MISSING,
                 DisclosureRevalidationFailureCode.SOURCE_REVISION_UNAVAILABLE,
@@ -291,8 +281,7 @@ class RevalidatingQAMessageDisclosure:
             or record.validation is None
             or message.run_id is None
             or record.run_id != message.run_id
-            or tuple(record.validation.dependency_ids)
-            != tuple(message.disclosure_dependency_ids)
+            or tuple(record.validation.dependency_ids) != tuple(message.disclosure_dependency_ids)
         ):
             return False
         request = DisclosureRevalidationRequest(
@@ -359,6 +348,10 @@ def _dependency_failures(
         failures.append(DisclosureRevalidationFailureCode.SOURCE_SUPERSEDED)
     if not observation.retention_eligible:
         failures.append(DisclosureRevalidationFailureCode.RETENTION_INELIGIBLE)
+    if not observation.lifecycle_disclosure_eligible:
+        failures.append(DisclosureRevalidationFailureCode.DISCLOSURE_REVIEW_REQUIRED)
+    if observation.active_disclosure_hold:
+        failures.append(DisclosureRevalidationFailureCode.DISCLOSURE_HELD)
     if allow_historical_revision:
         if (
             not observation.historical_revision_available
@@ -384,15 +377,9 @@ def _publication_failures(
 ) -> list[DisclosureRevalidationFailureCode]:
     publication = observation.publication
     failures: list[DisclosureRevalidationFailureCode] = []
-    if any(
-        dependency.projection_snapshot_id != publication.pinned_snapshot_id
-        for dependency in dependencies
-    ):
+    if any(dependency.projection_snapshot_id != publication.pinned_snapshot_id for dependency in dependencies):
         failures.append(DisclosureRevalidationFailureCode.SNAPSHOT_CHANGED)
-    if any(
-        dependency.canonical_boundary_id != publication.pinned_boundary_id
-        for dependency in dependencies
-    ):
+    if any(dependency.canonical_boundary_id != publication.pinned_boundary_id for dependency in dependencies):
         failures.append(DisclosureRevalidationFailureCode.BOUNDARY_CHANGED)
     if any(
         dependency.canonical_as_of_boundary_id != publication.pinned_as_of_boundary_id
@@ -472,7 +459,9 @@ def _safe_reason(disposition: DisclosureRevalidationDisposition) -> str:
     }[disposition]
 
 
-def _unique(values: list[DisclosureRevalidationFailureCode]) -> list[DisclosureRevalidationFailureCode]:
+def _unique(
+    values: list[DisclosureRevalidationFailureCode],
+) -> list[DisclosureRevalidationFailureCode]:
     return list(dict.fromkeys(values))
 
 

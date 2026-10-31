@@ -18,7 +18,7 @@ from sqlalchemy import (
     text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 from sqlalchemy.sql.naming import conv
 
@@ -1315,6 +1315,93 @@ current_retention_applicabilities = Table(
     PrimaryKeyConstraint(
         "workspace_id", "environment_id", "target_kind", "target_reference",
         name="pk_current_retention_applicabilities",
+    ),
+)
+
+disclosure_holds = Table(
+    "disclosure_holds",
+    metadata,
+    Column("hold_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("review_decision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("evidence_observation_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_ids", ARRAY(PostgreSQLUUID(as_uuid=True)), nullable=False),
+    Column("dependency_ids", ARRAY(PostgreSQLUUID(as_uuid=True)), nullable=False),
+    Column("artifact_ids", ARRAY(PostgreSQLUUID(as_uuid=True)), nullable=False),
+    Column("prohibited_effects", ARRAY(Text), nullable=False),
+    Column("audit_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("outbox_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("supersedes_hold_id", PostgreSQLUUID(as_uuid=True)),
+    Column("record", JSONB, nullable=False),
+    Column("effective_from", DateTime(timezone=True), nullable=False),
+    Column("effective_until", DateTime(timezone=True), nullable=False),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "source_object_id", "hold_id",
+        name="uq_disclosure_holds_scope_id",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "source_object_id", "supersedes_hold_id",
+        name="uq_disclosure_holds_one_successor",
+    ),
+)
+
+disclosure_hold_releases = Table(
+    "disclosure_hold_releases",
+    metadata,
+    Column("release_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("hold_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("audit_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("outbox_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("superseded_by_hold_id", PostgreSQLUUID(as_uuid=True)),
+    Column("record", JSONB, nullable=False),
+    Column("released_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "source_object_id", "hold_id",
+        name="uq_disclosure_hold_releases_hold",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "source_object_id", "hold_id", "release_id",
+        name="uq_disclosure_hold_releases_scope_id",
+    ),
+)
+
+disclosure_hold_source_revisions = Table(
+    "disclosure_hold_source_revisions",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("hold_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id",
+        "environment_id",
+        "source_object_id",
+        "hold_id",
+        "source_revision_id",
+        name="pk_disclosure_hold_source_revisions",
+    ),
+)
+
+current_disclosure_holds = Table(
+    "current_disclosure_holds",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("hold_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("current_release_id", PostgreSQLUUID(as_uuid=True)),
+    Column("state", Text, nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "source_object_id", "hold_id",
+        name="pk_current_disclosure_holds",
     ),
 )
 

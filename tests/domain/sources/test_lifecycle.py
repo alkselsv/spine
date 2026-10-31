@@ -182,6 +182,33 @@ def test_scope_withdrawal_requires_exact_governed_withdrawal_outcome() -> None:
         decision.validate_observation(observation)
 
 
+@pytest.mark.parametrize(
+    "kind",
+    [
+        LifecycleObservationKind.PROVIDER_OUTAGE,
+        LifecycleObservationKind.FILTERED_ABSENCE,
+        LifecycleObservationKind.SCOPE_WITHDRAWN,
+        LifecycleObservationKind.MOVE_WITHIN_SCOPE,
+        LifecycleObservationKind.QUALIFIED_DELETION_EVIDENCE,
+    ],
+)
+def test_disclosure_review_requires_exact_positive_move_or_deleted_evidence(
+    kind: LifecycleObservationKind,
+) -> None:
+    observation = _observation(
+        kind=kind,
+        confidence=LifecycleObservationConfidence.QUALIFIED,
+        reason_code=LifecycleReasonCode.PROVIDER_OUTAGE,
+    )
+    decision = _decision(
+        effect=LifecycleDecisionEffect.DISCLOSURE_REVIEW_REQUIRED,
+        status=LifecycleEligibilityStatus.DISCLOSURE_REVIEW_REQUIRED,
+    )
+
+    with pytest.raises(ValueError):
+        decision.validate_observation(observation)
+
+
 @pytest.mark.parametrize("field", ("source_object_id", "scope_reference", "scope_version_id"))
 def test_scope_withdrawal_cannot_be_widened_beyond_exact_source_and_scope(
     field: str,
