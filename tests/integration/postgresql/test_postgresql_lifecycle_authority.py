@@ -7,6 +7,7 @@ from dataclasses import replace
 
 import pytest
 from sqlalchemy import insert, select
+from sqlalchemy.exc import IntegrityError
 
 from spine.application.lifecycle import (
     LifecycleAuthorityError,
@@ -72,7 +73,13 @@ class _LockAttemptObservedUnitOfWork:
     async def _execute(self, statement: object, parameters: object | None = None):
         if "pg_advisory_xact_lock" in str(statement):
             self._lock_attempted.set()
-        return await self._unit_of_work._execute(statement, parameters)
+        try:
+            return await self._unit_of_work._execute(statement, parameters)
+        except IntegrityError as error:
+            constraint = getattr(getattr(error.orig, "diag", None), "constraint_name", None)
+            raise AssertionError(
+                f"Unexpected PostgreSQL integrity constraint: {constraint or 'unknown'}"
+            ) from error
 
     def __getattr__(self, name: str):
         return getattr(self._unit_of_work, name)
@@ -547,8 +554,11 @@ async def test_postgresql_new_source_is_eligible_before_its_first_lifecycle_deci
     context = postgresql_adapter.ingestion_context(
         case.source.workspace_id, case.source.environment_id, "provider_connection_read"
     )
+    lock_attempted = asyncio.Event()
     repository = PostgreSQLLifecycleAuthorityRepository(
-        uow_factory=postgresql_adapter.uow_factory,
+        uow_factory=_observe_lock_attempt(
+            postgresql_adapter.uow_factory, lock_attempted
+        ),
         observation_authority=_AllowObservationAuthority(),
         decision_authority=_AllowAuthority(),
         decision_effects=_DecisionEffects(),
