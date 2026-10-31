@@ -122,7 +122,11 @@ class GoogleLiveQualificationBindings:
             raise GoogleLiveQualificationRefused(
                 "Google live composition bindings are unsupported"
             )
-        if not callable(self.clock) or not callable(self.sleep):
+        if (
+            not callable(self.clock)
+            or not callable(self.sleep)
+            or not callable(self.jitter)
+        ):
             raise GoogleLiveQualificationRefused(
                 "Google live composition bindings are unsupported"
             )
