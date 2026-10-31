@@ -17,6 +17,7 @@ from spine.infrastructure.connections.provider_management import (
 from spine.infrastructure.connections.fake_provider import FakeProviderConnectionObserver
 from spine.infrastructure.connections.postgresql_provider_management import (
     PostgreSQLProviderConnectionManagementRepository,
+    PostgreSQLProviderConnectionRepository,
 )
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "PostgreSQLGoogleConnectionRepository",
     "PostgreSQLBitrix24OAuthRepository",
     "PostgreSQLProviderConnectionManagementRepository",
+    "PostgreSQLProviderConnectionRepository",
 ]

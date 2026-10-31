@@ -46,13 +46,14 @@ from spine.application.yandex_qualification_credentials import (
 
 
 class YandexQualificationInventoryConfig(DefinitionModel):
-    schema_version: Literal["yandex-qualification-inventory-config:v1"] = (
-        "yandex-qualification-inventory-config:v1"
+    schema_version: Literal["yandex-qualification-inventory-config:v2"] = (
+        "yandex-qualification-inventory-config:v2"
     )
     opt_in: StrictBool
     credential_binding: YandexQualificationCredentialBinding
     connection_id: UUID
     connection_version_id: UUID
+    service_principal_id: UUID
     resource_scope_reference: OpaqueProviderReference
     authorization_generation: StrictInt = Field(ge=1)
     configuration_generation: StrictInt = Field(ge=1)
@@ -67,14 +68,21 @@ class YandexQualificationInventoryConfig(DefinitionModel):
 
     @model_validator(mode="after")
     def validate_connection_authority(self) -> "YandexQualificationInventoryConfig":
-        if self.connection_id.int == 0 or self.connection_version_id.int == 0:
+        if any(
+            value.int == 0
+            for value in (
+                self.connection_id,
+                self.connection_version_id,
+                self.service_principal_id,
+            )
+        ):
             raise ValueError("qualification connection selectors must be non-nil")
         return self
 
 
 class YandexQualificationInventoryReport(DefinitionModel):
-    schema_version: Literal["yandex-qualification-inventory-report:v1"] = (
-        "yandex-qualification-inventory-report:v1"
+    schema_version: Literal["yandex-qualification-inventory-report:v2"] = (
+        "yandex-qualification-inventory-report:v2"
     )
     status: Literal["ready_for_manifest_approval", "not_verified"]
     fixture_manifest_version: Literal["spine-yandex-qualification-fixtures-v1"]
@@ -87,6 +95,7 @@ class YandexQualificationInventoryReport(DefinitionModel):
     environment_id: UUID
     connection_id: UUID
     connection_version_id: UUID
+    service_principal_id: UUID
     authorization_generation: StrictInt = Field(ge=1)
     configuration_generation: StrictInt = Field(ge=1)
     acting_identity_fingerprint: str | None = Field(
@@ -166,7 +175,11 @@ class YandexQualificationInventoryRunner:
             async with self._connection_repository.admit_read(
                 command, self._context
             ) as connection:
-                _validate_admitted_connection(command, connection)
+                _validate_admitted_connection(
+                    command,
+                    connection,
+                    service_principal_id=self.config.service_principal_id,
+                )
                 scope = YandexQualificationExecutionScope(
                     workspace_id=command.workspace_id,
                     environment_id=command.environment_id,
@@ -181,7 +194,11 @@ class YandexQualificationInventoryRunner:
                         async with self._connection_repository.admit_read(
                             command, self._context
                         ) as current_connection:
-                            _validate_admitted_connection(command, current_connection)
+                            _validate_admitted_connection(
+                                command,
+                                current_connection,
+                                service_principal_id=self.config.service_principal_id,
+                            )
 
                     return await self._run_admitted(
                         connection,
@@ -267,6 +284,7 @@ class YandexQualificationInventoryRunner:
             environment_id=self.config.credential_binding.environment_id,
             connection_id=self.config.connection_id,
             connection_version_id=self.config.connection_version_id,
+            service_principal_id=self.config.service_principal_id,
             authorization_generation=self.config.authorization_generation,
             configuration_generation=self.config.configuration_generation,
             acting_identity_fingerprint=hashlib.sha256(
@@ -300,6 +318,7 @@ class YandexQualificationInventoryRunner:
                 "environment_id": self.config.credential_binding.environment_id,
                 "connection_id": self.config.connection_id,
                 "connection_version_id": self.config.connection_version_id,
+                "service_principal_id": self.config.service_principal_id,
                 "authorization_generation": self.config.authorization_generation,
                 "configuration_generation": self.config.configuration_generation,
                 "file_count": inventory.file_count if inventory else 0,
@@ -316,7 +335,10 @@ class YandexQualificationInventoryRunner:
 
 
 def _validate_admitted_connection(
-    command: ProviderReadCommand, connection: ProviderConnection
+    command: ProviderReadCommand,
+    connection: ProviderConnection,
+    *,
+    service_principal_id: UUID,
 ) -> None:
     if (
         connection.status is not ProviderConnectionStatus.ACTIVE
@@ -326,6 +348,7 @@ def _validate_admitted_connection(
             connection.environment_id,
             connection.connection_id,
             connection.connection_version_id,
+            connection.service_principal_id,
             connection.authorization_generation,
             connection.configuration_generation,
         )
@@ -334,6 +357,7 @@ def _validate_admitted_connection(
             command.environment_id,
             command.connection_id,
             command.connection_version_id,
+            service_principal_id,
             command.authorization_generation,
             command.configuration_generation,
         )
@@ -353,13 +377,14 @@ def _write_inventory_candidate(
     artifact_writer: PrivateQualificationArtifactWriter,
 ) -> None:
     payload = {
-        "schema_version": "yandex-qualification-manifest-candidate:v1",
+        "schema_version": "yandex-qualification-manifest-candidate:v2",
         "fixture_manifest_version": config.fixture_manifest_version,
         "scope_version": config.scope_version,
         "workspace_id": str(config.credential_binding.workspace_id),
         "environment_id": str(config.credential_binding.environment_id),
         "connection_id": str(config.connection_id),
         "connection_version_id": str(config.connection_version_id),
+        "service_principal_id": str(config.service_principal_id),
         "authorization_generation": config.authorization_generation,
         "configuration_generation": config.configuration_generation,
         "request_policy_version": "spine-yandex-disk-qualification-ops:v1",
@@ -408,6 +433,7 @@ def yandex_inventory_not_verified_report(
         environment_id=config.credential_binding.environment_id,
         connection_id=config.connection_id,
         connection_version_id=config.connection_version_id,
+        service_principal_id=config.service_principal_id,
         authorization_generation=config.authorization_generation,
         configuration_generation=config.configuration_generation,
         file_count=0,

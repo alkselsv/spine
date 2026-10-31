@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -27,6 +27,10 @@ from spine.application.connections.management import (
     ProviderConnectionManager,
     ProviderConnectionNotFoundError,
     ProviderRuntimeObservation,
+)
+from spine.application.connections.provider import (
+    ProviderReadCommand,
+    ProviderReadDeniedError,
 )
 from spine.application.google_sheets_reconciliation import (
     GoogleSheetsReconciliationCommand,
@@ -61,7 +65,9 @@ from spine.infrastructure.connections.postgresql_google import (
 )
 from spine.infrastructure.connections.postgresql_provider_management import (
     PostgreSQLProviderConnectionManagementRepository,
+    PostgreSQLProviderConnectionRepository,
     provider_connection_approvals,
+    provider_connection_versions,
 )
 from spine.infrastructure.persistence.postgresql_google_sheets_sync import (
     PostgreSQLGoogleSheetsSyncRepository,
@@ -888,3 +894,129 @@ async def test_provider_neutral_management_persists_replay_and_isolates_workspac
     with pytest.raises(ProviderConnectionNotFoundError):
         await manager.configure(request, foreign_context)
     assert provider.calls == 2
+
+
+async def test_provider_neutral_read_admits_only_exact_current_yandex_scope(
+    google_database: GoogleDatabase,
+) -> None:
+    approval_id = _id(9950)
+    connection_id = _id(9951)
+    connection_version_id = _id(9952)
+    scope_reference = _id(9953)
+    qualification_reference = _id(9954)
+    capabilities = [
+        {
+            "schema_version": "provider-capability:v2",
+            "kind": kind.value,
+            "status": ProviderCapabilityStatus.SUPPORTED.value,
+            "qualification_reference": {"value": str(qualification_reference)},
+        }
+        for kind in (
+            ProviderCapabilityKind.ENUMERATION,
+            ProviderCapabilityKind.METADATA_READ,
+            ProviderCapabilityKind.FULL_RECONCILIATION,
+        )
+    ]
+    async with google_database.migration_engine.begin() as connection:
+        await connection.execute(
+            insert(provider_connection_approvals).values(
+                approval_id=approval_id,
+                workspace_id=WORKSPACE_ID,
+                environment_id=ENVIRONMENT_ID,
+                service_principal_id=SERVICE_PRINCIPAL_ID,
+                provider_kind=ProviderKind.YANDEX_DISK.value,
+                credential_reference=_id(9955),
+                grant_reference=_id(9956),
+                approved_resource_scope_references=[scope_reference],
+                authorization_generation=2,
+                configuration_generation=3,
+                status=ProviderConnectionStatus.ACTIVE.value,
+                recorded_at=OCCURRED_AT,
+            )
+        )
+        await connection.execute(
+            insert(provider_connection_versions).values(
+                connection_version_id=connection_version_id,
+                connection_id=connection_id,
+                approval_id=approval_id,
+                version=1,
+                predecessor_version_id=None,
+                workspace_id=WORKSPACE_ID,
+                environment_id=ENVIRONMENT_ID,
+                service_principal_id=SERVICE_PRINCIPAL_ID,
+                provider_kind=ProviderKind.YANDEX_DISK.value,
+                credential_reference=_id(9955),
+                grant_reference=_id(9956),
+                approved_resource_scope_references=[scope_reference],
+                authorization_generation=2,
+                configuration_generation=3,
+                status=ProviderConnectionStatus.ACTIVE.value,
+                capabilities=capabilities,
+                health=ProviderConnectionHealth.HEALTHY.value,
+                diagnostic_codes=[ProviderDiagnosticCode.CONNECTION_READY.value],
+                observed_at=OCCURRED_AT,
+                cursor_lag_seconds=None,
+                last_successful_reconciliation_at=OCCURRED_AT,
+                receipt_id=_id(9957),
+                idempotency_key="provider-neutral-read-9951",
+                command_digest="a" * 64,
+                recorded_at=OCCURRED_AT,
+            )
+        )
+
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=_id(9960), secret=b"provider-neutral-read-contract-secret"
+    )
+    repository = PostgreSQLProviderConnectionRepository(
+        session_factory=async_sessionmaker(
+            google_database.runtime_engine, expire_on_commit=False
+        ),
+        context_verifier=boundary,
+    )
+    command = ProviderReadCommand(
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        connection_id=connection_id,
+        connection_version_id=connection_version_id,
+        resource_scope_reference=OpaqueProviderReference(value=scope_reference),
+        authorization_generation=2,
+        configuration_generation=3,
+    )
+
+    def context(*, workspace_id=WORKSPACE_ID, environment_id=ENVIRONMENT_ID):
+        return boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            ),
+            service_principal_id=SERVICE_PRINCIPAL_ID,
+            purpose=PersistencePurpose("yandex_qualification"),
+            operation=PersistenceOperation("provider_connection_read"),
+            trace_id=_id(9961),
+        )
+
+    async with repository.admit_read(command, context()) as admitted:
+        assert admitted.connection_version_id == connection_version_id
+        assert admitted.provider_kind is ProviderKind.YANDEX_DISK
+
+    denied = (
+        replace(command, authorization_generation=1),
+        replace(
+            command,
+            resource_scope_reference=OpaqueProviderReference(value=_id(9962)),
+        ),
+    )
+    for stale_or_unapproved in denied:
+        with pytest.raises(ProviderReadDeniedError):
+            async with repository.admit_read(stale_or_unapproved, context()):
+                pytest.fail("stale or unapproved provider read was admitted")
+
+    with pytest.raises(ProviderReadDeniedError):
+        async with repository.admit_read(
+            command,
+            context(
+                workspace_id=OTHER_WORKSPACE_ID,
+                environment_id=OTHER_ENVIRONMENT_ID,
+            ),
+        ):
+            pytest.fail("cross-workspace provider read was admitted")
