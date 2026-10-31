@@ -115,7 +115,7 @@ def _command(
     connection_id: UUID = _id(2),
     scope: OpaqueProviderReference = SCOPE,
     target: str | None = "9043",
-    acting_subject_id: UUID | None = None,
+    acting_subject_id: UUID | None = _id(77),
     required_capabilities: tuple[ProviderCapabilityKind, ...] = BITRIX24_DISK_REQUIRED_CAPABILITIES,
 ) -> ProviderReadCommand:
     return ProviderReadCommand(
@@ -264,6 +264,15 @@ async def test_reader_requires_qualified_disk_capabilities_and_forwards_acting_u
         await _adapter(service).read(
             _connection(),
             _command(required_capabilities=BITRIX24_DISK_REQUIRED_CAPABILITIES[:-1]),
+        )
+
+    with pytest.raises(Bitrix24DiskContractError):
+        await _adapter(service).read(
+            _connection(), _command(acting_subject_id=None)
+        )
+    with pytest.raises(Bitrix24DiskContractError):
+        await _adapter(service).read(
+            _connection(), _command(acting_subject_id=_id(6))
         )
 
     service.calls.clear()

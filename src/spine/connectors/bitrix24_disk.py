@@ -375,10 +375,12 @@ class Bitrix24DiskProviderAdapter:
             for capability in BITRIX24_DISK_REQUIRED_CAPABILITIES
         ):
             raise Bitrix24DiskContractError()
-        acting_principal_id = (
-            command.acting_subject_id or connection.service_principal_id
-        )
-        if acting_principal_id.int == 0:
+        acting_principal_id = command.acting_subject_id
+        if (
+            acting_principal_id is None
+            or acting_principal_id.int == 0
+            or acting_principal_id == connection.service_principal_id
+        ):
             raise Bitrix24DiskContractError()
         for attempt in range(1, self._profile.max_attempts + 1):
             try:

@@ -6,6 +6,15 @@ from spine.domain.connections.bitrix24_oauth import (
     Bitrix24GrantState,
     Bitrix24Scope,
 )
+from spine.domain.connections.bitrix24_disk_scope import (
+    Bitrix24DiskContentPolicy,
+    Bitrix24DiskDiscoveryMode,
+    Bitrix24DiskMembershipEvidence,
+    Bitrix24DiskRootPolicy,
+    Bitrix24DiskStorageClass,
+    bitrix24_content_policy_digest,
+    bitrix24_root_policy_digest,
+)
 
 from spine.domain.connections.google import (
     GoogleConnection,
@@ -32,6 +41,13 @@ __all__ = [
     "Bitrix24GrantBinding",
     "Bitrix24GrantState",
     "Bitrix24Scope",
+    "Bitrix24DiskContentPolicy",
+    "Bitrix24DiskDiscoveryMode",
+    "Bitrix24DiskMembershipEvidence",
+    "Bitrix24DiskRootPolicy",
+    "Bitrix24DiskStorageClass",
+    "bitrix24_content_policy_digest",
+    "bitrix24_root_policy_digest",
     "GoogleConnection",
     "GoogleConnectionApproval",
     "GoogleConnectionStatus",
