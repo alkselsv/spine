@@ -106,3 +106,10 @@ candidate runtime installations, sufficient v2 category minima, or approved
 isolated benchmark evidence are present. A real model run requires the
 operator-owned isolated benchmark activity after #758 and #759 are integrated;
 this runner and its fake-backed adapter tests are not model-quality evidence.
+
+Two gates also remain deliberately closed pending evidence-contract decisions:
+`preprocessing_effects` is `NOT_VERIFIED` until an approved second preprocessing
+profile supports a real before/after inference comparison; codec-format WER is
+reported separately and is not treated as that comparison. The long-form
+recovery check replays the frozen annotated failure boundary against actual
+model outputs, but does not establish durable worker retry behavior.
