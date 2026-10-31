@@ -447,6 +447,7 @@ source_revision_provenance = Table(
     Column("observer_service", Text, nullable=False),
     Column("received_at", DateTime(timezone=True), nullable=False),
     Column("observed_at", DateTime(timezone=True), nullable=False),
+    Column("bitrix24_disk_membership", JSONB(none_as_null=True)),
 )
 
 register_link_claims = Table(
@@ -2047,6 +2048,80 @@ original_upload_records = Table(
     ),
 )
 
+bitrix24_disk_content_policy_versions = Table(
+    "bitrix24_disk_content_policy_versions",
+    metadata,
+    Column("policy_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("version", String(128), nullable=False),
+    Column("digest", String(64), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("connection_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("connection_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("resource_scope_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("recorded_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("workspace_id", "environment_id", "policy_id", "version", name="pk_b24_disk_content_policy_versions"),
+    UniqueConstraint("workspace_id", "environment_id", "policy_id", "version", "digest", name="uq_b24_disk_content_policy_digest"),
+    ForeignKeyConstraint(["workspace_id", "environment_id"], ["spine.environments.workspace_id", "spine.environments.id"], name="fk_b24_disk_content_policy_environment"),
+    CheckConstraint("digest ~ '^[0-9a-f]{64}$'", name="ck_b24_disk_content_policy_digest"),
+)
+
+current_bitrix24_disk_content_policies = Table(
+    "current_bitrix24_disk_content_policies",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("policy_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("current_version", String(128), nullable=False),
+    Column("current_digest", String(64), nullable=False),
+    Column("predecessor_version", String(128)),
+    Column("predecessor_digest", String(64)),
+    Column("generation", Integer, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("workspace_id", "environment_id", "policy_id", name="pk_current_b24_disk_content_policy"),
+    ForeignKeyConstraint(["workspace_id", "environment_id", "policy_id", "current_version", "current_digest"], ["spine.bitrix24_disk_content_policy_versions.workspace_id", "spine.bitrix24_disk_content_policy_versions.environment_id", "spine.bitrix24_disk_content_policy_versions.policy_id", "spine.bitrix24_disk_content_policy_versions.version", "spine.bitrix24_disk_content_policy_versions.digest"], name="fk_current_b24_disk_content_policy_version"),
+)
+
+bitrix24_disk_root_policy_versions = Table(
+    "bitrix24_disk_root_policy_versions",
+    metadata,
+    Column("policy_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("version", String(128), nullable=False),
+    Column("digest", String(64), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("connection_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("connection_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("resource_scope_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("content_policy_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("content_policy_version", String(128), nullable=False),
+    Column("content_policy_digest", String(64), nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("recorded_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("workspace_id", "environment_id", "policy_id", "version", name="pk_b24_disk_root_policy_versions"),
+    UniqueConstraint("workspace_id", "environment_id", "policy_id", "version", "digest", name="uq_b24_disk_root_policy_digest"),
+    ForeignKeyConstraint(["workspace_id", "environment_id"], ["spine.environments.workspace_id", "spine.environments.id"], name="fk_b24_disk_root_policy_environment"),
+    ForeignKeyConstraint(["workspace_id", "environment_id", "content_policy_id", "content_policy_version", "content_policy_digest"], ["spine.bitrix24_disk_content_policy_versions.workspace_id", "spine.bitrix24_disk_content_policy_versions.environment_id", "spine.bitrix24_disk_content_policy_versions.policy_id", "spine.bitrix24_disk_content_policy_versions.version", "spine.bitrix24_disk_content_policy_versions.digest"], name="fk_b24_disk_root_content_policy"),
+    CheckConstraint("digest ~ '^[0-9a-f]{64}$' AND content_policy_digest ~ '^[0-9a-f]{64}$'", name="ck_b24_disk_root_policy_digest"),
+)
+
+current_bitrix24_disk_root_policies = Table(
+    "current_bitrix24_disk_root_policies",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("policy_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("current_version", String(128), nullable=False),
+    Column("current_digest", String(64), nullable=False),
+    Column("predecessor_version", String(128)),
+    Column("predecessor_digest", String(64)),
+    Column("generation", Integer, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("workspace_id", "environment_id", "policy_id", name="pk_current_b24_disk_root_policy"),
+    ForeignKeyConstraint(["workspace_id", "environment_id", "policy_id", "current_version", "current_digest"], ["spine.bitrix24_disk_root_policy_versions.workspace_id", "spine.bitrix24_disk_root_policy_versions.environment_id", "spine.bitrix24_disk_root_policy_versions.policy_id", "spine.bitrix24_disk_root_policy_versions.version", "spine.bitrix24_disk_root_policy_versions.digest"], name="fk_current_b24_disk_root_policy_version"),
+)
+
 __all__ = [
     "access_policy_grants",
     "access_policy_versions",
@@ -2131,4 +2206,8 @@ __all__ = [
     "qa_answer_disclosure_records",
     "qa_answer_disclosure_deliveries",
     "original_upload_records",
+    "bitrix24_disk_content_policy_versions",
+    "current_bitrix24_disk_content_policies",
+    "bitrix24_disk_root_policy_versions",
+    "current_bitrix24_disk_root_policies",
 ]

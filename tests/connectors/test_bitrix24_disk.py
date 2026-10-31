@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 from uuid import UUID
@@ -45,6 +46,10 @@ from spine.domain.connections.provider import (
     ProviderConnection,
     ProviderConnectionStatus,
     ProviderKind,
+)
+from spine.domain.connections.bitrix24_disk_scope import (
+    Bitrix24DiskMembershipEvidence,
+    Bitrix24DiskStorageClass,
 )
 
 
@@ -115,7 +120,7 @@ def _command(
     connection_id: UUID = _id(2),
     scope: OpaqueProviderReference = SCOPE,
     target: str | None = "9043",
-    acting_subject_id: UUID | None = None,
+    acting_subject_id: UUID | None = _id(77),
     required_capabilities: tuple[ProviderCapabilityKind, ...] = BITRIX24_DISK_REQUIRED_CAPABILITIES,
 ) -> ProviderReadCommand:
     return ProviderReadCommand(
@@ -224,6 +229,92 @@ async def test_reader_preserves_disk_object_version_exact_bytes_and_omits_signed
 
 
 @pytest.mark.asyncio
+async def test_reader_carries_exact_scope_policy_and_actor_lineage() -> None:
+    service = OfficialShapeService()
+    base = _command(acting_subject_id=_id(77))
+    membership = Bitrix24DiskMembershipEvidence(
+        workspace_id=base.workspace_id,
+        environment_id=base.environment_id,
+        connection_id=base.connection_id,
+        connection_version_id=base.connection_version_id,
+        resource_scope_reference=base.resource_scope_reference,
+        root_policy_id=_id(31),
+        root_policy_version="root-v4",
+        root_policy_digest="a" * 64,
+        content_policy_id=_id(32),
+        content_policy_version="content-v2",
+        content_policy_digest="b" * 64,
+        authorization_generation=base.authorization_generation,
+        configuration_generation=base.configuration_generation,
+        grant_binding_id=_id(33),
+        grant_token_epoch=4,
+        grant_security_fence=0,
+        storage_id="1357",
+        storage_class=Bitrix24DiskStorageClass.COMMON,
+        storage_root_object_id="1000",
+        approved_root_folder_id="8907",
+        object_id="9043",
+        parent_folder_ids=("8907",),
+        provider_revision="42",
+    )
+    command = replace(base, membership_evidence=membership)
+    observation = await _adapter(service).read(_connection(), command)
+
+    lineage = observation.scope_membership
+    assert lineage is not None
+    assert lineage.root_policy_version == "root-v4"
+    assert lineage.content_policy_digest == "b" * 64
+    assert lineage.parent_folder_ids == ("8907",)
+    assert lineage.grant_token_epoch == 4
+
+
+@pytest.mark.asyncio
+async def test_policy_rotation_changes_observation_lineage_without_changing_object_identity() -> None:
+    base = _command(acting_subject_id=_id(77))
+    membership = Bitrix24DiskMembershipEvidence(
+        workspace_id=base.workspace_id,
+        environment_id=base.environment_id,
+        connection_id=base.connection_id,
+        connection_version_id=base.connection_version_id,
+        resource_scope_reference=base.resource_scope_reference,
+        root_policy_id=_id(31),
+        root_policy_version="root-v1",
+        root_policy_digest="a" * 64,
+        content_policy_id=_id(32),
+        content_policy_version="content-v1",
+        content_policy_digest="b" * 64,
+        authorization_generation=base.authorization_generation,
+        configuration_generation=base.configuration_generation,
+        grant_binding_id=_id(33),
+        grant_token_epoch=1,
+        grant_security_fence=0,
+        storage_id="1357",
+        storage_class=Bitrix24DiskStorageClass.COMMON,
+        storage_root_object_id="1000",
+        approved_root_folder_id="8907",
+        object_id="9043",
+        parent_folder_ids=("8907",),
+        provider_revision="42",
+    )
+    first = await _adapter(OfficialShapeService()).read(
+        _connection(), replace(base, membership_evidence=membership)
+    )
+    rotated = membership.model_copy(
+        update={"root_policy_version": "root-v2", "root_policy_digest": "c" * 64}
+    )
+    second = await _adapter(OfficialShapeService()).read(
+        _connection(), replace(base, membership_evidence=rotated)
+    )
+
+    assert first.external_identity.external_object_id == second.external_identity.external_object_id
+    assert first.event_identity != second.event_identity
+    assert first.scope_membership is not None
+    assert first.scope_membership.root_policy_version == "root-v1"
+    assert second.scope_membership is not None
+    assert second.scope_membership.root_policy_version == "root-v2"
+
+
+@pytest.mark.asyncio
 async def test_scope_workspace_and_revocation_are_denied_before_provider_read() -> None:
     service = OfficialShapeService()
     admission = ProviderReadAdmission(
@@ -264,6 +355,15 @@ async def test_reader_requires_qualified_disk_capabilities_and_forwards_acting_u
         await _adapter(service).read(
             _connection(),
             _command(required_capabilities=BITRIX24_DISK_REQUIRED_CAPABILITIES[:-1]),
+        )
+
+    with pytest.raises(Bitrix24DiskContractError):
+        await _adapter(service).read(
+            _connection(), _command(acting_subject_id=None)
+        )
+    with pytest.raises(Bitrix24DiskContractError):
+        await _adapter(service).read(
+            _connection(), _command(acting_subject_id=_id(6))
         )
 
     service.calls.clear()

@@ -39,6 +39,7 @@ from spine.domain.connections.provider import (
     ProviderConnection,
     ProviderKind,
 )
+from spine.domain.connections.bitrix24_disk_scope import Bitrix24DiskMembershipEvidence
 
 BITRIX24_DISK_EXTERNAL_NAMESPACE = "bitrix24-disk"
 BITRIX24_DISK_EXTERNAL_GENERATION = "bitrix24-disk-object:v1"
@@ -266,6 +267,7 @@ class Bitrix24DiskReadCommand(Protocol):
     resource_object_reference: str | None
     required_capabilities: tuple[ProviderCapabilityKind, ...]
     acting_subject_id: UUID | None
+    membership_evidence: Bitrix24DiskMembershipEvidence | None
 
 
 def bitrix24_disk_capabilities(
@@ -375,10 +377,12 @@ class Bitrix24DiskProviderAdapter:
             for capability in BITRIX24_DISK_REQUIRED_CAPABILITIES
         ):
             raise Bitrix24DiskContractError()
-        acting_principal_id = (
-            command.acting_subject_id or connection.service_principal_id
-        )
-        if acting_principal_id.int == 0:
+        acting_principal_id = command.acting_subject_id
+        if (
+            acting_principal_id is None
+            or acting_principal_id.int == 0
+            or acting_principal_id == connection.service_principal_id
+        ):
             raise Bitrix24DiskContractError()
         for attempt in range(1, self._profile.max_attempts + 1):
             try:
@@ -415,6 +419,18 @@ class Bitrix24DiskProviderAdapter:
         target = command.resource_object_reference
         if target is None:
             raise Bitrix24DiskResourceNotFoundError()
+        membership = getattr(command, "membership_evidence", None)
+        if membership is not None and (
+            membership.object_id != target
+            or membership.workspace_id != command.workspace_id
+            or membership.environment_id != command.environment_id
+            or membership.connection_id != command.connection_id
+            or membership.connection_version_id != command.connection_version_id
+            or membership.resource_scope_reference != command.resource_scope_reference
+            or membership.authorization_generation != command.authorization_generation
+            or membership.configuration_generation != command.configuration_generation
+        ):
+            raise Bitrix24DiskContractError()
         listed = await self._find_file(connection, command, target, acting_principal_id)
         metadata = await self._service.get_file(
             connection,
@@ -426,6 +442,13 @@ class Bitrix24DiskProviderAdapter:
             raise Bitrix24DiskResourceNotFoundError()
         if metadata.parent_id != listed.parent_id:
             raise Bitrix24DiskContractError()
+        membership = getattr(command, "membership_evidence", None)
+        if membership is not None and (
+            metadata.storage_id != membership.storage_id
+            or metadata.parent_id != membership.parent_folder_ids[0]
+            or metadata.global_content_version != membership.provider_revision
+        ):
+            raise Bitrix24DiskResourceNotFoundError()
         if metadata.size is None or metadata.size > self._profile.max_file_bytes:
             raise Bitrix24DiskFileTooLargeError()
         revision_evidence = _revision_evidence(metadata)
@@ -542,12 +565,15 @@ class Bitrix24DiskProviderAdapter:
         observed_at = self._clock()
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("Bitrix24 Disk reader clock must be timezone-aware")
+        membership = getattr(command, "membership_evidence", None)
+        event_evidence = {
+            "revision": revision_evidence.model_dump(mode="json"),
+            "scope_membership": (
+                None if membership is None else membership.model_dump(mode="json")
+            ),
+        }
         event_digest = hashlib.sha256(
-            json.dumps(
-                revision_evidence.model_dump(mode="json"),
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
+            json.dumps(event_evidence, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         identity_digest = hashlib.sha256(
             f"{connection.connection_id}|{metadata.id}".encode()
@@ -596,6 +622,7 @@ class Bitrix24DiskProviderAdapter:
             provider_media_type=content.media_type,
             provider_version_before=metadata.global_content_version,
             provider_version_after=metadata.global_content_version,
+            scope_membership=membership,
         )
 
     @staticmethod

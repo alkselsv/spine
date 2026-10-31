@@ -541,6 +541,11 @@ async def read_provider_observation(
             configuration_generation=1,
             required_capabilities=required_capabilities(case),
             resource_object_reference=case.provider_object_id,
+            acting_subject_id=(
+                stable_id(f"{case.name}:acting-user")
+                if case.provider_kind is ProviderKind.BITRIX24
+                else None
+            ),
         ),
         object(),
     )

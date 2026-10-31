@@ -506,6 +506,18 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "provider_connection_versions": ExpectedTablePrivileges(
             True, True, True, False, False
         ),
+        "bitrix24_disk_content_policy_versions": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "current_bitrix24_disk_content_policies": ExpectedTablePrivileges(
+            True, True, True, True, False
+        ),
+        "bitrix24_disk_root_policy_versions": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "current_bitrix24_disk_root_policies": ExpectedTablePrivileges(
+            True, True, True, True, False
+        ),
         "bitrix24_grant_bindings": ExpectedTablePrivileges(
             True, True, True, False, False
         ),

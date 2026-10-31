@@ -13,6 +13,7 @@ from uuid import UUID
 from pydantic import ConfigDict, Field, model_validator
 
 from spine.domain.common import DefinitionModel
+from spine.domain.connections.bitrix24_disk_scope import Bitrix24DiskMembershipEvidence
 from .original_reference import ObjectReference
 from .profile import BCP47_TABLE_DIGEST, REVISION_METADATA_SCHEMA, REVISION_PROFILE, REVISION_SCHEMA, UNICODE_TABLE_DIGEST, UNICODE_WHITESPACE_CODEPOINTS, normalize_language_tag, normalize_nfc
 
@@ -255,6 +256,7 @@ class SourceRevisionProvenance(DefinitionModel):
     observer_service: BoundedIdentifier
     received_at: datetime
     observed_at: datetime
+    bitrix24_disk_membership: Bitrix24DiskMembershipEvidence | None = None
 
     @model_validator(mode="after")
     def validate_provenance(self) -> "SourceRevisionProvenance":
@@ -262,6 +264,15 @@ class SourceRevisionProvenance(DefinitionModel):
             _nonzero(getattr(self, field_name), field_name)
         if (self.order_scheme is None) != (self.order_token is None):
             raise ValueError("order_scheme and order_token must be supplied together")
+        lineage = self.bitrix24_disk_membership
+        if lineage is not None and (
+            lineage.workspace_id != self.workspace_id
+            or lineage.environment_id != self.environment_id
+            or lineage.connection_id != self.connection_id
+            or lineage.root_policy_digest == ""
+            or lineage.content_policy_digest == ""
+        ):
+            raise ValueError("Bitrix24 Disk membership lineage does not match provenance scope")
         for value in (self.received_at, self.observed_at):
             if value.tzinfo is None or value.utcoffset() is None:
                 raise ValueError("provenance timestamps must be timezone-aware")

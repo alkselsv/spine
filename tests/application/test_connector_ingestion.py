@@ -127,6 +127,10 @@ from spine.domain.connections.provider import (
     ProviderConnectionStatus,
     ProviderKind,
 )
+from spine.domain.connections.bitrix24_disk_scope import (
+    Bitrix24DiskMembershipEvidence,
+    Bitrix24DiskStorageClass,
+)
 from spine.domain.common import EnvironmentKind
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.persistence.contexts import (
@@ -1101,6 +1105,44 @@ async def test_bitrix24_disk_file_replay_reaches_shared_canonical_revision_path(
         clock=lambda: NOW,
         sleep=lambda _: _async_none(),
     )
+    membership = Bitrix24DiskMembershipEvidence(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        connection_id=CONNECTION,
+        connection_version_id=connection.connection_version_id,
+        resource_scope_reference=OpaqueProviderReference(value=SCOPE),
+        root_policy_id=_id("bitrix24-root-policy"),
+        root_policy_version="root-v1",
+        root_policy_digest="a" * 64,
+        content_policy_id=_id("bitrix24-content-policy"),
+        content_policy_version="content-v1",
+        content_policy_digest="b" * 64,
+        authorization_generation=7,
+        configuration_generation=11,
+        grant_binding_id=_id("bitrix24-grant-binding"),
+        grant_token_epoch=1,
+        grant_security_fence=0,
+        storage_id="1357",
+        storage_class=Bitrix24DiskStorageClass.COMMON,
+        storage_root_object_id="1000",
+        approved_root_folder_id="8907",
+        object_id=metadata.id,
+        parent_folder_ids=("8907",),
+        provider_revision="42",
+    )
+
+    class S1PinnedDiskReader:
+        """Supply only the actor resolved by the offline S1 authority fake."""
+
+        async def read(self, admitted_connection, admitted_command):
+            return await provider.read(
+                admitted_connection,
+                replace(
+                    admitted_command,
+                    acting_subject_id=_id("bitrix24-acting-user"),
+                    membership_evidence=membership,
+                ),
+            )
     orchestrator, _, uploader, ingestion, uow = _orchestrator()
 
     class Repository:
@@ -1115,7 +1157,7 @@ async def test_bitrix24_disk_file_replay_reaches_shared_canonical_revision_path(
         observation_reader=ProviderAuthorizedObservationReader(
             admission=ProviderReadAdmission(
                 repository=Repository(),
-                provider=provider,
+                provider=S1PinnedDiskReader(),
             ),
             connection_version_id=connection.connection_version_id,
             required_capabilities=(
@@ -1151,6 +1193,7 @@ async def test_bitrix24_disk_file_replay_reaches_shared_canonical_revision_path(
     assert len(uow.events) == 1
     assert uow.events[0].event_type == "ingestion.projection.requested"
     assert ingestion.observation.revision == first.revision
+    assert ingestion.observation.provenance.bitrix24_disk_membership == membership
     assert "SIGNED-SECRET" not in first.revision.model_dump_json()
 
 

@@ -69,6 +69,27 @@ references existing immutable source, receipt, policy and audit records rather
 than duplicating their canonical facts. It contains no credentials, signed URLs,
 provider payloads, content bytes, sensitive filenames or excerpts.
 
+The Bitrix24 Disk root and content policy implementation stores immutable
+tenant-scoped policy versions separately from their current-head rows. Root
+policy rows bind the exact provider connection version, resource-scope reference,
+storage ID/class/root object, approved folder, independent recursion and future
+discovery flags, exact manifest, traversal profile and content-policy version.
+The composite foreign key binds each root version to the exact immutable content
+policy version and digest. Current heads retain predecessor version/digest and
+advance through generation CAS; RLS enforces workspace/environment scope and
+version rows reject update/delete. Root and content policy rotation never edits
+historical records, and stale worker pins fail current-authority resolution.
+
+Bounded Bitrix24 traversal resolves the current policy and S1 Disk acting-user
+grant before provider reads, then resolves both again before returning membership
+evidence. Storage root identity remains separate from the approved folder. Each
+positive membership carries exact root/content policy identities, versions and
+digests, connection generations, grant binding/fence, storage identity, exact
+object ID/revision and verified folder ancestry. The same evidence is retained in
+the normalized provider observation and source-revision provenance. Incomplete
+or permission-filtered traversal can carry positive evidence already observed,
+but cannot prove absence or grant lifecycle/deletion authority.
+
 `PROCESSOR_REQUIRED` is the default for new content admission. Before canonical
 acceptance, the system verifies the exact source and receipt evidence, current
 source and policy authority, lifecycle/retention eligibility, expected current
