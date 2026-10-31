@@ -57,8 +57,28 @@ class InMemoryGoogleConnectionRepository:
         command: GoogleConnectionCommand,
         context: TrustedPersistenceContext,
     ) -> GoogleConnectionMutationResult:
+        return await self._register(command, context, allow_revoked=False)
+
+    async def register_revoked(
+        self,
+        command: GoogleConnectionCommand,
+        context: TrustedPersistenceContext,
+    ) -> GoogleConnectionMutationResult:
+        if command.connection.status is not GoogleConnectionStatus.REVOKED:
+            raise GoogleConnectionConflictError()
+        return await self._register(command, context, allow_revoked=True)
+
+    async def _register(
+        self,
+        command: GoogleConnectionCommand,
+        context: TrustedPersistenceContext,
+        *,
+        allow_revoked: bool,
+    ) -> GoogleConnectionMutationResult:
         trusted = self._context_verifier.verify(context)
         connection = command.connection
+        if connection.status is GoogleConnectionStatus.REVOKED and not allow_revoked:
+            raise GoogleConnectionConflictError()
         if not context_allows_google_connection_registration(trusted, connection):
             raise GoogleConnectionConflictError()
         if not connection_matches_approval(

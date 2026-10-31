@@ -230,12 +230,6 @@ class GoogleGrantLifecycle:
 
 
 @dataclass(frozen=True, slots=True)
-class GoogleGrantCleanupResult:
-    remote_revocation_confirmed: bool
-    local_cleanup_verified: bool
-
-
-@dataclass(frozen=True, slots=True)
 class GoogleManualRevocationResult:
     connection: GoogleConnection
     remote_revocation_confirmed: bool
@@ -287,7 +281,7 @@ class GoogleManualRevocation:
                     local_cleanup_verified=False,
                     replay=replay,
                 )
-            revoked = await self._repository.register(
+            revoked = await self._repository.register_revoked(
                 confirmed_google_revocation_successor(
                     admitted_connection, occurred_at=occurred_at
                 ),
@@ -312,7 +306,6 @@ __all__ = [
     "GoogleCredentialStoragePort",
     "GoogleDesktopConsentPort",
     "GoogleGrantLifecycle",
-    "GoogleGrantCleanupResult",
     "GoogleGrantRevocationPort",
     "GoogleManualAuthorizationError",
     "GoogleManualConsent",

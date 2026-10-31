@@ -42,10 +42,14 @@ and sanitized errors. Calling this adapter performs OAuth network requests and
 is not part of ordinary tests or this offline qualification.
 
 Remote revoke and local cleanup are explicit operations behind ports. The local
-credential files are removed only after the revocation port confirms success;
-success is reported only when both file removals are verified. Cancellation is
-propagated so a caller can distinguish it from a completed cleanup. A failed or
-unverified revoke leaves local files in place for an explicit retry.
+connection is first suspended through `GoogleConnectionRepository.register`,
+which blocks further reads. After the fixed-endpoint revocation adapter confirms
+the remote revoke, a restricted `register_revoked` path records a REVOKED
+successor. Only then are local files removed. The two outcomes are reported
+separately, so a failed cleanup remains visible after remote revocation. A failed
+or unverified revoke leaves the connection suspended and local files in place
+for an explicit retry. Cancellation is propagated; the persisted state remains
+fail-closed at whichever step had completed.
 
 ## Offline verification
 

@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import urlopen
 
+import httpx
 import pytest
 from pydantic import SecretStr
 
 from spine.application.google_manual_authorization import GoogleManualAuthorizationError
-from spine.infrastructure.google_desktop_oauth import GoogleDesktopLoopbackConsent
+from spine.infrastructure.google_desktop_oauth import (
+    GoogleDesktopLoopbackConsent,
+    HttpxGoogleGrantRevocation,
+)
 
 CLIENT_CONFIGURATION = json.dumps(
     {
@@ -100,3 +103,23 @@ async def test_desktop_consent_refusal_is_sanitized() -> None:
 def test_desktop_consent_rejects_unapproved_scope_configuration() -> None:
     with pytest.raises(ValueError):
         GoogleDesktopLoopbackConsent(approved_scopes=())
+
+
+@pytest.mark.asyncio
+async def test_google_grant_revocation_adapter_sends_secret_only_to_fixed_endpoint() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200)
+
+    result = await HttpxGoogleGrantRevocation(
+        transport=httpx.MockTransport(handler)
+    ).revoke(refresh_token=SecretStr("synthetic-refresh-token"))
+
+    assert result is True
+    assert len(seen) == 1
+    assert str(seen[0].url) == "https://oauth2.googleapis.com/revoke"
+    assert parse_qs(seen[0].content.decode()) == {
+        "token": ["synthetic-refresh-token"]
+    }

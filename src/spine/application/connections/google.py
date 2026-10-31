@@ -174,6 +174,12 @@ class GoogleConnectionRepository(Protocol):
         context: TrustedPersistenceContext,
     ) -> GoogleConnectionMutationResult: ...
 
+    async def register_revoked(
+        self,
+        command: GoogleConnectionCommand,
+        context: TrustedPersistenceContext,
+    ) -> GoogleConnectionMutationResult: ...
+
     def admit_read(
         self,
         command: GoogleReadCommand,

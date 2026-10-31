@@ -85,6 +85,32 @@ class HttpxGoogleOAuthTokenExchange:
             raise GoogleManualAuthorizationError() from None
 
 
+class HttpxGoogleGrantRevocation:
+    """Revoke an OAuth grant using Google's fixed revocation endpoint."""
+
+    __slots__ = ("_transport",)
+
+    def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
+        self._transport = transport
+
+    async def revoke(self, *, refresh_token: SecretStr) -> bool:
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(20.0),
+                follow_redirects=False,
+                transport=self._transport,
+            ) as client:
+                response = await client.post(
+                    "https://oauth2.googleapis.com/revoke",
+                    data={"token": refresh_token.get_secret_value()},
+                )
+                return response.status_code == 200
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return False
+
+
 class GoogleDesktopLoopbackConsent:
     """Run explicit loopback consent and exchange its code through a fakeable port."""
 
@@ -306,6 +332,7 @@ def _loopback_response(*, status: str, body: bytes) -> bytes:
 __all__ = [
     "GoogleAuthorizationBrowserPort",
     "GoogleDesktopLoopbackConsent",
+    "HttpxGoogleGrantRevocation",
     "GoogleOAuthTokenExchangePort",
     "HttpxGoogleOAuthTokenExchange",
     "SystemAuthorizationBrowser",

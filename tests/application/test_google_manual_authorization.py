@@ -11,6 +11,7 @@ from spine.application.connections.google import (
     GoogleConnectionCommand,
     GoogleConnectionConflictError,
     GoogleConnectionMutationResult,
+    confirmed_google_revocation_successor,
 )
 from spine.application.google_manual_authorization import (
     GoogleConsentResult,
@@ -95,6 +96,13 @@ def _context():
     boundary = TrustedContextBoundary.for_testing(
         issuer_id=_id(20), secret=b"google-manual-reauth-test-secret"
     )
+    return boundary.interactive(
+        scope=EnvironmentScope(workspace_id=_id(4), environment_id=_id(5)),
+        purpose=PersistencePurpose("google_connector"),
+        operation=PersistenceOperation("google_connection_register"),
+        acting_subject_id=_id(21),
+        trace_id=_id(22),
+    )
 
 
 async def _registered_connection_repository():
@@ -122,13 +130,6 @@ async def _registered_connection_repository():
         context,
     )
     return current, context, repository
-    return boundary.interactive(
-        scope=EnvironmentScope(workspace_id=_id(4), environment_id=_id(5)),
-        purpose=PersistencePurpose("google_connector"),
-        operation=PersistenceOperation("google_connection_register"),
-        acting_subject_id=_id(21),
-        trace_id=_id(22),
-    )
 
 
 @pytest.mark.asyncio
@@ -390,6 +391,15 @@ async def test_manual_revocation_persists_denied_state_before_local_cleanup() ->
     assert result.local_cleanup_verified is True
     assert credentials.deleted == [(current.credential_reference, current.grant_reference)]
     assert revocation.tokens == ["synthetic-refresh-token"]
+
+
+@pytest.mark.asyncio
+async def test_generic_registration_cannot_assert_remote_revocation() -> None:
+    current, context, repository = await _registered_connection_repository()
+    revoked_command = confirmed_google_revocation_successor(current, occurred_at=NOW)
+
+    with pytest.raises(GoogleConnectionConflictError):
+        await repository.register(revoked_command, context)
 
 
 @pytest.mark.asyncio
