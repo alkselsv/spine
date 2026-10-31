@@ -542,6 +542,7 @@ async def test_postgresql_withdrawal_serializes_after_inflight_canonical_accepta
         )
         acceptance = await uow.canonical.accept(acceptance_command)
         lock_attempted.clear()
+        backend_pids.clear()
         withdrawal = asyncio.create_task(
             repository.record_decision(root_decision, context)
         )
