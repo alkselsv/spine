@@ -18,6 +18,22 @@ from spine.application.connections.provider import (
     ProviderReadCommand,
     ProviderReadDeniedError,
 )
+from spine.auth import ExternalSecretReference
+from spine.application.yandex_disk_qualification import (
+    YandexQualificationInventoryConfig,
+)
+from spine.application.yandex_qualification_credentials import (
+    YANDEX_QUALIFICATION_CLIENT_ID,
+    YANDEX_QUALIFICATION_OAUTH_SCOPE,
+    YANDEX_QUALIFICATION_PROVIDER_REFERENCE,
+    YANDEX_QUALIFICATION_ROOT,
+    YANDEX_QUALIFICATION_SECRET_REFERENCE,
+    YandexQualificationCredentialBinding,
+)
+from spine.application.yandex_qualification_inventory import (
+    YandexQualificationInventory,
+    YandexQualificationInventoryProbeResult,
+)
 from spine.application.persistence import (
     EnvironmentScope,
     PersistenceOperation,
@@ -63,6 +79,7 @@ from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.private_qualification_artifacts import (
     FilePrivateQualificationArtifactWriter,
 )
+from spine.scripts import yandex_live_inventory
 
 pytestmark = [pytest.mark.postgresql, pytest.mark.asyncio(loop_scope="session")]
 MIGRATION_ROLE = "spine_migration"
@@ -82,6 +99,7 @@ OCCURRED_AT = datetime(2026, 10, 31, 12, 0, tzinfo=timezone.utc)
 class YandexDatabase:
     migration_engine: AsyncEngine
     runtime_engine: AsyncEngine
+    runtime_url: SecretStr
 
 
 def _id(value: int) -> UUID:
@@ -161,7 +179,11 @@ async def yandex_database(
             },
         )
     try:
-        yield YandexDatabase(migration_engine, runtime_engine)
+        yield YandexDatabase(
+            migration_engine,
+            runtime_engine,
+            _role_url(postgresql_provision, RUNTIME_ROLE, RUNTIME_PASSWORD),
+        )
     finally:
         await runtime_engine.dispose()
         async with migration_engine.begin() as connection:
@@ -424,3 +446,99 @@ async def test_conflicting_connection_fails_without_recording_approval_or_audit(
         )
     assert fixed_approval_count == 0
     assert audit_count == 0
+
+
+async def test_live_inventory_retry_revalidation_completes_without_pool_starvation(
+    yandex_database: YandexDatabase,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection_config = _config()
+    service, _ = _service(yandex_database, config=connection_config)
+    connection_report = await service.run(
+        connection_config,
+        report_path=(tmp_path / "connection-report.json").resolve(),
+    )
+
+    class RetryProbe:
+        async def read(self, connection, resource_scope_reference, **kwargs):
+            del connection, resource_scope_reference
+            await kwargs["revalidate"]()
+            return YandexQualificationInventoryProbeResult(
+                inventory=YandexQualificationInventory(
+                    resources=(),
+                    file_count=0,
+                    directory_count=0,
+                    file_bytes=0,
+                    provider_pages=1,
+                ),
+                identity_requests=1,
+                disk_requests=1,
+            )
+
+    monkeypatch.setattr(
+        yandex_live_inventory,
+        "YandexDiskQualificationInventoryProbe",
+        lambda **kwargs: RetryProbe(),
+    )
+    monkeypatch.setenv(
+        "SPINE_DATABASE_URL",
+        yandex_database.runtime_url.get_secret_value(),
+    )
+    binding = YandexQualificationCredentialBinding(
+        schema_version="yandex-qualification-credential-binding:v1",
+        deployment_mode="qualification",
+        workspace_id=connection_config.workspace_id,
+        environment_id=connection_config.environment_id,
+        reference=ExternalSecretReference(
+            provider_reference=YANDEX_QUALIFICATION_PROVIDER_REFERENCE,
+            secret_reference=YANDEX_QUALIFICATION_SECRET_REFERENCE,
+        ),
+        client_id=YANDEX_QUALIFICATION_CLIENT_ID,
+        oauth_scope=YANDEX_QUALIFICATION_OAUTH_SCOPE,
+        approved_root=YANDEX_QUALIFICATION_ROOT,
+        expires_at=datetime(2027, 1, 1, tzinfo=timezone.utc),
+    )
+    inventory_config = YandexQualificationInventoryConfig(
+        opt_in=True,
+        credential_binding=binding,
+        connection_id=connection_report.connection_id,
+        connection_version_id=connection_report.connection_version_id,
+        service_principal_id=connection_report.service_principal_id,
+        resource_scope_reference=OpaqueProviderReference(
+            value=connection_report.resource_scope_reference
+        ),
+        authorization_generation=connection_report.authorization_generation,
+        configuration_generation=connection_report.configuration_generation,
+        security_approval_reference=connection_config.security_approval_reference,
+        data_approval_reference=connection_config.data_approval_reference,
+        fixture_manifest_version=connection_config.fixture_manifest_version,
+        scope_version=connection_config.scope_version,
+        approved_manifest_digest="a" * 64,
+    )
+    identity_file = (tmp_path / "identity.env").resolve()
+    FilePrivateQualificationArtifactWriter().create(
+        identity_file,
+        b"SPINE_YANDEX_QUALIFICATION_EXPECTED_USER_ID=123456789\n",
+    )
+    candidate = (tmp_path / "manifest-candidate.json").resolve()
+    report = (tmp_path / "inventory-report.json").resolve()
+
+    result = await asyncio.wait_for(
+        yandex_live_inventory._run(
+            config=inventory_config,
+            env_file=(tmp_path / "unused.env").resolve(),
+            identity_file=identity_file,
+            candidate_path=candidate,
+            report_path=report,
+            lease_file=(tmp_path / "inventory.lock").resolve(),
+            environment_opt_in=True,
+        ),
+        timeout=5,
+    )
+
+    assert result == 1
+    assert '"failure_code": "manifest_mismatch"' in report.read_text(
+        encoding="utf-8"
+    )
+    assert not candidate.exists()

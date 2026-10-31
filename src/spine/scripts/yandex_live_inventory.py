@@ -76,7 +76,7 @@ async def _run(
     engine = create_async_engine(
         settings.url.get_secret_value(),
         pool_size=1,
-        max_overflow=0,
+        max_overflow=1,
         pool_timeout=settings.pool_timeout_seconds,
         pool_pre_ping=settings.pool_pre_ping,
         pool_reset_on_return="rollback",
