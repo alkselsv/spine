@@ -182,6 +182,9 @@ def _lifecycle_query(connection: GoogleConnection) -> LifecycleEligibilityQuery:
         scope_version_id=connection.approval_id,
         scope_digest="a" * 64,
         provider_object_reference="file-1",
+        source_external_namespace="google",
+        source_external_generation="google-source-key:v1",
+        source_external_object_id="gsk1:" + "b" * 52,
     )
 
 

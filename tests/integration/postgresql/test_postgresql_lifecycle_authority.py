@@ -192,6 +192,9 @@ def _query(case, observation: LifecycleObservation) -> LifecycleEligibilityQuery
         scope_reference=observation.scope_reference,
         scope_version_id=observation.scope_version_id,
         scope_digest=observation.scope_digest,
+        source_external_namespace=case.source.external_namespace,
+        source_external_generation=case.source.external_generation,
+        source_external_object_id=case.source.external_object_id,
     )
 
 
@@ -447,8 +450,16 @@ async def test_postgresql_current_eligibility_uses_tombstone_and_exact_decision_
         ),
         context,
     )
+    stale_source_identity = await repository.current_eligibility(
+        replace(
+            _query(case, observation),
+            source_external_object_id="provider-object:stale",
+        ),
+        context,
+    )
 
     assert current.current_decision_id == decision.decision_id
     assert current.status is LifecycleEligibilityStatus.TOMBSTONED
     assert stale_scope.status is LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE
     assert stale_connection_version.status is LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE
+    assert stale_source_identity.status is LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE

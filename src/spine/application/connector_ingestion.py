@@ -165,6 +165,7 @@ class ConnectorIngestionCommand(BaseModel):
             or self.resource_object_reference is None
             or self.lifecycle_query.provider_object_reference
             != self.resource_object_reference
+            or self.lifecycle_query.source_external_namespace is None
         ):
             raise ValueError("lifecycle query must match the exact ingestion scope")
         return self
@@ -501,6 +502,7 @@ class ConnectorIngestionOrchestrator:
             command.resource_object_reference is None
             or command.lifecycle_query.provider_object_reference
             != command.resource_object_reference
+            or command.lifecycle_query.source_external_namespace is None
         ):
             raise LifecycleAuthorityError()
         if self.lifecycle_reader is None:

@@ -94,6 +94,7 @@ class ProviderReadCommand:
             or self.resource_object_reference is None
             or self.lifecycle_query.provider_object_reference
             != self.resource_object_reference
+            or self.lifecycle_query.source_external_namespace is None
         ):
             raise ValueError("lifecycle query must match the exact provider read scope")
 
@@ -228,7 +229,19 @@ class ProviderReadAdmission:
             observed_reference = getattr(key, "provider_object_id", None) or getattr(
                 key, "record_id", None
             )
-            if observed_reference != query.provider_object_reference:
+            if (
+                observed_reference != query.provider_object_reference
+                or (
+                    observation.external_identity.external_namespace,
+                    observation.external_identity.external_generation,
+                    observation.external_identity.external_object_id,
+                )
+                != (
+                    query.source_external_namespace,
+                    query.source_external_generation,
+                    query.source_external_object_id,
+                )
+            ):
                 raise ProviderReadDeniedError()
 
     @staticmethod

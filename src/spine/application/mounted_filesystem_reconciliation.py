@@ -18,6 +18,12 @@ from spine.application.document_lifecycle import (
     TombstoneDocumentCommand,
 )
 from spine.application.persistence.command_digest import digest_command
+from spine.application.lifecycle import (
+    CurrentLifecycleEligibilityReader,
+    LifecycleAuthorityError,
+    LifecycleEligibilityQuery,
+    require_current_read_eligibility,
+)
 from spine.application.connections.provider import (
     ProviderCapabilityUnavailableError,
     ProviderConnectionRepository,
@@ -140,6 +146,7 @@ class MountedFilesystemReconciliationCommand(DefinitionModel):
     configuration_generation: int = Field(gt=0)
     access_policy_version_id: UUID
     idempotency_key: str = Field(min_length=1, max_length=255)
+    lifecycle_query: LifecycleEligibilityQuery | None = None
 
     @model_validator(mode="after")
     def validate_ids(self) -> "MountedFilesystemReconciliationCommand":
@@ -153,6 +160,17 @@ class MountedFilesystemReconciliationCommand(DefinitionModel):
         ):
             if getattr(self, field_name).int == 0:
                 raise ValueError(f"{field_name} must be a non-zero UUID")
+        query = self.lifecycle_query
+        if query is not None and (
+            query.workspace_id != self.workspace_id
+            or query.environment_id != self.environment_id
+            or query.connection_id != self.connection_id
+            or query.connection_version_id != self.connection_version_id
+            or query.scope_reference != self.resource_scope_reference
+            or query.provider_object_reference != str(self.resource_scope_reference)
+            or query.source_external_namespace is None
+        ):
+            raise ValueError("lifecycle query must bind the exact mounted root scope")
         return self
 
 
@@ -310,12 +328,24 @@ class MountedFilesystemScanPort(Protocol):
 class AuthorizedMountedFilesystemScanner:
     repository: ProviderConnectionRepository
     provider: MountedFilesystemScanProvider
+    lifecycle_reader: CurrentLifecycleEligibilityReader | None = None
 
     async def read_snapshot(
         self,
         command: MountedFilesystemReconciliationCommand,
         context: TrustedPersistenceContext,
     ) -> MountedFilesystemScanSnapshot:
+        query = command.lifecycle_query
+        if query is None:
+            if self.lifecycle_reader is not None:
+                raise ProviderReadDeniedError()
+        elif self.lifecycle_reader is None:
+            raise ProviderReadDeniedError()
+        else:
+            try:
+                await require_current_read_eligibility(self.lifecycle_reader, query, context)
+            except LifecycleAuthorityError:
+                raise ProviderReadDeniedError() from None
         required = (
             ProviderCapabilityKind.ENUMERATION,
             ProviderCapabilityKind.BINARY_READ,
@@ -333,6 +363,10 @@ class AuthorizedMountedFilesystemScanner:
             authorization_generation=command.authorization_generation,
             configuration_generation=command.configuration_generation,
             required_capabilities=required,
+            resource_object_reference=(
+                query.provider_object_reference if query is not None else None
+            ),
+            lifecycle_query=query,
         )
         async with self.repository.admit_read(request, context) as connection:
             if (
@@ -361,9 +395,15 @@ class AuthorizedMountedFilesystemScanner:
             for capability in required:
                 if not connection.supports(capability):
                     raise ProviderCapabilityUnavailableError(capability)
-            return await self.provider.scan(
+            snapshot = await self.provider.scan(
                 connection, request.resource_scope_reference
             )
+        if query is not None and self.lifecycle_reader is not None:
+            try:
+                await require_current_read_eligibility(self.lifecycle_reader, query, context)
+            except LifecycleAuthorityError:
+                raise ProviderReadDeniedError() from None
+        return snapshot
 
 
 class MountedFilesystemIngestionPort(Protocol):

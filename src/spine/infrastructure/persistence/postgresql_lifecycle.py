@@ -221,6 +221,9 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
             result = await uow._execute(  # type: ignore[attr-defined]
                 select(
                     source_objects.c.connection_id.label("canonical_connection_id"),
+                    source_objects.c.external_namespace,
+                    source_objects.c.external_generation,
+                    source_objects.c.external_object_id,
                     current_source_heads.c.current_revision_kind,
                     lifecycle_decisions,
                 )
@@ -267,6 +270,17 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
             if (
                 row is None
                 or row["canonical_connection_id"] != query.connection_id
+                or query.source_external_namespace is None
+                or (
+                    row["external_namespace"],
+                    row["external_generation"],
+                    row["external_object_id"],
+                )
+                != (
+                    query.source_external_namespace,
+                    query.source_external_generation,
+                    query.source_external_object_id,
+                )
             ):
                 return _unavailable(query)
             decision = _decision(row) if row["decision_id"] is not None else None

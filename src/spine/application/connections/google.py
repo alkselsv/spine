@@ -178,6 +178,7 @@ class GoogleReadCommand:
             or self.resource_object_reference is None
             or self.lifecycle_query.provider_object_reference
             != self.resource_object_reference
+            or self.lifecycle_query.source_external_namespace is None
         ):
             raise ValueError("lifecycle query must match the exact Google read scope")
 

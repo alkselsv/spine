@@ -573,6 +573,9 @@ async def test_scope_withdrawal_blocks_connector_before_provider_read():
         scope_version_id=_id("scope-version"),
         scope_digest="a" * 64,
         provider_object_reference="estimate-42",
+        source_external_namespace=observation.external_identity.external_namespace,
+        source_external_generation=observation.external_identity.external_generation,
+        source_external_object_id=observation.external_identity.external_object_id,
     )
     command = _command().model_copy(
         update={

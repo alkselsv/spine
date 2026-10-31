@@ -22,6 +22,12 @@ from spine.application.connections.provider import (
     ProviderReadCommand,
     ProviderReadDeniedError,
 )
+from spine.application.lifecycle import (
+    CurrentLifecycleEligibilityReader,
+    LifecycleAuthorityError,
+    LifecycleEligibilityQuery,
+    require_current_read_eligibility,
+)
 from spine.application.persistence.context import (
     PersistenceOperation,
     TrustedPersistenceContext,
@@ -151,6 +157,7 @@ class YandexDiskReconciliationCommand(DefinitionModel):
     command_identity: str = Field(min_length=1, max_length=64)
     idempotency_key: str = Field(min_length=1, max_length=255)
     last_committed_checkpoint: str | None = Field(default=None, max_length=4096)
+    lifecycle_query: LifecycleEligibilityQuery | None = None
 
     @model_validator(mode="after")
     def validate_ids(self) -> "YandexDiskReconciliationCommand":
@@ -165,6 +172,17 @@ class YandexDiskReconciliationCommand(DefinitionModel):
         ):
             if getattr(self, field_name).int == 0:
                 raise ValueError(f"{field_name} must be a non-zero UUID")
+        query = self.lifecycle_query
+        if query is not None and (
+            query.workspace_id != self.workspace_id
+            or query.environment_id != self.environment_id
+            or query.connection_id != self.connection_id
+            or query.connection_version_id != self.connection_version_id
+            or query.scope_reference != self.resource_scope_reference
+            or query.provider_object_reference != str(self.resource_scope_reference)
+            or query.source_external_namespace is None
+        ):
+            raise ValueError("lifecycle query must bind the exact Yandex source scope")
         return self
 
 
@@ -325,6 +343,7 @@ class AuthorizedYandexDiskScanner:
 
     repository: ProviderConnectionRepository
     provider: YandexDiskScanProvider
+    lifecycle_reader: CurrentLifecycleEligibilityReader | None = None
 
     async def read_page(
         self,
@@ -332,6 +351,19 @@ class AuthorizedYandexDiskScanner:
         checkpoint: str | None,
         context: TrustedPersistenceContext,
     ) -> YandexDiskScanPage:
+        query = command.lifecycle_query
+        if query is None:
+            if self.lifecycle_reader is not None:
+                raise ProviderReadDeniedError()
+        elif self.lifecycle_reader is None:
+            raise ProviderReadDeniedError()
+        else:
+            try:
+                await require_current_read_eligibility(
+                    self.lifecycle_reader, query, context
+                )
+            except LifecycleAuthorityError:
+                raise ProviderReadDeniedError() from None
         read_command = ProviderReadCommand(
             workspace_id=command.workspace_id,
             environment_id=command.environment_id,
@@ -347,6 +379,10 @@ class AuthorizedYandexDiskScanner:
                 ProviderCapabilityKind.METADATA_READ,
                 ProviderCapabilityKind.FULL_RECONCILIATION,
             ),
+            resource_object_reference=(
+                query.provider_object_reference if query is not None else None
+            ),
+            lifecycle_query=query,
         )
         async with self.repository.admit_read(read_command, context) as connection:
             _validate_scan_connection(read_command, connection)
@@ -358,6 +394,13 @@ class AuthorizedYandexDiskScanner:
                 read_command.resource_scope_reference,
                 checkpoint=checkpoint,
             )
+        if query is not None and self.lifecycle_reader is not None:
+            try:
+                await require_current_read_eligibility(
+                    self.lifecycle_reader, query, context
+                )
+            except LifecycleAuthorityError:
+                raise ProviderReadDeniedError() from None
         return provider_page
 
 

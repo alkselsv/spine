@@ -193,6 +193,9 @@ class LifecycleEligibilityQuery:
     scope_version_id: UUID
     scope_digest: str
     provider_object_reference: str | None = None
+    source_external_namespace: str | None = None
+    source_external_generation: str | None = None
+    source_external_object_id: str | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -212,6 +215,15 @@ class LifecycleEligibilityQuery:
             1 <= len(self.provider_object_reference) <= 1024
         ):
             raise LifecycleAuthorityError()
+        external_identity = (
+            self.source_external_namespace,
+            self.source_external_generation,
+            self.source_external_object_id,
+        )
+        if any(value is not None for value in external_identity) and any(
+            value is None or not value for value in external_identity
+        ):
+            raise LifecycleAuthorityError()
 
     def digest_payload(self) -> dict[str, object]:
         """Return the stable exact binding used by command idempotency digests."""
@@ -228,6 +240,10 @@ class LifecycleEligibilityQuery:
         }
         if self.provider_object_reference is not None:
             payload["provider_object_reference"] = self.provider_object_reference
+        if self.source_external_namespace is not None:
+            payload["source_external_namespace"] = self.source_external_namespace
+            payload["source_external_generation"] = self.source_external_generation
+            payload["source_external_object_id"] = self.source_external_object_id
         return payload
 
     def matches_decision(self, decision: LifecycleDecision) -> bool:

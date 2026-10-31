@@ -447,12 +447,23 @@ async def _lock_and_validate_lifecycle_eligibility(
             _LIFECYCLE_DECISIONS.c.scope_version_id,
             _LIFECYCLE_DECISIONS.c.scope_digest,
             _LIFECYCLE_DECISIONS.c.status,
+            _SOURCE_OBJECTS.c.external_namespace,
+            _SOURCE_OBJECTS.c.external_generation,
+            _SOURCE_OBJECTS.c.external_object_id,
         )
         .select_from(
             _CURRENT_LIFECYCLE_AUTHORITIES.join(
                 _LIFECYCLE_DECISIONS,
                 _LIFECYCLE_DECISIONS.c.decision_id
                 == _CURRENT_LIFECYCLE_AUTHORITIES.c.current_decision_id,
+            ).join(
+                _SOURCE_OBJECTS,
+                (_SOURCE_OBJECTS.c.source_object_id
+                 == _CURRENT_LIFECYCLE_AUTHORITIES.c.source_object_id)
+                & (_SOURCE_OBJECTS.c.workspace_id
+                   == _CURRENT_LIFECYCLE_AUTHORITIES.c.workspace_id)
+                & (_SOURCE_OBJECTS.c.environment_id
+                   == _CURRENT_LIFECYCLE_AUTHORITIES.c.environment_id),
             )
         )
         .where(
@@ -471,6 +482,17 @@ async def _lock_and_validate_lifecycle_eligibility(
         or query.workspace_id != workspace_id
         or query.environment_id != environment_id
         or query.source_object_id != source_object_id
+            or query.source_external_namespace is None
+            or (
+                row["external_namespace"],
+                row["external_generation"],
+                row["external_object_id"],
+            )
+            != (
+                query.source_external_namespace,
+                query.source_external_generation,
+                query.source_external_object_id,
+            )
         or (
             row["connection_id"],
             row["connection_version_id"],

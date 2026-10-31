@@ -195,6 +195,9 @@ def _lifecycle_query() -> LifecycleEligibilityQuery:
         scope_version_id=_id(3),
         scope_digest="a" * 64,
         provider_object_reference="file-1",
+        source_external_namespace="google",
+        source_external_generation="google-source-key:v1",
+        source_external_object_id="gsk1:" + "a" * 52,
     )
 
 
