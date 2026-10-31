@@ -10,7 +10,6 @@ import os
 from pathlib import Path
 import tarfile
 
-
 PACKAGE_NAME = "issue-680-synthetic-v1"
 MIB = 1024 * 1024
 FIXED_MTIME = 1_700_000_000
@@ -168,10 +167,7 @@ def generate(output_dir: Path) -> tuple[Path, Path, str]:
             "max_reconciliation_attempts_per_item": 2,
         },
         "entries": [
-            *(
-                _regular_entry(corpus, path, purpose)
-                for path, purpose in regular_files
-            ),
+            *(_regular_entry(corpus, path, purpose) for path, purpose in regular_files),
             {
                 "relative_path": "symlink-internal",
                 "type": "symlink",
@@ -229,9 +225,7 @@ def generate(output_dir: Path) -> tuple[Path, Path, str]:
 
     _write_archive(package, archive_path)
     checksum = _sha256(archive_path)
-    checksum_path.write_text(
-        f"{checksum}  {archive_path.name}\n", encoding="ascii"
-    )
+    checksum_path.write_text(f"{checksum}  {archive_path.name}\n", encoding="ascii")
     return package, archive_path, checksum
 
 
