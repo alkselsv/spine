@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
+import random
 
 from spine.application.connections.google import GoogleConnectionRepository
 from spine.application.diagnostics import DiagnosticEventRegistry, DiagnosticSink
@@ -42,6 +43,7 @@ class GoogleLiveQualificationBindings:
     sleep: Callable[[float], Awaitable[None]]
     context: TrustedPersistenceContext
     approval_verifier: GoogleExecutionApprovalVerifier
+    jitter: Callable[[float, float], float] = random.uniform
     shared_drive_preflight: GoogleSharedDrivePreflightPort | None = None
 
     def build_runner(
@@ -66,6 +68,7 @@ class GoogleLiveQualificationBindings:
                 credential_resolver=self.credential_resolver,
                 transport=self.transport,
                 retry_observer=self.retry_observer,
+                jitter=self.jitter,
                 sheet_profiles=tuple(
                     target.profile for target in config.sheet_targets
                 ),
