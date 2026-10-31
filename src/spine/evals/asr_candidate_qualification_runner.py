@@ -795,7 +795,7 @@ async def _run_real_candidate(
                         for segment in assembled for signal in segment.signals
                     ),
                     chunk_boundaries_verified=chunk_boundaries_verified,
-                    partial_recovery_verified=partial_recovery_verified,
+                    partial_recovery_replay_observed=partial_recovery_verified,
                 ))
                 if input_format == case.audio.media_format.value:
                     prediction_by_case[case.case_id] = transcript
@@ -1167,7 +1167,7 @@ def _evaluate_observations(
         for item in long_form_observations.values()
     )
     long_form_recovery_observed = bool(long_form_cases) and all(
-        item is not None and item.partial_recovery_verified
+        item is not None and item.partial_recovery_replay_observed
         for item in long_form_observations.values()
     )
     long_form_pause_handling_observed = bool(long_form_cases) and all(
@@ -1208,6 +1208,7 @@ def _evaluate_observations(
                 or (term_predictions > 0 and term_exact / term_predictions < 0.95)
             )
             required_coverage.append(terminology_localization_complete)
+            required_coverage.append(False)  # Vocabulary exhaustiveness is not established.
         elif gate_id == "segment_timestamps":
             required_coverage = [has_minima.get(("segment_timestamps", category), False) for category in ("boundary_error", "alignment_coverage")]
             required_coverage.append(timestamp_alignment_complete)
@@ -1225,6 +1226,7 @@ def _evaluate_observations(
                 long_form_pause_handling_observed,
                 all(item is not None and item.missing_reference_segments == 0 for item in long_form_observations.values()),
                 long_form_recovery_observed,
+                False,  # Replay does not inject worker failure/retry or verify durable deduplication.
             ))
             measured_failure = False
         elif gate_id == "preprocessing_effects":
@@ -1269,8 +1271,10 @@ def _evaluate_observations(
             observed_value=None,
             threshold=threshold,
             detail=(
-                "Long-form chunks and recovery expectations were checked from real synthetic inference outputs; recovery is an annotation-driven replay, not a production worker failure."
-                if gate_id == "long_form_chunking" and status is QualificationStatus.PASS
+                "NOT_VERIFIED: chunk boundaries and outputs are measured, but annotation-driven recovery replay does not exercise injected worker failure/retry or durable deduplication."
+                if gate_id == "long_form_chunking"
+                else "NOT_VERIFIED: precision is measured over annotated terms only; the frozen dataset does not establish that this vocabulary is exhaustive."
+                if gate_id == "terminology"
                 else "NOT_VERIFIED: per-format WER is reported, but there is no approved paired preprocessing profile for a before/after inference comparison."
                 if gate_id == "preprocessing_effects"
                 else "Independent #661 gate evaluated; missing or insufficient category coverage remains NOT_VERIFIED."

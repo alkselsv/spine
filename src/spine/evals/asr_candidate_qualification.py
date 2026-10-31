@@ -198,7 +198,7 @@ class CandidateCaseObservation(DefinitionModel):
     unmatched_prediction_segments: StrictInt = Field(default=0, ge=0)
     timestamps_supported: StrictBool = True
     chunk_boundaries_verified: StrictBool = False
-    partial_recovery_verified: StrictBool = False
+    partial_recovery_replay_observed: StrictBool = False
 
     @model_validator(mode="after")
     def validate_segment_times(self) -> "CandidateCaseObservation":
