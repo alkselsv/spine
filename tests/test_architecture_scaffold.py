@@ -106,6 +106,27 @@ class ArchitectureScaffoldTests(unittest.TestCase):
                 f"infrastructure import in {path}",
             )
 
+    def test_yandex_qualification_application_uses_ports_not_connectors(self) -> None:
+        application_root = Path(__file__).parents[1] / "src" / "spine" / "application"
+        for name in (
+            "yandex_disk_qualification.py",
+            "yandex_identity_preflight.py",
+            "yandex_qualification_identity.py",
+            "yandex_qualification_inventory.py",
+        ):
+            path = application_root / name
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            imports = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imports.extend(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imports.append(node.module)
+            self.assertFalse(
+                any(name.startswith("spine.connectors") for name in imports),
+                f"connector import in {path}",
+            )
+
     def test_application_persistence_contracts_have_no_framework_imports(self) -> None:
         contracts_root = (
             Path(__file__).parents[1] / "src" / "spine" / "application" / "persistence"

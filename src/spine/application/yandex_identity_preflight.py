@@ -19,10 +19,10 @@ from pydantic import Field, StrictBool, StrictStr, model_validator
 from spine.application.private_qualification_artifacts import (
     PrivateQualificationArtifactWriter,
 )
-from spine.connectors.yandex_disk import YandexDiskCredentialResolver
-from spine.connectors.yandex_disk_api import (
-    YandexDiskApiRequest,
-    YandexDiskApiTransport,
+from spine.application.yandex_qualification_identity import (
+    IdentityFailureCode,
+    YandexIdentityProbe,
+    YandexIdentityProbeError,
 )
 from spine.domain.common import DefinitionModel
 from spine.application.yandex_qualification_credentials import (
@@ -31,18 +31,7 @@ from spine.application.yandex_qualification_credentials import (
 )
 
 
-_IDENTITY_URL = "https://login.yandex.ru/info"
-_MAXIMUM_IDENTITY_RESPONSE_BYTES = 64 * 1024
 _EXPECTED_USER_ID_KEY = "SPINE_YANDEX_QUALIFICATION_EXPECTED_USER_ID"
-
-IdentityFailureCode = Literal[
-    "authorization_denied",
-    "client_mismatch",
-    "credential_denied",
-    "provider_contract_rejected",
-    "provider_unavailable",
-    "candidate_write_denied",
-]
 
 
 class YandexIdentityPreflightRefused(RuntimeError):
@@ -103,13 +92,11 @@ class YandexIdentityPreflightRunner:
         self,
         *,
         config: YandexIdentityPreflightConfig,
-        credential_resolver: YandexDiskCredentialResolver,
-        transport: YandexDiskApiTransport,
+        identity_probe: YandexIdentityProbe,
         artifact_writer: PrivateQualificationArtifactWriter,
     ) -> None:
         self.config = config
-        self._resolver = credential_resolver
-        self._transport = transport
+        self._identity_probe = identity_probe
         self._artifact_writer = artifact_writer
 
     async def run(
@@ -125,58 +112,12 @@ class YandexIdentityPreflightRunner:
 
         binding = self.config.credential_binding
         try:
-            secret = await self._resolver.resolve(
-                binding.reference,
-                workspace_id=binding.workspace_id,
-                environment_id=binding.environment_id,
-            )
-            token = secret.get_secret_value()
-            if not token:
-                return self._failed("credential_denied", identity_requests=0)
+            observation = await self._identity_probe.probe(binding)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            return self._failed("credential_denied", identity_requests=0)
-
-        try:
-            response = await self._transport.request(
-                YandexDiskApiRequest(
-                    method="GET",
-                    url=_IDENTITY_URL,
-                    headers={"Authorization": f"OAuth {token}"},
-                    query={"format": "json"},
-                    timeout_seconds=10.0,
-                    max_response_bytes=_MAXIMUM_IDENTITY_RESPONSE_BYTES,
-                )
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            return self._failed("provider_unavailable", identity_requests=1)
-
-        if response.status_code in (401, 403):
-            return self._failed("authorization_denied", identity_requests=1)
-        if response.status_code >= 500:
-            return self._failed("provider_unavailable", identity_requests=1)
-        if response.status_code < 200 or response.status_code >= 300:
-            return self._failed("provider_contract_rejected", identity_requests=1)
-
-        payload = response.json_body
-        if payload is None:
-            return self._failed("provider_contract_rejected", identity_requests=1)
-        user_id = payload.get("id")
-        client_id = payload.get("client_id")
-        if (
-            not isinstance(user_id, str)
-            or not user_id.isascii()
-            or not user_id.isdigit()
-            or len(user_id) > 255
-        ):
-            return self._failed("provider_contract_rejected", identity_requests=1)
-        if not isinstance(client_id, str) or not client_id:
-            return self._failed("provider_contract_rejected", identity_requests=1)
-        if client_id != binding.client_id:
-            return self._failed("client_mismatch", identity_requests=1)
+        except YandexIdentityProbeError as exc:
+            return self._failed(exc.code, identity_requests=exc.identity_requests)
+        user_id = observation.user_id
 
         try:
             _write_identity_candidate(

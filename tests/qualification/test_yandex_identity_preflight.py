@@ -14,6 +14,7 @@ from spine.connectors.yandex_disk_api import (
     YandexDiskApiRequest,
     YandexDiskApiResponse,
 )
+from spine.connectors.yandex_identity_preflight import YandexIdentityProbeAdapter
 from spine.application.yandex_identity_preflight import (
     YandexIdentityPreflightConfig,
     YandexIdentityPreflightRefused,
@@ -84,8 +85,10 @@ def _runner(*, opt_in: bool, response: YandexDiskApiResponse):
             opt_in=opt_in,
             credential_binding=_binding(),
         ),
-        credential_resolver=resolver,
-        transport=transport,
+        identity_probe=YandexIdentityProbeAdapter(
+            credential_resolver=resolver,
+            transport=transport,
+        ),
         artifact_writer=FilePrivateQualificationArtifactWriter(),
     )
     return runner, resolver, transport

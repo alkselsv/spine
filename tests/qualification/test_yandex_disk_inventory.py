@@ -19,9 +19,14 @@ from spine.connectors.yandex_disk_api import (
 )
 from spine.application.yandex_disk_qualification import (
     YandexQualificationInventoryConfig,
-    YandexQualificationInventoryError,
-    YandexQualificationInventoryReader,
     YandexQualificationInventoryRunner,
+)
+from spine.application.yandex_qualification_inventory import (
+    YandexQualificationInventoryError,
+)
+from spine.connectors.yandex_disk_inventory import YandexQualificationInventoryReader
+from spine.connectors.yandex_disk_qualification import (
+    YandexDiskQualificationInventoryProbe,
 )
 from spine.domain.connections.provider import ProviderConnectionStatus
 from spine.infrastructure.yandex_qualification_credentials import (
@@ -209,18 +214,25 @@ async def test_recursive_inventory_honors_bounded_provider_retry_after() -> None
 
     service.list_resources = throttled_once  # type: ignore[method-assign]
     delays: list[float] = []
+    retry_events: list[str] = []
 
     async def record_delay(delay: float) -> None:
         delays.append(delay)
+        retry_events.append("sleep")
+
+    async def revalidate() -> None:
+        retry_events.append("revalidate")
 
     await YandexQualificationInventoryReader(
         service=service,
         approved_root="/Spine-Qualification-678-v1",
         sleep=record_delay,
         jitter=lambda ceiling: ceiling / 2,
+        revalidate=revalidate,
     ).read(_connection(), SCOPE)
 
     assert delays == [0.75]
+    assert retry_events == ["sleep", "revalidate"]
 
 
 @pytest.mark.asyncio
@@ -252,6 +264,41 @@ async def test_recursive_inventory_rejects_retry_after_beyond_attempt_deadline()
 
     assert raised.value.code == "deadline_exceeded"
     assert delays == []
+
+
+@pytest.mark.asyncio
+async def test_recursive_inventory_shares_attempt_deadline_between_confirmation_passes() -> None:
+    root = "disk:/Spine-Qualification-678-v1"
+    now = 0.0
+
+    class SlowPass:
+        async def list_resources(self, connection, scope, *, path=None, offset, limit):
+            nonlocal now
+            del connection, scope
+            assert path == root
+            now += 0.6
+            return YandexDiskResourcePage(
+                _embedded={
+                    "path": root,
+                    "items": (_file(f"{root}/one.txt"),),
+                    "limit": limit,
+                    "offset": offset,
+                    "total": 1,
+                }
+            )
+
+    reader = YandexQualificationInventoryReader(
+        service=SlowPass(),
+        approved_root="/Spine-Qualification-678-v1",
+        attempt_timeout_seconds=1.0,
+        logical_timeout_seconds=2.0,
+        monotonic=lambda: now,
+    )
+
+    with pytest.raises(YandexQualificationInventoryError) as raised:
+        await reader.read(_connection(), SCOPE)
+
+    assert raised.value.code == "deadline_exceeded"
 
 
 @pytest.mark.asyncio
@@ -353,6 +400,25 @@ def _request_governor() -> YandexQualificationRequestGovernor:
         policy=policy,
         monotonic=lambda: now,
         sleep=advance,
+    )
+
+
+async def _ignore_delay(_: float) -> None:
+    return None
+
+
+def _inventory_probe(
+    transport,
+    *,
+    sleep=_ignore_delay,
+    jitter=lambda _: 0.0,
+) -> YandexDiskQualificationInventoryProbe:
+    return YandexDiskQualificationInventoryProbe(
+        credential_resolver=Resolver(),
+        transport=transport,
+        request_governor=_request_governor(),
+        sleep=sleep,
+        jitter=jitter,
     )
 
 
@@ -506,14 +572,11 @@ async def test_inventory_runner_writes_private_candidate_and_safe_aggregate_repo
     report = await YandexQualificationInventoryRunner(
         config=_config(),
         expected_user_id=SecretStr("123456789"),
-        credential_resolver=Resolver(),
-        transport=transport,
-        request_governor=_request_governor(),
+        inventory_probe=_inventory_probe(transport),
         connection_repository=Repository(),
         execution_lease=AllowedExecutionLease(),
         artifact_writer=FilePrivateQualificationArtifactWriter(),
         context=object(),  # type: ignore[arg-type]
-        sleep=lambda _: _no_sleep(),
     ).run(environment_opt_in=True, candidate_path=candidate)
 
     assert report.status == "ready_for_manifest_approval"
@@ -541,9 +604,7 @@ async def test_inventory_runner_refuses_without_double_opt_in_before_admission(
     report = await YandexQualificationInventoryRunner(
         config=_config().model_copy(update={"opt_in": False}),
         expected_user_id=SecretStr("123456789"),
-        credential_resolver=Resolver(),
-        transport=transport,
-        request_governor=_request_governor(),
+        inventory_probe=_inventory_probe(transport),
         connection_repository=repository,
         execution_lease=AllowedExecutionLease(),
         artifact_writer=FilePrivateQualificationArtifactWriter(),
@@ -568,9 +629,7 @@ async def test_inventory_runner_denies_missing_execution_lease_before_network(
     report = await YandexQualificationInventoryRunner(
         config=_config(),
         expected_user_id=SecretStr("123456789"),
-        credential_resolver=Resolver(),
-        transport=transport,
-        request_governor=_request_governor(),
+        inventory_probe=_inventory_probe(transport),
         connection_repository=Repository(),
         execution_lease=DeniedExecutionLease(),
         artifact_writer=FilePrivateQualificationArtifactWriter(),
@@ -605,9 +664,7 @@ async def test_inventory_runner_denies_foreign_or_inactive_admission_before_netw
     report = await YandexQualificationInventoryRunner(
         config=_config(),
         expected_user_id=SecretStr("123456789"),
-        credential_resolver=Resolver(),
-        transport=transport,
-        request_governor=_request_governor(),
+        inventory_probe=_inventory_probe(transport),
         connection_repository=Repository(foreign_connection),
         execution_lease=AllowedExecutionLease(),
         artifact_writer=FilePrivateQualificationArtifactWriter(),
@@ -691,15 +748,11 @@ async def test_inventory_runner_records_provider_failures_as_distinct_states(
     report = await YandexQualificationInventoryRunner(
         config=_config(),
         expected_user_id=SecretStr("123456789"),
-        credential_resolver=Resolver(),
-        transport=transport,
-        request_governor=_request_governor(),
+        inventory_probe=_inventory_probe(transport),
         connection_repository=Repository(),
         execution_lease=AllowedExecutionLease(),
         artifact_writer=FilePrivateQualificationArtifactWriter(),
         context=object(),  # type: ignore[arg-type]
-        sleep=lambda _: _no_sleep(),
-        jitter=lambda _: 0.0,
     ).run(
         environment_opt_in=True,
         candidate_path=(tmp_path / "candidate.json").resolve(),
@@ -721,15 +774,11 @@ async def test_inventory_runner_revalidates_authority_before_retry(
     report = await YandexQualificationInventoryRunner(
         config=_config(),
         expected_user_id=SecretStr("123456789"),
-        credential_resolver=Resolver(),
-        transport=transport,
-        request_governor=_request_governor(),
+        inventory_probe=_inventory_probe(transport),
         connection_repository=repository,
         execution_lease=AllowedExecutionLease(),
         artifact_writer=FilePrivateQualificationArtifactWriter(),
         context=object(),  # type: ignore[arg-type]
-        sleep=lambda _: _no_sleep(),
-        jitter=lambda _: 0.0,
     ).run(
         environment_opt_in=True,
         candidate_path=(tmp_path / "candidate.json").resolve(),
@@ -748,9 +797,7 @@ async def test_inventory_runner_records_cancellation_as_terminal_evidence(
     report = await YandexQualificationInventoryRunner(
         config=_config(),
         expected_user_id=SecretStr("123456789"),
-        credential_resolver=Resolver(),
-        transport=CancelledTransport(),
-        request_governor=_request_governor(),
+        inventory_probe=_inventory_probe(CancelledTransport()),
         connection_repository=Repository(),
         execution_lease=AllowedExecutionLease(),
         artifact_writer=FilePrivateQualificationArtifactWriter(),
@@ -783,9 +830,7 @@ async def test_inventory_runner_rejects_unaccounted_or_excess_wire_bytes(
         report = await YandexQualificationInventoryRunner(
             config=_config(),
             expected_user_id=SecretStr("123456789"),
-            credential_resolver=Resolver(),
-            transport=Transport([response]),
-            request_governor=_request_governor(),
+            inventory_probe=_inventory_probe(Transport([response])),
             connection_repository=Repository(),
             execution_lease=AllowedExecutionLease(),
             artifact_writer=FilePrivateQualificationArtifactWriter(),
@@ -811,15 +856,11 @@ async def test_inventory_runner_reports_manifest_mismatch_without_candidate(
     report = await YandexQualificationInventoryRunner(
         config=_config(),
         expected_user_id=SecretStr("123456789"),
-        credential_resolver=Resolver(),
-        transport=Transport(responses),
-        request_governor=_request_governor(),
+        inventory_probe=_inventory_probe(Transport(responses)),
         connection_repository=Repository(),
         execution_lease=AllowedExecutionLease(),
         artifact_writer=FilePrivateQualificationArtifactWriter(),
         context=object(),  # type: ignore[arg-type]
-        sleep=lambda _: _no_sleep(),
-        jitter=lambda _: 0.0,
     ).run(environment_opt_in=True, candidate_path=candidate)
 
     assert report.failure_code == "manifest_mismatch"
@@ -835,15 +876,13 @@ async def test_inventory_runner_rejects_different_manifest_with_same_aggregates(
     report = await YandexQualificationInventoryRunner(
         config=_config(),
         expected_user_id=SecretStr("123456789"),
-        credential_resolver=Resolver(),
-        transport=Transport(_same_aggregate_different_manifest_responses()),
-        request_governor=_request_governor(),
+        inventory_probe=_inventory_probe(
+            Transport(_same_aggregate_different_manifest_responses())
+        ),
         connection_repository=Repository(),
         execution_lease=AllowedExecutionLease(),
         artifact_writer=FilePrivateQualificationArtifactWriter(),
         context=object(),  # type: ignore[arg-type]
-        sleep=lambda _: _no_sleep(),
-        jitter=lambda _: 0.0,
     ).run(environment_opt_in=True, candidate_path=candidate)
 
     assert report.status == "not_verified"
@@ -861,15 +900,11 @@ async def test_inventory_runner_does_not_replace_existing_manifest_candidate(
     report = await YandexQualificationInventoryRunner(
         config=_config(),
         expected_user_id=SecretStr("123456789"),
-        credential_resolver=Resolver(),
-        transport=Transport(_baseline_responses()),
-        request_governor=_request_governor(),
+        inventory_probe=_inventory_probe(Transport(_baseline_responses())),
         connection_repository=Repository(),
         execution_lease=AllowedExecutionLease(),
         artifact_writer=FilePrivateQualificationArtifactWriter(),
         context=object(),  # type: ignore[arg-type]
-        sleep=lambda _: _no_sleep(),
-        jitter=lambda _: 0.0,
     ).run(environment_opt_in=True, candidate_path=candidate)
 
     assert report.failure_code == "candidate_write_denied"

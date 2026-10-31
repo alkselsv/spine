@@ -113,9 +113,9 @@ runner performs two complete
 recursive metadata traversals of the exact root. Every folder page is path-confined, every
 listed item must be a direct child of that page, and the two ordered inventories
 must be identical. The two passes share the approved ten-page, 32-resource and
-retry budgets. Each pass has a five-minute deadline and the logical run has a
-ten-minute deadline; authority is re-admitted before every retry. Cancellation
-produces terminal `NOT_VERIFIED` evidence. The run also stops as `NOT_VERIFIED`
+retry budgets. The combined two-pass scan attempt has a five-minute deadline
+and the logical run has a ten-minute deadline; authority is re-admitted before
+every retry. Cancellation produces terminal `NOT_VERIFIED` evidence. The run also stops as `NOT_VERIFIED`
 if it observes a changing inventory, does not match the approved aggregate
 baseline of five files, four child directories and 1,416 bytes, or differs from
 the exact owner-approved opaque manifest digest.

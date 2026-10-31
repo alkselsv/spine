@@ -9,68 +9,29 @@ import random
 import time
 from typing import Literal
 
-from pydantic import Field, StrictInt
-
 from spine.application.yandex_disk_scan import (
     YandexDiskThrottleError,
     YandexDiskTransientError,
+)
+from spine.application.yandex_qualification_inventory import (
+    InventoryFailureCode,
+    YandexQualificationInventory,
+    YandexQualificationInventoryError,
+    YandexQualificationInventoryItem,
 )
 from spine.connectors.yandex_disk import (
     YandexDiskResource,
     YandexDiskResourcePage,
     YandexDiskService,
 )
-from spine.domain.common import DefinitionModel
 from spine.domain.connections.provider import (
     OpaqueProviderReference,
     ProviderConnection,
 )
 
 
-InventoryFailureCode = Literal[
-    "candidate_write_denied",
-    "cancelled",
-    "contract_rejected",
-    "deadline_exceeded",
-    "inventory_changed",
-    "manifest_mismatch",
-    "page_limit_reached",
-    "permission_lost",
-    "prerequisite_denied",
-    "provider_unavailable",
-    "resource_limit_reached",
-    "resource_not_found",
-    "response_byte_limit_reached",
-    "retry_budget_exhausted",
-    "scope_denied",
-    "throttled",
-    "authorization_revoked",
-]
-
-
 async def _skip_revalidation() -> None:
     return None
-
-
-class YandexQualificationInventoryError(RuntimeError):
-    """A content-free refusal to claim a complete recursive inventory."""
-
-    def __init__(self, code: InventoryFailureCode) -> None:
-        self.code = code
-        super().__init__("Yandex qualification inventory is incomplete")
-
-
-class YandexQualificationInventory(DefinitionModel):
-    """Private exact inventory; callers must not serialize it publicly."""
-
-    schema_version: Literal["yandex-qualification-inventory:v1"] = (
-        "yandex-qualification-inventory:v1"
-    )
-    resources: tuple[YandexDiskResource, ...]
-    file_count: StrictInt = Field(ge=0)
-    directory_count: StrictInt = Field(ge=0)
-    file_bytes: StrictInt = Field(ge=0)
-    provider_pages: StrictInt = Field(ge=1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,19 +76,23 @@ class YandexQualificationInventoryReader:
             max_resources=self.max_resources,
         )
         logical_deadline = self.monotonic() + self.logical_timeout_seconds
+        attempt_deadline = min(
+            logical_deadline,
+            self.monotonic() + self.attempt_timeout_seconds,
+        )
         first = await self._read_once(
             connection,
             resource_scope_reference,
             retry_budget=retry_budget,
             inventory_budget=inventory_budget,
-            logical_deadline=logical_deadline,
+            attempt_deadline=attempt_deadline,
         )
         confirmation = await self._read_once(
             connection,
             resource_scope_reference,
             retry_budget=retry_budget,
             inventory_budget=inventory_budget,
-            logical_deadline=logical_deadline,
+            attempt_deadline=attempt_deadline,
         )
         if first.resources != confirmation.resources:
             raise YandexQualificationInventoryError("inventory_changed")
@@ -140,12 +105,8 @@ class YandexQualificationInventoryReader:
         *,
         retry_budget: _RetryBudget,
         inventory_budget: _InventoryBudget,
-        logical_deadline: float,
+        attempt_deadline: float,
     ) -> YandexQualificationInventory:
-        attempt_deadline = min(
-            logical_deadline,
-            self.monotonic() + self.attempt_timeout_seconds,
-        )
         root = f"disk:{self.approved_root}"
         pending = [root]
         seen_directories = {root}
@@ -167,6 +128,7 @@ class YandexQualificationInventoryReader:
                     retry_budget=retry_budget,
                     deadline=attempt_deadline,
                 )
+                self._require_before_deadline(attempt_deadline)
                 embedded = page.embedded
                 if (
                     embedded.path != directory
@@ -194,7 +156,12 @@ class YandexQualificationInventoryReader:
                     raise YandexQualificationInventoryError("contract_rejected")
                 offset = next_offset
 
-        ordered = tuple(resources[path] for path in sorted(resources))
+        ordered = tuple(
+            YandexQualificationInventoryItem.model_validate(
+                resources[path].model_dump(mode="python")
+            )
+            for path in sorted(resources)
+        )
         files = tuple(item for item in ordered if item.type == "file")
         return YandexQualificationInventory(
             resources=ordered,
@@ -218,17 +185,26 @@ class YandexQualificationInventoryReader:
         for attempt in range(1, self.max_attempts + 1):
             self._require_before_deadline(deadline)
             try:
-                return await self.service.list_resources(
-                    connection,
-                    resource_scope_reference,
-                    path=path,
-                    offset=offset,
-                    limit=limit,
+                remaining = deadline - self.monotonic()
+                if remaining <= 0:
+                    raise YandexQualificationInventoryError("deadline_exceeded")
+                return await asyncio.wait_for(
+                    self.service.list_resources(
+                        connection,
+                        resource_scope_reference,
+                        path=path,
+                        offset=offset,
+                        limit=limit,
+                    ),
+                    timeout=remaining,
                 )
+            except TimeoutError:
+                raise YandexQualificationInventoryError(
+                    "deadline_exceeded"
+                ) from None
             except (YandexDiskThrottleError, YandexDiskTransientError) as exc:
                 if attempt == self.max_attempts:
                     raise
-                await self.revalidate()
                 retry_budget.reserve(2)
                 ceiling = self.backoff_ceilings[attempt - 1]
                 delay = self.jitter(ceiling)
@@ -243,6 +219,8 @@ class YandexQualificationInventoryReader:
                 if self.monotonic() + retry_delay >= deadline:
                     raise YandexQualificationInventoryError("deadline_exceeded")
                 await self.sleep(retry_delay)
+                self._require_before_deadline(deadline)
+                await self.revalidate()
         raise AssertionError("bounded inventory retry loop did not terminate")
 
     def _require_before_deadline(self, deadline: float) -> None:

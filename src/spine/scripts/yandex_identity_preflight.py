@@ -11,6 +11,7 @@ import sys
 import httpx
 
 from spine.connectors.yandex_disk_api import HttpxYandexDiskApiTransport
+from spine.connectors.yandex_identity_preflight import YandexIdentityProbeAdapter
 from spine.application.yandex_identity_preflight import (
     YandexIdentityPreflightConfig,
     YandexIdentityPreflightRefused,
@@ -41,8 +42,10 @@ async def _run(
     async with httpx.AsyncClient() as client:
         report = await YandexIdentityPreflightRunner(
             config=config,
-            credential_resolver=resolver,
-            transport=HttpxYandexDiskApiTransport(client=client),
+            identity_probe=YandexIdentityProbeAdapter(
+                credential_resolver=resolver,
+                transport=HttpxYandexDiskApiTransport(client=client),
+            ),
             artifact_writer=FilePrivateQualificationArtifactWriter(),
         ).run(
             environment_opt_in=environment_opt_in,

@@ -6,24 +6,12 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
-import random
 from typing import Literal
 from collections.abc import Awaitable, Callable
 from uuid import UUID
 
 from pydantic import Field, SecretStr, StrictBool, StrictInt, model_validator
 
-from spine.application.yandex_disk_scan import (
-    YandexDiskAuthorizationRevokedError,
-    YandexDiskContractError,
-    YandexDiskFileTooLargeError,
-    YandexDiskPermissionLostError,
-    YandexDiskProviderUnavailableError,
-    YandexDiskResourceNotFoundError,
-    YandexDiskScopeOutOfScopeError,
-    YandexDiskThrottleError,
-    YandexDiskTransientError,
-)
 from spine.application.connections.provider import (
     ProviderConnectionRepository,
     ProviderReadCommand,
@@ -38,23 +26,11 @@ from spine.application.yandex_qualification_execution import (
     YandexQualificationExecutionLease,
     YandexQualificationExecutionScope,
 )
-from spine.connectors.yandex_disk import (
-    YandexDiskCredentialResolver,
-)
-from spine.connectors.yandex_disk_inventory import (
+from spine.application.yandex_qualification_inventory import (
     InventoryFailureCode,
     YandexQualificationInventory,
     YandexQualificationInventoryError,
-    YandexQualificationInventoryReader,
-)
-from spine.connectors.yandex_disk_api import (
-    YandexDiskApiRequest,
-    YandexDiskApiResponse,
-    YandexDiskApiService,
-    YandexDiskApiTransport,
-    YandexQualificationApiBinding,
-    YandexQualificationRequestGovernor,
-    YandexQualificationRequestPolicy,
+    YandexQualificationInventoryProbe,
 )
 from spine.domain.common import DefinitionModel
 from spine.domain.connections.provider import (
@@ -65,8 +41,6 @@ from spine.domain.connections.provider import (
     ProviderConnectionStatus,
 )
 from spine.application.yandex_qualification_credentials import (
-    YANDEX_QUALIFICATION_CLIENT_ID,
-    YANDEX_QUALIFICATION_ROOT,
     YandexQualificationCredentialBinding,
 )
 
@@ -155,29 +129,19 @@ class YandexQualificationInventoryRunner:
         *,
         config: YandexQualificationInventoryConfig,
         expected_user_id: SecretStr,
-        credential_resolver: YandexDiskCredentialResolver,
-        transport: YandexDiskApiTransport,
-        request_governor: YandexQualificationRequestGovernor,
+        inventory_probe: YandexQualificationInventoryProbe,
         connection_repository: ProviderConnectionRepository,
         execution_lease: YandexQualificationExecutionLease,
         artifact_writer: PrivateQualificationArtifactWriter,
         context: TrustedPersistenceContext,
-        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-        jitter: Callable[[float], float] = lambda ceiling: random.SystemRandom().uniform(
-            0.0, ceiling
-        ),
     ) -> None:
         self.config = config
         self._expected_user_id = expected_user_id
-        self._credential_resolver = credential_resolver
-        self._transport = transport
-        self._request_governor = request_governor
+        self._inventory_probe = inventory_probe
         self._connection_repository = connection_repository
         self._execution_lease = execution_lease
         self._artifact_writer = artifact_writer
         self._context = context
-        self._sleep = sleep
-        self._jitter = jitter
 
     async def run(
         self, *, environment_opt_in: bool, candidate_path: Path
@@ -236,49 +200,25 @@ class YandexQualificationInventoryRunner:
         *,
         revalidate: Callable[[], Awaitable[None]],
     ) -> YandexQualificationInventoryReport:
-        binding = _qualification_binding(
-            self.config.credential_binding,
-            connection,
-            self.config.resource_scope_reference,
-            self._expected_user_id,
-        )
-        policy = YandexQualificationRequestPolicy()
-        counting_transport = _CountingTransport(
-            self._transport,
-            max_response_bytes=policy.max_scan_bytes,
-            max_requests=policy.max_requests_per_logical_scan,
-        )
-        service = YandexDiskApiService(
-            binding=binding,
-            credential_resolver=self._credential_resolver,
-            transport=counting_transport,
-            request_policy=policy,
-            request_governor=self._request_governor,
-        )
         try:
-            inventory = await YandexQualificationInventoryReader(
-                service=service,
-                approved_root=binding.approved_root,
-                page_size=policy.max_items,
-                max_pages=policy.max_pages,
-                max_resources=policy.max_items,
-                max_attempts=policy.max_request_attempts,
-                max_retry_requests=policy.max_retry_requests,
-                backoff_ceilings=policy.retry_backoff_ceilings,
-                sleep=self._sleep,
-                jitter=self._jitter,
+            probe_result = await self._inventory_probe.read(
+                connection,
+                self.config.resource_scope_reference,
+                credential_binding=self.config.credential_binding,
+                expected_user_id=self._expected_user_id,
                 revalidate=revalidate,
-            ).read(connection, binding.resource_scope_reference)
+            )
+            inventory = probe_result.inventory
         except asyncio.CancelledError:
-            return self._failed("cancelled", counts=counting_transport)
+            return self._failed("cancelled")
         except YandexQualificationInventoryError as exc:
-            return self._failed(exc.code, counts=counting_transport)
+            return self._failed(
+                exc.code,
+                identity_requests=exc.identity_requests,
+                disk_requests=exc.disk_requests,
+            )
         except ProviderReadDeniedError:
             raise
-        except Exception as exc:
-            return self._failed(
-                _provider_failure_code(exc), counts=counting_transport
-            )
 
         counts = (
             inventory.file_count,
@@ -294,14 +234,16 @@ class YandexQualificationInventoryRunner:
             return self._failed(
                 "manifest_mismatch",
                 inventory=inventory,
-                counts=counting_transport,
+                identity_requests=probe_result.identity_requests,
+                disk_requests=probe_result.disk_requests,
             )
         manifest_digest = _inventory_digest(inventory)
         if manifest_digest != self.config.approved_manifest_digest:
             return self._failed(
                 "manifest_mismatch",
                 inventory=inventory,
-                counts=counting_transport,
+                identity_requests=probe_result.identity_requests,
+                disk_requests=probe_result.disk_requests,
             )
         try:
             _write_inventory_candidate(
@@ -314,7 +256,8 @@ class YandexQualificationInventoryRunner:
             return self._failed(
                 "candidate_write_denied",
                 inventory=inventory,
-                counts=counting_transport,
+                identity_requests=probe_result.identity_requests,
+                disk_requests=probe_result.disk_requests,
             )
         return YandexQualificationInventoryReport(
             status="ready_for_manifest_approval",
@@ -334,8 +277,8 @@ class YandexQualificationInventoryRunner:
             directory_count=inventory.directory_count,
             file_bytes=inventory.file_bytes,
             provider_pages_per_pass=inventory.provider_pages,
-            identity_requests=counting_transport.identity_requests,
-            disk_requests=counting_transport.disk_requests,
+            identity_requests=probe_result.identity_requests,
+            disk_requests=probe_result.disk_requests,
             inventory_passes=2,
             manifest_candidate_written=True,
         )
@@ -345,7 +288,8 @@ class YandexQualificationInventoryRunner:
         code: InventoryFailureCode,
         *,
         inventory: YandexQualificationInventory | None = None,
-        counts: "_CountingTransport | None" = None,
+        identity_requests: int = 0,
+        disk_requests: int = 0,
     ) -> YandexQualificationInventoryReport:
         return YandexQualificationInventoryReport.model_validate(
             {
@@ -362,91 +306,13 @@ class YandexQualificationInventoryRunner:
                 "directory_count": inventory.directory_count if inventory else 0,
                 "file_bytes": inventory.file_bytes if inventory else 0,
                 "provider_pages_per_pass": inventory.provider_pages if inventory else 0,
-                "identity_requests": counts.identity_requests if counts else 0,
-                "disk_requests": counts.disk_requests if counts else 0,
+                "identity_requests": identity_requests,
+                "disk_requests": disk_requests,
                 "inventory_passes": 2 if inventory else 0,
                 "failure_code": code,
                 "manifest_candidate_written": False,
             }
         )
-
-
-class _CountingTransport:
-    """Count endpoint classes without retaining request or response data."""
-
-    def __init__(
-        self,
-        transport: YandexDiskApiTransport,
-        *,
-        max_response_bytes: int,
-        max_requests: int,
-    ) -> None:
-        self._transport = transport
-        self._max_response_bytes = max_response_bytes
-        self._max_requests = max_requests
-        self._response_bytes = 0
-        self.identity_requests = 0
-        self.disk_requests = 0
-
-    async def request(self, request: YandexDiskApiRequest) -> YandexDiskApiResponse:
-        if self.identity_requests + self.disk_requests >= self._max_requests:
-            raise YandexDiskContractError()
-        if request.url == "https://login.yandex.ru/info":
-            self.identity_requests += 1
-        else:
-            self.disk_requests += 1
-        response = await self._transport.request(request)
-        if response.wire_bytes is None or response.wire_bytes < 0:
-            raise YandexDiskContractError()
-        self._response_bytes += response.wire_bytes
-        if self._response_bytes > self._max_response_bytes:
-            raise YandexDiskFileTooLargeError()
-        return response
-
-
-def _provider_failure_code(exc: Exception) -> InventoryFailureCode:
-    if isinstance(exc, YandexDiskAuthorizationRevokedError):
-        return "authorization_revoked"
-    if isinstance(exc, YandexDiskPermissionLostError):
-        return "permission_lost"
-    if isinstance(exc, YandexDiskThrottleError):
-        return "throttled"
-    if isinstance(exc, (YandexDiskTransientError, YandexDiskProviderUnavailableError)):
-        return "provider_unavailable"
-    if isinstance(exc, YandexDiskScopeOutOfScopeError):
-        return "scope_denied"
-    if isinstance(exc, YandexDiskResourceNotFoundError):
-        return "resource_not_found"
-    if isinstance(exc, YandexDiskFileTooLargeError):
-        return "response_byte_limit_reached"
-    if isinstance(exc, YandexDiskContractError):
-        return "contract_rejected"
-    return "contract_rejected"
-
-
-def _qualification_binding(
-    credential_binding: YandexQualificationCredentialBinding,
-    connection: ProviderConnection,
-    resource_scope_reference: OpaqueProviderReference,
-    expected_user_id: SecretStr,
-) -> YandexQualificationApiBinding:
-    return YandexQualificationApiBinding(
-        schema_version="yandex-qualification-api-binding:v1",
-        deployment_mode="qualification",
-        workspace_id=connection.workspace_id,
-        environment_id=connection.environment_id,
-        connection_id=connection.connection_id,
-        connection_version_id=connection.connection_version_id,
-        credential_reference=connection.credential_reference,
-        grant_reference=connection.grant_reference,
-        resource_scope_reference=resource_scope_reference,
-        authorization_generation=connection.authorization_generation,
-        configuration_generation=connection.configuration_generation,
-        external_secret_reference=credential_binding.reference,
-        expected_user_id=expected_user_id,
-        client_id=YANDEX_QUALIFICATION_CLIENT_ID,
-        approved_root=YANDEX_QUALIFICATION_ROOT,
-    )
 
 
 def _validate_admitted_connection(
@@ -560,7 +426,6 @@ __all__ = [
     "YandexQualificationInventory",
     "YandexQualificationInventoryConfig",
     "YandexQualificationInventoryError",
-    "YandexQualificationInventoryReader",
     "YandexQualificationInventoryReport",
     "YandexQualificationInventoryRunner",
     "write_yandex_inventory_report",
