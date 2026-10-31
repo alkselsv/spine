@@ -533,6 +533,98 @@ source_revision_receipt_associations = Table(
     Column("storage_status", Text, nullable=False),
     Column("finalized_at", DateTime(timezone=True), nullable=False),
     Column("associated_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint(
+        "association_id",
+        "workspace_id",
+        "environment_id",
+        "source_object_id",
+        "revision_id",
+        "original_receipt_id",
+        "original_upload_id",
+        "original_sha256",
+        "byte_length",
+        name="uq_source_receipt_associations_verifier_binding",
+    ),
+)
+
+trusted_content_verification_evidence = Table(
+    "trusted_content_verification_evidence",
+    metadata,
+    Column("evidence_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("receipt_association_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("original_receipt_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("original_upload_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("original_sha256", String(64), nullable=False),
+    Column("byte_length", Integer, nullable=False),
+    Column("evidence_digest", String(64), nullable=False),
+    Column("verified_at", DateTime(timezone=True), nullable=False),
+    Column("record", JSONB, nullable=False),
+    UniqueConstraint(
+        "workspace_id",
+        "environment_id",
+        "evidence_digest",
+        name="uq_trusted_content_evidence_digest",
+    ),
+    ForeignKeyConstraint(
+        [
+            "receipt_association_id",
+            "workspace_id",
+            "environment_id",
+            "source_object_id",
+            "source_revision_id",
+            "original_receipt_id",
+            "original_upload_id",
+            "original_sha256",
+            "byte_length",
+        ],
+        [
+            "spine.source_revision_receipt_associations.association_id",
+            "spine.source_revision_receipt_associations.workspace_id",
+            "spine.source_revision_receipt_associations.environment_id",
+            "spine.source_revision_receipt_associations.source_object_id",
+            "spine.source_revision_receipt_associations.revision_id",
+            "spine.source_revision_receipt_associations.original_receipt_id",
+            "spine.source_revision_receipt_associations.original_upload_id",
+            "spine.source_revision_receipt_associations.original_sha256",
+            "spine.source_revision_receipt_associations.byte_length",
+        ],
+        name="fk_trusted_content_evidence_exact_receipt",
+    ),
+    CheckConstraint(
+        "byte_length >= 0",
+        name="ck_trusted_content_evidence_length",
+    ),
+    CheckConstraint(
+        "original_sha256 ~ '^[0-9a-f]{64}$' AND evidence_digest ~ '^[0-9a-f]{64}$'",
+        name="ck_trusted_content_evidence_digests",
+    ),
+    CheckConstraint(
+        "record->>'schema_version' = 'trusted-content-verification:v1' "
+        "AND jsonb_typeof(record) = 'object' "
+        "AND record - ARRAY['schema_version', 'evidence_id', 'workspace_id', "
+        "'environment_id', 'source_object_id', 'source_revision_id', "
+        "'receipt_association_id', 'original_receipt_id', 'original_upload_id', "
+        "'original_sha256', 'byte_length', 'recognized_format', "
+        "'format_profile_version', 'verifier_profile_version', "
+        "'bounds_profile_version', 'outcome', 'reason_codes', "
+        "'cleanup_outcome', 'verified_at', 'evidence_digest'] = '{}'::jsonb "
+        "AND record->>'evidence_id' = evidence_id::text "
+        "AND record->>'workspace_id' = workspace_id::text "
+        "AND record->>'environment_id' = environment_id::text "
+        "AND record->>'source_object_id' = source_object_id::text "
+        "AND record->>'source_revision_id' = source_revision_id::text "
+        "AND record->>'receipt_association_id' = receipt_association_id::text "
+        "AND record->>'original_receipt_id' = original_receipt_id::text "
+        "AND record->>'original_upload_id' = original_upload_id::text "
+        "AND record->>'original_sha256' = original_sha256 "
+        "AND record->>'byte_length' = byte_length::text "
+        "AND record->>'evidence_digest' = evidence_digest",
+        name="ck_trusted_content_evidence_record_binding",
+    ),
 )
 
 ingestion_runs = Table(
@@ -1905,6 +1997,7 @@ __all__ = [
     "bitrix24_crm_material_acceptances",
     "bitrix24_crm_material_revocations",
     "source_revision_receipt_associations",
+    "trusted_content_verification_evidence",
     "ingestion_runs",
     "ingestion_run_sources",
     "ingestion_run_source_bindings",

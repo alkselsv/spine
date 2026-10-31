@@ -56,6 +56,13 @@ from .models import (
     SourceKind,
     canonical_revision_metadata_digest,
 )
+from .trusted_content import (
+    TrustedContentFormat,
+    TrustedContentVerificationEvidence,
+    TrustedContentVerificationOutcome,
+    VerificationCleanupOutcome,
+    assert_exact_revision_receipt_binding,
+)
 from .errors import RevisionDigestMismatchError, SourceInvariantError
 from .canonicalization import (
     REVISION_PROFILE,
@@ -141,6 +148,11 @@ __all__ = [
     "SourceRevision",
     "SourceRevisionProvenance",
     "SourceRevisionReceiptAssociation",
+    "TrustedContentFormat",
+    "TrustedContentVerificationEvidence",
+    "TrustedContentVerificationOutcome",
+    "VerificationCleanupOutcome",
+    "assert_exact_revision_receipt_binding",
     "canonical_revision_metadata_digest",
     "SourceInvariantError",
     "OBSERVATION_SCHEMA",

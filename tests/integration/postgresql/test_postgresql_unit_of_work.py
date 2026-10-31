@@ -1247,6 +1247,102 @@ async def test_postgresql_source_revision_preserves_external_file_evidence(
     assert resolved.revision_metadata == metadata
 
 
+async def _trusted_content_evidence_case(
+    postgresql_adapter: PersistenceAdapter, number: int
+):
+    from spine.domain.sources import (
+        TrustedContentFormat,
+        TrustedContentVerificationEvidence,
+        TrustedContentVerificationOutcome,
+        VerificationCleanupOutcome,
+    )
+
+    case = await prepare_canonical_case(postgresql_adapter, number)
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        associations = await uow.sources.resolve_receipt_associations(
+            case.revision.revision_id
+        )
+    association = associations[0]
+    evidence = TrustedContentVerificationEvidence.issue(
+        evidence_id=synthetic_uuid(number + 10),
+        revision=case.revision,
+        association=association,
+        recognized_format=TrustedContentFormat.TEXT,
+        format_profile_version="text-markdown:v1",
+        verifier_profile_version="trusted-content-offline:v1",
+        bounds_profile_version="trusted-content-bounds:v1",
+        outcome=TrustedContentVerificationOutcome.VERIFIED,
+        reason_codes=("verified",),
+        cleanup_outcome=VerificationCleanupOutcome.NOT_REQUIRED,
+        verified_at=datetime(2026, 10, 30, 12, 0, tzinfo=timezone.utc),
+    )
+    return case, association, evidence
+
+
+async def test_postgresql_trusted_content_evidence_replays_and_rejects_conflict(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    from spine.application.persistence.trusted_content import (
+        TrustedContentEvidenceConflict,
+    )
+    from spine.domain.sources import TrustedContentVerificationEvidence
+
+    case, association, evidence = await _trusted_content_evidence_case(
+        postgresql_adapter, 72400
+    )
+
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        assert await uow.trusted_content_evidence.append(evidence) == evidence
+        await uow.commit()
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        assert await uow.trusted_content_evidence.append(evidence) == evidence
+        assert await uow.trusted_content_evidence.resolve(evidence.evidence_id) == evidence
+        assert await uow.trusted_content_evidence.list_for_association(
+            association.association_id
+        ) == (evidence,)
+        await uow.commit()
+
+    conflicting = TrustedContentVerificationEvidence.issue(
+        evidence_id=evidence.evidence_id,
+        revision=case.revision,
+        association=association,
+        recognized_format=evidence.recognized_format,
+        format_profile_version=evidence.format_profile_version,
+        verifier_profile_version=evidence.verifier_profile_version,
+        bounds_profile_version=evidence.bounds_profile_version,
+        outcome=evidence.outcome,
+        reason_codes=("changed",),
+        cleanup_outcome=evidence.cleanup_outcome,
+        verified_at=evidence.verified_at,
+    )
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        with pytest.raises(TrustedContentEvidenceConflict, match="immutable"):
+            await uow.trusted_content_evidence.append(conflicting)
+        await uow.rollback()
+
+
+async def test_postgresql_trusted_content_evidence_is_tenant_isolated(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    from spine.application.persistence.trusted_content import (
+        TrustedContentEvidenceConflict,
+    )
+
+    case, _, evidence = await _trusted_content_evidence_case(
+        postgresql_adapter, 72430
+    )
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        await uow.trusted_content_evidence.append(evidence)
+        await uow.commit()
+
+    foreign_case = await prepare_canonical_case(postgresql_adapter, 72450)
+    async with postgresql_adapter.uow_factory(foreign_case.context) as uow:
+        assert await uow.trusted_content_evidence.resolve(evidence.evidence_id) is None
+        with pytest.raises(TrustedContentEvidenceConflict, match="scope"):
+            await uow.trusted_content_evidence.append(evidence)
+        await uow.rollback()
+
+
 async def test_postgresql_parsed_artifacts_use_transaction_local_tenant_scope(
     postgresql_adapter: PersistenceAdapter,
     postgresql_contract_database: PostgreSQLContractDatabase,
