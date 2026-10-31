@@ -8469,15 +8469,44 @@ async def test_crm_relationship_withdrawal_and_audit_outbox_are_atomic(
         ),
         trace_id=trace_id,
     )
+    unknown_commit = [True]
+
+    class CommitResultUnknownUow:
+        def __init__(self, manager: object) -> None:
+            self._manager = manager
+            self._uow: object | None = None
+
+        async def __aenter__(self):
+            self._uow = await self._manager.__aenter__()
+            return self
+
+        async def __aexit__(self, exc_type, exc_value, traceback):
+            return await self._manager.__aexit__(exc_type, exc_value, traceback)
+
+        def __getattr__(self, name: str):
+            return getattr(self._uow, name)
+
+        async def commit(self) -> None:
+            await self._uow.commit()
+            if unknown_commit[0]:
+                unknown_commit[0] = False
+                raise PersistenceUnavailableError("Injected unknown PostgreSQL commit result.")
+
+    uncertain_commit_repository = PostgreSQLCrmRelationshipV2Repository(
+        uow_factory=lambda context: CommitResultUnknownUow(
+            postgresql_adapter.uow_factory(context)
+        ),
+        context_factory=context_factory,
+    )
     results = await asyncio.gather(
-        repository.append_lifecycle_event(
+        uncertain_commit_repository.append_lifecycle_event(
             event,
             audit_event=audit,
             outbox_intent=intent,
             audit_registry=audit_registry,
             outbox_registry=outbox_registry,
         ),
-        repository.append_lifecycle_event(
+        uncertain_commit_repository.append_lifecycle_event(
             contender,
             audit_event=contender_audit,
             outbox_intent=contender_intent,
@@ -8486,10 +8515,24 @@ async def test_crm_relationship_withdrawal_and_audit_outbox_are_atomic(
         ),
         return_exceptions=True,
     )
-    winners = [result for result in results if isinstance(result, CrmRelationshipLifecycleEvent)]
+    commit_unknowns = [result for result in results if isinstance(result, PersistenceUnavailableError)]
     conflicts = [result for result in results if isinstance(result, OptimisticConflictError)]
-    assert len(winners) == len(conflicts) == 1
-    winner = winners[0]
+    assert len(commit_unknowns) == len(conflicts) == 1
+    engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    async with engine.connect() as connection:
+        persisted_event_id = await connection.scalar(text(
+            "SELECT last_event_id FROM spine.crm_relationship_authority_heads "
+            "WHERE workspace_id = :workspace_id AND environment_id = :environment_id "
+            "AND relationship_key = :relationship_key"
+        ), {"workspace_id": workspace_id, "environment_id": environment_id,
+            "relationship_key": identity.relationship_key})
+    winner, losing_candidate = (
+        (event, contender) if persisted_event_id == event.event_id
+        else (contender, event)
+    )
     winning_audit_id, winning_outbox_id = (
         (audit_id, outbox_id) if winner.event_id == event.event_id
         else (contender_audit_id, contender_outbox_id)
@@ -8498,7 +8541,7 @@ async def test_crm_relationship_withdrawal_and_audit_outbox_are_atomic(
         (audit, intent) if winner.event_id == event.event_id
         else (contender_audit, contender_intent)
     )
-    # An identical retry after a concurrent winner returns the retained event.
+    # A retry after commit succeeded but its result was lost returns history.
     assert await repository.append_lifecycle_event(
         winner,
         audit_event=winning_audit,
@@ -8506,6 +8549,48 @@ async def test_crm_relationship_withdrawal_and_audit_outbox_are_atomic(
         audit_registry=audit_registry,
         outbox_registry=outbox_registry,
     ) == winner
+    losing_audit, losing_intent = (
+        (audit, intent) if losing_candidate.event_id == event.event_id
+        else (contender_audit, contender_intent)
+    )
+    with pytest.raises(OptimisticConflictError):
+        await repository.append_lifecycle_event(
+            losing_candidate,
+            audit_event=losing_audit,
+            outbox_intent=losing_intent,
+            audit_registry=audit_registry,
+            outbox_registry=outbox_registry,
+        )
+
+    unsupported_reapproval = CrmRelationshipLifecycleEvent(
+        event_id=synthetic_uuid(71657),
+        relationship_key=identity.relationship_key,
+        claim_id=synthetic_uuid(71658),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        generation=2,
+        action="reapprove",
+        actor_id=actor_id,
+        authority_id=synthetic_uuid(71659),
+        authority_version_id=synthetic_uuid(71660),
+        authorization_generation=1,
+        expected_generation=1,
+        predecessor_event_id=winner.event_id,
+        reapproval_receipt_id=synthetic_uuid(71661),
+        reapproval_eligibility_id=synthetic_uuid(71662),
+        reason_code="reapproval_without_current_receipt",
+        idempotency_key=synthetic_uuid(71663),
+        payload_digest="f" * 64,
+        created_at=INGESTION_CONTRACT_NOW,
+    )
+    with pytest.raises(OptimisticConflictError, match="current exact positive verification receipt"):
+        await repository.append_lifecycle_event(
+            unsupported_reapproval,
+            audit_event=winning_audit,
+            outbox_intent=winning_intent,
+            audit_registry=audit_registry,
+            outbox_registry=outbox_registry,
+        )
 
     async with engine.connect() as connection:
         authority = (await connection.execute(text(
