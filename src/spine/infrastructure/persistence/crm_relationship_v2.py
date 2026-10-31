@@ -46,6 +46,7 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     crm_relationship_eligibility_heads,
     crm_relationship_idempotency,
     crm_relationship_identities,
+    crm_relationship_lifecycle_events,
     crm_relationship_profiles,
     crm_relationship_receipts,
     current_lifecycle_authorities,
@@ -139,8 +140,7 @@ class CrmRelationshipV2Store:
         if current.outcome is CrmEligibilityOutcome.GOVERNANCE_WITHDRAWN:
             return current
         authorization_generation = await self._scalar(text(
-            "SELECT generation FROM spine.authorization_generations "
-            "WHERE workspace_id = :workspace_id AND environment_id = :environment_id FOR SHARE"
+            "SELECT spine.lock_current_authorization_generation(:workspace_id, :environment_id)"
         ).bindparams(workspace_id=workspace_id, environment_id=environment_id))
         source = (await self._execute(select(
             current_source_heads.c.current_revision_id,
@@ -511,8 +511,7 @@ class CrmRelationshipV2Store:
         ):
             raise OptimisticConflictError("CRM claim must reference the current eligible canonical source revision.")
         authorization_result = await self._execute(text(
-            "SELECT generation FROM spine.authorization_generations "
-            "WHERE workspace_id = :workspace_id AND environment_id = :environment_id FOR SHARE"
+            "SELECT spine.lock_current_authorization_generation(:workspace_id, :environment_id)"
         ).bindparams(
             workspace_id=claim.workspace_id, environment_id=claim.environment_id,
         ))
@@ -748,8 +747,7 @@ class CrmRelationshipV2Store:
             current_source_heads.c.source_object_id == claim_scope.source_object_id,
         ).with_for_update(of=current_source_heads)).mappings().one_or_none()
         authorization_generation = await self._scalar(text(
-            "SELECT generation FROM spine.authorization_generations "
-            "WHERE workspace_id = :workspace_id AND environment_id = :environment_id FOR SHARE"
+            "SELECT spine.lock_current_authorization_generation(:workspace_id, :environment_id)"
         ).bindparams(
             workspace_id=receipt.workspace_id, environment_id=receipt.environment_id,
         ))
@@ -918,8 +916,7 @@ class CrmRelationshipV2Store:
         if event.generation != event.expected_generation + 1:
             raise OptimisticConflictError("CRM lifecycle generation is not the next expected value.")
         auth_result = await self._execute(text(
-            "SELECT generation FROM spine.authorization_generations "
-            "WHERE workspace_id = :workspace_id AND environment_id = :environment_id FOR SHARE"
+            "SELECT spine.lock_current_authorization_generation(:workspace_id, :environment_id)"
         ).bindparams(
             workspace_id=event.workspace_id, environment_id=event.environment_id,
         ))
@@ -1110,6 +1107,31 @@ class CrmRelationshipV2Store:
                 evaluated_at=reapproved_eligibility.evaluated_at,
             ))
 
+        # The authority head's last_event_id is a foreign key to this append-only
+        # event. Persist its audit/outbox and event rows in the same transaction
+        # before advancing the mutable head.
+        audit_id, outbox_id = await self._persist_audit_outbox(
+            audit_event=audit_event, outbox_intent=outbox_intent,
+            audit_registry=audit_registry, outbox_registry=outbox_registry,
+            workspace_id=event.workspace_id, environment_id=event.environment_id,
+            actor_id=event.actor_id, created_at=event.created_at,
+            record_id=event.event_id,
+        )
+        await self._execute(insert(crm_relationship_lifecycle_events).values(
+            event_id=event.event_id, workspace_id=event.workspace_id,
+            environment_id=event.environment_id, relationship_key=event.relationship_key,
+            claim_id=event.claim_id, generation=event.generation, action=event.action,
+            expected_generation=event.expected_generation, actor_id=event.actor_id,
+            authority_id=event.authority_id, authority_version_id=event.authority_version_id,
+            authorization_generation=event.authorization_generation,
+            predecessor_event_id=event.predecessor_event_id,
+            reapproval_receipt_id=event.reapproval_receipt_id,
+            reapproval_eligibility_id=event.reapproval_eligibility_id,
+            idempotency_key=event.idempotency_key, payload_digest=event.payload_digest,
+            audit_event_id=audit_id, outbox_event_id=outbox_id,
+            record=record, created_at=event.created_at,
+        ))
+
         next_withdrawn = event.action == "withdraw" and event.claim_id is None
         changed = await self._execute(update(crm_relationship_authority_heads).where(
             crm_relationship_authority_heads.c.workspace_id == event.workspace_id,
@@ -1190,27 +1212,6 @@ class CrmRelationshipV2Store:
                     updated_at=event.created_at,
                 ))
 
-        audit_id, outbox_id = await self._persist_audit_outbox(
-            audit_event=audit_event, outbox_intent=outbox_intent,
-            audit_registry=audit_registry, outbox_registry=outbox_registry,
-            workspace_id=event.workspace_id, environment_id=event.environment_id,
-            actor_id=event.actor_id, created_at=event.created_at,
-            record_id=event.event_id,
-        )
-        await self._execute(insert(crm_relationship_lifecycle_events).values(
-            event_id=event.event_id, workspace_id=event.workspace_id,
-            environment_id=event.environment_id, relationship_key=event.relationship_key,
-            claim_id=event.claim_id, generation=event.generation, action=event.action,
-            expected_generation=event.expected_generation, actor_id=event.actor_id,
-            authority_id=event.authority_id, authority_version_id=event.authority_version_id,
-            authorization_generation=event.authorization_generation,
-            predecessor_event_id=event.predecessor_event_id,
-            reapproval_receipt_id=event.reapproval_receipt_id,
-            reapproval_eligibility_id=event.reapproval_eligibility_id,
-            idempotency_key=event.idempotency_key, payload_digest=event.payload_digest,
-            audit_event_id=audit_id, outbox_event_id=outbox_id,
-            record=record, created_at=event.created_at,
-        ))
         return event
 
 

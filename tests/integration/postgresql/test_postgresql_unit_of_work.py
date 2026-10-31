@@ -8447,3 +8447,268 @@ async def test_crm_relationship_claim_rejects_source_without_current_lifecycle_a
         claim_id=claim.claim_id,
         actor_id=actor_id,
     ) is None
+
+
+@pytest.mark.postgresql
+@pytest.mark.asyncio(loop_scope="session")
+async def test_crm_relationship_withdrawal_and_audit_outbox_are_atomic(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    from spine.application.persistence.outbox import OutboxEventRegistry, OutboxIntent
+    from spine.domain.audit import AuditObjectReference
+    from spine.domain.sources.crm_relationship_v2 import (
+        CrmRelationshipLifecycleEvent,
+        CrmRelationshipNaturalIdentity,
+        relationship_key,
+    )
+
+    case = await prepare_canonical_case(postgresql_adapter, 71640)
+    workspace_id = case.source.workspace_id
+    environment_id = case.source.environment_id
+    actor_id = synthetic_uuid(961)
+    identity_fields = {
+        "workspace_id": workspace_id,
+        "environment_id": environment_id,
+        "provider_instance": "synthetic.bitrix.portal",
+        "connection_id": synthetic_uuid(71641),
+        "activity_namespace": "bitrix.activity",
+        "activity_type_id": "1",
+        "activity_id": "71642",
+        "raw_entity_type_id": "2",
+        "normalizer_id": "bitrix.owner-type",
+        "normalizer_version": "v1",
+        "entity_namespace": "bitrix.company",
+        "entity_id": "71643",
+        "files_namespace": "bitrix.activity.files",
+        "files_item_id": "71644",
+        "mapping_profile_id": synthetic_uuid(71645),
+    }
+    identity = CrmRelationshipIdentity(
+        **identity_fields,
+        relationship_key=relationship_key(CrmRelationshipNaturalIdentity(**identity_fields)),
+    )
+    context_factory = lambda operation, trace_id: postgresql_adapter.interactive_environment_context(
+        workspace_id, environment_id, operation, trace_id
+    )
+    repository = PostgreSQLCrmRelationshipV2Repository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=context_factory,
+    )
+    await repository.register_identity(identity, actor_id=actor_id)
+
+    event = CrmRelationshipLifecycleEvent(
+        event_id=synthetic_uuid(71646),
+        relationship_key=identity.relationship_key,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        generation=1,
+        action="withdraw",
+        actor_id=actor_id,
+        authority_id=synthetic_uuid(71647),
+        authority_version_id=synthetic_uuid(71648),
+        authorization_generation=1,
+        expected_generation=0,
+        reason_code="human_withdrawal",
+        idempotency_key=synthetic_uuid(71649),
+        payload_digest="d" * 64,
+        created_at=INGESTION_CONTRACT_NOW,
+    )
+    audit_registry = AuditEventRegistry.with_default_families()
+    audit_id = synthetic_uuid(71650)
+    outbox_id = synthetic_uuid(71651)
+    trace_id = synthetic_uuid(71652)
+    audit = audit_registry.build_event(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_type="command.outcome",
+        schema_version=1,
+        payload=CommandAuditPayload(command_type="crm.relationship.withdraw"),
+        origin=ContextOrigin.INTERACTIVE,
+        acting_subject_id=actor_id,
+        service_principal_id=None,
+        trace_id=trace_id,
+        occurred_at=INGESTION_CONTRACT_NOW,
+        outcome=AuditOutcome.ACCEPTED,
+        reason="crm_relationship_withdrawal",
+        target=AuditObjectReference(
+            object_type="crm_relationship_lifecycle_event",
+            object_id=event.event_id,
+            schema_version=1,
+        ),
+        audit_event_id=audit_id,
+    )
+    intent = OutboxIntent(
+        event_id=outbox_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_type="crm.relationship.lifecycle",
+        schema_version=1,
+        payload=CommandAuditPayload(command_type="crm.relationship.withdraw"),
+        aggregate=OpaqueObjectReference(
+            object_type="crm_relationship_lifecycle_event",
+            object_id=event.event_id,
+            schema_version=1,
+        ),
+        trace_id=trace_id,
+    )
+    outbox_registry = OutboxEventRegistry()
+    outbox_registry.register(
+        event_type="crm.relationship.lifecycle",
+        schema_version=1,
+        payload_type=CommandAuditPayload,
+    )
+    engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    async with engine.begin() as connection:
+        await connection.execute(text("""
+            CREATE FUNCTION spine.test_fail_crm_relationship_authority_update()
+            RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                RAISE EXCEPTION 'injected CRM authority update failure'
+                    USING ERRCODE = '23514';
+            END $$
+        """))
+        await connection.execute(text("""
+            CREATE TRIGGER test_fail_crm_relationship_authority_update
+            BEFORE UPDATE ON spine.crm_relationship_authority_heads
+            FOR EACH ROW EXECUTE FUNCTION spine.test_fail_crm_relationship_authority_update()
+        """))
+
+    # Fail after audit/outbox and lifecycle rows are staged but before the
+    # authority head advances. Every insert and the idempotency reservation
+    # must roll back together.
+    try:
+        with pytest.raises(ConstraintConflictError):
+            await repository.append_lifecycle_event(
+                event,
+                audit_event=audit,
+                outbox_intent=intent,
+                audit_registry=audit_registry,
+                outbox_registry=outbox_registry,
+            )
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(text(
+                "DROP TRIGGER test_fail_crm_relationship_authority_update "
+                "ON spine.crm_relationship_authority_heads"
+            ))
+            await connection.execute(text(
+                "DROP FUNCTION spine.test_fail_crm_relationship_authority_update()"
+            ))
+    async with engine.begin() as connection:
+        authority_after_failure = (await connection.execute(text(
+            "SELECT lifecycle_generation, withdrawn FROM spine.crm_relationship_authority_heads "
+            "WHERE workspace_id = :workspace_id AND environment_id = :environment_id "
+            "AND relationship_key = :relationship_key"
+        ), {"workspace_id": workspace_id, "environment_id": environment_id,
+            "relationship_key": identity.relationship_key})).one()
+        staged_rows_after_failure = await connection.scalar(text(
+            "SELECT (SELECT count(*) FROM spine.crm_relationship_lifecycle_events WHERE event_id = :event_id) "
+            "+ (SELECT count(*) FROM spine.audit_events WHERE audit_event_id = :audit_id) "
+            "+ (SELECT count(*) FROM spine.outbox_intents WHERE event_id = :outbox_id)"
+        ), {"event_id": event.event_id, "audit_id": audit_id, "outbox_id": outbox_id})
+    assert authority_after_failure == (0, False)
+    assert staged_rows_after_failure == 0
+
+    contender = event.model_copy(update={
+        "event_id": synthetic_uuid(71653),
+        "idempotency_key": synthetic_uuid(71654),
+        "payload_digest": "e" * 64,
+    })
+    contender_audit_id = synthetic_uuid(71655)
+    contender_outbox_id = synthetic_uuid(71656)
+    contender_audit = audit_registry.build_event(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_type="command.outcome",
+        schema_version=1,
+        payload=CommandAuditPayload(command_type="crm.relationship.withdraw"),
+        origin=ContextOrigin.INTERACTIVE,
+        acting_subject_id=actor_id,
+        service_principal_id=None,
+        trace_id=trace_id,
+        occurred_at=INGESTION_CONTRACT_NOW,
+        outcome=AuditOutcome.ACCEPTED,
+        reason="crm_relationship_withdrawal",
+        target=AuditObjectReference(
+            object_type="crm_relationship_lifecycle_event",
+            object_id=contender.event_id,
+            schema_version=1,
+        ),
+        audit_event_id=contender_audit_id,
+    )
+    contender_intent = OutboxIntent(
+        event_id=contender_outbox_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_type="crm.relationship.lifecycle",
+        schema_version=1,
+        payload=CommandAuditPayload(command_type="crm.relationship.withdraw"),
+        aggregate=OpaqueObjectReference(
+            object_type="crm_relationship_lifecycle_event",
+            object_id=contender.event_id,
+            schema_version=1,
+        ),
+        trace_id=trace_id,
+    )
+    results = await asyncio.gather(
+        repository.append_lifecycle_event(
+            event,
+            audit_event=audit,
+            outbox_intent=intent,
+            audit_registry=audit_registry,
+            outbox_registry=outbox_registry,
+        ),
+        repository.append_lifecycle_event(
+            contender,
+            audit_event=contender_audit,
+            outbox_intent=contender_intent,
+            audit_registry=audit_registry,
+            outbox_registry=outbox_registry,
+        ),
+        return_exceptions=True,
+    )
+    winners = [result for result in results if isinstance(result, CrmRelationshipLifecycleEvent)]
+    conflicts = [result for result in results if isinstance(result, OptimisticConflictError)]
+    assert len(winners) == len(conflicts) == 1
+    winner = winners[0]
+    winning_audit_id, winning_outbox_id = (
+        (audit_id, outbox_id) if winner.event_id == event.event_id
+        else (contender_audit_id, contender_outbox_id)
+    )
+    winning_audit, winning_intent = (
+        (audit, intent) if winner.event_id == event.event_id
+        else (contender_audit, contender_intent)
+    )
+    # An identical retry after a concurrent winner returns the retained event.
+    assert await repository.append_lifecycle_event(
+        winner,
+        audit_event=winning_audit,
+        outbox_intent=winning_intent,
+        audit_registry=audit_registry,
+        outbox_registry=outbox_registry,
+    ) == winner
+
+    async with engine.connect() as connection:
+        authority = (await connection.execute(text(
+            "SELECT lifecycle_generation, withdrawn FROM spine.crm_relationship_authority_heads "
+            "WHERE workspace_id = :workspace_id AND environment_id = :environment_id "
+            "AND relationship_key = :relationship_key"
+        ), {"workspace_id": workspace_id, "environment_id": environment_id,
+            "relationship_key": identity.relationship_key})).one()
+        lifecycle_count = await connection.scalar(text(
+            "SELECT count(*) FROM spine.crm_relationship_lifecycle_events WHERE event_id = :event_id"
+        ), {"event_id": winner.event_id})
+        audit_count = await connection.scalar(text(
+            "SELECT count(*) FROM spine.audit_events WHERE audit_event_id = :event_id"
+        ), {"event_id": winning_audit_id})
+        outbox_count = await connection.scalar(text(
+            "SELECT count(*) FROM spine.outbox_intents WHERE event_id = :event_id"
+        ), {"event_id": winning_outbox_id})
+    await engine.dispose()
+
+    assert authority == (1, True)
+    assert lifecycle_count == audit_count == outbox_count == 1

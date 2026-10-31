@@ -72,6 +72,35 @@ def upgrade() -> None:
     op.execute(f"REVOKE ALL ON FUNCTION {SCHEMA}.require_crm_relationship_v2_writes_enabled() FROM PUBLIC")
     op.execute(f"INSERT INTO {SCHEMA}.crm_relationship_v2_state(singleton, enabled) VALUES (true, false) ON CONFLICT (singleton) DO NOTHING")
 
+    # Runtime roles can only resolve authorization generations through a
+    # security-definer boundary. Lock the current row there so a concurrent
+    # authority change serializes with each CRM v2 write transaction.
+    op.execute(f"""
+    CREATE FUNCTION {SCHEMA}.lock_current_authorization_generation(
+        requested_workspace_id uuid,
+        requested_environment_id uuid
+    ) RETURNS bigint
+    LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+    SET search_path = pg_catalog, {SCHEMA}
+    AS $$
+    DECLARE resolved_generation bigint;
+    BEGIN
+        IF current_setting('spine.workspace_id', true) IS DISTINCT FROM requested_workspace_id::text
+           OR current_setting('spine.environment_id', true) IS DISTINCT FROM requested_environment_id::text THEN
+            RETURN NULL;
+        END IF;
+        SELECT generation INTO resolved_generation
+        FROM {SCHEMA}.authorization_generations
+        WHERE workspace_id = requested_workspace_id
+          AND environment_id = requested_environment_id
+        FOR SHARE;
+        RETURN resolved_generation;
+    END
+    $$
+    """)
+    op.execute(f"REVOKE ALL ON FUNCTION {SCHEMA}.lock_current_authorization_generation(uuid, uuid) FROM PUBLIC")
+    op.execute(f"GRANT EXECUTE ON FUNCTION {SCHEMA}.lock_current_authorization_generation(uuid, uuid) TO {_role('runtime_role')}")
+
     op.execute(f"""
     DO $block$
     BEGIN
@@ -285,6 +314,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # Operational rollback disables v2 writers and retains all evidence for re-upgrade.
+    # Keep the scoped authorization-lock helper so retained v2 readers remain usable.
     op.execute(f"UPDATE {SCHEMA}.crm_relationship_v2_state SET enabled = false WHERE singleton")
     for table, constraint in (
         ("crm_relationship_claims", "fk_crm_rel_claim_connection_version"),
