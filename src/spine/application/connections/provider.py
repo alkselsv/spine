@@ -15,6 +15,7 @@ from spine.domain.connections.provider import (
     ProviderConnection,
     ProviderConnectionStatus,
 )
+from spine.domain.connections.bitrix24_disk_scope import Bitrix24DiskMembershipEvidence
 
 
 class ProviderReadError(RuntimeError):
@@ -46,6 +47,7 @@ class ProviderReadCommand:
     acting_subject_id: UUID | None = None
     external_identity_occurrence: str | None = None
     expected_provider_revision: str | None = None
+    membership_evidence: Bitrix24DiskMembershipEvidence | None = None
 
     def __post_init__(self) -> None:
         if any(

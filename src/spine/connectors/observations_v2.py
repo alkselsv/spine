@@ -22,6 +22,7 @@ from spine.domain.connections.provider import (
     ProviderCapabilityKind,
     ProviderKind,
 )
+from spine.domain.connections.bitrix24_disk_scope import Bitrix24DiskMembershipEvidence
 
 
 EXTERNAL_OBSERVATION_SCHEMA_V2 = "external-observation:v2"
@@ -238,6 +239,7 @@ class NormalizedExternalObservationV2(DefinitionModel):
     provider_media_type: str | None = Field(default=None, max_length=255)
     provider_version_before: str | None = Field(default=None, min_length=1, max_length=128)
     provider_version_after: str | None = Field(default=None, min_length=1, max_length=128)
+    scope_membership: Bitrix24DiskMembershipEvidence | None = None
 
     @model_validator(mode="after")
     def validate_scope_and_provenance(self) -> "NormalizedExternalObservationV2":

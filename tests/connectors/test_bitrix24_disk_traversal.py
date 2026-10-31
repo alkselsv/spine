@@ -3,16 +3,14 @@ from uuid import UUID
 
 import pytest
 
+from spine.application.connections.bitrix24_oauth import Bitrix24PinnedGrant, SecretTokenPair
 from spine.connectors.bitrix24_disk import Bitrix24DiskFile, Bitrix24DiskFilePage
 from spine.connectors.bitrix24_disk_traversal import (
     Bitrix24DiskRootTraversal,
+    Bitrix24DiskStorageIdentity,
     Bitrix24DiskTraversalProfile,
 )
-from spine.domain.connections.bitrix24_disk_scope import (
-    Bitrix24DiskDiscoveryMode,
-    Bitrix24DiskRootPolicy,
-    Bitrix24DiskStorageClass,
-)
+from spine.domain.connections.bitrix24_disk_scope import Bitrix24DiskRootPolicy, Bitrix24DiskStorageClass
 from spine.domain.connections.provider import (
     OpaqueProviderReference,
     ProviderConnection,
@@ -68,6 +66,16 @@ def connection() -> ProviderConnection:
     )
 
 
+def pinned_grant(acting_user: UUID | None = None) -> Bitrix24PinnedGrant:
+    return Bitrix24PinnedGrant(
+        binding_id=ident(21),
+        acting_user_id=str(acting_user or ident(20)),
+        token_epoch=1,
+        security_fence=0,
+        tokens=SecretTokenPair(access_token="safe-test-access", refresh_token="safe-test-refresh"),
+    )
+
+
 def policy(**updates: object) -> Bitrix24DiskRootPolicy:
     values: dict[str, object] = {
         "policy_id": ident(10),
@@ -82,7 +90,7 @@ def policy(**updates: object) -> Bitrix24DiskRootPolicy:
         "storage_root_object_id": "storage-root",
         "approved_root_folder_id": "approved-root",
         "recurse": False,
-        "discovery_mode": Bitrix24DiskDiscoveryMode.FIXED_MANIFEST,
+        "future_discovery": False,
         "manifest_object_ids": ("file-1",),
         "content_policy_id": ident(11),
         "content_policy_version": "v1",
@@ -102,11 +110,21 @@ class FakeDisk:
         }
         self.calls: list[tuple[str, int]] = []
 
-    async def list_children(self, connection: ProviderConnection, scope: OpaqueProviderReference, *, folder_id: str, start: int, page_size: int, acting_principal_id: UUID) -> Bitrix24DiskFilePage:
+    async def get_storage(self, connection: ProviderConnection, scope: OpaqueProviderReference, *, storage_id: str, pinned_grant: Bitrix24PinnedGrant) -> Bitrix24DiskStorageIdentity:
+        del connection, scope, pinned_grant
+        return Bitrix24DiskStorageIdentity(
+            storage_id=storage_id,
+            storage_class=Bitrix24DiskStorageClass.COMMON,
+            storage_root_object_id="storage-root",
+        )
+
+    async def list_children(self, connection: ProviderConnection, scope: OpaqueProviderReference, *, folder_id: str, start: int, page_size: int, pinned_grant: Bitrix24PinnedGrant) -> Bitrix24DiskFilePage:
+        assert pinned_grant.acting_user_id == str(ident(20))
         self.calls.append((folder_id, start))
         return self.pages[folder_id][start // page_size]
 
-    async def get_folder(self, connection: ProviderConnection, scope: OpaqueProviderReference, *, folder_id: str, acting_principal_id: UUID) -> Bitrix24DiskFile:
+    async def get_folder(self, connection: ProviderConnection, scope: OpaqueProviderReference, *, folder_id: str, pinned_grant: Bitrix24PinnedGrant) -> Bitrix24DiskFile:
+        assert pinned_grant.acting_user_id == str(ident(20))
         return self.folders[folder_id]
 
 
@@ -118,7 +136,7 @@ async def test_scan_returns_exact_membership_for_positive_member_even_when_other
         service=service,
         profile=Bitrix24DiskTraversalProfile(),
     ).scan(
-        connection(), policy(), acting_principal_id=ident(20), authorize_folder=allow,
+        connection(), policy(), pinned_grant=pinned_grant(), authorize_folder=allow,
     )
     assert result.complete is True
     assert len(result.memberships) == 1
@@ -141,10 +159,11 @@ async def test_incomplete_listing_does_not_prove_non_membership() -> None:
         service=service,
         profile=Bitrix24DiskTraversalProfile(page_size=1),
     ).scan(
-        connection(), policy(), acting_principal_id=ident(20), authorize_folder=allow,
+        connection(), policy(), pinned_grant=pinned_grant(), authorize_folder=allow,
     )
     assert result.complete is False
     assert result.reason_code == "page_drift"
+    assert tuple(member.object_id for member in result.memberships) == ("file-1",)
 
 
 @pytest.mark.asyncio
@@ -154,11 +173,53 @@ async def test_service_principal_cannot_be_used_as_acting_user() -> None:
         service=service,
         profile=Bitrix24DiskTraversalProfile(),
     ).scan(
-        connection(), policy(), acting_principal_id=ident(6), authorize_folder=allow,
+        connection(), policy(), pinned_grant=pinned_grant(ident(6)), authorize_folder=allow,
     )
     assert result.complete is False
     assert result.reason_code == "acting_user_authority_required"
     assert service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_nested_membership_requires_matching_parent_chain_and_independent_discovery() -> None:
+    nested = file_object("nested-folder", "approved-root")
+    child = file_object("file-2", "nested-folder", kind="file")
+    service = FakeDisk({
+        "approved-root": (Bitrix24DiskFilePage(result=(nested,), total=1),),
+        "nested-folder": (Bitrix24DiskFilePage(result=(child,), total=1),),
+    })
+    service.folders["nested-folder"] = nested
+    result = await Bitrix24DiskRootTraversal(
+        service=service,
+        profile=Bitrix24DiskTraversalProfile(),
+    ).scan(
+        connection(),
+        policy(recurse=True, future_discovery=True, manifest_object_ids=()),
+        pinned_grant=pinned_grant(),
+        authorize_folder=allow,
+    )
+    assert result.complete is True
+    assert result.memberships[0].object_id == "file-2"
+    assert result.memberships[0].parent_folder_ids == ("nested-folder", "approved-root")
+
+
+@pytest.mark.asyncio
+async def test_permission_filtered_provider_failure_stays_incomplete() -> None:
+    class FailedDisk(FakeDisk):
+        async def list_children(self, *args, **kwargs):
+            del args, kwargs
+            from spine.connectors.bitrix24_disk import Bitrix24DiskPermissionLostError
+
+            raise Bitrix24DiskPermissionLostError()
+
+    result = await Bitrix24DiskRootTraversal(
+        service=FailedDisk({"approved-root": ()}),
+        profile=Bitrix24DiskTraversalProfile(),
+    ).scan(
+        connection(), policy(), pinned_grant=pinned_grant(), authorize_folder=allow,
+    )
+    assert result.complete is False
+    assert result.reason_code == "provider_read_incomplete"
 
 
 async def allow(folder_id: str) -> bool:

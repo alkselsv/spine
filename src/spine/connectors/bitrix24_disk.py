@@ -39,6 +39,7 @@ from spine.domain.connections.provider import (
     ProviderConnection,
     ProviderKind,
 )
+from spine.domain.connections.bitrix24_disk_scope import Bitrix24DiskMembershipEvidence
 
 BITRIX24_DISK_EXTERNAL_NAMESPACE = "bitrix24-disk"
 BITRIX24_DISK_EXTERNAL_GENERATION = "bitrix24-disk-object:v1"
@@ -266,6 +267,7 @@ class Bitrix24DiskReadCommand(Protocol):
     resource_object_reference: str | None
     required_capabilities: tuple[ProviderCapabilityKind, ...]
     acting_subject_id: UUID | None
+    membership_evidence: Bitrix24DiskMembershipEvidence | None
 
 
 def bitrix24_disk_capabilities(
@@ -417,6 +419,18 @@ class Bitrix24DiskProviderAdapter:
         target = command.resource_object_reference
         if target is None:
             raise Bitrix24DiskResourceNotFoundError()
+        membership = getattr(command, "membership_evidence", None)
+        if membership is not None and (
+            membership.object_id != target
+            or membership.workspace_id != command.workspace_id
+            or membership.environment_id != command.environment_id
+            or membership.connection_id != command.connection_id
+            or membership.connection_version_id != command.connection_version_id
+            or membership.resource_scope_reference != command.resource_scope_reference
+            or membership.authorization_generation != command.authorization_generation
+            or membership.configuration_generation != command.configuration_generation
+        ):
+            raise Bitrix24DiskContractError()
         listed = await self._find_file(connection, command, target, acting_principal_id)
         metadata = await self._service.get_file(
             connection,
@@ -428,6 +442,13 @@ class Bitrix24DiskProviderAdapter:
             raise Bitrix24DiskResourceNotFoundError()
         if metadata.parent_id != listed.parent_id:
             raise Bitrix24DiskContractError()
+        membership = getattr(command, "membership_evidence", None)
+        if membership is not None and (
+            metadata.storage_id != membership.storage_id
+            or metadata.parent_id != membership.parent_folder_ids[0]
+            or metadata.global_content_version != membership.provider_revision
+        ):
+            raise Bitrix24DiskResourceNotFoundError()
         if metadata.size is None or metadata.size > self._profile.max_file_bytes:
             raise Bitrix24DiskFileTooLargeError()
         revision_evidence = _revision_evidence(metadata)
@@ -598,6 +619,7 @@ class Bitrix24DiskProviderAdapter:
             provider_media_type=content.media_type,
             provider_version_before=metadata.global_content_version,
             provider_version_after=metadata.global_content_version,
+            scope_membership=getattr(command, "membership_evidence", None),
         )
 
     @staticmethod

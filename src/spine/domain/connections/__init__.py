@@ -8,7 +8,6 @@ from spine.domain.connections.bitrix24_oauth import (
 )
 from spine.domain.connections.bitrix24_disk_scope import (
     Bitrix24DiskContentPolicy,
-    Bitrix24DiskDiscoveryMode,
     Bitrix24DiskMembershipEvidence,
     Bitrix24DiskRootPolicy,
     Bitrix24DiskStorageClass,
@@ -42,7 +41,6 @@ __all__ = [
     "Bitrix24GrantState",
     "Bitrix24Scope",
     "Bitrix24DiskContentPolicy",
-    "Bitrix24DiskDiscoveryMode",
     "Bitrix24DiskMembershipEvidence",
     "Bitrix24DiskRootPolicy",
     "Bitrix24DiskStorageClass",

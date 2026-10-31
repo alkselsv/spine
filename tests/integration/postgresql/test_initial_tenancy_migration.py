@@ -5299,13 +5299,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261218_86_bitrix24_oauth_authority.py",
         "20261219_87_trusted_content_verification.py",
         "20261220_88_source_lifecycle_authority.py",
+        "20261221_89_bitrix24_disk_root_policies.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261221_89_injected_failure.py").write_text(
+    (target / "versions" / "20261222_90_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261221_89'\n"
-        "down_revision = '20261220_88'\n"
+        "revision = '20261222_90'\n"
+        "down_revision = '20261221_89'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

@@ -8,7 +8,6 @@ from spine.application.bitrix24_disk_scope_admission import (
 )
 from spine.domain.connections.bitrix24_disk_scope import (
     Bitrix24DiskContentPolicy,
-    Bitrix24DiskDiscoveryMode,
     Bitrix24DiskRootPolicy,
     Bitrix24DiskStorageClass,
 )
@@ -53,7 +52,7 @@ def root_policy(content: Bitrix24DiskContentPolicy, **updates: object) -> Bitrix
         "storage_root_object_id": "root-1",
         "approved_root_folder_id": "approved-1",
         "recurse": False,
-        "discovery_mode": Bitrix24DiskDiscoveryMode.FIXED_MANIFEST,
+        "future_discovery": False,
         "manifest_object_ids": ("file-1",),
         "content_policy_id": content.policy_id,
         "content_policy_version": content.version,
@@ -120,6 +119,20 @@ async def test_admission_fences_superseded_root_policy() -> None:
         await Bitrix24DiskScopeAdmissionService(PolicyFake(root, content)).resolve_current(
             connection(), root_policy_id=root.policy_id,
             root_policy_version="v3", root_policy_digest="b" * 64,
+        )
+
+
+@pytest.mark.asyncio
+async def test_admission_cannot_resolve_policy_from_another_workspace() -> None:
+    content = content_policy()
+    root = root_policy(content)
+    isolated_connection = connection().model_copy(update={"workspace_id": ident(40)})
+    with pytest.raises(Bitrix24DiskScopeDenied, match="root_policy_unavailable"):
+        await Bitrix24DiskScopeAdmissionService(PolicyFake(root, content)).resolve_current(
+            isolated_connection,
+            root_policy_id=root.policy_id,
+            root_policy_version=root.version,
+            root_policy_digest=root.digest,
         )
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from enum import Enum
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import Field, field_validator, model_validator
@@ -22,11 +22,6 @@ class Bitrix24DiskStorageClass(str, Enum):
     GROUP = "group"
 
 
-class Bitrix24DiskDiscoveryMode(str, Enum):
-    FIXED_MANIFEST = "fixed_manifest"
-    APPROVED_SUBTREE = "approved_subtree"
-
-
 class Bitrix24DiskContentPolicy(DefinitionModel):
     """Per-root, versioned content eligibility. Empty allowlists deny all."""
 
@@ -39,7 +34,7 @@ class Bitrix24DiskContentPolicy(DefinitionModel):
     connection_version_id: UUID
     resource_scope_reference: OpaqueProviderReference
     allowed_formats: tuple[str, ...] = ()
-    processing_mode: str = "processor_required"
+    processing_mode: Literal["processor_required", "opaque_acceptance"] = "processor_required"
 
     @field_validator("allowed_formats")
     @classmethod
@@ -85,7 +80,7 @@ class Bitrix24DiskRootPolicy(DefinitionModel):
     storage_root_object_id: ObjectId
     approved_root_folder_id: ObjectId
     recurse: bool = False
-    discovery_mode: Bitrix24DiskDiscoveryMode = Bitrix24DiskDiscoveryMode.FIXED_MANIFEST
+    future_discovery: bool = False
     manifest_object_ids: tuple[ObjectId, ...] = ()
     content_policy_id: UUID
     content_policy_version: VersionIdentifier
@@ -113,9 +108,7 @@ class Bitrix24DiskRootPolicy(DefinitionModel):
             raise ValueError("group storage requires an exact group entity")
         if self.storage_class is Bitrix24DiskStorageClass.COMMON and self.group_entity_id is not None:
             raise ValueError("common storage cannot carry a group entity")
-        if self.discovery_mode is Bitrix24DiskDiscoveryMode.APPROVED_SUBTREE and not self.recurse:
-            raise ValueError("subtree discovery requires recursion")
-        if self.discovery_mode is Bitrix24DiskDiscoveryMode.FIXED_MANIFEST and not self.manifest_object_ids:
+        if not self.future_discovery and not self.manifest_object_ids:
             raise ValueError("fixed-manifest policy requires at least one exact object")
         expected = bitrix24_root_policy_digest(self)
         if self.digest and self.digest != expected:
@@ -136,7 +129,17 @@ class Bitrix24DiskMembershipEvidence(DefinitionModel):
     root_policy_id: UUID
     root_policy_version: VersionIdentifier
     root_policy_digest: Digest
+    content_policy_id: UUID
+    content_policy_version: VersionIdentifier
+    content_policy_digest: Digest
+    authorization_generation: int = Field(ge=1)
+    configuration_generation: int = Field(ge=1)
+    grant_binding_id: UUID
+    grant_token_epoch: int = Field(ge=1)
+    grant_security_fence: int = Field(ge=0)
     storage_id: str
+    storage_class: Bitrix24DiskStorageClass
+    group_entity_id: str | None = None
     storage_root_object_id: str
     approved_root_folder_id: str
     object_id: str
@@ -149,7 +152,11 @@ class Bitrix24DiskMembershipEvidence(DefinitionModel):
             raise ValueError("membership evidence must end at the approved root")
         if len(set(self.parent_folder_ids)) != len(self.parent_folder_ids):
             raise ValueError("membership ancestry cannot contain a cycle")
-        if any(value.int == 0 for value in (self.workspace_id, self.environment_id, self.connection_id, self.connection_version_id, self.root_policy_id)):
+        if self.storage_class is Bitrix24DiskStorageClass.GROUP and self.group_entity_id is None:
+            raise ValueError("group membership requires its exact entity identity")
+        if self.storage_class is Bitrix24DiskStorageClass.COMMON and self.group_entity_id is not None:
+            raise ValueError("common membership cannot carry a group entity")
+        if any(value.int == 0 for value in (self.workspace_id, self.environment_id, self.connection_id, self.connection_version_id, self.root_policy_id, self.content_policy_id, self.grant_binding_id)):
             raise ValueError("membership scope identifiers must be non-zero")
         return self
 
@@ -169,7 +176,6 @@ def bitrix24_content_policy_digest(policy: Bitrix24DiskContentPolicy) -> str:
 
 __all__ = [
     "Bitrix24DiskContentPolicy",
-    "Bitrix24DiskDiscoveryMode",
     "Bitrix24DiskMembershipEvidence",
     "Bitrix24DiskRootPolicy",
     "Bitrix24DiskStorageClass",
