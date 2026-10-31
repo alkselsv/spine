@@ -756,12 +756,12 @@ def test_offline_composition_rejects_mismatched_context_scope_before_runner_crea
 @pytest.mark.asyncio
 async def test_offline_composition_uses_injected_provider_ports_after_admission() -> None:
     config = _config(opt_in=True)
+    request_policy = GoogleApiRequestPolicy.model_validate(
+        config.request_policy.model_dump()
+        | {"max_attempts": 2, "backoff_ceiling_seconds": (1.0,)}
+    )
     config = config.model_copy(
-        update={
-            "request_policy": config.request_policy.model_copy(
-                update={"max_attempts": 2, "backoff_ceiling_seconds": (1.0,)}
-            )
-        }
+        update={"request_policy": request_policy}
     )
     repository = CurrentConnectionRepository(config.connection)
     resolver_calls: list[tuple[object, object]] = []
