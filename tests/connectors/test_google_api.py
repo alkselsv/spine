@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -105,6 +106,8 @@ def _service(
     sheets_page_size: int = 200,
     retry_observer=None,
     drive_id: str | None = None,
+    max_requests_per_run: int = 500,
+    jitter=None,
 ) -> GoogleApiService:
     return GoogleApiService(
         endpoints=GoogleApiEndpoints(
@@ -121,7 +124,9 @@ def _service(
         request_policy=GoogleApiRequestPolicy(
             timeout_seconds=7.5,
             max_attempts=2,
-            backoff_seconds=(0.25,),
+            max_requests_per_run=max_requests_per_run,
+            max_concurrent_requests=2,
+            backoff_ceiling_seconds=(1.0,),
             drive_page_size=100,
             sheets_page_size=sheets_page_size,
         ),
@@ -146,6 +151,7 @@ def _service(
         sheet_profiles=sheet_profiles,
         clock=lambda: NOW,
         sleep=sleep or (lambda _delay: _completed_sleep()),
+        jitter=jitter or (lambda _low, high: high),
     )
 
 
@@ -819,7 +825,201 @@ async def test_transient_provider_failure_retries_with_configured_backoff() -> N
     )
 
     assert result.version == "1"
-    assert delays == [0.25]
+    assert delays == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_retry_after_is_a_minimum_wait_and_over_ceiling_hard_stops() -> None:
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    within_transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(
+                status_code=429,
+                json_body={"error": {}},
+                headers={"Retry-After": "2"},
+            ),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"id": "file-1", "name": "ok", "mimeType": "text/plain", "version": "1"},
+            ),
+        ]
+    )
+    await _service(
+        RecordingCredentialResolver(), within_transport, sleep=sleep
+    ).get_metadata_for_file(_connection(), RESOURCE_SCOPE, "file-1")
+    assert delays == [2.0]
+
+    over_transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(
+                status_code=429,
+                json_body={"error": {}},
+                headers={"Retry-After": "31"},
+            ),
+        ]
+    )
+    with pytest.raises(GoogleProviderQuotaError):
+        await _service(RecordingCredentialResolver(), over_transport).get_metadata_for_file(
+            _connection(), RESOURCE_SCOPE, "file-1"
+        )
+    assert len(over_transport.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_run_request_budget_counts_oauth_and_retries_before_sending() -> None:
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(status_code=503, json_body={}),
+        ]
+    )
+    service = _service(
+        RecordingCredentialResolver(), transport, max_requests_per_run=2
+    )
+
+    with service.using_run_request_budget() as budget:
+        with pytest.raises(GoogleProviderQuotaError):
+            await service.get_metadata_for_file(_connection(), RESOURCE_SCOPE, "file-1")
+
+    assert budget.requests == 2
+    assert len(transport.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_aggregate_concurrency_and_grant_refresh_are_shared() -> None:
+    class ConcurrentTransport:
+        def __init__(self) -> None:
+            self.active = 0
+            self.maximum_active = 0
+            self.oauth_requests = 0
+            self.provider_requests = 0
+            self.two_provider_requests_active = asyncio.Event()
+            self.release_provider_requests = asyncio.Event()
+
+        async def request(self, request):
+            self.active += 1
+            self.maximum_active = max(self.maximum_active, self.active)
+            try:
+                if request.method == "POST":
+                    self.oauth_requests += 1
+                    await asyncio.sleep(0)
+                    return GoogleApiResponse(
+                        status_code=200,
+                        json_body={"access_token": "token", "expires_in": 3600},
+                    )
+                self.provider_requests += 1
+                if self.provider_requests >= 2:
+                    self.two_provider_requests_active.set()
+                await self.release_provider_requests.wait()
+                return GoogleApiResponse(
+                    status_code=200,
+                    json_body={
+                        "id": "file-1",
+                        "name": "ok",
+                        "mimeType": "text/plain",
+                        "version": "1",
+                    },
+                )
+            finally:
+                self.active -= 1
+
+    transport = ConcurrentTransport()
+    service = _service(RecordingCredentialResolver(), transport)
+    with service.using_run_request_budget() as budget:
+        calls = [
+            asyncio.create_task(
+                service.get_metadata_for_file(
+                    _connection(), RESOURCE_SCOPE, "file-1"
+                )
+            )
+            for _ in range(3)
+        ]
+        await asyncio.wait_for(transport.two_provider_requests_active.wait(), 1)
+        assert transport.maximum_active == 2
+        transport.release_provider_requests.set()
+        await asyncio.gather(*calls)
+
+    assert transport.oauth_requests == 1
+    assert transport.provider_requests == 3
+    assert transport.maximum_active == 2
+    assert budget.requests == 4
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_provider_request_starts_no_retry() -> None:
+    started = asyncio.Event()
+
+    class BlockingTransport:
+        def __init__(self) -> None:
+            self.requests = []
+
+        async def request(self, request):
+            self.requests.append(request)
+            if request.method == "POST":
+                return GoogleApiResponse(
+                    status_code=200,
+                    json_body={"access_token": "token", "expires_in": 3600},
+                )
+            started.set()
+            await asyncio.Event().wait()
+
+    transport = BlockingTransport()
+    service = _service(RecordingCredentialResolver(), transport)
+    with service.using_run_request_budget():
+        task = asyncio.create_task(
+            service.get_metadata_for_file(_connection(), RESOURCE_SCOPE, "file-1")
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert len(transport.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_full_jitter_source_controls_retry_delay() -> None:
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(status_code=503, json_body={}),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"id": "file-1", "name": "ok", "mimeType": "text/plain", "version": "1"},
+            ),
+        ]
+    )
+    await _service(
+        RecordingCredentialResolver(),
+        transport,
+        sleep=sleep,
+        jitter=lambda low, high: low + (high - low) / 2,
+    ).get_metadata_for_file(_connection(), RESOURCE_SCOPE, "file-1")
+
+    assert delays == [0.5]
 
 
 @pytest.mark.asyncio
@@ -872,35 +1072,42 @@ async def test_nonretryable_oauth_failures_are_typed_without_retry(
 
 
 @pytest.mark.asyncio
-async def test_transient_oauth_transport_failure_retries_with_sanitized_event() -> None:
+async def test_ambiguous_oauth_transport_failure_is_not_retried() -> None:
     observer = RecordingRetryObserver()
+    transport = RecordingTransport([GoogleProviderReadError()])
+
+    with pytest.raises(GoogleProviderReadError):
+        await _service(
+            RecordingCredentialResolver(), transport, retry_observer=observer
+        ).get_metadata_for_file(_connection(), RESOURCE_SCOPE, "file-1")
+
+    assert len(transport.requests) == 1
+    assert observer.events == []
+
+
+@pytest.mark.asyncio
+async def test_terminal_oauth_quota_is_not_retried() -> None:
     transport = RecordingTransport(
         [
-            GoogleProviderReadError(),
             GoogleApiResponse(
-                status_code=200,
-                json_body={"access_token": "token", "expires_in": 3600},
+                status_code=429,
+                json_body={
+                    "error": {"errors": [{"reason": "dailyLimitExceeded"}]}
+                },
             ),
             GoogleApiResponse(
                 status_code=200,
-                json_body={
-                    "id": "file-1",
-                    "name": "Recovered",
-                    "mimeType": "text/plain",
-                    "version": "2",
-                },
+                json_body={"access_token": "unexpected retry", "expires_in": 3600},
             ),
         ]
     )
 
-    result = await _service(
-        RecordingCredentialResolver(), transport, retry_observer=observer
-    ).get_metadata_for_file(_connection(), RESOURCE_SCOPE, "file-1")
+    with pytest.raises(GoogleProviderQuotaError):
+        await _service(RecordingCredentialResolver(), transport).get_metadata_for_file(
+            _connection(), RESOURCE_SCOPE, "file-1"
+        )
 
-    assert result.version == "2"
-    assert [(event.operation, event.reason) for event in observer.events] == [
-        ("oauth", "transient")
-    ]
+    assert len(transport.requests) == 1
 
 
 @pytest.mark.asyncio
@@ -1323,6 +1530,52 @@ def test_google_endpoints_reject_non_https_provider_origins() -> None:
         )
 
 
+def test_google_request_policy_requires_explicit_bounded_controls() -> None:
+    with pytest.raises(ValueError):
+        GoogleApiRequestPolicy(
+            timeout_seconds=30.1,
+            max_attempts=1,
+            max_requests_per_run=500,
+            max_concurrent_requests=2,
+            backoff_ceiling_seconds=(),
+            drive_page_size=100,
+            sheets_page_size=200,
+        )
+
+    with pytest.raises(ValueError):
+        GoogleApiRequestPolicy(
+            timeout_seconds=30.0,
+            max_attempts=2,
+            max_requests_per_run=500,
+            max_concurrent_requests=2,
+            backoff_ceiling_seconds=(1.1,),
+            drive_page_size=100,
+            sheets_page_size=200,
+        )
+
+    with pytest.raises(ValueError):
+        GoogleApiRequestPolicy(
+            timeout_seconds=30.0,
+            max_attempts=5,
+            max_requests_per_run=500,
+            max_concurrent_requests=2,
+            backoff_ceiling_seconds=(1.0, 2.0, 4.0, 4.0),
+            drive_page_size=100,
+            sheets_page_size=200,
+        )
+
+    with pytest.raises(ValueError):
+        GoogleApiRequestPolicy(
+            timeout_seconds=30.0,
+            max_attempts=4,
+            max_requests_per_run=500,
+            max_concurrent_requests=2,
+            backoff_ceiling_seconds=(1.0, 0.5, 4.0),
+            drive_page_size=100,
+            sheets_page_size=200,
+        )
+
+
 @pytest.mark.asyncio
 async def test_cross_workspace_connection_is_denied_before_credentials_or_http() -> (
     None
@@ -1400,6 +1653,35 @@ async def test_credential_resolver_failure_is_sanitized_before_transport() -> No
             2,
         ),
         (
+            [
+                GoogleApiResponse(
+                    status_code=403,
+                    json_body={
+                        "error": {"errors": [{"reason": "quotaExceeded"}]}
+                    },
+                ),
+                GoogleApiResponse(
+                    status_code=200,
+                    json_body={"id": "file-1", "name": "unexpected retry", "mimeType": "text/plain", "version": "1"},
+                ),
+            ],
+            GoogleProviderQuotaError,
+            1,
+        ),
+        (
+            [
+                GoogleApiResponse(
+                    status_code=403,
+                    json_body={
+                        "error": {"errors": [{"reason": "dailyLimitExceeded"}]}
+                    },
+                ),
+                GoogleApiResponse(status_code=200, json_body={}),
+            ],
+            GoogleProviderQuotaError,
+            1,
+        ),
+        (
             [GoogleApiResponse(status_code=400, json_body={"error": {}})],
             GoogleProviderContractError,
             1,
@@ -1440,6 +1722,8 @@ async def test_provider_failures_are_typed_and_only_retryable_failures_retry(
         assert event.connection_id == _connection().connection_id
         assert event.operation == "provider"
         assert event.schema_version == "google-api-retry:v1"
+        assert not hasattr(event, "request_url")
+        assert not hasattr(event, "response_body")
 
 
 @pytest.mark.asyncio

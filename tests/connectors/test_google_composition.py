@@ -86,7 +86,9 @@ async def test_production_composition_denies_before_credentials_and_transport() 
         request_policy=GoogleApiRequestPolicy(
             timeout_seconds=1.0,
             max_attempts=1,
-            backoff_seconds=(),
+            max_requests_per_run=500,
+            max_concurrent_requests=2,
+            backoff_ceiling_seconds=(),
             drive_page_size=10,
             sheets_page_size=10,
         ),

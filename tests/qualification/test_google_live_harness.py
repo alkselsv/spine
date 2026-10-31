@@ -125,7 +125,9 @@ def _config(*, opt_in: bool) -> GoogleLiveQualificationConfig:
         request_policy=GoogleApiRequestPolicy(
             timeout_seconds=5.0,
             max_attempts=1,
-            backoff_seconds=(),
+            max_requests_per_run=500,
+            max_concurrent_requests=2,
+            backoff_ceiling_seconds=(),
             drive_page_size=10,
             sheets_page_size=20,
         ),
@@ -347,6 +349,10 @@ async def test_live_harness_deadline_cancels_provider_and_starts_no_later_calls(
         def using_transport(self, transport, *, sleep=None):
             del transport, sleep
             yield
+
+        @contextmanager
+        def using_run_request_budget(self):
+            yield object()
 
         async def get_metadata_for_file(self, connection, scope, file_id):
             del connection, scope

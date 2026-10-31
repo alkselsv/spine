@@ -13,8 +13,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from email.utils import parsedate_to_datetime
 import hashlib
 import json
+import math
+import random
 import re
 from contextvars import ContextVar, Token
 from typing import Any, Literal, Protocol
@@ -112,19 +115,43 @@ class GoogleApiRequestPolicy(DefinitionModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    timeout_seconds: StrictFloat = Field(gt=0)
-    max_attempts: StrictInt = Field(ge=1, le=10)
-    backoff_seconds: tuple[StrictFloat, ...]
+    timeout_seconds: StrictFloat = Field(gt=0, le=30)
+    max_attempts: StrictInt = Field(ge=1, le=4)
+    max_requests_per_run: StrictInt = Field(ge=1, le=500)
+    max_concurrent_requests: StrictInt = Field(ge=1, le=2)
+    backoff_ceiling_seconds: tuple[StrictFloat, ...]
     drive_page_size: StrictInt = Field(ge=1, le=1000)
     sheets_page_size: StrictInt = Field(ge=1, le=4096)
 
     @model_validator(mode="after")
     def validate_backoff(self) -> "GoogleApiRequestPolicy":
-        if len(self.backoff_seconds) != self.max_attempts - 1:
-            raise ValueError("backoff_seconds must define every bounded retry delay")
-        if any(value < 0 for value in self.backoff_seconds):
-            raise ValueError("backoff_seconds cannot contain negative delays")
+        if not math.isfinite(self.timeout_seconds):
+            raise ValueError("timeout_seconds must be finite")
+        if len(self.backoff_ceiling_seconds) != self.max_attempts - 1:
+            raise ValueError(
+                "backoff_ceiling_seconds must define every bounded retry delay"
+            )
+        approved_ceilings = (1.0, 2.0, 4.0)
+        if (
+            any(not math.isfinite(value) for value in self.backoff_ceiling_seconds)
+            or self.backoff_ceiling_seconds
+            != approved_ceilings[: self.max_attempts - 1]
+        ):
+            raise ValueError("retry backoff ceilings must match the approved schedule")
         return self
+
+
+class GoogleApiRunRequestBudget:
+    """Count every physical request attempt in one qualified run."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.requests = 0
+
+    def reserve(self) -> None:
+        if self.requests >= self.limit:
+            raise GoogleProviderQuotaError()
+        self.requests += 1
 
 
 class GoogleResourceScope(DefinitionModel):
@@ -331,7 +358,11 @@ class HttpxGoogleApiTransport:
             status_code=response.status_code,
             json_body=json_body,
             content=content,
-            headers=({"content-type": content_type} if content_type else {}),
+            headers={
+                key: response.headers[key]
+                for key in ("content-type", "retry-after")
+                if key in response.headers
+            },
             stream_observed=stream_observed,
         )
 
@@ -392,6 +423,7 @@ class GoogleApiService:
         sheet_profiles: tuple[GoogleSheetsReadProfile, ...] = (),
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         sleep: Callable[[float], Awaitable[None]],
+        jitter: Callable[[float, float], float] = random.uniform,
     ) -> None:
         references = tuple(scope.reference.value for scope in resource_scopes)
         if len(set(references)) != len(references):
@@ -424,6 +456,14 @@ class GoogleApiService:
         )
         self._clock = clock
         self._base_sleep = sleep
+        self._jitter = jitter
+        self._request_semaphore = asyncio.Semaphore(
+            request_policy.max_concurrent_requests
+        )
+        self._refresh_locks: dict[UUID, asyncio.Lock] = {}
+        self._run_request_budget: ContextVar[GoogleApiRunRequestBudget | None] = (
+            ContextVar(f"google-api-request-budget-{id(self)}", default=None)
+        )
         self._sleep_override: ContextVar[Callable[[float], Awaitable[None]] | None] = (
             ContextVar(f"google-api-sleep-{id(self)}", default=None)
         )
@@ -1008,11 +1048,13 @@ class GoogleApiService:
         json_expected: bool = True,
         drive_not_found: bool = False,
     ) -> GoogleApiResponse:
+        if method.upper() != "GET":
+            raise GoogleProviderPolicyError()
         refreshed_after_unauthorized = False
         for attempt in range(self._policy.max_attempts):
             token = await self._access_token(connection)
             try:
-                response = await self.transport.request(
+                response = await self._send_request(
                     GoogleApiRequest(
                         method=method,
                         url=url,
@@ -1022,12 +1064,19 @@ class GoogleApiService:
                         timeout_seconds=self._policy.timeout_seconds,
                     )
                 )
+            except asyncio.CancelledError:
+                raise
+            except GoogleProviderQuotaError:
+                raise
             except (TimeoutError, asyncio.TimeoutError, GoogleProviderReadError):
                 if attempt + 1 == self._policy.max_attempts:
                     raise GoogleProviderReadError() from None
+                delay = self._retry_delay(attempt, None)
                 await self._record_retry(connection, "provider", "transient", attempt)
-                await self.sleep(self._policy.backoff_seconds[attempt])
+                await self.sleep(delay)
                 continue
+            if _is_terminal_provider_quota(response):
+                raise GoogleProviderQuotaError()
             if 200 <= response.status_code < 300:
                 if json_expected and response.json_body is None:
                     raise GoogleProviderContractError(
@@ -1042,8 +1091,9 @@ class GoogleApiService:
                 ):
                     raise GoogleProviderAuthorizationError()
                 refreshed_after_unauthorized = True
+                delay = self._retry_delay(attempt, response)
                 await self._record_retry(connection, "provider", "reauthorize", attempt)
-                await self.sleep(self._policy.backoff_seconds[attempt])
+                await self.sleep(delay)
                 continue
             if response.status_code == 404:
                 if drive_not_found:
@@ -1052,10 +1102,10 @@ class GoogleApiService:
                     )
                 raise GoogleProviderNotFoundError()
             if response.status_code == 403:
-                if _provider_reason(response) in {
+                reason = _provider_reason(response)
+                if reason in {
                     "ratelimitexceeded",
                     "userratelimitexceeded",
-                    "quotaexceeded",
                 }:
                     failure: Exception = GoogleProviderQuotaError()
                 else:
@@ -1070,6 +1120,7 @@ class GoogleApiService:
                 raise GoogleProviderContractError("Google provider request failed.")
             if attempt + 1 == self._policy.max_attempts:
                 raise failure
+            delay = self._retry_delay(attempt, response)
             await self._record_retry(
                 connection,
                 "provider",
@@ -1080,7 +1131,7 @@ class GoogleApiService:
                 ),
                 attempt,
             )
-            await self.sleep(self._policy.backoff_seconds[attempt])
+            await self.sleep(delay)
         raise AssertionError("bounded Google request must return or raise")
 
     def _token_key(self, connection: GoogleConnection) -> tuple[object, ...]:
@@ -1099,16 +1150,24 @@ class GoogleApiService:
     ) -> GoogleApiResponse:
         for attempt in range(self._policy.max_attempts):
             try:
-                response = await self.transport.request(request)
+                response = await self._send_request(request)
+            except asyncio.CancelledError:
+                raise
+            except GoogleProviderQuotaError:
+                raise
             except (
                 TimeoutError,
                 asyncio.TimeoutError,
                 GoogleProviderReadError,
             ):
-                response = None
+                # A timeout or transport error leaves the POST outcome unknown.
+                # Retrying could repeat a refresh whose response was lost.
+                raise GoogleProviderReadError() from None
+            if _is_terminal_provider_quota(response):
+                raise GoogleProviderQuotaError()
             if response is not None and 200 <= response.status_code < 300:
                 return response
-            if response is not None and response.status_code < 500:
+            if response.status_code < 500:
                 reason = _provider_reason(response)
                 if response.status_code == 401 or reason in {
                     "invalid_grant",
@@ -1125,17 +1184,15 @@ class GoogleApiService:
                     raise GoogleProviderContractError(
                         "Google OAuth request was rejected."
                     )
+            if response.status_code != 429:
+                raise GoogleProviderReadError()
             if attempt + 1 == self._policy.max_attempts:
-                if response is not None and response.status_code == 429:
+                if response.status_code == 429:
                     raise GoogleProviderQuotaError()
                 raise GoogleProviderReadError()
-            reason = (
-                "quota"
-                if response is not None and response.status_code == 429
-                else "transient"
-            )
-            await self._record_retry(connection, "oauth", reason, attempt)
-            await self.sleep(self._policy.backoff_seconds[attempt])
+            delay = self._retry_delay(attempt, response)
+            await self._record_retry(connection, "oauth", "quota", attempt)
+            await self.sleep(delay)
         raise AssertionError("bounded OAuth request must return or raise")
 
     async def _record_retry(
@@ -1173,6 +1230,22 @@ class GoogleApiService:
         cached = self._tokens.get(key)
         if cached is not None and cached.expires_at > now + timedelta(seconds=30):
             return cached.value
+        lock = self._refresh_locks.setdefault(
+            connection.grant_reference.value, asyncio.Lock()
+        )
+        async with lock:
+            cached = self._tokens.get(key)
+            now = self._clock()
+            if cached is not None and cached.expires_at > now + timedelta(seconds=30):
+                return cached.value
+            return await self._refresh_access_token(connection, key, now)
+
+    async def _refresh_access_token(
+        self,
+        connection: GoogleConnection,
+        key: tuple[object, ...],
+        now: datetime,
+    ) -> str:
         try:
             material = await self._resolver.resolve(
                 connection.credential_reference, connection.grant_reference
@@ -1216,6 +1289,40 @@ class GoogleApiService:
         )
         return access_token
 
+    async def _send_request(self, request: GoogleApiRequest) -> GoogleApiResponse:
+        async with self._request_semaphore:
+            budget = self._run_request_budget.get()
+            if budget is not None:
+                budget.reserve()
+            return await self.transport.request(request)
+
+    @contextmanager
+    def using_run_request_budget(self) -> Iterator[GoogleApiRunRequestBudget]:
+        """Share one request counter across every nested call in a live run."""
+
+        existing = self._run_request_budget.get()
+        if existing is not None:
+            yield existing
+            return
+        budget = GoogleApiRunRequestBudget(self._policy.max_requests_per_run)
+        token = self._run_request_budget.set(budget)
+        try:
+            yield budget
+        finally:
+            self._run_request_budget.reset(token)
+
+    def _retry_delay(
+        self, zero_based_attempt: int, response: GoogleApiResponse | None
+    ) -> float:
+        ceiling = self._policy.backoff_ceiling_seconds[zero_based_attempt]
+        jitter_delay = self._jitter(0.0, ceiling)
+        if not 0 <= jitter_delay <= ceiling:
+            raise ValueError("Google retry jitter must be within its approved ceiling")
+        retry_after = _retry_after_seconds(response, self._clock())
+        if retry_after is not None and retry_after > _MAX_RETRY_AFTER_SECONDS:
+            raise GoogleProviderQuotaError()
+        return max(jitter_delay, retry_after or 0.0)
+
     @staticmethod
     def _json_success(response: GoogleApiResponse) -> Mapping[str, Any]:
         if response.status_code < 200 or response.status_code >= 300:
@@ -1224,6 +1331,51 @@ class GoogleApiService:
             raise GoogleProviderContractError("Google provider response is invalid.")
         return response.json_body
 
+
+def _retry_after_seconds(
+    response: GoogleApiResponse | None, now: datetime
+) -> float | None:
+    if response is None or not response.headers:
+        return None
+    value = next(
+        (
+            item
+            for key, item in response.headers.items()
+            if key.lower() == "retry-after"
+        ),
+        None,
+    )
+    if value is None:
+        return None
+    stripped = value.strip()
+    if stripped.isdecimal():
+        return float(min(int(stripped), int(_MAX_RETRY_AFTER_SECONDS) + 1))
+    try:
+        retry_at = parsedate_to_datetime(stripped)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if retry_at.tzinfo is None or retry_at.utcoffset() is None:
+        return None
+    return max(0.0, (retry_at - now).total_seconds())
+
+
+_MAX_RETRY_AFTER_SECONDS = 30.0
+_TERMINAL_PROVIDER_QUOTA_REASONS = frozenset(
+    {
+        "quotaexceeded",
+        "quota_exceeded",
+        "resource_exhausted",
+        "dailylimitexceeded",
+        "dailylimitexceededunreg",
+    }
+)
+
+
+def _is_terminal_provider_quota(response: GoogleApiResponse) -> bool:
+    return (
+        not 200 <= response.status_code < 300
+        and _provider_reason(response) in _TERMINAL_PROVIDER_QUOTA_REASONS
+    )
 
 def _required_string(payload: Mapping[str, Any], key: str) -> str:
     value = payload.get(key)

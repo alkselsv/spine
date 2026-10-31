@@ -327,7 +327,10 @@ class GoogleLiveQualificationProvider:
                 raise
         metadata_reads = downloads = exports = 0
         snapshot_pages = change_pages = sheet_pages = 0
-        with self.service.using_transport(bounded_transport, sleep=bounded_sleep):
+        with (
+            self.service.using_run_request_budget(),
+            self.service.using_transport(bounded_transport, sleep=bounded_sleep),
+        ):
             for target in self.config.file_targets:
                 metadata = await self.service.get_metadata_for_file(
                     connection,
