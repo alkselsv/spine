@@ -319,7 +319,7 @@ async def _prepare_scope_authority(
         scope=(child_case.source.workspace_id, child_case.source.environment_id),
         source_object=root_source,
         create_scope=False,
-        provenance_event="event-2",
+        provenance_event=f"root-authority-{base}",
     )
     root_observation = _observation(root_case, base + 1).model_copy(
         update={
@@ -353,11 +353,12 @@ def _bind_scope_authority(query: LifecycleEligibilityQuery, root_case) -> Lifecy
     )
 
 
-async def _accept_canonical_tombstone(adapter: PersistenceAdapter, case, number: int) -> None:
-    async with adapter.uow_factory(case.context) as uow:
-        await uow.canonical.accept(case.command)
-        await uow.commit()
-
+async def _accept_canonical_tombstone(
+    adapter: PersistenceAdapter,
+    case,
+    observation: LifecycleObservation,
+    number: int,
+) -> None:
     revision = tombstone(case.source, synthetic_uuid(number + 1))
     provenance = source_provenance(case.source, revision.revision_id, "tombstone-event-2")
     source_context = adapter.source_context(
@@ -405,6 +406,7 @@ async def _accept_canonical_tombstone(adapter: PersistenceAdapter, case, number:
         accepted_at=NOW,
         audit_event=audit,
         outbox_intent=outbox,
+        lifecycle_query=_query(case, observation),
         operation=case.context.operation,
     )
     async with adapter.uow_factory(case.context) as uow:
@@ -446,8 +448,13 @@ async def test_postgresql_lifecycle_authority_persists_current_scoped_decision(
     from spine.application.persistence.errors import CanonicalEligibilityError
 
     with pytest.raises(CanonicalEligibilityError):
+        legacy = replace(
+            case.command,
+            idempotency_key=IdempotencyKey("withdrawn-unbound-canonical"),
+        )
+        legacy = replace(legacy, digest=legacy.expected_digest())
         async with postgresql_adapter.uow_factory(case.context) as uow:
-            await uow.canonical.accept(case.command)
+            await uow.canonical.accept(legacy)
             await uow.commit()
     async with postgresql_adapter.uow_factory(context) as uow:
         audit_result = await uow._execute(  # type: ignore[attr-defined]
@@ -719,6 +726,9 @@ async def test_postgresql_current_eligibility_uses_tombstone_and_exact_decision_
     decision = _decision(case, observation, context, 73420)
     await _accept_canonical_tombstone(postgresql_adapter, case, 73430)
     await repository.record_observation(observation, context)
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        await uow.canonical.accept(case.command)
+        await uow.commit()
     await repository.record_decision(decision, context)
 
     current = await repository.current_eligibility(_query(case, observation), context)

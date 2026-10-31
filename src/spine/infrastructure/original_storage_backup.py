@@ -79,7 +79,7 @@ class FilesystemOriginalStorageBackupSource:
 
         try:
             with tempfile.TemporaryDirectory(prefix="spine-object-backup-") as temp_dir:
-                snapshot_path = Path(temp_dir) / "originals.tar"
+                snapshot_path = Path(temp_dir).resolve(strict=True) / "originals.tar"
                 snapshot = await self._object_store.export_finalized_backup(
                     snapshot_path, references
                 )

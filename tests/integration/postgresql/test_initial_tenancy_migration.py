@@ -1341,6 +1341,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "current_lifecycle_authorities",
         "retention_applicabilities",
         "current_retention_applicabilities",
+        "disclosure_holds",
+        "disclosure_hold_source_revisions",
+        "disclosure_hold_releases",
+        "current_disclosure_holds",
     }
     tables = set(
         (
@@ -1371,7 +1375,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                     "'bitrix24_grant_bindings','bitrix24_grant_authorities',"
                     "'bitrix24_oauth_attempts','bitrix24_oauth_callback_receipts',"
                     "'lifecycle_observations','lifecycle_decisions','current_lifecycle_authorities',"
-                    "'retention_applicabilities','current_retention_applicabilities'))"
+                    "'retention_applicabilities','current_retention_applicabilities',"
+                    "'disclosure_holds','disclosure_hold_source_revisions',"
+                    "'disclosure_hold_releases','current_disclosure_holds'))"
                 )
             )
         ).scalars()
@@ -1391,7 +1397,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                      "'bitrix24_grant_bindings','bitrix24_grant_authorities',"
                      "'bitrix24_oauth_attempts','bitrix24_oauth_callback_receipts',"
                      "'lifecycle_observations','lifecycle_decisions','current_lifecycle_authorities',"
-                     "'retention_applicabilities','current_retention_applicabilities')")
+                     "'retention_applicabilities','current_retention_applicabilities',"
+                     "'disclosure_holds','disclosure_hold_source_revisions',"
+                     "'disclosure_hold_releases','current_disclosure_holds')")
             )
         ).scalars()
     )
@@ -2989,7 +2997,10 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
-                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'retention_applicabilities', 'current_retention_applicabilities', 'backup_fence_leases', "
+                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', "
+                            "'retention_applicabilities', 'current_retention_applicabilities', "
+                            "'disclosure_holds', 'disclosure_hold_source_revisions', "
+                            "'disclosure_hold_releases', 'current_disclosure_holds', 'backup_fence_leases', "
                             "'fence_operation_tickets', 'recovery_quiescence_evidence', "
                             "'storage_recovery_manifests', 'recovery_evidence_invalidations', "
                             "'parsed_documents', 'parsed_document_segments', 'ontology_versions', "
@@ -3029,7 +3040,10 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
-                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'retention_applicabilities', 'current_retention_applicabilities', 'backup_fence_leases', 'fence_operation_tickets', "
+                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', "
+                            "'retention_applicabilities', 'current_retention_applicabilities', "
+                            "'disclosure_holds', 'disclosure_hold_source_revisions', "
+                            "'disclosure_hold_releases', 'current_disclosure_holds', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
@@ -3063,7 +3077,10 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
-                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'retention_applicabilities', 'current_retention_applicabilities', 'backup_fence_leases', 'fence_operation_tickets', "
+                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', "
+                            "'retention_applicabilities', 'current_retention_applicabilities', "
+                            "'disclosure_holds', 'disclosure_hold_source_revisions', "
+                            "'disclosure_hold_releases', 'current_disclosure_holds', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
@@ -3096,7 +3113,10 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
-                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'retention_applicabilities', 'current_retention_applicabilities', 'backup_fence_leases', 'fence_operation_tickets', "
+                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', "
+                            "'retention_applicabilities', 'current_retention_applicabilities', "
+                            "'disclosure_holds', 'disclosure_hold_source_revisions', "
+                            "'disclosure_hold_releases', 'current_disclosure_holds', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
@@ -3128,7 +3148,10 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
-                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'retention_applicabilities', 'current_retention_applicabilities', 'backup_fence_leases', 'fence_operation_tickets', "
+                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', "
+                            "'retention_applicabilities', 'current_retention_applicabilities', "
+                            "'disclosure_holds', 'disclosure_hold_source_revisions', "
+                            "'disclosure_hold_releases', 'current_disclosure_holds', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
@@ -3822,7 +3845,10 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'recovery_evidence_invalidations', "
                         "'canonical_generation_counters', 'canonical_acceptances', 'current_source_heads', "
                         "'canonical_boundaries', 'canonical_boundary_members', "
-                        "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'retention_applicabilities', 'current_retention_applicabilities', "
+                        "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', "
+                        "'retention_applicabilities', 'current_retention_applicabilities', "
+                        "'disclosure_holds', 'disclosure_hold_source_revisions', "
+                        "'disclosure_hold_releases', 'current_disclosure_holds', "
                         "'parsed_documents', 'parsed_document_segments', 'ontology_versions', "
                         "'projection_config_versions', 'projection_runs', 'projection_run_transitions', "
                         "'projection_partitions', 'projection_receipts', 'source_projection_references', "

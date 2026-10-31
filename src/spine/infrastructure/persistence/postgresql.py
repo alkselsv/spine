@@ -430,6 +430,7 @@ async def _lock_and_validate_lifecycle_eligibility(
     environment_id: UUID,
     source_object_id: UUID,
     query: Any | None,
+    allowed_statuses: tuple[str, ...] = ("eligible",),
 ) -> None:
     """Serialize a source write with withdrawal and require its exact current scope."""
 
@@ -566,19 +567,21 @@ async def _lock_and_validate_lifecycle_eligibility(
         )
         return
     if (
-        row["connection_id"],
-        row["connection_version_id"],
-        row["scope_reference"],
-        row["scope_version_id"],
-        row["scope_digest"],
-        row["status"],
-    ) != (
-        query.connection_id,
-        query.connection_version_id,
-        query.scope_reference,
-        query.scope_version_id,
-        query.scope_digest,
-        "eligible",
+        (
+            row["connection_id"],
+            row["connection_version_id"],
+            row["scope_reference"],
+            row["scope_version_id"],
+            row["scope_digest"],
+        )
+        != (
+            query.connection_id,
+            query.connection_version_id,
+            query.scope_reference,
+            query.scope_version_id,
+            query.scope_digest,
+        )
+        or row["status"] not in allowed_statuses
     ):
         await uow._fail(
             CanonicalEligibilityError("Current lifecycle eligibility is unavailable.")

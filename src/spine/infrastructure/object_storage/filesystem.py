@@ -2766,11 +2766,16 @@ class FilesystemOriginalObjectStore:
         if os.name != "posix" or not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
             raise StorageConfigurationError()
         try:
-            root = Path(os.path.abspath(os.fspath(configured_root)))
-            if "\x00" in os.fspath(root) or not root.is_absolute():
+            configured = Path(os.path.abspath(os.fspath(configured_root)))
+            if "\x00" in os.fspath(configured) or not configured.is_absolute():
                 raise StorageConfigurationError()
-            if any(component in {"", ".", ".."} for component in root.parts[1:]):
+            if any(component in {"", ".", ".."} for component in configured.parts[1:]):
                 raise StorageConfigurationError()
+            # Resolve trusted platform aliases in ancestors (macOS /var ->
+            # /private/var) while preserving the configured final component.
+            # The final component is still opened with O_NOFOLLOW, so a
+            # symlinked storage root remains unsupported.
+            root = configured.parent.resolve(strict=False) / configured.name
             return root
         except StorageError:
             raise

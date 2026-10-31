@@ -98,7 +98,7 @@ class PostgreSQLDisclosureHoldRepository(DisclosureHoldRepository):
                         current_lifecycle_authorities.c.source_object_id
                         == hold.source_object_id,
                     )
-                    .with_for_update()
+                    .with_for_update(of=current_lifecycle_authorities)
                 )
                 current = current_result.mappings().one_or_none()
                 if current is None or (

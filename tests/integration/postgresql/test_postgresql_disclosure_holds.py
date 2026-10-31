@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import insert, select, update
-from sqlalchemy.exc import DBAPIError
 
 from spine.application.disclosure_holds import (
     DisclosureConstraintQuery,
     DisclosureHoldAuthorityError,
     DisclosureHoldConflictError,
 )
+from spine.application.persistence.errors import UnexpectedPersistenceError
 from spine.domain.sources.disclosure_holds import (
     DisclosureHold,
     DisclosureHoldEffect,
@@ -252,14 +253,15 @@ async def test_postgresql_hold_create_release_replay_and_workspace_isolation(
     )
     assert active.hold_ids == (hold.hold_id,)
     unrelated = await repository.active_holds(
-        _query(hold, datetime(2026, 11, 1, tzinfo=timezone.utc)).model_copy(
-            update={"artifact_id": synthetic_uuid(733999)}
+        replace(
+            _query(hold, datetime(2026, 11, 1, tzinfo=timezone.utc)),
+            artifact_id=synthetic_uuid(733999),
         ),
         context,
     )
     assert unrelated.hold_ids == ()
 
-    with pytest.raises(DBAPIError):
+    with pytest.raises(UnexpectedPersistenceError):
         async with postgresql_adapter.uow_factory(context) as uow:
             await uow._execute(  # type: ignore[attr-defined]
                 update(disclosure_holds)
