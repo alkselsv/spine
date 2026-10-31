@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import cast
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
 
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -12,12 +14,16 @@ from spine.application.persistence.context import (
     TrustedContextProvenance,
     TrustedPersistenceContext,
 )
+from spine.application.persistence.unit_of_work import UnitOfWork
 from spine.application.retention import (
     ApprovedRetentionApplicabilityAuthority,
     RetentionArtifactRef,
+    RetentionApplicabilityError,
+    RetentionEligibility,
     RetentionEligibilityQuery,
     RetentionEligibilityReader,
     RetentionEligibilityStatus,
+    RetentionSourceDecision,
     RetentionSourceLineage,
 )
 from spine.domain.sources.retention import (
@@ -131,6 +137,11 @@ class _PolicyApprovals:
 class _BindingApprovals:
     async def binding_is_approved(self, applicability, context, transaction) -> bool:
         return applicability.approving_authority_digest == "b" * 64
+
+
+class _UnavailablePolicyApprovals:
+    async def policy_is_current(self, applicability, context, transaction) -> bool:
+        raise RuntimeError("private approval adapter detail")
 
 
 def _context(workspace_id: UUID = _uuid(1), environment_id: UUID = _uuid(2)):
@@ -331,3 +342,34 @@ async def test_missing_current_policy_or_binding_authority_denies(
     result = await reader.resolve(_query(), _context())
 
     assert result.status is RetentionEligibilityStatus.AUTHORITY_UNAVAILABLE
+
+
+def test_retention_eligibility_rejects_aggregate_status_contradicting_sources() -> None:
+    with pytest.raises(ValidationError):
+        RetentionEligibility(
+            workspace_id=_uuid(1),
+            environment_id=_uuid(2),
+            artifact_class=RetentionArtifactClass.ORIGINAL,
+            status=RetentionEligibilityStatus.EXPIRED,
+            source_decisions=(
+                RetentionSourceDecision(
+                    source_object_id=_uuid(10),
+                    source_revision_id=_uuid(1010),
+                    status=RetentionEligibilityStatus.MISSING,
+                ),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_writer_authority_outage_is_disclosure_safe() -> None:
+    source = _source(10)
+    binding = _binding(applicability_id=210, source_object_id=source.source_object_id)
+    verifier = ApprovedRetentionApplicabilityAuthority(
+        policies=_UnavailablePolicyApprovals(), bindings=_BindingApprovals()
+    )
+
+    with pytest.raises(RetentionApplicabilityError) as caught:
+        await verifier.verify(binding, _context(), cast(UnitOfWork, object()))
+
+    assert str(caught.value) == "Retention applicability authority is unavailable."

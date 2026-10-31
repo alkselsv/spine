@@ -108,11 +108,8 @@ class RetentionEligibility(DefinitionModel):
             }:
                 raise ValueError("retention eligibility requires source decisions")
             return self
-        all_eligible = all(
-            item.status is RetentionEligibilityStatus.ELIGIBLE
-            for item in self.source_decisions
-        )
-        if all_eligible != (self.status is RetentionEligibilityStatus.ELIGIBLE):
+        expected_status = _aggregate_status(list(self.source_decisions))
+        if self.status is not expected_status:
             raise ValueError("aggregate retention status must match source decisions")
         return self
 
@@ -212,7 +209,13 @@ class ApprovedRetentionApplicabilityAuthority:
         context: TrustedPersistenceContext,
         transaction: UnitOfWork,
     ) -> None:
-        if not await self._verify(applicability, context, transaction):
+        try:
+            approved = await self._verify(applicability, context, transaction)
+        except RetentionApplicabilityError:
+            raise
+        except Exception:
+            raise RetentionApplicabilityError() from None
+        if not approved:
             raise RetentionApplicabilityError()
 
     async def is_current(
