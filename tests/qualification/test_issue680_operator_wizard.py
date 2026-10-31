@@ -9,7 +9,6 @@ import re
 import subprocess
 import tarfile
 
-
 ROOT = Path(__file__).resolve().parents[2]
 GENERATOR_PATH = ROOT / "tools/generate_issue680_mounted_filesystem_corpus.py"
 WIZARD_PATH = ROOT / "tools/issue680_mounted_filesystem_qualification_wizard.sh"
@@ -64,7 +63,9 @@ def test_generator_builds_the_approved_deterministic_synthetic_corpus(
         assert all(member.mtime == 1_700_000_000 for member in members)
         assert any(member.issym() for member in members)
         assert any(member.isfifo() for member in members)
-        assert not any("outside-scope-synthetic.txt" in member.name for member in members)
+        assert not any(
+            "outside-scope-synthetic.txt" in member.name for member in members
+        )
 
 
 def test_operator_wizard_has_the_confirmed_stages_and_never_controls_the_mount() -> (
@@ -85,13 +86,16 @@ def test_operator_wizard_has_the_confirmed_stages_and_never_controls_the_mount()
         "Identity, sanitized evidence, and cleanup",
     ]
     assert "MountedFilesystemReconciliationWorker.reconcile" in script
-    assert "source_write_operation_performed_by_spine\": False" in script
-    assert "mount_operation_performed_by_spine\": False" in script
+    assert 'source_write_operation_performed_by_spine": False' in script
+    assert 'mount_operation_performed_by_spine": False' in script
     assert "QUALIFICATION_ROOT" not in script.split("report = {", 1)[1]
     assert not re.search(r"^\s*(sudo\s+)?(mount|umount)\s", script, flags=re.MULTILINE)
-    assert subprocess.run(
-        ["bash", "-n", str(WIZARD_PATH)], capture_output=True, check=False
-    ).returncode == 0
+    assert (
+        subprocess.run(
+            ["bash", "-n", str(WIZARD_PATH)], capture_output=True, check=False
+        ).returncode
+        == 0
+    )
 
 
 def test_runbook_routes_the_operator_through_generator_and_wizard() -> None:

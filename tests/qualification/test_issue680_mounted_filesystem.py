@@ -5,11 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
-REPORT_PATH = (
-    ROOT / "docs/qualification/issue-680-mounted-filesystem-attempt-v1.json"
-)
+REPORT_PATH = ROOT / "docs/qualification/issue-680-mounted-filesystem-attempt-v1.json"
 
 
 def _report() -> dict[str, object]:
