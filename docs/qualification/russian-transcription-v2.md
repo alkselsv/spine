@@ -54,6 +54,12 @@ SHA-256, and uses local files only. It does not run Piper, fetch packages, or
 download audio/model assets. It writes only v2 assets, manifest and digest; it
 does not modify v1 files.
 
+Fixture integrity validation also requires the local `ffprobe` executable to
+inspect MP3/M4A codec, profile, sample-rate, channel and duration metadata. The
+repository R1 CI job installs the Ubuntu `ffmpeg` package (which includes
+`ffprobe`) before running the offline suite; this is a media-inspection tool,
+not an ASR/TTS runtime or model asset.
+
 Validate fixture integrity and emit the typed coverage report with:
 
 ```bash

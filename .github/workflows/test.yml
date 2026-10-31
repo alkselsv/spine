@@ -82,6 +82,11 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Install media probe for frozen synthetic fixtures
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ffmpeg
+          ffprobe -version
       - run: uv sync --extra dev --locked
       - run: uv run python -m compileall -q src tests
       - name: Run mandatory repository and PostgreSQL suite
