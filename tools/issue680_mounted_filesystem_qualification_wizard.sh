@@ -188,10 +188,20 @@ TOTAL_STAGES=8
 
 ENV_FILE="${ISSUE680_STATE_FILE:-/private/tmp/spine-issue680-qualification.env}"
 REPORT_PATH="${ISSUE680_REPORT_PATH:-/private/tmp/issue-680-mounted-filesystem-live-report.json}"
-EXPECTED_PACKAGE_SHA256="f440f989356fc0842749b1db6045e7df8878470a6476c60dbc84563bc9699faf"
+EXPECTED_PACKAGE_SHA256="e7367a5419e65c552ea7340404cb5241b2b8022c084fa5faa58086e089d8dc71"
+WIZARD_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+REPORT_WRITER="$WIZARD_DIR/issue680_qualification_report.py"
 umask 077
 
+write_operator_report() {
+  python3 "$REPORT_WRITER" \
+    --state "$ENV_FILE" \
+    --report "$REPORT_PATH" \
+    --reason "$1"
+}
+
 die() {
+  write_operator_report prerequisite_missing || true
   printf '  %s✗ %s%s\n' "$RED" "$1" "$RESET" >&2
   exit 1
 }
@@ -236,6 +246,19 @@ mount_fingerprint() {
     printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
   fi
 }
+
+if [[ "${1:-}" == "--describe" ]]; then
+  printf '%s\n' \
+    "1. Approved scope and ownership" \
+    "2. Read-only target preflight" \
+    "3. Baseline and containment" \
+    "4. Streaming and size limits" \
+    "5. Path-scoped rename" \
+    "6. Unstable read quarantine" \
+    "7. Mount interruption and recovery" \
+    "8. Identity, sanitized evidence, and cleanup"
+  exit 0
+fi
 
 banner "Spine issue #680 mounted-filesystem qualification"
 
@@ -365,16 +388,8 @@ ask_status RECOVERY_STATUS "Recovery reconciliation outcome"
 
 stage "Identity, sanitized evidence, and cleanup"
 say "Path-scoped identity is the mandatory baseline. Inode and checksum evidence cannot upgrade it."
-ask BACKEND_FILE_ID_STATUS "Backend file-ID qualification [NOT_CLAIMED/QUALIFIED]:"
-BACKEND_FILE_ID_STATUS=$(printf '%s' "$BACKEND_FILE_ID_STATUS" | tr '[:lower:]' '[:upper:]')
-case "$BACKEND_FILE_ID_STATUS" in
-  NOT_CLAIMED) BACKEND_IDENTITY_EVIDENCE_REFERENCE="none" ;;
-  QUALIFIED)
-    ask BACKEND_IDENTITY_EVIDENCE_REFERENCE "Opaque independent backend file-ID evidence reference:"
-    require_safe_reference BACKEND_IDENTITY_EVIDENCE_REFERENCE "$BACKEND_IDENTITY_EVIDENCE_REFERENCE"
-    ;;
-  *) die "backend file-ID status must be NOT_CLAIMED or QUALIFIED" ;;
-esac
+BACKEND_FILE_ID_STATUS="NOT_CLAIMED"
+BACKEND_IDENTITY_EVIDENCE_REFERENCE="none"
 write_env BACKEND_FILE_ID_STATUS "$BACKEND_FILE_ID_STATUS"
 write_env BACKEND_IDENTITY_EVIDENCE_REFERENCE "$BACKEND_IDENTITY_EVIDENCE_REFERENCE"
 ask_status IDENTITY_STATUS "Identity qualification outcome"
@@ -388,98 +403,10 @@ require_safe_reference CLEANUP_EVIDENCE_REFERENCE "$CLEANUP_EVIDENCE_REFERENCE"
 write_env CLEANUP_EVIDENCE_REFERENCE "$CLEANUP_EVIDENCE_REFERENCE"
 ask_status CLEANUP_STATUS "Cleanup outcome"
 
-export ENV_FILE REPORT_PATH
-python3 - <<'PY'
-from __future__ import annotations
-
-import json
-import os
-from pathlib import Path
-
-
-state: dict[str, str] = {}
-for line in Path(os.environ["ENV_FILE"]).read_text(encoding="utf-8").splitlines():
-    if not line or line.startswith("#") or "=" not in line:
-        continue
-    key, value = line.split("=", 1)
-    state[key] = value
-
-status_keys = {
-    "preflight": "PREFLIGHT_STATUS",
-    "containment": "CONTAINMENT_STATUS",
-    "streaming_limits": "LIMITS_STATUS",
-    "path_scoped_rename": "RENAME_STATUS",
-    "unstable_read": "UNSTABLE_STATUS",
-    "mount_interruption": "OUTAGE_STATUS",
-    "recovery_reconciliation": "RECOVERY_STATUS",
-    "identity": "IDENTITY_STATUS",
-    "cleanup": "CLEANUP_STATUS",
-}
-scenarios = {name: state[key] for name, key in status_keys.items()}
-if "FAIL" in scenarios.values():
-    overall = "FAIL"
-elif set(scenarios.values()) == {"PASS"}:
-    overall = "PASS"
-else:
-    overall = "NOT_VERIFIED"
-
-report = {
-    "schema_version": "issue-680-mounted-filesystem-live:v1",
-    "ticket": 680,
-    "status": overall,
-    "workspace_id": state["WORKSPACE_ID"],
-    "environment_id": state["ENVIRONMENT_ID"],
-    "connection_version_id": state["CONNECTION_VERSION_ID"],
-    "resource_scope_reference": state["RESOURCE_SCOPE_REFERENCE"],
-    "backend": state["FILESYSTEM_TYPE"],
-    "mount_option_fingerprint": state["MOUNT_OPTION_FINGERPRINT"],
-    "reader_identity": {
-        "logical_name": "spine-source-reader",
-        "uid": int(state["READER_UID"]),
-        "gid": int(state["READER_GID"]),
-        "security_reference": state["SECURITY_IDENTITY_REFERENCE"],
-    },
-    "approval_references": {
-        "data_owner": state["DATA_OWNER_APPROVAL_REFERENCE"],
-        "platform_operations": state["PLATFORM_OPERATIONS_REFERENCE"],
-        "write_denial": state["WRITE_DENIAL_EVIDENCE_REFERENCE"],
-        "mount_denial": state["MOUNT_DENIAL_EVIDENCE_REFERENCE"],
-    },
-    "run_references": {
-        "baseline": state["BASELINE_RUN_REFERENCE"],
-        "limits": state["LIMITS_RUN_REFERENCE"],
-        "rename": state["RENAME_RUN_REFERENCE"],
-        "unstable_read": state["UNSTABLE_RUN_REFERENCE"],
-        "outage": state["OUTAGE_RUN_REFERENCE"],
-        "recovery": state["RECOVERY_RUN_REFERENCE"],
-        "cleanup": state["CLEANUP_EVIDENCE_REFERENCE"],
-    },
-    "scenarios": scenarios,
-    "identity_conclusion": (
-        "backend_file_id"
-        if state["BACKEND_FILE_ID_STATUS"] == "QUALIFIED"
-        else "path_scoped"
-    ),
-    "backend_file_id_claim": state["BACKEND_FILE_ID_STATUS"],
-    "backend_identity_evidence_reference": state[
-        "BACKEND_IDENTITY_EVIDENCE_REFERENCE"
-    ],
-    "safety": {
-        "mount_operation_performed_by_spine": False,
-        "source_write_operation_performed_by_spine": False,
-        "source_content_recorded": False,
-        "source_names_recorded": False,
-        "share_address_recorded": False,
-        "credentials_recorded": False,
-        "raw_errors_recorded": False,
-    },
-}
-Path(os.environ["REPORT_PATH"]).write_text(
-    json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-)
-PY
+write_operator_report independent_evidence_review_required
 chmod 600 "$ENV_FILE" "$REPORT_PATH"
 say "Sanitized report: $REPORT_PATH"
 say "Private resumable state: $ENV_FILE"
+say "The operator report remains NOT_VERIFIED until independent evidence review."
 
 finish

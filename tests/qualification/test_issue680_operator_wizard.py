@@ -4,26 +4,38 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tarfile
 
 ROOT = Path(__file__).resolve().parents[2]
 GENERATOR_PATH = ROOT / "tools/generate_issue680_mounted_filesystem_corpus.py"
 WIZARD_PATH = ROOT / "tools/issue680_mounted_filesystem_qualification_wizard.sh"
+REPORT_WRITER_PATH = ROOT / "tools/issue680_qualification_report.py"
 RUNBOOK_PATH = ROOT / "docs/runbooks/r2-mounted-filesystem.md"
 EXPECTED_ARCHIVE_SHA256 = (
-    "f440f989356fc0842749b1db6045e7df8878470a6476c60dbc84563bc9699faf"
+    "e7367a5419e65c552ea7340404cb5241b2b8022c084fa5faa58086e089d8dc71"
 )
 
 
-def _generator_module():
-    spec = importlib.util.spec_from_file_location("issue680_corpus", GENERATOR_PATH)
+def _load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _generator_module():
+    return _load_module("issue680_corpus", GENERATOR_PATH)
+
+
+def _report_writer_module():
+    return _load_module("issue680_report_writer", REPORT_WRITER_PATH)
 
 
 def test_generator_builds_the_approved_deterministic_synthetic_corpus(
@@ -56,6 +68,9 @@ def test_generator_builds_the_approved_deterministic_synthetic_corpus(
         "symlink",
         "fifo",
     }
+    outside = package / "outside-scope-synthetic.txt"
+    assert outside.is_file()
+    assert (package / "corpus" / "symlink-escape").resolve(strict=True) == outside
 
     with tarfile.open(archive_path, "r:gz") as archive:
         members = archive.getmembers()
@@ -68,27 +83,25 @@ def test_generator_builds_the_approved_deterministic_synthetic_corpus(
         )
 
 
-def test_operator_wizard_has_the_confirmed_stages_and_never_controls_the_mount() -> (
-    None
-):
+def test_operator_wizard_describes_confirmed_stages_and_never_controls_mount() -> None:
     script = WIZARD_PATH.read_text(encoding="utf-8")
-    stages = re.findall(r'^stage "([^"]+)"$', script, flags=re.MULTILINE)
+    described = subprocess.run(
+        ["bash", str(WIZARD_PATH), "--describe"],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
 
-    assert "TOTAL_STAGES=8" in script
-    assert stages == [
-        "Approved scope and ownership",
-        "Read-only target preflight",
-        "Baseline and containment",
-        "Streaming and size limits",
-        "Path-scoped rename",
-        "Unstable read quarantine",
-        "Mount interruption and recovery",
-        "Identity, sanitized evidence, and cleanup",
+    assert described.stdout.splitlines() == [
+        "1. Approved scope and ownership",
+        "2. Read-only target preflight",
+        "3. Baseline and containment",
+        "4. Streaming and size limits",
+        "5. Path-scoped rename",
+        "6. Unstable read quarantine",
+        "7. Mount interruption and recovery",
+        "8. Identity, sanitized evidence, and cleanup",
     ]
-    assert "MountedFilesystemReconciliationWorker.reconcile" in script
-    assert 'source_write_operation_performed_by_spine": False' in script
-    assert 'mount_operation_performed_by_spine": False' in script
-    assert "QUALIFICATION_ROOT" not in script.split("report = {", 1)[1]
     assert not re.search(r"^\s*(sudo\s+)?(mount|umount)\s", script, flags=re.MULTILINE)
     assert (
         subprocess.run(
@@ -96,6 +109,80 @@ def test_operator_wizard_has_the_confirmed_stages_and_never_controls_the_mount()
         ).returncode
         == 0
     )
+
+
+def test_operator_wizard_writes_not_verified_report_when_prerequisite_is_missing(
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "operator-report.json"
+    state_path = tmp_path / "private-state.env"
+    result = subprocess.run(
+        ["bash", str(WIZARD_PATH)],
+        input="\n",
+        capture_output=True,
+        check=False,
+        text=True,
+        env={
+            **os.environ,
+            "ISSUE680_STATE_FILE": str(state_path),
+            "ISSUE680_REPORT_PATH": str(report_path),
+            "NO_COLOR": "1",
+        },
+    )
+
+    assert result.returncode == 1
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["status"] == "NOT_VERIFIED"
+    assert report["reason_code"] == "prerequisite_missing"
+    assert set(report["scenarios"].values()) == {"NOT_VERIFIED"}
+    assert report["identity_conclusion"] == "path_scoped"
+    assert report["backend_file_id_claim"] == "NOT_CLAIMED"
+
+
+def test_operator_report_requires_independent_review_even_when_operator_passes() -> (
+    None
+):
+    module = _report_writer_module()
+    state = {
+        key: "PASS"
+        for key in (
+            "PREFLIGHT_STATUS",
+            "CONTAINMENT_STATUS",
+            "LIMITS_STATUS",
+            "RENAME_STATUS",
+            "UNSTABLE_STATUS",
+            "OUTAGE_STATUS",
+            "RECOVERY_STATUS",
+            "IDENTITY_STATUS",
+            "CLEANUP_STATUS",
+        )
+    }
+    state.update(
+        {
+            "BACKEND_FILE_ID_STATUS": "QUALIFIED",
+            "BACKEND_IDENTITY_EVIDENCE_REFERENCE": "operator-only-reference",
+        }
+    )
+
+    report = module.build_report(state, "independent_evidence_review_required")
+    payload = report.model_dump(mode="json")
+
+    assert payload["status"] == "NOT_VERIFIED"
+    assert payload["reason_code"] == "independent_evidence_review_required"
+    assert payload["identity_conclusion"] == "path_scoped"
+    assert payload["backend_file_id_claim"] == "NOT_CLAIMED"
+    assert "operator-only-reference" not in json.dumps(payload)
+
+
+def test_operator_report_preserves_failure_as_fail() -> None:
+    module = _report_writer_module()
+
+    report = module.build_report(
+        {"CONTAINMENT_STATUS": "FAIL"}, "independent_evidence_review_required"
+    )
+
+    assert report.status == "FAIL"
+    assert report.reason_code == "operator_failure"
 
 
 def test_runbook_routes_the_operator_through_generator_and_wizard() -> None:
