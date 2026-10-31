@@ -32,7 +32,8 @@ The immutable profile `spine-yandex-disk-qualification-ops:v1` enforces:
 - one request per second with burst two;
 - at most 10 pages and 32 resources;
 - at most 256 KiB per file and 2 MiB per provider JSON response;
-- two adapter attempts with one explicit backoff interval;
+- three adapter attempts (initial plus two retries) with full-jitter ceilings of
+  one and two seconds; only transport/timeouts and HTTP 429 are retryable;
 - bounded request timeout and bounded `Retry-After` handling.
 
 HTTP/provider payloads, signed URLs and authorization headers are absent from
@@ -88,3 +89,32 @@ The operator must inspect the candidate locally and explicitly approve that
 identity before it is promoted into the runtime API binding. Until that approval
 is recorded, no `cloud-api.yandex.net` request is permitted and #678 remains
 `NOT_VERIFIED` for Disk behavior.
+
+### Recursive metadata inventory
+
+After the acting identity is approved, the recursive inventory runner is the
+first Disk phase. It requires a strict configuration opt-in and a current
+tenant-scoped `ProviderConnectionRepository.admit_read` result before resolving
+the credential or calling Yandex. No standalone CLI is exposed until a canonical
+connection repository composition exists. The runner performs two complete
+recursive metadata traversals of the exact root. Every folder page is path-confined, every
+listed item must be a direct child of that page, and the two ordered inventories
+must be identical. The run stops as `NOT_VERIFIED` if it reaches a page/resource
+bound, observes a changing inventory, or does not match the approved aggregate
+baseline of five files, four child directories and 1,416 bytes.
+
+This phase does not request download links or file bytes. On success it writes a
+mode-`0600` manifest candidate containing the protected exact paths and provider
+metadata for local Fixture Owner review. Its separate safe report contains only
+aggregate counts, request counts, fixed version identifiers and content-free
+status fields. The manifest candidate must never be committed or attached to
+GitHub. No content import is permitted until the Fixture Owner has inspected and
+explicitly approved that candidate as the exact
+`spine-yandex-qualification-fixtures-v1` manifest.
+
+Any metadata probe made before canonical Provider Connection admission is
+preliminary operator evidence only. It cannot qualify the adapter, authorize a
+content download, or be published as a passing #678 result. The admitted rerun's
+safe report binds the provider/request-policy versions, connection/version,
+authorization/configuration generations, acting-identity fingerprint and opaque
+manifest digest; the private candidate carries the same configuration binding.

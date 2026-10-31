@@ -14,6 +14,7 @@ from spine.application.yandex_disk_scan import (
     YandexDiskContractError,
     YandexDiskFileTooLargeError,
     YandexDiskPermissionLostError,
+    YandexDiskProviderUnavailableError,
     YandexDiskResourceNotFoundError,
     YandexDiskScopeOutOfScopeError,
     YandexDiskThrottleError,
@@ -208,6 +209,53 @@ async def test_list_resources_verifies_identity_before_disk_and_maps_shape() -> 
 
 
 @pytest.mark.asyncio
+async def test_list_resources_allows_only_an_explicit_descendant_directory() -> None:
+    directory = "disk:/Spine-Qualification-678-v1/nested"
+    transport = Transport(
+        [
+            _identity(),
+            YandexDiskApiResponse(
+                status_code=200,
+                json_body={
+                    "_embedded": {
+                        "path": directory,
+                        "items": [_resource_payload(path=f"{directory}/brief.pdf")],
+                        "limit": 32,
+                        "offset": 0,
+                        "total": 1,
+                    }
+                },
+            ),
+        ]
+    )
+
+    page = await _service(transport).list_resources(
+        _connection(), SCOPE, path=directory, offset=0, limit=32
+    )
+
+    assert page.embedded.path == directory
+    assert transport.requests[1].query["path"] == directory
+
+
+@pytest.mark.asyncio
+async def test_list_resources_rejects_sibling_directory_before_secret_resolution() -> None:
+    resolver = CredentialResolver()
+    transport = Transport([])
+
+    with pytest.raises(YandexDiskScopeOutOfScopeError):
+        await _service(transport, resolver).list_resources(
+            _connection(),
+            SCOPE,
+            path="disk:/Spine-Qualification-678-other",
+            offset=0,
+            limit=32,
+        )
+
+    assert resolver.calls == []
+    assert transport.requests == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("user_id", "client_id"),
     [
@@ -333,7 +381,7 @@ async def test_download_rejects_unapproved_signed_url_without_fetching_it() -> N
         (403, YandexDiskPermissionLostError),
         (404, YandexDiskResourceNotFoundError),
         (429, YandexDiskThrottleError),
-        (503, YandexDiskTransientError),
+        (503, YandexDiskProviderUnavailableError),
         (400, YandexDiskContractError),
     ],
 )
@@ -420,4 +468,5 @@ def test_qualification_composition_pins_reader_to_approved_ops_budget() -> None:
     assert composition.read_profile.max_pages == 10
     assert composition.read_profile.max_items == 32
     assert composition.read_profile.max_file_bytes == 256 * 1024
-    assert composition.read_profile.max_attempts == 2
+    assert composition.read_profile.max_attempts == 3
+    assert composition.read_profile.backoff_seconds == (1.0, 2.0)

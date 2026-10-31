@@ -26,6 +26,7 @@ _SCOPE_KEY = "SPINE_YANDEX_QUALIFICATION_SCOPE"
 _ROOT_KEY = "SPINE_YANDEX_QUALIFICATION_ROOT"
 _REFERENCE_KEY = "SPINE_YANDEX_QUALIFICATION_CREDENTIAL_REFERENCE"
 _TOKEN_KEY = "SPINE_YANDEX_QUALIFICATION_OAUTH_TOKEN"
+_EXPECTED_USER_ID_KEY = "SPINE_YANDEX_QUALIFICATION_EXPECTED_USER_ID"
 _REQUIRED_KEYS = frozenset(
     (_CLIENT_ID_KEY, _SCOPE_KEY, _ROOT_KEY, _REFERENCE_KEY, _TOKEN_KEY)
 )
@@ -133,7 +134,36 @@ class LocalYandexQualificationCredentialResolver:
         return SecretStr(values[_TOKEN_KEY])
 
 
+def load_approved_yandex_user_id(path: Path) -> SecretStr:
+    """Load the separately human-approved acting identity from a private file."""
+
+    try:
+        values = _read_private_environment(path)
+        if frozenset(values) != {_EXPECTED_USER_ID_KEY}:
+            raise YandexQualificationCredentialDeniedError()
+        identifier = values[_EXPECTED_USER_ID_KEY]
+        if (
+            not identifier.isascii()
+            or not identifier.isdigit()
+            or len(identifier) > 255
+        ):
+            raise YandexQualificationCredentialDeniedError()
+        return SecretStr(identifier)
+    except YandexQualificationCredentialDeniedError:
+        raise
+    except (KeyError, TypeError, ValueError):
+        raise YandexQualificationCredentialDeniedError() from None
+
+
 def _read_exact_qualification_environment(path: Path) -> dict[str, str]:
+    return _parse_exact_environment(_read_private_text(path))
+
+
+def _read_private_environment(path: Path) -> dict[str, str]:
+    return _parse_environment(_read_private_text(path))
+
+
+def _read_private_text(path: Path) -> str:
     if not path.is_absolute():
         raise YandexQualificationCredentialDeniedError()
     flags = os.O_RDONLY
@@ -171,7 +201,7 @@ def _read_exact_qualification_environment(path: Path) -> dict[str, str]:
     finally:
         if descriptor is not None:
             os.close(descriptor)
-    return _parse_exact_environment(text)
+    return text
 
 
 def _parse_exact_environment(content: str) -> dict[str, str]:
@@ -206,8 +236,35 @@ def _parse_exact_environment(content: str) -> dict[str, str]:
     return values
 
 
+def _parse_environment(content: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    try:
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                raise YandexQualificationCredentialDeniedError()
+            name, value = line.split("=", 1)
+            if (
+                name in values
+                or value != value.strip()
+                or not value
+                or len(value) > _MAXIMUM_VALUE_CHARACTERS
+                or "\x00" in value
+            ):
+                raise YandexQualificationCredentialDeniedError()
+            values[name] = value
+    except YandexQualificationCredentialDeniedError:
+        raise
+    except (TypeError, ValueError):
+        raise YandexQualificationCredentialDeniedError() from None
+    return values
+
+
 __all__ = [
     "LocalYandexQualificationCredentialResolver",
+    "load_approved_yandex_user_id",
     "YANDEX_QUALIFICATION_CLIENT_ID",
     "YANDEX_QUALIFICATION_OAUTH_SCOPE",
     "YANDEX_QUALIFICATION_PROVIDER_REFERENCE",

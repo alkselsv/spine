@@ -41,18 +41,18 @@ def compose_yandex_qualification_reader(
     connection_repository: ProviderConnectionRepository,
     clock: Callable[[], datetime],
     sleep: Callable[[float], Awaitable[None]],
-    jitter: Callable[[float], float] = lambda _: 0.0,
+    jitter: Callable[[float], float] | None = None,
 ) -> YandexQualificationReaderComposition:
     """Wire the concrete API only through the admitted provider adapter."""
 
     request_policy = YandexQualificationRequestPolicy()
     read_profile = YandexDiskReadProfile(
         page_size=request_policy.max_items,
-        max_attempts=2,
+        max_attempts=request_policy.max_request_attempts,
         max_file_bytes=request_policy.max_file_bytes,
         max_pages=request_policy.max_pages,
         max_items=request_policy.max_items,
-        backoff_seconds=(1.0,),
+        backoff_seconds=request_policy.retry_backoff_ceilings,
     )
     service = YandexDiskApiService(
         binding=binding,
@@ -61,13 +61,21 @@ def compose_yandex_qualification_reader(
         request_policy=request_policy,
         sleep=sleep,
     )
-    provider = YandexDiskProviderAdapter(
-        service=service,
-        profile=read_profile,
-        clock=clock,
-        sleep=sleep,
-        jitter=jitter,
-    )
+    if jitter is None:
+        provider = YandexDiskProviderAdapter(
+            service=service,
+            profile=read_profile,
+            clock=clock,
+            sleep=sleep,
+        )
+    else:
+        provider = YandexDiskProviderAdapter(
+            service=service,
+            profile=read_profile,
+            clock=clock,
+            sleep=sleep,
+            jitter=jitter,
+        )
     return YandexQualificationReaderComposition(
         admission=ProviderReadAdmission(
             repository=connection_repository,

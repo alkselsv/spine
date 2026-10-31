@@ -501,7 +501,7 @@ async def test_transient_outage_uses_bounded_backoff_and_jitter() -> None:
 
     await adapter.read(_connection(), _command())
 
-    assert delays == [0.75]
+    assert delays == [0.25]
 
 
 @pytest.mark.asyncio

@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 from pathlib import Path
 from typing import Literal
 
@@ -25,6 +24,9 @@ from spine.domain.common import DefinitionModel
 from spine.infrastructure.yandex_qualification_credentials import (
     YANDEX_QUALIFICATION_CLIENT_ID,
     YandexQualificationCredentialBinding,
+)
+from spine.infrastructure.private_qualification_artifacts import (
+    create_private_qualification_file,
 )
 
 
@@ -200,42 +202,10 @@ class YandexIdentityPreflightRunner:
 
 
 def _write_identity_candidate(path: Path, user_id: str) -> None:
-    _create_private_file(
+    create_private_qualification_file(
         path,
         f"{_EXPECTED_USER_ID_KEY}={user_id}\n".encode("utf-8"),
     )
-
-
-def _create_private_file(path: Path, content: bytes) -> None:
-    if not path.is_absolute() or path.parent.resolve(strict=True) != path.parent:
-        raise OSError("private output path is not an approved local path")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(path, flags, 0o600)
-        written = 0
-        while written < len(content):
-            count = os.write(descriptor, content[written:])
-            if count < 1:
-                raise OSError("private output write did not make progress")
-            written += count
-        os.fsync(descriptor)
-    except Exception:
-        if descriptor is not None:
-            os.close(descriptor)
-            descriptor = None
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
-        raise
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
 
 
 def write_yandex_identity_preflight_report(
@@ -246,7 +216,7 @@ def write_yandex_identity_preflight_report(
     content = (
         json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
-    _create_private_file(path, content)
+    create_private_qualification_file(path, content)
 
 
 __all__ = [

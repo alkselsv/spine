@@ -20,6 +20,7 @@ from spine.application.yandex_disk_scan import (
     YandexDiskContractError,
     YandexDiskFileTooLargeError,
     YandexDiskPermissionLostError,
+    YandexDiskProviderUnavailableError,
     YandexDiskResourceNotFoundError,
     YandexDiskScopeOutOfScopeError,
     YandexDiskThrottleError,
@@ -122,6 +123,11 @@ class YandexQualificationRequestPolicy(DefinitionModel):
     max_file_bytes: Literal[262144] = 256 * 1024
     max_scan_bytes: Literal[2097152] = 2 * 1024 * 1024
     max_retry_after_seconds: StrictFloat = Field(default=30.0, ge=0, le=60)
+    max_request_attempts: Literal[3] = 3
+    max_retry_requests: Literal[20] = 20
+    max_requests_per_attempt: Literal[100] = 100
+    max_requests_per_logical_scan: Literal[200] = 200
+    retry_backoff_ceilings: tuple[Literal[1.0], Literal[2.0]] = (1.0, 2.0)
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -140,6 +146,7 @@ class YandexDiskApiResponse:
     json_body: Mapping[str, Any] | None = None
     content: bytes = b""
     headers: Mapping[str, str] | None = None
+    wire_bytes: int | None = None
 
 
 class YandexDiskApiTransport(Protocol):
@@ -187,6 +194,7 @@ class HttpxYandexDiskApiTransport:
                     json_body=json_body,
                     content=bytes(content),
                     headers=response_headers,
+                    wire_bytes=len(content),
                 )
         except asyncio.CancelledError:
             raise
@@ -264,10 +272,13 @@ class YandexDiskApiService:
         connection: ProviderConnection,
         resource_scope_reference: OpaqueProviderReference,
         *,
+        path: str | None = None,
         offset: int,
         limit: int,
     ) -> YandexDiskResourcePage:
         self._require_connection(connection, resource_scope_reference)
+        requested_path = path or _disk_path(self._binding.approved_root)
+        self._require_path(requested_path)
         if (
             type(offset) is not int
             or type(limit) is not int
@@ -282,7 +293,7 @@ class YandexDiskApiService:
             token,
             _DISK_RESOURCES_URL,
             {
-                "path": _disk_path(self._binding.approved_root),
+                "path": requested_path,
                 "offset": str(offset),
                 "limit": str(limit),
             },
@@ -295,7 +306,7 @@ class YandexDiskApiService:
             raise YandexDiskContractError()
         try:
             embedded_path = _required_string(embedded, "path")
-            if embedded_path != _disk_path(self._binding.approved_root):
+            if embedded_path != requested_path:
                 raise YandexDiskContractError()
             items = tuple(
                 _resource(item, approved_root=self._binding.approved_root)
@@ -480,6 +491,7 @@ class YandexDiskApiService:
             YandexDiskContractError,
             YandexDiskFileTooLargeError,
             YandexDiskPermissionLostError,
+            YandexDiskProviderUnavailableError,
             YandexDiskResourceNotFoundError,
             YandexDiskThrottleError,
             YandexDiskTransientError,
@@ -507,7 +519,7 @@ class YandexDiskApiService:
                 )
             )
         if response.status_code >= 500:
-            raise YandexDiskTransientError()
+            raise YandexDiskProviderUnavailableError()
         raise YandexDiskContractError()
 
 

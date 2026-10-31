@@ -12,6 +12,7 @@ from spine.infrastructure.yandex_qualification_credentials import (
     LocalYandexQualificationCredentialResolver,
     YandexQualificationCredentialBinding,
     YandexQualificationCredentialDeniedError,
+    load_approved_yandex_user_id,
 )
 
 NOW = datetime(2026, 10, 30, 20, 0, tzinfo=timezone.utc)
@@ -306,3 +307,44 @@ async def test_symlinked_configuration_is_denied(tmp_path: Path) -> None:
 
     with pytest.raises(YandexQualificationCredentialDeniedError):
         await _resolve(resolver)
+
+
+def test_approved_user_id_loader_accepts_only_private_numeric_identity(
+    tmp_path: Path,
+) -> None:
+    identity_file = (tmp_path / "identity-approved.env").resolve()
+    identity_file.write_text(
+        "SPINE_YANDEX_QUALIFICATION_EXPECTED_USER_ID=123456789\n",
+        encoding="utf-8",
+    )
+    identity_file.chmod(0o600)
+
+    identity = load_approved_yandex_user_id(identity_file)
+
+    assert identity.get_secret_value() == "123456789"
+    assert "123456789" not in repr(identity)
+
+
+@pytest.mark.parametrize(
+    ("content", "mode"),
+    (
+        ("SPINE_YANDEX_QUALIFICATION_EXPECTED_USER_ID=123456789\n", 0o640),
+        ("SPINE_YANDEX_QUALIFICATION_EXPECTED_USER_ID=not-numeric\n", 0o600),
+        (
+            "SPINE_YANDEX_QUALIFICATION_EXPECTED_USER_ID=123456789\nEXTRA=value\n",
+            0o600,
+        ),
+    ),
+)
+def test_approved_user_id_loader_denies_unsafe_file_without_disclosure(
+    tmp_path: Path, content: str, mode: int
+) -> None:
+    identity_file = (tmp_path / "identity-approved.env").resolve()
+    identity_file.write_text(content, encoding="utf-8")
+    identity_file.chmod(mode)
+
+    with pytest.raises(YandexQualificationCredentialDeniedError) as raised:
+        load_approved_yandex_user_id(identity_file)
+
+    assert str(raised.value) == "qualification credential denied"
+    assert "123456789" not in str(raised.value)
