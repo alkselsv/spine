@@ -462,6 +462,12 @@ async def test_postgresql_withdrawal_serializes_after_inflight_canonical_accepta
     assert await withdrawal == root_decision
     current = await repository.current_eligibility(child_query, context)
     assert current.status is LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE
+    from spine.application.persistence.errors import CanonicalEligibilityError
+
+    with pytest.raises(CanonicalEligibilityError):
+        async with postgresql_adapter.uow_factory(case.context) as uow:
+            await uow.canonical.accept(case.command)
+            await uow.commit()
 
 
 @pytest.mark.asyncio(loop_scope="session")

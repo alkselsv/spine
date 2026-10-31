@@ -454,6 +454,7 @@ async def _lock_and_validate_lifecycle_eligibility(
             _LIFECYCLE_DECISIONS.c.scope_version_id,
             _LIFECYCLE_DECISIONS.c.scope_digest,
             _LIFECYCLE_DECISIONS.c.status,
+            _SOURCE_OBJECTS.c.connection_id.label("canonical_connection_id"),
             _SOURCE_OBJECTS.c.external_namespace,
             _SOURCE_OBJECTS.c.external_generation,
             _SOURCE_OBJECTS.c.external_object_id,
@@ -493,6 +494,39 @@ async def _lock_and_validate_lifecycle_eligibility(
             await uow._fail(
                 CanonicalEligibilityError("Current lifecycle eligibility is unavailable.")
             )
+        if row is not None and row["canonical_connection_id"] is not None:
+            authority_ids_result = await uow._execute(
+                select(_SOURCE_OBJECTS.c.source_object_id)
+                .select_from(
+                    _SOURCE_OBJECTS.join(
+                        _CURRENT_LIFECYCLE_AUTHORITIES,
+                        (_CURRENT_LIFECYCLE_AUTHORITIES.c.workspace_id
+                         == _SOURCE_OBJECTS.c.workspace_id)
+                        & (_CURRENT_LIFECYCLE_AUTHORITIES.c.environment_id
+                           == _SOURCE_OBJECTS.c.environment_id)
+                        & (_CURRENT_LIFECYCLE_AUTHORITIES.c.source_object_id
+                           == _SOURCE_OBJECTS.c.source_object_id),
+                    )
+                )
+                .where(
+                    _SOURCE_OBJECTS.c.workspace_id == workspace_id,
+                    _SOURCE_OBJECTS.c.environment_id == environment_id,
+                    _SOURCE_OBJECTS.c.connection_id == row["canonical_connection_id"],
+                )
+            )
+            authority_ids = authority_ids_result.scalars().all()
+            for authority_id in sorted(set(authority_ids), key=str):
+                lock_key = f"{workspace_id}:{environment_id}:{authority_id}"
+                await uow._execute(
+                    text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:key, 0))"),
+                    {"key": lock_key},
+                )
+            if authority_ids:
+                await uow._fail(
+                    CanonicalEligibilityError(
+                        "Current lifecycle eligibility is unavailable."
+                    )
+                )
         return
     if row is None:
         await uow._fail(
