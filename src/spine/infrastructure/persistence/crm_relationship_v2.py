@@ -91,6 +91,16 @@ class CrmRelationshipV2Store:
     async def _scalar(self, statement: Any) -> Any:
         return (await self._execute(statement)).scalar_one_or_none()
 
+    async def _lock_profile_version(self, *, workspace_id: UUID, environment_id: UUID,
+                                    profile_id: UUID, shared: bool) -> None:
+        lock_function = (
+            "pg_advisory_xact_lock_shared" if shared else "pg_advisory_xact_lock"
+        )
+        lock_key = f"spine.crm_relationship_profile:{workspace_id}:{environment_id}:{profile_id}"
+        await self._execute(text(
+            f"SELECT pg_catalog.{lock_function}(pg_catalog.hashtextextended(:lock_key, 0))"
+        ).bindparams(lock_key=lock_key))
+
     async def current_eligibility(
         self, *, workspace_id: UUID, environment_id: UUID, claim_id: UUID,
         actor_id: UUID,
@@ -166,20 +176,8 @@ class CrmRelationshipV2Store:
             current_source_heads.c.source_object_id == claim.source_object_id,
         ).with_for_update(read=True, of=current_source_heads))).mappings().one_or_none()
         connection = (await self._execute(text(
-            "SELECT version_record.approval_id, version_record.authorization_generation, "
-            "version_record.configuration_generation, "
-            "version_record.status, approval.status AS approval_status, version_record.version, "
-            "version_record.approved_resource_scope_references "
-            "FROM spine.provider_connection_versions AS version_record "
-            "JOIN spine.provider_connection_approvals AS approval "
-            "ON approval.approval_id = version_record.approval_id "
-            "AND approval.workspace_id = version_record.workspace_id "
-            "AND approval.environment_id = version_record.environment_id "
-            "WHERE version_record.workspace_id = :workspace_id "
-            "AND version_record.environment_id = :environment_id "
-            "AND version_record.connection_id = :connection_id "
-            "AND version_record.connection_version_id = :connection_version_id "
-            "FOR SHARE OF version_record, approval"
+            "SELECT * FROM spine.lock_provider_connection_authority("
+            ":workspace_id, :environment_id, :connection_id, :connection_version_id)"
         ).bindparams(
             workspace_id=workspace_id, environment_id=environment_id,
             connection_id=claim.connection_id,
@@ -193,6 +191,10 @@ class CrmRelationshipV2Store:
             workspace_id=workspace_id, environment_id=environment_id,
             connection_id=claim.connection_id,
         ))
+        await self._lock_profile_version(
+            workspace_id=workspace_id, environment_id=environment_id,
+            profile_id=claim.mapping_profile_id, shared=True,
+        )
         current_profile = (await self._execute(select(
             crm_relationship_profiles.c.profile_version,
             crm_relationship_profiles.c.record,
@@ -200,8 +202,7 @@ class CrmRelationshipV2Store:
             crm_relationship_profiles.c.workspace_id == workspace_id,
             crm_relationship_profiles.c.environment_id == environment_id,
             crm_relationship_profiles.c.profile_id == claim.mapping_profile_id,
-        ).order_by(crm_relationship_profiles.c.profile_version.desc()).limit(1)
-        .with_for_update(read=True))).one_or_none()
+        ).order_by(crm_relationship_profiles.c.profile_version.desc()).limit(1))).one_or_none()
         identity_record = await self._scalar(select(
             crm_relationship_identities.c.natural_identity,
         ).where(
@@ -366,6 +367,12 @@ class CrmRelationshipV2Store:
         if (profile.workspace_id.int == 0 or profile.environment_id.int == 0):
             raise OptimisticConflictError("CRM mapping profile has an invalid tenant scope.")
         record = profile.model_dump(mode="json")
+        await self._lock_profile_version(
+            workspace_id=profile.workspace_id,
+            environment_id=profile.environment_id,
+            profile_id=profile.profile_id,
+            shared=False,
+        )
         table = crm_relationship_profiles
         values = {
             "profile_id": profile.profile_id, "workspace_id": profile.workspace_id,
@@ -519,20 +526,8 @@ class CrmRelationshipV2Store:
         if authorization_generation != claim.authorization_generation:
             raise OptimisticConflictError("CRM claim authorization generation is stale.")
         connection_version = (await self._execute(text(
-            "SELECT version_record.approval_id, version_record.authorization_generation, "
-            "version_record.configuration_generation, version_record.status, "
-            "approval.status AS approval_status, version_record.version, "
-            "version_record.approved_resource_scope_references "
-            "FROM spine.provider_connection_versions AS version_record "
-            "JOIN spine.provider_connection_approvals AS approval "
-            "ON approval.approval_id = version_record.approval_id "
-            "AND approval.workspace_id = version_record.workspace_id "
-            "AND approval.environment_id = version_record.environment_id "
-            "WHERE version_record.workspace_id = :workspace_id "
-            "AND version_record.environment_id = :environment_id "
-            "AND version_record.connection_id = :connection_id "
-            "AND version_record.connection_version_id = :connection_version_id "
-            "FOR SHARE OF version_record, approval"
+            "SELECT * FROM spine.lock_provider_connection_authority("
+            ":workspace_id, :environment_id, :connection_id, :connection_version_id)"
         ).bindparams(
             workspace_id=claim.workspace_id,
             environment_id=claim.environment_id,
@@ -558,6 +553,10 @@ class CrmRelationshipV2Store:
         ))
         if current_connection_version != connection_version.version:
             raise OptimisticConflictError("CRM claim connection version is no longer current.")
+        await self._lock_profile_version(
+            workspace_id=claim.workspace_id, environment_id=claim.environment_id,
+            profile_id=claim.mapping_profile_id, shared=True,
+        )
         current_profile = (await self._execute(select(
             crm_relationship_profiles.c.profile_version,
             crm_relationship_profiles.c.record,
@@ -565,7 +564,7 @@ class CrmRelationshipV2Store:
             crm_relationship_profiles.c.workspace_id == claim.workspace_id,
             crm_relationship_profiles.c.environment_id == claim.environment_id,
             crm_relationship_profiles.c.profile_id == claim.mapping_profile_id,
-        ).order_by(crm_relationship_profiles.c.profile_version.desc()).limit(1).with_for_update())).one_or_none()
+        ).order_by(crm_relationship_profiles.c.profile_version.desc()).limit(1))).one_or_none()
         if current_profile is None or current_profile.profile_version != claim.mapping_profile_version:
             raise OptimisticConflictError("CRM claim mapping profile version is no longer current.")
         try:
@@ -649,6 +648,8 @@ class CrmRelationshipV2Store:
             crm_relationship_claims.c.mapping_profile_version,
             crm_relationship_claims.c.authorization_generation,
             crm_relationship_claims.c.configuration_generation,
+            crm_relationship_claims.c.relationship_key,
+            crm_relationship_claims.c.record,
         ).where(
             crm_relationship_claims.c.workspace_id == receipt.workspace_id,
             crm_relationship_claims.c.environment_id == receipt.environment_id,
@@ -723,7 +724,7 @@ class CrmRelationshipV2Store:
         if authority is None or authority.lifecycle_generation != lifecycle_generation:
             raise OptimisticConflictError("CRM observation uses a stale lifecycle generation.")
 
-        source_result = await self._execute(select(
+        source_result = (await self._execute(select(
             current_source_heads.c.current_revision_id,
             current_source_heads.c.current_revision_kind,
             lifecycle_decisions.c.status.label("lifecycle_status"),
@@ -745,27 +746,15 @@ class CrmRelationshipV2Store:
             current_source_heads.c.workspace_id == receipt.workspace_id,
             current_source_heads.c.environment_id == receipt.environment_id,
             current_source_heads.c.source_object_id == claim_scope.source_object_id,
-        ).with_for_update(of=current_source_heads)).mappings().one_or_none()
+        ).with_for_update(of=current_source_heads))).mappings().one_or_none()
         authorization_generation = await self._scalar(text(
             "SELECT spine.lock_current_authorization_generation(:workspace_id, :environment_id)"
         ).bindparams(
             workspace_id=receipt.workspace_id, environment_id=receipt.environment_id,
         ))
         current_connection = (await self._execute(text(
-            "SELECT version_record.approval_id, version_record.authorization_generation, "
-            "version_record.configuration_generation, "
-            "version_record.status, approval.status AS approval_status, version_record.version, "
-            "version_record.approved_resource_scope_references "
-            "FROM spine.provider_connection_versions AS version_record "
-            "JOIN spine.provider_connection_approvals AS approval "
-            "ON approval.approval_id = version_record.approval_id "
-            "AND approval.workspace_id = version_record.workspace_id "
-            "AND approval.environment_id = version_record.environment_id "
-            "WHERE version_record.workspace_id = :workspace_id "
-            "AND version_record.environment_id = :environment_id "
-            "AND version_record.connection_id = :connection_id "
-            "AND version_record.connection_version_id = :connection_version_id "
-            "FOR SHARE OF version_record, approval"
+            "SELECT * FROM spine.lock_provider_connection_authority("
+            ":workspace_id, :environment_id, :connection_id, :connection_version_id)"
         ).bindparams(
             workspace_id=receipt.workspace_id,
             environment_id=receipt.environment_id,
@@ -781,6 +770,10 @@ class CrmRelationshipV2Store:
             environment_id=receipt.environment_id,
             connection_id=receipt.connection_id,
         ))
+        await self._lock_profile_version(
+            workspace_id=receipt.workspace_id, environment_id=receipt.environment_id,
+            profile_id=claim_scope.mapping_profile_id, shared=True,
+        )
         current_profile = (await self._execute(select(
             crm_relationship_profiles.c.profile_version,
             crm_relationship_profiles.c.record,
@@ -788,8 +781,7 @@ class CrmRelationshipV2Store:
             crm_relationship_profiles.c.workspace_id == receipt.workspace_id,
             crm_relationship_profiles.c.environment_id == receipt.environment_id,
             crm_relationship_profiles.c.profile_id == claim_scope.mapping_profile_id,
-        ).order_by(crm_relationship_profiles.c.profile_version.desc()).limit(1)
-        .with_for_update())).one_or_none()
+        ).order_by(crm_relationship_profiles.c.profile_version.desc()).limit(1))).one_or_none()
         source_is_current = (
             source_result is not None
             and source_result["current_revision_id"] == claim_scope.source_revision_id
@@ -831,13 +823,21 @@ class CrmRelationshipV2Store:
         )
         current_head = (await self._execute(select(
             head.c.outcome,
+            head.c.verification_generation,
+            head.c.lifecycle_generation,
         ).where(
             head.c.workspace_id == receipt.workspace_id,
             head.c.environment_id == receipt.environment_id,
             head.c.claim_id == receipt.claim_id,
-        ).with_for_update())).scalar_one_or_none()
+        ).with_for_update())).one_or_none()
+        if (
+            current_head is None
+            or current_head.verification_generation != expected_verification_generation
+            or current_head.lifecycle_generation != lifecycle_generation
+        ):
+            raise OptimisticConflictError("CRM eligibility head changed during verification.")
         effective_outcome = eligibility.outcome
-        if authority.withdrawn or current_head == "GOVERNANCE_WITHDRAWN":
+        if authority.withdrawn or current_head.outcome == "GOVERNANCE_WITHDRAWN":
             effective_outcome = CrmEligibilityOutcome.GOVERNANCE_WITHDRAWN
         elif not source_is_current:
             effective_outcome = CrmEligibilityOutcome.STALE_CONTEXT
@@ -1012,6 +1012,10 @@ class CrmRelationshipV2Store:
                 workspace_id=event.workspace_id, environment_id=event.environment_id,
                 source_object_id=evidence.source_object_id,
             ))).one_or_none()
+            await self._lock_profile_version(
+                workspace_id=event.workspace_id, environment_id=event.environment_id,
+                profile_id=evidence.mapping_profile_id, shared=True,
+            )
             current_profile = (await self._execute(select(
                 crm_relationship_profiles.c.profile_version,
                 crm_relationship_profiles.c.record,
@@ -1019,8 +1023,7 @@ class CrmRelationshipV2Store:
                 crm_relationship_profiles.c.workspace_id == event.workspace_id,
                 crm_relationship_profiles.c.environment_id == event.environment_id,
                 crm_relationship_profiles.c.profile_id == evidence.mapping_profile_id,
-            ).order_by(crm_relationship_profiles.c.profile_version.desc()).limit(1)
-            .with_for_update())).one_or_none()
+            ).order_by(crm_relationship_profiles.c.profile_version.desc()).limit(1))).one_or_none()
             latest_connection_version = await self._scalar(text(
                 "SELECT max(version) FROM spine.provider_connection_versions "
                 "WHERE workspace_id = :workspace_id AND environment_id = :environment_id "
@@ -1040,20 +1043,8 @@ class CrmRelationshipV2Store:
             ):
                 raise OptimisticConflictError("CRM reapproval authority, source, or profile is no longer current.")
             current_connection = (await self._execute(text(
-                "SELECT version_record.approval_id, version_record.authorization_generation, "
-                "version_record.configuration_generation, version_record.status, "
-                "approval.status AS approval_status, version_record.version, "
-                "version_record.approved_resource_scope_references "
-                "FROM spine.provider_connection_versions AS version_record "
-                "JOIN spine.provider_connection_approvals AS approval "
-                "ON approval.approval_id = version_record.approval_id "
-                "AND approval.workspace_id = version_record.workspace_id "
-                "AND approval.environment_id = version_record.environment_id "
-                "WHERE version_record.workspace_id = :workspace_id "
-                "AND version_record.environment_id = :environment_id "
-                "AND version_record.connection_id = :connection_id "
-                "AND version_record.connection_version_id = :connection_version_id "
-                "FOR SHARE OF version_record, approval"
+                "SELECT * FROM spine.lock_provider_connection_authority("
+                ":workspace_id, :environment_id, :connection_id, :connection_version_id)"
             ).bindparams(
                 workspace_id=event.workspace_id, environment_id=event.environment_id,
                 connection_id=evidence.connection_id,

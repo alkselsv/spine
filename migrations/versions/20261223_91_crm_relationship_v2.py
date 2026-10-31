@@ -100,6 +100,55 @@ def upgrade() -> None:
     """)
     op.execute(f"REVOKE ALL ON FUNCTION {SCHEMA}.lock_current_authorization_generation(uuid, uuid) FROM PUBLIC")
     op.execute(f"GRANT EXECUTE ON FUNCTION {SCHEMA}.lock_current_authorization_generation(uuid, uuid) TO {_role('runtime_role')}")
+    op.execute(f"""
+    CREATE FUNCTION {SCHEMA}.lock_provider_connection_authority(
+        requested_workspace_id uuid,
+        requested_environment_id uuid,
+        requested_connection_id uuid,
+        requested_connection_version_id uuid
+    ) RETURNS TABLE (
+        approval_id uuid,
+        authorization_generation bigint,
+        configuration_generation bigint,
+        status text,
+        approval_status text,
+        version bigint,
+        approved_resource_scope_references uuid[]
+    )
+    LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+    SET search_path = pg_catalog, {SCHEMA}
+    AS $$
+    BEGIN
+        IF current_setting('spine.workspace_id', true) IS DISTINCT FROM requested_workspace_id::text
+           OR current_setting('spine.environment_id', true) IS DISTINCT FROM requested_environment_id::text THEN
+            RETURN;
+        END IF;
+        PERFORM pg_catalog.pg_advisory_xact_lock_shared(
+            pg_catalog.hashtextextended(requested_connection_id::text, 0)
+        );
+        RETURN QUERY
+        SELECT version_record.approval_id,
+               version_record.authorization_generation,
+               version_record.configuration_generation,
+               version_record.status::text,
+               approval.status::text,
+               version_record.version,
+               version_record.approved_resource_scope_references
+        FROM {SCHEMA}.provider_connection_versions AS version_record
+        JOIN {SCHEMA}.provider_connection_approvals AS approval
+          ON approval.approval_id = version_record.approval_id
+         AND approval.workspace_id = version_record.workspace_id
+         AND approval.environment_id = version_record.environment_id
+        WHERE version_record.workspace_id = requested_workspace_id
+          AND version_record.environment_id = requested_environment_id
+          AND version_record.connection_id = requested_connection_id
+          AND version_record.connection_version_id = requested_connection_version_id
+        FOR SHARE OF version_record, approval;
+    END
+    $$
+    """)
+    op.execute(f"REVOKE ALL ON FUNCTION {SCHEMA}.lock_provider_connection_authority(uuid, uuid, uuid, uuid) FROM PUBLIC")
+    op.execute(f"GRANT EXECUTE ON FUNCTION {SCHEMA}.lock_provider_connection_authority(uuid, uuid, uuid, uuid) TO {_role('runtime_role')}")
 
     op.execute(f"""
     DO $block$
