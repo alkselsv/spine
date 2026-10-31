@@ -660,6 +660,23 @@ async def postgresql_adapter(
             trace_id=synthetic_uuid(960),
         )
 
+    def governance_context(
+        workspace_id: UUID,
+        environment_id: UUID,
+        actor_id: UUID,
+        operation: str,
+    ) -> TrustedPersistenceContext:
+        return boundary.interactive(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            ),
+            acting_subject_id=actor_id,
+            purpose=PersistencePurpose("source_governance"),
+            operation=PersistenceOperation(operation),
+            trace_id=synthetic_uuid(962),
+        )
+
     def worker_workspace_context(workspace_id: UUID) -> TrustedPersistenceContext:
         return boundary.worker(
             scope=WorkspaceScope(workspace_id=workspace_id),
@@ -684,6 +701,7 @@ async def postgresql_adapter(
             outbox_events=outbox_events,
             source_context=source_context,
             ingestion_context=ingestion_context,
+            governance_context=governance_context,
         )
     finally:
         await engine.dispose()

@@ -759,7 +759,7 @@ async def test_offline_composition_uses_injected_provider_ports_after_admission(
     config = config.model_copy(
         update={
             "request_policy": config.request_policy.model_copy(
-                update={"max_attempts": 2, "backoff_ceiling_seconds": (1.0,)}
+                update={"max_attempts": 2, "backoff_seconds": (0.25,)}
             )
         }
     )
@@ -829,15 +829,14 @@ async def test_offline_composition_uses_injected_provider_ports_after_admission(
 
     report = await bindings.build_runner(config).run(environment_opt_in=True)
 
-    assert report.status == "passed", report.failure_code
+    assert report.status == "passed"
     assert report.metadata_reads == 1
     assert resolver_calls == [
         (config.connection.credential_reference, config.connection.grant_reference)
     ]
     assert len(retry_events) == 1
     assert retry_events[0].reason == "transient"
-    assert len(sleep_delays) == 1
-    assert 0.0 <= sleep_delays[0] <= 1.0
+    assert sleep_delays == [0.25]
     assert clock_calls
     assert sink.events == ()
     assert responses == []

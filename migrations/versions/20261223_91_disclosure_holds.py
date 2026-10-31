@@ -39,9 +39,7 @@ def _tenant_table(name: str, *, mutable: bool = False) -> None:
     )
     grants = "SELECT, INSERT, UPDATE" if mutable else "SELECT, INSERT"
     op.execute(f"GRANT {grants} ON TABLE {SCHEMA}.{name} TO {runtime}")
-    op.execute(
-        f"REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE {SCHEMA}.{name} FROM {runtime}"
-    )
+    op.execute(f"REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE {SCHEMA}.{name} FROM {runtime}")
 
 
 def _immutable(name: str) -> None:
@@ -183,9 +181,7 @@ def upgrade() -> None:
             "prohibited_effects <@ ARRAY['retrieval','model_use','final_disclosure','derived_artifact_disclosure']::text[]",
             name="ck_disclosure_holds_effects",
         ),
-        sa.CheckConstraint(
-            "effective_until > effective_from", name="ck_disclosure_holds_interval"
-        ),
+        sa.CheckConstraint("effective_until > effective_from", name="ck_disclosure_holds_interval"),
         schema=SCHEMA,
     )
     op.create_table(
@@ -287,7 +283,12 @@ def upgrade() -> None:
             name="fk_disclosure_hold_source_revisions_hold",
         ),
         sa.ForeignKeyConstraint(
-            ["workspace_id", "environment_id", "source_object_id", "source_revision_id"],
+            [
+                "workspace_id",
+                "environment_id",
+                "source_object_id",
+                "source_revision_id",
+            ],
             [
                 f"{SCHEMA}.source_revisions.workspace_id",
                 f"{SCHEMA}.source_revisions.environment_id",
@@ -295,6 +296,52 @@ def upgrade() -> None:
                 f"{SCHEMA}.source_revisions.revision_id",
             ],
             name="fk_disclosure_hold_source_revisions_revision",
+        ),
+        schema=SCHEMA,
+    )
+    op.create_table(
+        "disclosure_hold_targets",
+        sa.Column("workspace_id", uuid, nullable=False),
+        sa.Column("environment_id", uuid, nullable=False),
+        sa.Column("source_object_id", uuid, nullable=False),
+        sa.Column("hold_id", uuid, nullable=False),
+        sa.Column("source_revision_id", uuid, nullable=False),
+        sa.Column("dependency_id", uuid, nullable=False),
+        sa.Column("artifact_id", uuid, nullable=False),
+        sa.PrimaryKeyConstraint(
+            "workspace_id",
+            "environment_id",
+            "source_object_id",
+            "hold_id",
+            "source_revision_id",
+            "dependency_id",
+            "artifact_id",
+            name="pk_disclosure_hold_targets",
+        ),
+        sa.ForeignKeyConstraint(
+            ["workspace_id", "environment_id", "source_object_id", "hold_id"],
+            [
+                f"{SCHEMA}.disclosure_holds.workspace_id",
+                f"{SCHEMA}.disclosure_holds.environment_id",
+                f"{SCHEMA}.disclosure_holds.source_object_id",
+                f"{SCHEMA}.disclosure_holds.hold_id",
+            ],
+            name="fk_disclosure_hold_targets_hold",
+        ),
+        sa.ForeignKeyConstraint(
+            [
+                "workspace_id",
+                "environment_id",
+                "source_object_id",
+                "source_revision_id",
+            ],
+            [
+                f"{SCHEMA}.source_revisions.workspace_id",
+                f"{SCHEMA}.source_revisions.environment_id",
+                f"{SCHEMA}.source_revisions.source_object_id",
+                f"{SCHEMA}.source_revisions.revision_id",
+            ],
+            name="fk_disclosure_hold_targets_revision",
         ),
         schema=SCHEMA,
     )
@@ -342,9 +389,7 @@ def upgrade() -> None:
             ],
             name="fk_current_disclosure_holds_release",
         ),
-        sa.CheckConstraint(
-            "state IN ('active','released')", name="ck_current_disclosure_holds_state"
-        ),
+        sa.CheckConstraint("state IN ('active','released')", name="ck_current_disclosure_holds_state"),
         sa.CheckConstraint(
             "(state = 'active' AND generation = 1 AND current_release_id IS NULL) OR "
             "(state = 'released' AND generation = 2 AND current_release_id IS NOT NULL)",
@@ -356,6 +401,7 @@ def upgrade() -> None:
         "disclosure_holds",
         "disclosure_hold_releases",
         "disclosure_hold_source_revisions",
+        "disclosure_hold_targets",
         "current_disclosure_holds",
     ):
         _tenant_table(name, mutable=name == "current_disclosure_holds")
@@ -366,14 +412,68 @@ def upgrade() -> None:
     _immutable("disclosure_holds")
     _immutable("disclosure_hold_releases")
     _immutable("disclosure_hold_source_revisions")
+    _immutable("disclosure_hold_targets")
+    op.execute(f"""
+        CREATE FUNCTION {SCHEMA}.guard_disclosure_hold_target_insert() RETURNS trigger
+        LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, {SCHEMA}
+        AS $function$ DECLARE target_is_declared boolean; BEGIN
+            SELECT source_revision_ids @> ARRAY[NEW.source_revision_id]
+               AND dependency_ids @> ARRAY[NEW.dependency_id]
+               AND artifact_ids @> ARRAY[NEW.artifact_id]
+              INTO target_is_declared
+              FROM {SCHEMA}.disclosure_holds
+             WHERE workspace_id = NEW.workspace_id
+               AND environment_id = NEW.environment_id
+               AND source_object_id = NEW.source_object_id
+               AND hold_id = NEW.hold_id;
+            IF target_is_declared IS DISTINCT FROM true OR EXISTS (
+                SELECT 1 FROM {SCHEMA}.current_disclosure_holds
+                 WHERE workspace_id = NEW.workspace_id
+                   AND environment_id = NEW.environment_id
+                   AND source_object_id = NEW.source_object_id
+                   AND hold_id = NEW.hold_id
+            ) THEN
+                RAISE EXCEPTION 'Disclosure hold target is not part of the immutable declared set.'
+                    USING ERRCODE = '23514', CONSTRAINT = 'ck_disclosure_hold_target_declared';
+            END IF;
+            RETURN NEW;
+        END; $function$
+        """)
+    op.execute(
+        f"CREATE TRIGGER trg_disclosure_hold_target_insert BEFORE INSERT ON "
+        f"{SCHEMA}.disclosure_hold_targets FOR EACH ROW EXECUTE FUNCTION "
+        f"{SCHEMA}.guard_disclosure_hold_target_insert()"
+    )
+    op.execute(f"REVOKE ALL ON FUNCTION {SCHEMA}.guard_disclosure_hold_target_insert() FROM PUBLIC")
     op.execute(f"""
         CREATE FUNCTION {SCHEMA}.guard_current_disclosure_hold_step() RETURNS trigger
         LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, {SCHEMA}
-        AS $function$ BEGIN
+        AS $function$ DECLARE targets_complete boolean; BEGIN
             IF TG_OP = 'INSERT' THEN
                 IF NEW.state <> 'active' OR NEW.generation <> 1 OR NEW.current_release_id IS NOT NULL THEN
                     RAISE EXCEPTION 'Disclosure hold baseline is invalid.'
                         USING ERRCODE = '23514', CONSTRAINT = 'ck_current_disclosure_hold_step';
+                END IF;
+                SELECT cardinality(hold.source_revision_ids)
+                           * cardinality(hold.dependency_ids)
+                           * cardinality(hold.artifact_ids)
+                           = (
+                               SELECT count(*)
+                                 FROM {SCHEMA}.disclosure_hold_targets AS target
+                                WHERE target.workspace_id = NEW.workspace_id
+                                  AND target.environment_id = NEW.environment_id
+                                  AND target.source_object_id = NEW.source_object_id
+                                  AND target.hold_id = NEW.hold_id
+                           )
+                  INTO targets_complete
+                  FROM {SCHEMA}.disclosure_holds AS hold
+                 WHERE hold.workspace_id = NEW.workspace_id
+                   AND hold.environment_id = NEW.environment_id
+                   AND hold.source_object_id = NEW.source_object_id
+                   AND hold.hold_id = NEW.hold_id;
+                IF targets_complete IS DISTINCT FROM true THEN
+                    RAISE EXCEPTION 'Disclosure hold target set is incomplete.'
+                        USING ERRCODE = '23514', CONSTRAINT = 'ck_disclosure_hold_targets_complete';
                 END IF;
             ELSIF OLD.state <> 'active' OR OLD.generation <> 1
                OR NEW.state <> 'released' OR NEW.generation <> 2
@@ -389,9 +489,7 @@ def upgrade() -> None:
         f"{SCHEMA}.current_disclosure_holds FOR EACH ROW EXECUTE FUNCTION "
         f"{SCHEMA}.guard_current_disclosure_hold_step()"
     )
-    op.execute(
-        f"REVOKE ALL ON FUNCTION {SCHEMA}.guard_current_disclosure_hold_step() FROM PUBLIC"
-    )
+    op.execute(f"REVOKE ALL ON FUNCTION {SCHEMA}.guard_current_disclosure_hold_step() FROM PUBLIC")
 
 
 def downgrade() -> None:
@@ -404,16 +502,18 @@ def downgrade() -> None:
     ).scalar_one()
     if populated:
         raise RuntimeError(
-            "disclosure hold history is immutable; populated governance tables "
-            "must be retained during rollback"
+            "disclosure hold history is immutable; populated governance tables " "must be retained during rollback"
         )
     op.drop_table("current_disclosure_holds", schema=SCHEMA)
+    op.drop_table("disclosure_hold_targets", schema=SCHEMA)
     op.drop_table("disclosure_hold_source_revisions", schema=SCHEMA)
     op.drop_table("disclosure_hold_releases", schema=SCHEMA)
     op.drop_table("disclosure_holds", schema=SCHEMA)
     op.execute(f"DROP FUNCTION {SCHEMA}.guard_current_disclosure_hold_step()")
     op.execute(f"DROP FUNCTION {SCHEMA}.reject_disclosure_hold_releases_mutation()")
     op.execute(f"DROP FUNCTION {SCHEMA}.reject_disclosure_hold_source_revisions_mutation()")
+    op.execute(f"DROP FUNCTION {SCHEMA}.reject_disclosure_hold_targets_mutation()")
+    op.execute(f"DROP FUNCTION {SCHEMA}.guard_disclosure_hold_target_insert()")
     op.execute(f"DROP FUNCTION {SCHEMA}.reject_disclosure_holds_mutation()")
     op.drop_constraint(
         "uq_lifecycle_decisions_scope_id",

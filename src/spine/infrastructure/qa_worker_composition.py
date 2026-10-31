@@ -178,6 +178,7 @@ from spine.infrastructure.qa_agent_runtime import (
     SEMANTIC_SUPPORT_POLICY_VERSION,
 )
 
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -227,8 +228,8 @@ class _ActiveRequestTokens:
 _ACTIVE_REQUEST_SCOPE: ContextVar[_ActiveRequestScope | None] = ContextVar(
     "spine_qa_active_request_scope", default=None
 )
-_ACTIVE_AUTHORIZATION_CONTEXT: ContextVar[TrustedAuthorizationContext | None] = ContextVar(
-    "spine_qa_active_authorization_context", default=None
+_ACTIVE_AUTHORIZATION_CONTEXT: ContextVar[TrustedAuthorizationContext | None] = (
+    ContextVar("spine_qa_active_authorization_context", default=None)
 )
 _ACTIVE_EVIDENCE_CONTENT: ContextVar[dict[str, str] | None] = ContextVar(
     "spine_qa_active_evidence_content", default=None
@@ -236,8 +237,8 @@ _ACTIVE_EVIDENCE_CONTENT: ContextVar[dict[str, str] | None] = ContextVar(
 _ACTIVE_RETRIEVAL_SCOPE: ContextVar[AuthorizedRetrievalScope | None] = ContextVar(
     "spine_qa_active_retrieval_scope", default=None
 )
-_ACTIVE_COMPLETENESS_INTENT: ContextVar[_ActiveCompletenessIntent | None] = ContextVar(
-    "spine_qa_active_completeness_intent", default=None
+_ACTIVE_COMPLETENESS_INTENT: ContextVar[_ActiveCompletenessIntent | None] = (
+    ContextVar("spine_qa_active_completeness_intent", default=None)
 )
 
 
@@ -312,7 +313,9 @@ class _ScopedConfigurationCatalog:
         self._uow_factory = uow_factory
         self._boundary = boundary
         self._service_principal_id = service_principal_id
-        self._configurations: dict[tuple[UUID, UUID], TrustedAnswerQuestionConfiguration] = {}
+        self._configurations: dict[
+            tuple[UUID, UUID], TrustedAnswerQuestionConfiguration
+        ] = {}
 
     async def prepare(self, command: object) -> None:
         """Pin the current canonical publication before attempt allocation."""
@@ -343,7 +346,9 @@ class _ScopedConfigurationCatalog:
             profile=profile,
         )
 
-    async def _current_profile(self, workspace_id: UUID, environment_id: UUID) -> ContextProfileVersion:
+    async def _current_profile(
+        self, workspace_id: UUID, environment_id: UUID
+    ) -> ContextProfileVersion:
         session = self._session_factory()  # type: ignore[operator]
         async with session:
             async with session.begin():
@@ -358,24 +363,20 @@ class _ScopedConfigurationCatalog:
                     },
                 )
                 rows = (
-                    (
-                        await session.execute(
-                            __import__("sqlalchemy").text(
-                                "SELECT * FROM spine.context_profiles "
-                                "WHERE workspace_id = :workspace_id "
-                                "AND environment_id = :environment_id "
-                                "AND server_approved IS TRUE AND revoked IS FALSE "
-                                "ORDER BY profile_version DESC LIMIT 2"
-                            ),
-                            {
-                                "workspace_id": str(workspace_id),
-                                "environment_id": str(environment_id),
-                            },
-                        )
+                    await session.execute(
+                        __import__("sqlalchemy").text(
+                            "SELECT * FROM spine.context_profiles "
+                            "WHERE workspace_id = :workspace_id "
+                            "AND environment_id = :environment_id "
+                            "AND server_approved IS TRUE AND revoked IS FALSE "
+                            "ORDER BY profile_version DESC LIMIT 2"
+                        ),
+                        {
+                            "workspace_id": str(workspace_id),
+                            "environment_id": str(environment_id),
+                        },
                     )
-                    .mappings()
-                    .all()
-                )
+                ).mappings().all()
         if len(rows) != 1:
             raise RuntimeError("approved Q&A context profile is unavailable")
         return ContextProfileVersion.model_validate(dict(rows[0]))
@@ -468,7 +469,9 @@ class _ScopedConfigurationCatalog:
             return None
         return self._configurations.get((workspace_id, environment_id))
 
-    def verify_configuration(self, configuration: TrustedAnswerQuestionConfiguration) -> bool:
+    def verify_configuration(
+        self, configuration: TrustedAnswerQuestionConfiguration
+    ) -> bool:
         return configuration.approved
 
 
@@ -487,7 +490,9 @@ class TrustedQAAuthorizationContextRegistry:
     def register(self, reference: UUID, command: object) -> None:
         self._commands[reference] = command
 
-    def register_context(self, reference: UUID, context: TrustedAuthorizationContext) -> None:
+    def register_context(
+        self, reference: UUID, context: TrustedAuthorizationContext
+    ) -> None:
         if (
             type(context) is not TrustedAuthorizationContext
             or context.authority_snapshot_reference != reference
@@ -652,7 +657,11 @@ class OneShotQualifiedContextBroker:
                 purpose="answer_question",
                 operation="retrieve_context",
             )
-            if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+            if (
+                not isinstance(generation, int)
+                or isinstance(generation, bool)
+                or generation < 1
+            ):
                 raise RuntimeError("qualified Q&A service authority is unavailable")
             context = TrustedAuthorizationContext(
                 mode=AuthorizationContextMode.NONINTERACTIVE_PROCESSING,
@@ -669,10 +678,14 @@ class OneShotQualifiedContextBroker:
                 trace_id=request.diagnostic_context.trace_id,
                 issued_at=self._clock(),
                 noninteractive_authority_reference=(
-                    _noninteractive_authority_reference(request.authorization_context_ref)
+                    _noninteractive_authority_reference(
+                        request.authorization_context_ref
+                    )
                 ),
             )
-            self._trusted_contexts.register_context(request.authorization_context_ref, context)
+            self._trusted_contexts.register_context(
+                request.authorization_context_ref, context
+            )
             self._used = True
             try:
                 response = await self._broker.retrieve(request)
@@ -680,7 +693,9 @@ class OneShotQualifiedContextBroker:
                     raise RuntimeError("qualified Context Broker response is invalid")
                 return response
             finally:
-                self._trusted_contexts.unregister_context(request.authorization_context_ref)
+                self._trusted_contexts.unregister_context(
+                    request.authorization_context_ref
+                )
 
 
 class _PersistencePort:
@@ -744,7 +759,9 @@ class ContextBrokerPersistenceAuthority:
         self._boundary = boundary
         self._service_principal_id = service_principal_id
 
-    def issue(self, *, workspace_id: UUID, environment_id: UUID, trace_id: UUID) -> TrustedPersistenceContext:
+    def issue(
+        self, *, workspace_id: UUID, environment_id: UUID, trace_id: UUID
+    ) -> TrustedPersistenceContext:
         return self._boundary.worker(
             scope=EnvironmentScope(
                 workspace_id=workspace_id,
@@ -853,13 +870,23 @@ class _CurrentContentAuthorization:
             source = await uow.sources.resolve_source(source_object_id)
             head = await uow.canonical.resolve_current(source_object_id)
             current_policy = await uow.access_policies.resolve_current(source_object_id)
-            revision = None if head is None else await uow.sources.resolve_revision(head.current_revision_id)
+            revision = (
+                None
+                if head is None
+                else await uow.sources.resolve_revision(head.current_revision_id)
+            )
             policy = (
                 None
                 if current_policy is None
-                else await uow.access_policies.resolve_policy(current_policy.access_policy_version_id)
+                else await uow.access_policies.resolve_policy(
+                    current_policy.access_policy_version_id
+                )
             )
-            provenance = () if revision is None else await uow.sources.list_provenance(revision.revision_id)
+            provenance = (
+                ()
+                if revision is None
+                else await uow.sources.list_provenance(revision.revision_id)
+            )
             await uow.commit()
         if source is None or head is None or revision is None:
             return None
@@ -881,9 +908,14 @@ class _CurrentIdentityAuthority:
     def __init__(self, session_factory: object) -> None:
         self._resolver = PostgreSQLQualificationAuthorityResolver(session_factory)  # type: ignore[arg-type]
 
-    async def revalidate(self, context: TrustedAuthorizationContext) -> TrustedAuthorizationContext:
+    async def revalidate(
+        self, context: TrustedAuthorizationContext
+    ) -> TrustedAuthorizationContext:
         scope = _active_request_scope()
-        if context.workspace_id != scope.workspace_id or context.environment_id != scope.environment_id:
+        if (
+            context.workspace_id != scope.workspace_id
+            or context.environment_id != scope.environment_id
+        ):
             raise RuntimeError("Q&A authority scope changed")
         requested_scope = RequestedAuthorizationScope(
             workspace_id=context.workspace_id,
@@ -942,7 +974,9 @@ class _CurrentNoninteractiveAuthority:
             or context.operation != "retrieve_context"
             or not self._trusted_contexts.contains_context(context)
             or context.noninteractive_authority_reference
-            != _noninteractive_authority_reference(context.authority_snapshot_reference)
+            != _noninteractive_authority_reference(
+                context.authority_snapshot_reference
+            )
         ):
             return False
         generation = await self._resolver.resolve_service_authority(
@@ -1006,10 +1040,14 @@ class _ContextReadModel(_BrokerScopedPort):
             references = await uow.projections.list_source_references(run_id)
             revisions_by_id = {}
             for reference in references:
-                revision = await uow.sources.resolve_revision(reference.source_revision_id)
+                revision = await uow.sources.resolve_revision(
+                    reference.source_revision_id
+                )
                 if revision is not None:
                     revisions_by_id[revision.revision_id] = revision
-            boundary = await uow.canonical_boundaries.resolve(publication.canonical_boundary_id)
+            boundary = await uow.canonical_boundaries.resolve(
+                publication.canonical_boundary_id
+            )
             await uow.commit()
         if run is None or boundary is None:
             raise RuntimeError("canonical projection read model is unavailable")
@@ -1093,22 +1131,20 @@ class _ParsedProjectionRetrieval:
                     },
                 )
                 rows = (
-                    (
-                        await session.execute(
-                            query,
-                            {
-                                "workspace_id": str(workspace_id),
-                                "environment_id": str(environment_id),
-                                "source_revision_ids": [str(item) for item in by_revision],
-                                "projection_run_id": str(getattr(command, "projection_run_id")),
-                                "projection_snapshot_id": str(getattr(command, "projection_candidate").snapshot_id),
-                                "limit": getattr(command, "limit"),
-                            },
-                        )
+                    await session.execute(
+                        query,
+                        {
+                            "workspace_id": str(workspace_id),
+                            "environment_id": str(environment_id),
+                            "source_revision_ids": [str(item) for item in by_revision],
+                            "projection_run_id": str(getattr(command, "projection_run_id")),
+                            "projection_snapshot_id": str(
+                                getattr(command, "projection_candidate").snapshot_id
+                            ),
+                            "limit": getattr(command, "limit"),
+                        },
                     )
-                    .mappings()
-                    .all()
-                )
+                ).mappings().all()
         chunks = []
         evidence_content: dict[str, str] = {}
         for row in rows:
@@ -1182,14 +1218,18 @@ class _CanonicalEvidenceVerifier(_BrokerScopedPort):
                 references = await uow.projections.list_source_references(run_id)
                 members = await uow.projections.list_snapshot_members(snapshot_id)
                 revisions = {
-                    reference.source_revision_id: await uow.sources.resolve_revision(reference.source_revision_id)
+                    reference.source_revision_id: await uow.sources.resolve_revision(
+                        reference.source_revision_id
+                    )
                     for reference in references
                 }
                 await uow.commit()
             item_kind, item_id = (
                 ("chunk", item.chunk_id)
                 if hasattr(item, "chunk_id")
-                else (("entity", item.entity_id) if hasattr(item, "entity_id") else ("relation", item.relation_id))
+                else ("entity", item.entity_id)
+                if hasattr(item, "entity_id")
+                else ("relation", item.relation_id)
             )
             for claim in evidence:
                 matches = tuple(
@@ -1200,7 +1240,8 @@ class _CanonicalEvidenceVerifier(_BrokerScopedPort):
                     and reference.source_object_id == claim.source_object_id
                     and reference.source_revision_id == claim.source_revision_id
                     and reference.processing_receipt_id == claim.processing_receipt_id
-                    and reference.locator_schema_version == claim.locator_contract_version
+                    and reference.locator_schema_version
+                    == claim.locator_contract_version
                     and reference.locator_digest
                     == canonical_projection_locator_digest(
                         locator_contract_version=claim.locator_contract_version,
@@ -1240,10 +1281,16 @@ class _CanonicalEvidenceVerifier(_BrokerScopedPort):
         source_ids: tuple[UUID, ...],
     ) -> ContentAuthorizationDecision:
         if context.mode is AuthorizationContextMode.HUMAN_DISCLOSURE:
-            return await self._authorization.decide_human_disclosure(context, source_ids)
+            return await self._authorization.decide_human_disclosure(
+                context, source_ids
+            )
         if context.mode is AuthorizationContextMode.INTERACTIVE_PROCESSING:
-            return await self._authorization.decide_interactive_processing(context, source_ids)
-        return await self._authorization.decide_noninteractive_processing(context, source_ids)
+            return await self._authorization.decide_interactive_processing(
+                context, source_ids
+            )
+        return await self._authorization.decide_noninteractive_processing(
+            context, source_ids
+        )
 
 
 class _CurrentBundleRevalidator(_ScopedPort):
@@ -1254,7 +1301,9 @@ class _CurrentBundleRevalidator(_ScopedPort):
             publication = await uow.projections.resolve_active_publication("qa")
             for evidence in bundle.evidence_references:
                 head = await uow.canonical.resolve_current(evidence.source_object_id)
-                policy = await uow.access_policies.resolve_current(evidence.source_object_id)
+                policy = await uow.access_policies.resolve_current(
+                    evidence.source_object_id
+                )
                 if (
                     head is None
                     or head.current_revision_id != evidence.source_revision_id
@@ -1263,17 +1312,17 @@ class _CurrentBundleRevalidator(_ScopedPort):
                 ):
                     safe = False
             await uow.commit()
-        safe = (
-            safe
-            and isinstance(publication, PublishedActivePublication)
-            and (
-                publication.projection_snapshot.projection_snapshot_id
-                == bundle.projection_snapshot.projection_snapshot_id
-                and publication.activation_generation == bundle.activation_generation
-            )
+        safe = safe and isinstance(publication, PublishedActivePublication) and (
+            publication.projection_snapshot.projection_snapshot_id
+            == bundle.projection_snapshot.projection_snapshot_id
+            and publication.activation_generation == bundle.activation_generation
         )
         return RevalidationCheckpointResult(
-            disposition=(RevalidationDisposition.SAFE_REPLAY if safe else RevalidationDisposition.REJECTED),
+            disposition=(
+                RevalidationDisposition.SAFE_REPLAY
+                if safe
+                else RevalidationDisposition.REJECTED
+            ),
             checkpoint=request.checkpoint,
             workspace_id=request.workspace_id,
             environment_id=request.environment_id,
@@ -1319,18 +1368,26 @@ class _CurrentCitationValidator(_ScopedPort):
                     bundle_digest=bundle_ref.bundle_digest,
                 )
                 evidence = tuple(
-                    item for item in bundle.evidence_references if item.evidence_id == citation.evidence_id
+                    item
+                    for item in bundle.evidence_references
+                    if item.evidence_id == citation.evidence_id
                 )
                 if len(evidence) != 1 or evidence[0] != citation.evidence_reference:
                     raise ValueError
                 run_id = bundle.projection_snapshot.projection_run_id
                 references = await uow.projections.list_source_references(run_id)
-                members = await uow.projections.list_snapshot_members(bundle.projection_snapshot.projection_snapshot_id)
-                revision = await uow.sources.resolve_revision(citation.evidence_reference.source_revision_id)
+                members = await uow.projections.list_snapshot_members(
+                    bundle.projection_snapshot.projection_snapshot_id
+                )
+                revision = await uow.sources.resolve_revision(
+                    citation.evidence_reference.source_revision_id
+                )
                 await uow.commit()
             source_reference = citation.evidence_reference
             exact_projection = tuple(
-                item for item in references if _projection_reference_matches_evidence(item, source_reference)
+                item
+                for item in references
+                if _projection_reference_matches_evidence(item, source_reference)
             )
             exact_member = tuple(
                 item
@@ -1381,16 +1438,23 @@ class _CurrentCitationValidator(_ScopedPort):
             )
 
 
-def _projection_reference_matches_evidence(reference: object, evidence: object) -> bool:
+def _projection_reference_matches_evidence(
+    reference: object, evidence: object
+) -> bool:
     """Match canonical segment evidence while keeping physical object IDs opaque."""
 
     return (
         getattr(reference, "segment_id", None) == getattr(evidence, "evidence_id", None)
-        and getattr(reference, "projected_kind", None) == getattr(evidence, "projected_kind", None)
-        and getattr(reference, "source_object_id", None) == getattr(evidence, "source_object_id", None)
-        and getattr(reference, "source_revision_id", None) == getattr(evidence, "source_revision_id", None)
-        and getattr(reference, "processing_receipt_id", None) == getattr(evidence, "processing_receipt_id", None)
-        and getattr(reference, "locator_digest", None) == getattr(evidence, "locator_digest", None)
+        and getattr(reference, "projected_kind", None)
+        == getattr(evidence, "projected_kind", None)
+        and getattr(reference, "source_object_id", None)
+        == getattr(evidence, "source_object_id", None)
+        and getattr(reference, "source_revision_id", None)
+        == getattr(evidence, "source_revision_id", None)
+        and getattr(reference, "processing_receipt_id", None)
+        == getattr(evidence, "processing_receipt_id", None)
+        and getattr(reference, "locator_digest", None)
+        == getattr(evidence, "locator_digest", None)
     )
 
 
@@ -1418,9 +1482,17 @@ class _ValidationPlans:
         answer = candidate.answer
         requests = []
         for claim in answer.claims:
-            relationships = tuple(item for item in answer.relationships if item.claim_id == claim.claim_id)
-            citation_ids = {citation_id for relationship in relationships for citation_id in relationship.citation_ids}
-            citations = tuple(item for item in answer.citations if item.citation_id in citation_ids)
+            relationships = tuple(
+                item for item in answer.relationships if item.claim_id == claim.claim_id
+            )
+            citation_ids = {
+                citation_id
+                for relationship in relationships
+                for citation_id in relationship.citation_ids
+            }
+            citations = tuple(
+                item for item in answer.citations if item.citation_id in citation_ids
+            )
             evidence = tuple(
                 SemanticSupportEvidence(
                     citation=item,
@@ -1476,7 +1548,9 @@ class _ValidationPlans:
             activation_generation=bundle.activation_generation,
             canonical_boundary_id=bundle.canonical_boundary.boundary_id,
         )
-        constraints = tuple(sorted(scope.source_constraints, key=lambda item: item.source_object_id.hex))
+        constraints = tuple(
+            sorted(scope.source_constraints, key=lambda item: item.source_object_id.hex)
+        )
         constraints_by_source = {item.source_object_id: item for item in constraints}
         authorization = _ACTIVE_AUTHORIZATION_CONTEXT.get()
         if authorization is None:
@@ -1519,16 +1593,18 @@ class _ValidationPlans:
         if scope.completeness_requirement is CompletenessRequirement.BEST_EFFORT:
             constrained_source_ids = set(constraints_by_source)
             canonical_members = tuple(
-                member for member in canonical_members if member.source_object_id in constrained_source_ids
+                member
+                for member in canonical_members
+                if member.source_object_id in constrained_source_ids
             )
         target_members: list[TargetScopeMember] = []
         coverage_members: list[ObservedCoverageMember] = []
         for member in canonical_members:
-            revision_kind = getattr(member, "current_revision_kind", getattr(member, "revision_kind", None))
+            revision_kind = getattr(
+                member, "current_revision_kind", getattr(member, "revision_kind", None)
+            )
             source_revision_id = getattr(
-                member,
-                "current_revision_id",
-                getattr(member, "source_revision_id", None),
+                member, "current_revision_id", getattr(member, "source_revision_id", None)
             )
             if revision_kind is not RevisionKind.CONTENT:
                 continue
@@ -1542,7 +1618,8 @@ class _ValidationPlans:
             if (
                 decision.source_object_ids != (member.source_object_id,)
                 or len(decision.policy_evidence) != 1
-                or decision.policy_evidence[0].source_revision_id != source_revision_id
+                or decision.policy_evidence[0].source_revision_id
+                != source_revision_id
             ):
                 raise RuntimeError("canonical completeness source is not current")
             target_members.append(
@@ -1556,11 +1633,9 @@ class _ValidationPlans:
             status = (
                 CoverageMemberStatus.PROJECTION_GAP
                 if represented is None
-                else (
-                    CoverageMemberStatus.STALE
-                    if represented.source_revision_id != source_revision_id
-                    else CoverageMemberStatus.REPRESENTED
-                )
+                else CoverageMemberStatus.STALE
+                if represented.source_revision_id != source_revision_id
+                else CoverageMemberStatus.REPRESENTED
             )
             coverage_members.append(
                 ObservedCoverageMember(
@@ -1569,7 +1644,8 @@ class _ValidationPlans:
                     status=status,
                     proof_reference=(
                         represented.projection_snapshot_member_id
-                        if represented is not None and represented.source_revision_id == source_revision_id
+                        if represented is not None
+                        and represented.source_revision_id == source_revision_id
                         else None
                     ),
                 )
@@ -1591,11 +1667,18 @@ class _ValidationPlans:
                 not decision.allowed
                 or decision.source_object_ids != (target_member.source_object_id,)
                 or len(decision.policy_evidence) != 1
-                or decision.policy_evidence[0].source_revision_id != target_member.source_revision_id
+                or decision.policy_evidence[0].source_revision_id
+                != target_member.source_revision_id
             ):
-                raise RuntimeError("canonical completeness authorization changed during evaluation")
+                raise RuntimeError(
+                    "canonical completeness authorization changed during evaluation"
+                )
             revalidated_target_members.append(
-                target_member.model_copy(update={"authorization_decision_reference": decision.decision_reference})
+                target_member.model_copy(
+                    update={
+                        "authorization_decision_reference": decision.decision_reference
+                    }
+                )
             )
         target_members = revalidated_target_members
         source_constraint_digest = hashlib.sha256(
@@ -1619,10 +1702,11 @@ class _ValidationPlans:
             target_scope_id=target_scope_id,
             boundary=boundary,
             derivation_reference=uuid5(
-                bundle.bundle_id,
-                f"target-scope-derivation:v2:{source_constraint_digest}",
+                bundle.bundle_id, f"target-scope-derivation:v2:{source_constraint_digest}"
             ),
-            canonical_view_reference=uuid5(bundle.bundle_id, f"target-canonical-view:v1:{canonical_view_digest}"),
+            canonical_view_reference=uuid5(
+                bundle.bundle_id, f"target-canonical-view:v1:{canonical_view_digest}"
+            ),
             canonical_view_digest=canonical_view_digest,
             canonical_view_generation=max(
                 (item.accepted_generation for item in canonical_view_members),
@@ -1654,7 +1738,9 @@ class _ValidationPlans:
                         else PartialFallbackAuthority.ACCEPTED_PREFERENCE
                     ),
                     authorization_reference=uuid5(
-                        (completeness_intent.command_id if current_request else scope.profile_ref.profile_id),
+                        completeness_intent.command_id
+                        if current_request
+                        else scope.profile_ref.profile_id,
                         "partial-fallback-authorization:v2:"
                         + (
                             "current-request"
@@ -1671,37 +1757,49 @@ class _ValidationPlans:
                         )
                     ),
                     applicability_reference=(
-                        completeness_intent.command_id if current_request else scope.profile_ref.profile_id
+                        completeness_intent.command_id
+                        if current_request
+                        else scope.profile_ref.profile_id
                     ),
                 )
 
         citations = tuple(candidate.answer.citations)
         citation_results_by_id = {
-            citation.citation_id: result for citation, result in zip(citations, citation_results, strict=True)
+            citation.citation_id: result
+            for citation, result in zip(citations, citation_results, strict=True)
         }
         citation_sources = {
-            citation.citation_id: citation.evidence_reference.source_object_id for citation in citations
+            citation.citation_id: citation.evidence_reference.source_object_id
+            for citation in citations
         }
         semantic_by_claim = {item.claim_id: item for item in semantic_results}
-        target_by_source = {item.source_object_id: item for item in target_scope.members}
+        target_by_source = {
+            item.source_object_id: item for item in target_scope.members
+        }
         assessments = []
         coverage_is_complete = bool(coverage_members) and all(
-            item.status is CoverageMemberStatus.REPRESENTED for item in coverage_members
+            item.status is CoverageMemberStatus.REPRESENTED
+            for item in coverage_members
         )
         for claim in candidate.answer.claims:
             relationships = tuple(
                 item
                 for item in candidate.answer.relationships
-                if item.claim_id == claim.claim_id and item.kind is not ClaimEvidenceRelationshipKind.CONTRADICTION
+                if item.claim_id == claim.claim_id
+                and item.kind is not ClaimEvidenceRelationshipKind.CONTRADICTION
             )
             citation_ids = tuple(
-                citation_id for relationship in relationships for citation_id in relationship.citation_ids
+                citation_id
+                for relationship in relationships
+                for citation_id in relationship.citation_ids
             )
             semantic = semantic_by_claim.get(claim.claim_id)
             validations = tuple(
                 ClaimEvidenceValidation(
                     citation_id=citation_id,
-                    citation_validation_reference=citation_results_by_id[citation_id].validation_reference,
+                    citation_validation_reference=citation_results_by_id[
+                        citation_id
+                    ].validation_reference,
                     semantic_support_validation_reference=semantic.validation_record_id,
                     authorization_validation_reference=(
                         target_by_source[citation_sources[citation_id]].authorization_decision_reference
@@ -1715,15 +1813,21 @@ class _ValidationPlans:
                 for citation_id in citation_ids
             )
             citations_current = bool(validations) and all(
-                isinstance(citation_results_by_id[citation_id], ValidCitation) for citation_id in citation_ids
+                isinstance(citation_results_by_id[citation_id], ValidCitation)
+                for citation_id in citation_ids
             )
-            supported = semantic is not None and semantic.outcome is SemanticSupportOutcome.SUPPORTED
+            supported = (
+                semantic is not None
+                and semantic.outcome is SemanticSupportOutcome.SUPPORTED
+            )
             independently_validated = (
                 supported
                 and citations_current
                 and bool(relationships)
                 and all(
-                    relationship.kind is ClaimEvidenceRelationshipKind.INDEPENDENT for relationship in relationships
+                    relationship.kind
+                    is ClaimEvidenceRelationshipKind.INDEPENDENT
+                    for relationship in relationships
                 )
             )
             missing_coverage_impact = MissingCoverageImpact.UNKNOWN
@@ -1759,9 +1863,15 @@ class _ValidationPlans:
                 GroundedClaimAssessment(
                     boundary=boundary,
                     claim_id=claim.claim_id,
-                    grounding_status=(ClaimGroundingStatus.GROUNDED if supported else ClaimGroundingStatus.REJECTED),
+                    grounding_status=(
+                        ClaimGroundingStatus.GROUNDED
+                        if supported
+                        else ClaimGroundingStatus.REJECTED
+                    ),
                     authorization_status=(
-                        ClaimAuthorizationStatus.CURRENT if citations_current else ClaimAuthorizationStatus.REJECTED
+                        ClaimAuthorizationStatus.CURRENT
+                        if citations_current
+                        else ClaimAuthorizationStatus.REJECTED
                     ),
                     partial_utility=(
                         PartialClaimUtility.INDEPENDENTLY_USEFUL
@@ -1775,16 +1885,23 @@ class _ValidationPlans:
             )
         conflict_relationships: dict[tuple[UUID, UUID], list[UUID]] = {}
         for item in candidate.answer.relationships:
-            if item.kind is not ClaimEvidenceRelationshipKind.CONTRADICTION or item.related_claim_id is None:
+            if (
+                item.kind is not ClaimEvidenceRelationshipKind.CONTRADICTION
+                or item.related_claim_id is None
+            ):
                 continue
-            pair = tuple(sorted((item.claim_id, item.related_claim_id), key=lambda value: value.hex))
+            pair = tuple(
+                sorted((item.claim_id, item.related_claim_id), key=lambda value: value.hex)
+            )
             conflict_relationships.setdefault(pair, []).append(item.relationship_id)
         assessment_by_claim = {item.claim_id: item for item in assessments}
         validated_claims = tuple(
             claim
             for claim in candidate.answer.claims
-            if assessment_by_claim[claim.claim_id].grounding_status is ClaimGroundingStatus.GROUNDED
-            and assessment_by_claim[claim.claim_id].authorization_status is ClaimAuthorizationStatus.CURRENT
+            if assessment_by_claim[claim.claim_id].grounding_status
+            is ClaimGroundingStatus.GROUNDED
+            and assessment_by_claim[claim.claim_id].authorization_status
+            is ClaimAuthorizationStatus.CURRENT
         )
         if len(validated_claims) > 1:
             if self._conflict_validator is None:
@@ -1794,7 +1911,8 @@ class _ValidationPlans:
                     evidence_content[citation.evidence_id]
                     for relationship in candidate.answer.relationships
                     if relationship.claim_id == claim.claim_id
-                    and relationship.kind is not ClaimEvidenceRelationshipKind.CONTRADICTION
+                    and relationship.kind
+                    is not ClaimEvidenceRelationshipKind.CONTRADICTION
                     for citation in citations
                     if citation.citation_id in relationship.citation_ids
                 )
@@ -1825,11 +1943,15 @@ class _ValidationPlans:
             conflict_policy_version = conflict_validation.policy_version
         else:
             grounded_conflict_pairs = {}
-            conflict_validation_reference = uuid5(bundle.bundle_id, "grounded-conflict-single-claim:v1")
+            conflict_validation_reference = uuid5(
+                bundle.bundle_id, "grounded-conflict-single-claim:v1"
+            )
             conflict_policy_version = "qa.grounded-conflict:r1"
         conflicts = tuple(
             GroundedConflict(
-                conflict_id=uuid5(bundle.bundle_id, f"grounded-conflict:v1:{left}:{right}"),
+                conflict_id=uuid5(
+                    bundle.bundle_id, f"grounded-conflict:v1:{left}:{right}"
+                ),
                 boundary=boundary,
                 claim_ids=(left, right),
                 relationship_ids=relationship_ids,
@@ -1846,7 +1968,9 @@ class _ValidationPlans:
                             *(
                                 reference
                                 for claim_id in (left, right)
-                                for validation in assessment_by_claim[claim_id].evidence_validations
+                                for validation in assessment_by_claim[
+                                    claim_id
+                                ].evidence_validations
                                 for reference in (
                                     validation.citation_validation_reference,
                                     validation.semantic_support_validation_reference,
@@ -1868,11 +1992,17 @@ class _ValidationPlans:
             "target_scope": target_scope.model_dump(mode="json"),
             "observed_coverage": observed_coverage.model_dump(mode="json"),
             "claim_assessments": [item.model_dump(mode="json") for item in assessments],
-            "partial_fallback": (None if partial_fallback is None else partial_fallback.model_dump(mode="json")),
+            "partial_fallback": (
+                None
+                if partial_fallback is None
+                else partial_fallback.model_dump(mode="json")
+            ),
             "conflicts": [item.model_dump(mode="json") for item in conflicts],
         }
         evaluation_digest = hashlib.sha256(
-            json.dumps(evaluation_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            json.dumps(evaluation_payload, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
         ).hexdigest()
         request = AnswerEvaluationRequest(
             answer=candidate.answer,
@@ -1881,7 +2011,9 @@ class _ValidationPlans:
             claim_assessments=tuple(assessments),
             partial_fallback=partial_fallback,
             conflicts=conflicts,
-            evaluation_lineage_reference=uuid5(bundle.bundle_id, f"answer-evaluation:v2:{evaluation_digest}"),
+            evaluation_lineage_reference=uuid5(
+                bundle.bundle_id, f"answer-evaluation:v2:{evaluation_digest}"
+            ),
         )
         decision = evaluate_answer_candidate(request)
         return AnswerQuestionEvaluationLineage(
@@ -1956,8 +2088,14 @@ class _CurrentDisclosureStateProvider(_ScopedPort):
             publication = await uow.projections.resolve_active_publication("qa")
             for dependency in dependencies:
                 head = await uow.canonical.resolve_current(dependency.source_object_id)
-                revision = None if head is None else await uow.sources.resolve_revision(head.current_revision_id)
-                policy = await uow.access_policies.resolve_current(dependency.source_object_id)
+                revision = (
+                    None
+                    if head is None
+                    else await uow.sources.resolve_revision(head.current_revision_id)
+                )
+                policy = await uow.access_policies.resolve_current(
+                    dependency.source_object_id
+                )
                 auth = evidence_by_source.get(dependency.source_object_id)
                 lifecycle_eligible, active_hold = await resolve_final_disclosure_constraints(
                     uow,
@@ -1969,22 +2107,40 @@ class _CurrentDisclosureStateProvider(_ScopedPort):
                     DisclosureDependencyObservation(
                         dependency_id=dependency.dependency_id,
                         source_object_id=dependency.source_object_id,
-                        current_policy_version_id=(None if policy is None else policy.access_policy_version_id),
-                        current_policy_generation=(None if policy is None else policy.policy_generation),
+                        current_policy_version_id=(
+                            None if policy is None else policy.access_policy_version_id
+                        ),
+                        current_policy_generation=(
+                            None if policy is None else policy.policy_generation
+                        ),
                         membership_generation=decision.membership_generation,
                         authority_generation=decision.authority_generation,
                         service_authority_generation=(
-                            dependency.service_authority_generation if decision.allowed else None
+                            dependency.service_authority_generation
+                            if decision.allowed
+                            else None
                         ),
                         contributor_authorized=decision.allowed and auth is not None,
-                        current_revision_id=(None if revision is None else revision.revision_id),
-                        current_revision_digest=(None if revision is None else revision.revision_digest),
-                        revision_current=(
-                            revision is not None and revision.revision_id == dependency.source_revision_id
+                        current_revision_id=None if revision is None else revision.revision_id,
+                        current_revision_digest=(
+                            None if revision is None else revision.revision_digest
                         ),
-                        superseded=(revision is not None and revision.revision_id != dependency.source_revision_id),
-                        tombstoned=(head is not None and head.current_revision_kind is not RevisionKind.CONTENT),
-                        retention_eligible=(head is not None and head.current_revision_kind is RevisionKind.CONTENT),
+                        revision_current=(
+                            revision is not None
+                            and revision.revision_id == dependency.source_revision_id
+                        ),
+                        superseded=(
+                            revision is not None
+                            and revision.revision_id != dependency.source_revision_id
+                        ),
+                        tombstoned=(
+                            head is not None
+                            and head.current_revision_kind is not RevisionKind.CONTENT
+                        ),
+                        retention_eligible=(
+                            head is not None
+                            and head.current_revision_kind is RevisionKind.CONTENT
+                        ),
                         lifecycle_disclosure_eligible=lifecycle_eligible,
                         active_disclosure_hold=active_hold,
                     )
@@ -1993,7 +2149,8 @@ class _CurrentDisclosureStateProvider(_ScopedPort):
         first = dependencies[0]
         current = publication if isinstance(publication, PublishedActivePublication) else None
         exact = current is not None and (
-            current.projection_snapshot.projection_snapshot_id == first.projection_snapshot_id
+            current.projection_snapshot.projection_snapshot_id
+            == first.projection_snapshot_id
             and current.activation_generation == first.activation_generation
             and current.canonical_boundary_id == first.canonical_boundary_id
         )
@@ -2007,12 +2164,30 @@ class _CurrentDisclosureStateProvider(_ScopedPort):
                 pinned_boundary_id=first.canonical_boundary_id,
                 pinned_as_of_boundary_id=first.canonical_as_of_boundary_id,
                 pinned_as_of_generation=first.canonical_as_of_generation,
-                current_snapshot_id=(None if current is None else current.projection_snapshot.projection_snapshot_id),
-                current_activation_generation=(None if current is None else current.activation_generation),
-                current_boundary_id=(None if current is None else current.canonical_boundary_id),
-                current_as_of_boundary_id=(None if current is None else current.canonical_boundary_id),
-                current_as_of_generation=(None if current is None else current.accepted_through_generation),
-                impact=(DisclosurePublicationImpact.NONE if exact else DisclosurePublicationImpact.MATERIAL),
+                current_snapshot_id=(
+                    None
+                    if current is None
+                    else current.projection_snapshot.projection_snapshot_id
+                ),
+                current_activation_generation=(
+                    None if current is None else current.activation_generation
+                ),
+                current_boundary_id=(
+                    None if current is None else current.canonical_boundary_id
+                ),
+                current_as_of_boundary_id=(
+                    None if current is None else current.canonical_boundary_id
+                ),
+                current_as_of_generation=(
+                    None
+                    if current is None
+                    else current.accepted_through_generation
+                ),
+                impact=(
+                    DisclosurePublicationImpact.NONE
+                    if exact
+                    else DisclosurePublicationImpact.MATERIAL
+                ),
             ),
             dependencies=tuple(observations),
         )
@@ -2051,10 +2226,7 @@ class _ScopedRepositoryProxy:
             trace_id = (
                 getattr(owned, "request_id", None)
                 or getattr(owned, "run_id", None)
-                or uuid5(
-                    workspace_id,
-                    f"{environment_id}:{self._repository_name}:{method_name}",
-                )
+                or uuid5(workspace_id, f"{environment_id}:{self._repository_name}:{method_name}")
             )
             context = self._boundary.worker(
                 scope=EnvironmentScope(
@@ -2091,7 +2263,9 @@ class _ScopedContextBundleRepository:
 
     def _context(self, workspace_id: UUID, environment_id: UUID, trace_id: UUID):
         return self._boundary.worker(
-            scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id),
+            scope=EnvironmentScope(
+                workspace_id=workspace_id, environment_id=environment_id
+            ),
             service_principal_id=self._service_principal_id,
             purpose=PersistencePurpose("governed_qa.context_bundle.v1"),
             operation=PersistenceOperation("context_bundles"),
@@ -2121,7 +2295,9 @@ class _ScopedContextBundleRepository:
             return result
 
     async def create_or_replay(self, bundle: object) -> object:
-        context = self._context(bundle.workspace_id, bundle.environment_id, bundle.run_id)
+        context = self._context(
+            bundle.workspace_id, bundle.environment_id, bundle.run_id
+        )
         try:
             async with self._uow_factory(context) as uow:  # type: ignore[operator]
                 result = await uow.context_bundles.create(bundle)
@@ -2251,13 +2427,17 @@ async def build_production_qa_capability_graph(
         boundary=boundary,
         service_principal_id=service_principal_id,
     )
-    artifacts = PostgreSQLQAArtifactStore(session_factory, service_principal_id=service_principal_id)
+    artifacts = PostgreSQLQAArtifactStore(
+        session_factory, service_principal_id=service_principal_id
+    )
     execution = AnswerQuestionExecutionBoundary(
         capability=_CAPABILITY,
         binding_resolver=AgentBindingResolver(
             catalog=_ScopedAgentCatalog(),
             registry=registry,
-            approved_deployment_policy=DeploymentSelectionPolicy(frozenset({DeploymentStage.PRODUCTION})),
+            approved_deployment_policy=DeploymentSelectionPolicy(
+                frozenset({DeploymentStage.PRODUCTION})
+            ),
         ),
         configuration_catalog=configuration,
         runtime_provider=ConfiguredLLMRuntimeProvider(
@@ -2265,7 +2445,9 @@ async def build_production_qa_capability_graph(
             api_key=llm_api_key,
             model=llm_model,
             endpoint=llm_endpoint,
-            authority_generation_resolver=_CurrentQAServiceAuthority(session_factory, service_principal_id),
+            authority_generation_resolver=_CurrentQAServiceAuthority(
+                session_factory, service_principal_id
+            ),
             admitted_authority_generation=_admitted_authority_generation,
         ),
     )
@@ -2293,7 +2475,9 @@ async def build_production_qa_capability_graph(
         service_principal_id=service_principal_id,
     )
     trusted_contexts = TrustedQAAuthorizationContextRegistry(service_principal_id)
-    qualification_authority = PostgreSQLQualificationAuthorityResolver(session_factory)  # type: ignore[arg-type]
+    qualification_authority = PostgreSQLQualificationAuthorityResolver(
+        session_factory  # type: ignore[arg-type]
+    )
     port_values = {
         "uow_factory": uow_factory,
         "boundary": boundary,
@@ -2311,7 +2495,9 @@ async def build_production_qa_capability_graph(
         noninteractive_authority=noninteractive_authority,
     )
     content_authorization = ContentAuthorizationDecisionService(
-        repository=_CurrentContentAuthorization(_ScopedPort(**port_values, operation="resolve_content_authorization")),
+        repository=_CurrentContentAuthorization(
+            _ScopedPort(**port_values, operation="resolve_content_authorization")
+        ),
         identity_authority=identity_authority,
         noninteractive_authority=noninteractive_authority,
     )
@@ -2329,8 +2515,12 @@ async def build_production_qa_capability_graph(
         repository=_ProfileRepository(**port_values),
         capability_policy=_AllowContextRetrieval(),
     )
-    plan_builder = PhysicalReadPlanBuilder(namespace_registry=_CanonicalNamespaceRegistry())  # type: ignore[arg-type]
-    retrieval = PhysicalReadPlanExecutor(_ParsedProjectionRetrieval(session_factory))
+    plan_builder = PhysicalReadPlanBuilder(
+        namespace_registry=_CanonicalNamespaceRegistry()  # type: ignore[arg-type]
+    )
+    retrieval = PhysicalReadPlanExecutor(
+        _ParsedProjectionRetrieval(session_factory)
+    )
     broker = AuthorizedContextBrokerApplicationService(
         trusted_context=trusted_contexts,
         profile_resolver=profile_resolver,
@@ -2351,7 +2541,9 @@ async def build_production_qa_capability_graph(
         authority_resolver=qualification_authority,
         service_principal_id=service_principal_id,
     )
-    revalidator = _CurrentBundleRevalidator(**port_values, operation="revalidate_context_bundle")
+    revalidator = _CurrentBundleRevalidator(
+        **port_values, operation="revalidate_context_bundle"
+    )
     disclosure_revalidator = DisclosureRevalidationService(
         state_provider=_CurrentDisclosureStateProvider(
             **port_values,

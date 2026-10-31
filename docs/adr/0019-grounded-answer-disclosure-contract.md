@@ -60,7 +60,11 @@ stack rather than only fakes.
 
 This ADR composes with, and does not amend, ADR 0011: PostgreSQL current policy
 remains the sole authorization authority and all contributing sources require
-current access. It also composes with, and does not amend, ADR 0018: ordinary Q&A
+current access. An exact positive lifecycle review decision or active
+`DisclosureHold:v1` makes the affected dependency ineligible even when
+AccessPolicy otherwise allows it. A separately authorized release clears only
+that exact hold and does not grant provider, retrieval or content access. It also
+composes with, and does not amend, ADR 0018: ordinary Q&A
 uses an active publication, canonical revisions and tombstones override projected
 state, `as_of` is server-selected, and historical disclosure remains limited to
 the explicitly authorized revision-history or citation-inspection flow.

@@ -39,10 +39,7 @@ from spine.application.citation_inspector import (
     CitationInspectorRequester,
     ProtectedCitationInspector,
 )
-from spine.application.persistence.context import (
-    EnvironmentScope,
-    TrustedPersistenceContext,
-)
+from spine.application.persistence.context import EnvironmentScope, TrustedPersistenceContext
 from spine.domain.capabilities import (
     AnswerDisclosureRecord,
     AnswerQuestionOutcome,
@@ -83,7 +80,9 @@ class _CurrentSessionOwnerDisclosure:
     repository: object
     accepted: RevalidatingQAMessageDisclosure | None = None
 
-    async def is_eligible(self, *, message: QAMessage, requester: QASessionRequester) -> bool:
+    async def is_eligible(
+        self, *, message: QAMessage, requester: QASessionRequester
+    ) -> bool:
         session = await self.repository.resolve_session(  # type: ignore[attr-defined]
             workspace_id=message.workspace_id,
             environment_id=message.environment_id,
@@ -126,7 +125,9 @@ class _CurrentSessionDisclosureState:
         observations = []
         requester_authorized = True
         for dependency in dependencies:
-            head = await self.uow.canonical.resolve_current(dependency.source_object_id)  # type: ignore[attr-defined]
+            head = await self.uow.canonical.resolve_current(  # type: ignore[attr-defined]
+                dependency.source_object_id
+            )
             current_policy = await self.uow.access_policies.resolve_current(  # type: ignore[attr-defined]
                 dependency.source_object_id
             )
@@ -140,7 +141,9 @@ class _CurrentSessionDisclosureState:
             revision = (
                 None
                 if head is None
-                else await self.uow.sources.resolve_revision(head.current_revision_id)  # type: ignore[attr-defined]
+                else await self.uow.sources.resolve_revision(  # type: ignore[attr-defined]
+                    head.current_revision_id
+                )
             )
             contributor_authorized = bool(
                 policy is not None
@@ -161,32 +164,61 @@ class _CurrentSessionDisclosureState:
                     dependency_id=dependency.dependency_id,
                     source_object_id=dependency.source_object_id,
                     current_policy_version_id=(
-                        None if current_policy is None else current_policy.access_policy_version_id
+                        None
+                        if current_policy is None
+                        else current_policy.access_policy_version_id
                     ),
-                    current_policy_generation=(None if current_policy is None else current_policy.policy_generation),
+                    current_policy_generation=(
+                        None
+                        if current_policy is None
+                        else current_policy.policy_generation
+                    ),
                     membership_generation=self.requester.authorization_generation,
                     authority_generation=self.requester.authorization_generation,
                     service_authority_generation=(
-                        dependency.service_authority_generation if contributor_authorized else None
+                        dependency.service_authority_generation
+                        if contributor_authorized
+                        else None
                     ),
                     contributor_authorized=contributor_authorized,
-                    current_revision_id=(None if revision is None else revision.revision_id),
-                    current_revision_digest=(None if revision is None else revision.revision_digest),
-                    revision_current=bool(
-                        revision is not None and revision.revision_id == dependency.source_revision_id
+                    current_revision_id=(
+                        None if revision is None else revision.revision_id
                     ),
-                    superseded=bool(revision is not None and revision.revision_id != dependency.source_revision_id),
-                    tombstoned=bool(head is not None and head.current_revision_kind is not RevisionKind.CONTENT),
-                    retention_eligible=bool(head is not None and head.current_revision_kind is RevisionKind.CONTENT),
+                    current_revision_digest=(
+                        None if revision is None else revision.revision_digest
+                    ),
+                    revision_current=bool(
+                        revision is not None
+                        and revision.revision_id == dependency.source_revision_id
+                    ),
+                    superseded=bool(
+                        revision is not None
+                        and revision.revision_id != dependency.source_revision_id
+                    ),
+                    tombstoned=bool(
+                        head is not None
+                        and head.current_revision_kind is not RevisionKind.CONTENT
+                    ),
+                    retention_eligible=bool(
+                        head is not None
+                        and head.current_revision_kind is RevisionKind.CONTENT
+                    ),
                     lifecycle_disclosure_eligible=lifecycle_eligible,
                     active_disclosure_hold=active_hold,
                 )
             )
-        publication = await self.uow.projections.resolve_active_publication("qa")  # type: ignore[attr-defined]
-        current = publication if isinstance(publication, PublishedActivePublication) else None
+        publication = await self.uow.projections.resolve_active_publication(  # type: ignore[attr-defined]
+            "qa"
+        )
+        current = (
+            publication
+            if isinstance(publication, PublishedActivePublication)
+            else None
+        )
         first = dependencies[0]
         exact = current is not None and (
-            current.projection_snapshot.projection_snapshot_id == first.projection_snapshot_id
+            current.projection_snapshot.projection_snapshot_id
+            == first.projection_snapshot_id
             and current.activation_generation == first.activation_generation
             and current.canonical_boundary_id == first.canonical_boundary_id
         )
@@ -200,18 +232,36 @@ class _CurrentSessionDisclosureState:
                 pinned_boundary_id=first.canonical_boundary_id,
                 pinned_as_of_boundary_id=first.canonical_as_of_boundary_id,
                 pinned_as_of_generation=first.canonical_as_of_generation,
-                current_snapshot_id=(None if current is None else current.projection_snapshot.projection_snapshot_id),
-                current_activation_generation=(None if current is None else current.activation_generation),
-                current_boundary_id=(None if current is None else current.canonical_boundary_id),
-                current_as_of_boundary_id=(None if current is None else current.canonical_boundary_id),
-                current_as_of_generation=(None if current is None else current.accepted_through_generation),
-                impact=(DisclosurePublicationImpact.NONE if exact else DisclosurePublicationImpact.MATERIAL),
+                current_snapshot_id=(
+                    None
+                    if current is None
+                    else current.projection_snapshot.projection_snapshot_id
+                ),
+                current_activation_generation=(
+                    None if current is None else current.activation_generation
+                ),
+                current_boundary_id=(
+                    None if current is None else current.canonical_boundary_id
+                ),
+                current_as_of_boundary_id=(
+                    None if current is None else current.canonical_boundary_id
+                ),
+                current_as_of_generation=(
+                    None if current is None else current.accepted_through_generation
+                ),
+                impact=(
+                    DisclosurePublicationImpact.NONE
+                    if exact
+                    else DisclosurePublicationImpact.MATERIAL
+                ),
             ),
             dependencies=tuple(observations),
         )
 
 
-def current_disclosure_revalidator(uow: object, requester: object) -> DisclosureRevalidationService:
+def current_disclosure_revalidator(
+    uow: object, requester: object
+) -> DisclosureRevalidationService:
     """Bind fresh disclosure checks to the active scoped unit of work."""
 
     return DisclosureRevalidationService(
@@ -234,7 +284,9 @@ class _CurrentTargetScopeAuthorizer:
         if members is None or requester_id is None:
             return False
         for member in members:
-            head = await self.uow.canonical.resolve_current(member.source_object_id)  # type: ignore[attr-defined]
+            head = await self.uow.canonical.resolve_current(  # type: ignore[attr-defined]
+                member.source_object_id
+            )
             current_policy = await self.uow.access_policies.resolve_current(  # type: ignore[attr-defined]
                 member.source_object_id
             )
@@ -256,7 +308,9 @@ class _CurrentTargetScopeAuthorizer:
         return True
 
 
-def current_target_scope_authorizer(uow: object, requester: object) -> _CurrentTargetScopeAuthorizer:
+def current_target_scope_authorizer(
+    uow: object, requester: object
+) -> _CurrentTargetScopeAuthorizer:
     """Bind target-scope authorization to the active scoped unit of work."""
 
     return _CurrentTargetScopeAuthorizer(uow=uow, requester=requester)
@@ -276,7 +330,9 @@ class PostgreSQLQASessionService:
         repository = uow.qa_sessions  # type: ignore[attr-defined]
         accepted = None
         if requester is not None:
-            accepted = RevalidatingQAMessageDisclosure(current_disclosure_revalidator(uow, requester))
+            accepted = RevalidatingQAMessageDisclosure(
+                current_disclosure_revalidator(uow, requester)
+            )
         return PersistedQASessionService(
             repository=repository,
             disclosure_eligibility=_CurrentSessionOwnerDisclosure(
@@ -286,7 +342,6 @@ class PostgreSQLQASessionService:
             answer_question_runs=uow.answer_question_runs,  # type: ignore[attr-defined]
             answer_disclosures=uow.answer_disclosures,  # type: ignore[attr-defined]
         )
-
     async def create_session(
         self,
         *,
@@ -311,13 +366,19 @@ class PostgreSQLQASessionService:
         after: QASessionPosition | None,
     ) -> QASessionPage[QASession]:
         async with self.uow_factory(context) as uow:
-            result = await self._service(uow).list_sessions(context=context, limit=limit, after=after)
+            result = await self._service(uow).list_sessions(
+                context=context, limit=limit, after=after
+            )
             await uow.commit()
             return result
 
-    async def get_session(self, *, context: TrustedPersistenceContext, session_id: UUID) -> QASession | None:
+    async def get_session(
+        self, *, context: TrustedPersistenceContext, session_id: UUID
+    ) -> QASession | None:
         async with self.uow_factory(context) as uow:
-            result = await self._service(uow).get_session(context=context, session_id=session_id)
+            result = await self._service(uow).get_session(
+                context=context, session_id=session_id
+            )
             await uow.commit()
             return result
 
@@ -573,7 +634,9 @@ class _PostgreSQLFeedbackTargetResolver:
             if run.subject.id != requester.subject_id or run.final_attempt_id is None:
                 return None
             link = await self.uow.answer_question_runs.resolve_message_link(run_id)  # type: ignore[attr-defined]
-            if link is None or message_id is None or (link.message_id != message_id):
+            if link is None or message_id is None or (
+                link.message_id != message_id
+            ):
                 return None
             record = await self.uow.answer_disclosures.resolve_for_attempt(  # type: ignore[attr-defined]
                 workspace_id=workspace_id,
@@ -589,7 +652,8 @@ class _PostgreSQLFeedbackTargetResolver:
                     return None
             else:
                 if citation_id != target_id or not any(
-                    item.citation_id == target_id for item in accepted.answer.citations
+                    item.citation_id == target_id
+                    for item in accepted.answer.citations
                 ):
                     return None
             return FeedbackTargetReference(

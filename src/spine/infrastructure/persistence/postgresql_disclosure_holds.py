@@ -29,6 +29,7 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     current_lifecycle_authorities,
     disclosure_hold_releases,
     disclosure_hold_source_revisions,
+    disclosure_hold_targets,
     disclosure_holds,
     lifecycle_decisions,
 )
@@ -46,9 +47,7 @@ class PostgreSQLDisclosureHoldRepository(DisclosureHoldRepository):
         self._authority = authority
         self._effects = effects
 
-    async def create_hold(
-        self, hold: DisclosureHold, context: TrustedPersistenceContext
-    ) -> DisclosureHold:
+    async def create_hold(self, hold: DisclosureHold, context: TrustedPersistenceContext) -> DisclosureHold:
         _context(context, hold.workspace_id, hold.environment_id, hold.actor_id)
         try:
             async with self._uow_factory(context) as uow:
@@ -68,35 +67,20 @@ class PostgreSQLDisclosureHoldRepository(DisclosureHoldRepository):
                     .select_from(
                         current_lifecycle_authorities.join(
                             lifecycle_decisions,
-                            (
-                                lifecycle_decisions.c.workspace_id
-                                == current_lifecycle_authorities.c.workspace_id
-                            )
-                            & (
-                                lifecycle_decisions.c.environment_id
-                                == current_lifecycle_authorities.c.environment_id
-                            )
+                            (lifecycle_decisions.c.workspace_id == current_lifecycle_authorities.c.workspace_id)
+                            & (lifecycle_decisions.c.environment_id == current_lifecycle_authorities.c.environment_id)
                             & (
                                 lifecycle_decisions.c.source_object_id
                                 == current_lifecycle_authorities.c.source_object_id
                             )
-                            & (
-                                lifecycle_decisions.c.decision_id
-                                == current_lifecycle_authorities.c.current_decision_id
-                            )
-                            & (
-                                lifecycle_decisions.c.generation
-                                == current_lifecycle_authorities.c.generation
-                            ),
+                            & (lifecycle_decisions.c.decision_id == current_lifecycle_authorities.c.current_decision_id)
+                            & (lifecycle_decisions.c.generation == current_lifecycle_authorities.c.generation),
                         )
                     )
                     .where(
-                        current_lifecycle_authorities.c.workspace_id
-                        == hold.workspace_id,
-                        current_lifecycle_authorities.c.environment_id
-                        == hold.environment_id,
-                        current_lifecycle_authorities.c.source_object_id
-                        == hold.source_object_id,
+                        current_lifecycle_authorities.c.workspace_id == hold.workspace_id,
+                        current_lifecycle_authorities.c.environment_id == hold.environment_id,
+                        current_lifecycle_authorities.c.source_object_id == hold.source_object_id,
                     )
                     .with_for_update(of=current_lifecycle_authorities)
                 )
@@ -117,14 +101,10 @@ class PostgreSQLDisclosureHoldRepository(DisclosureHoldRepository):
                     predecessor_pointer_result = await uow._execute(  # type: ignore[attr-defined]
                         select(current_disclosure_holds.c.state)
                         .where(
-                            current_disclosure_holds.c.workspace_id
-                            == hold.workspace_id,
-                            current_disclosure_holds.c.environment_id
-                            == hold.environment_id,
-                            current_disclosure_holds.c.source_object_id
-                            == hold.source_object_id,
-                            current_disclosure_holds.c.hold_id
-                            == hold.supersedes_hold_id,
+                            current_disclosure_holds.c.workspace_id == hold.workspace_id,
+                            current_disclosure_holds.c.environment_id == hold.environment_id,
+                            current_disclosure_holds.c.source_object_id == hold.source_object_id,
+                            current_disclosure_holds.c.hold_id == hold.supersedes_hold_id,
                         )
                         .with_for_update()
                     )
@@ -135,8 +115,7 @@ class PostgreSQLDisclosureHoldRepository(DisclosureHoldRepository):
                             disclosure_holds.c.workspace_id == hold.workspace_id,
                             disclosure_holds.c.environment_id == hold.environment_id,
                             disclosure_holds.c.source_object_id == hold.source_object_id,
-                            disclosure_holds.c.supersedes_hold_id
-                            == hold.supersedes_hold_id,
+                            disclosure_holds.c.supersedes_hold_id == hold.supersedes_hold_id,
                         )
                     )
                     if successor_result.scalar_one_or_none() is not None:
@@ -147,9 +126,7 @@ class PostgreSQLDisclosureHoldRepository(DisclosureHoldRepository):
                     hold.outbox_event_id,
                 ):
                     raise DisclosureHoldAuthorityError()
-                await uow._execute(  # type: ignore[attr-defined]
-                    insert(disclosure_holds).values(**_hold_columns(hold))
-                )
+                await uow._execute(insert(disclosure_holds).values(**_hold_columns(hold)))  # type: ignore[attr-defined]
                 await uow._execute(  # type: ignore[attr-defined]
                     insert(disclosure_hold_source_revisions),
                     [
@@ -161,6 +138,23 @@ class PostgreSQLDisclosureHoldRepository(DisclosureHoldRepository):
                             "source_revision_id": revision_id,
                         }
                         for revision_id in hold.source_revision_ids
+                    ],
+                )
+                await uow._execute(  # type: ignore[attr-defined]
+                    insert(disclosure_hold_targets),
+                    [
+                        {
+                            "workspace_id": hold.workspace_id,
+                            "environment_id": hold.environment_id,
+                            "source_object_id": hold.source_object_id,
+                            "hold_id": hold.hold_id,
+                            "source_revision_id": revision_id,
+                            "dependency_id": dependency_id,
+                            "artifact_id": artifact_id,
+                        }
+                        for revision_id in hold.source_revision_ids
+                        for dependency_id in hold.dependency_ids
+                        for artifact_id in hold.artifact_ids
                     ],
                 )
                 await uow._execute(  # type: ignore[attr-defined]
@@ -194,8 +188,7 @@ class PostgreSQLDisclosureHoldRepository(DisclosureHoldRepository):
                 result = await uow._execute(  # type: ignore[attr-defined]
                     select(disclosure_hold_releases).where(
                         disclosure_hold_releases.c.workspace_id == release.workspace_id,
-                        disclosure_hold_releases.c.environment_id
-                        == release.environment_id,
+                        disclosure_hold_releases.c.environment_id == release.environment_id,
                         disclosure_hold_releases.c.release_id == release.release_id,
                     )
                 )
@@ -245,20 +238,14 @@ class PostgreSQLDisclosureHoldRepository(DisclosureHoldRepository):
                     select(current_disclosure_holds)
                     .where(
                         current_disclosure_holds.c.workspace_id == release.workspace_id,
-                        current_disclosure_holds.c.environment_id
-                        == release.environment_id,
-                        current_disclosure_holds.c.source_object_id
-                        == release.source_object_id,
+                        current_disclosure_holds.c.environment_id == release.environment_id,
+                        current_disclosure_holds.c.source_object_id == release.source_object_id,
                         current_disclosure_holds.c.hold_id == release.hold_id,
                     )
                     .with_for_update()
                 )
                 pointer = pointer_result.mappings().one_or_none()
-                if (
-                    pointer is None
-                    or pointer["state"] != "active"
-                    or pointer["generation"] != 1
-                ):
+                if pointer is None or pointer["state"] != "active" or pointer["generation"] != 1:
                     raise DisclosureHoldConflictError()
                 await self._authority.authorize_release(release, hold, context, uow)
                 if await self._effects.persist_release(release, context, uow) != (
@@ -273,10 +260,8 @@ class PostgreSQLDisclosureHoldRepository(DisclosureHoldRepository):
                     update(current_disclosure_holds)
                     .where(
                         current_disclosure_holds.c.workspace_id == release.workspace_id,
-                        current_disclosure_holds.c.environment_id
-                        == release.environment_id,
-                        current_disclosure_holds.c.source_object_id
-                        == release.source_object_id,
+                        current_disclosure_holds.c.environment_id == release.environment_id,
+                        current_disclosure_holds.c.source_object_id == release.source_object_id,
                         current_disclosure_holds.c.hold_id == release.hold_id,
                         current_disclosure_holds.c.state == "active",
                         current_disclosure_holds.c.generation == 1,
@@ -307,41 +292,25 @@ class PostgreSQLDisclosureHoldRepository(DisclosureHoldRepository):
                 select(disclosure_holds.c.hold_id)
                 .select_from(
                     disclosure_holds.join(
+                        disclosure_hold_targets,
+                        (disclosure_hold_targets.c.workspace_id == disclosure_holds.c.workspace_id)
+                        & (disclosure_hold_targets.c.environment_id == disclosure_holds.c.environment_id)
+                        & (disclosure_hold_targets.c.source_object_id == disclosure_holds.c.source_object_id)
+                        & (disclosure_hold_targets.c.hold_id == disclosure_holds.c.hold_id),
+                    )
+                    .join(
                         current_disclosure_holds,
-                        (
-                            current_disclosure_holds.c.workspace_id
-                            == disclosure_holds.c.workspace_id
-                        )
-                        & (
-                            current_disclosure_holds.c.environment_id
-                            == disclosure_holds.c.environment_id
-                        )
-                        & (
-                            current_disclosure_holds.c.source_object_id
-                            == disclosure_holds.c.source_object_id
-                        )
-                        & (
-                            current_disclosure_holds.c.hold_id
-                            == disclosure_holds.c.hold_id
-                        ),
-                    ).outerjoin(
+                        (current_disclosure_holds.c.workspace_id == disclosure_holds.c.workspace_id)
+                        & (current_disclosure_holds.c.environment_id == disclosure_holds.c.environment_id)
+                        & (current_disclosure_holds.c.source_object_id == disclosure_holds.c.source_object_id)
+                        & (current_disclosure_holds.c.hold_id == disclosure_holds.c.hold_id),
+                    )
+                    .outerjoin(
                         disclosure_hold_releases,
-                        (
-                            disclosure_hold_releases.c.workspace_id
-                            == current_disclosure_holds.c.workspace_id
-                        )
-                        & (
-                            disclosure_hold_releases.c.environment_id
-                            == current_disclosure_holds.c.environment_id
-                        )
-                        & (
-                            disclosure_hold_releases.c.source_object_id
-                            == current_disclosure_holds.c.source_object_id
-                        )
-                        & (
-                            disclosure_hold_releases.c.release_id
-                            == current_disclosure_holds.c.current_release_id
-                        ),
+                        (disclosure_hold_releases.c.workspace_id == current_disclosure_holds.c.workspace_id)
+                        & (disclosure_hold_releases.c.environment_id == current_disclosure_holds.c.environment_id)
+                        & (disclosure_hold_releases.c.source_object_id == current_disclosure_holds.c.source_object_id)
+                        & (disclosure_hold_releases.c.release_id == current_disclosure_holds.c.current_release_id),
                     )
                 )
                 .where(
@@ -352,11 +321,9 @@ class PostgreSQLDisclosureHoldRepository(DisclosureHoldRepository):
                         current_disclosure_holds.c.state == "active",
                         disclosure_hold_releases.c.released_at > query.evaluated_at,
                     ),
-                    disclosure_holds.c.source_revision_ids.any(
-                        query.source_revision_id
-                    ),
-                    disclosure_holds.c.dependency_ids.any(query.dependency_id),
-                    disclosure_holds.c.artifact_ids.any(query.artifact_id),
+                    disclosure_hold_targets.c.source_revision_id == query.source_revision_id,
+                    disclosure_hold_targets.c.dependency_id == query.dependency_id,
+                    disclosure_hold_targets.c.artifact_id == query.artifact_id,
                     disclosure_holds.c.prohibited_effects.any(query.effect.value),
                     disclosure_holds.c.effective_from <= query.evaluated_at,
                     disclosure_holds.c.effective_until > query.evaluated_at,

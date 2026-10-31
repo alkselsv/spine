@@ -12,7 +12,10 @@ from spine.application.disclosure_holds import (
     DisclosureHoldAuthorityError,
     DisclosureHoldConflictError,
 )
-from spine.application.persistence.errors import UnexpectedPersistenceError
+from spine.application.persistence.errors import (
+    ConstraintConflictError,
+    UnexpectedPersistenceError,
+)
 from spine.domain.sources.disclosure_holds import (
     DisclosureHold,
     DisclosureHoldEffect,
@@ -29,12 +32,20 @@ from spine.domain.sources.lifecycle import (
 )
 from spine.infrastructure.persistence.postgresql_disclosure_holds import (
     PostgreSQLDisclosureHoldRepository,
+    _hold_columns,
+)
+from spine.infrastructure.disclosure_hold_composition import (
+    PostgreSQLDisclosureHoldEffectsWriter,
+    PostgreSQLCurrentDisclosureHoldAuthority,
 )
 from spine.infrastructure.persistence.postgresql_lifecycle import (
     PostgreSQLLifecycleAuthorityRepository,
 )
 from spine.infrastructure.persistence.postgresql_mappings import (
     audit_events,
+    current_disclosure_holds,
+    disclosure_hold_source_revisions,
+    disclosure_hold_targets,
     disclosure_holds,
     outbox_intents,
 )
@@ -90,9 +101,7 @@ class _HoldEffects:
         )
         return release.audit_event_id, release.outbox_event_id
 
-    async def _persist(
-        self, audit_id, outbox_id, hold_id, occurred_at, context, transaction
-    ):
+    async def _persist(self, audit_id, outbox_id, hold_id, occurred_at, context, transaction):
         await transaction._execute(  # type: ignore[attr-defined]
             insert(audit_events).values(
                 audit_event_id=audit_id,
@@ -190,10 +199,10 @@ def _hold(case, context, decision, number: int) -> DisclosureHold:
             DisclosureHoldEffect.RETRIEVAL,
             DisclosureHoldEffect.FINAL_DISCLOSURE,
         ),
-        authority_reference=synthetic_uuid(number + 3),
-        authority_version_id=synthetic_uuid(number + 4),
-        authority_digest="d" * 64,
-        actor_id=context.service_principal_id,
+        authority_reference=decision.authority_reference,
+        authority_version_id=decision.authority_version_id,
+        authority_digest=decision.authority_digest,
+        actor_id=decision.actor_id,
         reason_code=DisclosureHoldReason.GOVERNED_SOURCE_REVIEW,
         effective_from=datetime(2026, 10, 31, 2, tzinfo=timezone.utc),
         effective_until=datetime(2026, 12, 1, tzinfo=timezone.utc),
@@ -209,10 +218,10 @@ def _release(hold: DisclosureHold, context, number: int) -> DisclosureHoldReleas
         environment_id=hold.environment_id,
         source_object_id=hold.source_object_id,
         hold_id=hold.hold_id,
-        authority_reference=synthetic_uuid(number + 1),
-        authority_version_id=synthetic_uuid(number + 2),
-        authority_digest="e" * 64,
-        actor_id=context.service_principal_id,
+        authority_reference=hold.authority_reference,
+        authority_version_id=hold.authority_version_id,
+        authority_digest=hold.authority_digest,
+        actor_id=hold.actor_id,
         reason_code=DisclosureHoldReason.REVIEW_COMPLETED,
         released_at=datetime(2026, 11, 2, tzinfo=timezone.utc),
         audit_event_id=synthetic_uuid(number + 3),
@@ -241,17 +250,41 @@ async def test_postgresql_hold_create_release_replay_and_workspace_isolation(
     repository = PostgreSQLDisclosureHoldRepository(
         uow_factory=postgresql_adapter.uow_factory,
         authority=_HoldAuthority(),
-        effects=_HoldEffects(),
+        effects=PostgreSQLDisclosureHoldEffectsWriter(),
     )
     hold = _hold(case, context, decision, 733130)
     release = _release(hold, context, 733140)
 
     assert await repository.create_hold(hold, context) == hold
     assert await repository.create_hold(hold, context) == hold
-    active = await repository.active_holds(
-        _query(hold, datetime(2026, 11, 1, tzinfo=timezone.utc)), context
-    )
+    active = await repository.active_holds(_query(hold, datetime(2026, 11, 1, tzinfo=timezone.utc)), context)
     assert active.hold_ids == (hold.hold_id,)
+    async with postgresql_adapter.uow_factory(context) as uow:
+        target = (
+            (
+                await uow._execute(  # type: ignore[attr-defined]
+                    select(disclosure_hold_targets).where(disclosure_hold_targets.c.hold_id == hold.hold_id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert (
+            target["workspace_id"],
+            target["environment_id"],
+            target["source_object_id"],
+            target["source_revision_id"],
+            target["dependency_id"],
+            target["artifact_id"],
+        ) == (
+            hold.workspace_id,
+            hold.environment_id,
+            hold.source_object_id,
+            hold.source_revision_ids[0],
+            hold.dependency_ids[0],
+            hold.artifact_ids[0],
+        )
+        await uow.rollback()  # type: ignore[attr-defined]
     unrelated = await repository.active_holds(
         replace(
             _query(hold, datetime(2026, 11, 1, tzinfo=timezone.utc)),
@@ -270,15 +303,35 @@ async def test_postgresql_hold_create_release_replay_and_workspace_isolation(
             )
             await uow.commit()  # type: ignore[attr-defined]
 
+    with pytest.raises(ConstraintConflictError):
+        async with postgresql_adapter.uow_factory(context) as uow:
+            await uow._execute(  # type: ignore[attr-defined]
+                insert(disclosure_hold_targets).values(
+                    workspace_id=hold.workspace_id,
+                    environment_id=hold.environment_id,
+                    source_object_id=hold.source_object_id,
+                    hold_id=hold.hold_id,
+                    source_revision_id=hold.source_revision_ids[0],
+                    dependency_id=hold.dependency_ids[0],
+                    artifact_id=synthetic_uuid(733997),
+                )
+            )
+            await uow.commit()  # type: ignore[attr-defined]
+
+    with pytest.raises(UnexpectedPersistenceError):
+        async with postgresql_adapter.uow_factory(context) as uow:
+            await uow._execute(  # type: ignore[attr-defined]
+                update(disclosure_hold_targets)
+                .where(disclosure_hold_targets.c.hold_id == hold.hold_id)
+                .values(artifact_id=synthetic_uuid(733998))
+            )
+            await uow.commit()  # type: ignore[attr-defined]
+
     assert await repository.release_hold(release, context) == release
     assert await repository.release_hold(release, context) == release
-    historical = await repository.active_holds(
-        _query(hold, datetime(2026, 11, 1, tzinfo=timezone.utc)), context
-    )
+    historical = await repository.active_holds(_query(hold, datetime(2026, 11, 1, tzinfo=timezone.utc)), context)
     assert historical.hold_ids == (hold.hold_id,)
-    released = await repository.active_holds(
-        _query(hold, datetime(2026, 11, 3, tzinfo=timezone.utc)), context
-    )
+    released = await repository.active_holds(_query(hold, datetime(2026, 11, 3, tzinfo=timezone.utc)), context)
     assert released.hold_ids == ()
     late_successor = hold.model_copy(
         update={
@@ -302,9 +355,7 @@ async def test_postgresql_hold_create_release_replay_and_workspace_isolation(
         )
     async with postgresql_adapter.uow_factory(foreign_context) as uow:
         hidden = await uow._execute(  # type: ignore[attr-defined]
-            select(disclosure_holds.c.hold_id).where(
-                disclosure_holds.c.hold_id == hold.hold_id
-            )
+            select(disclosure_holds.c.hold_id).where(disclosure_holds.c.hold_id == hold.hold_id)
         )
         assert hidden.scalar_one_or_none() is None
         await uow.rollback()  # type: ignore[attr-defined]
@@ -332,12 +383,108 @@ async def test_postgresql_hold_release_cas_allows_one_immutable_winner(
     )
 
     assert sum(isinstance(item, DisclosureHoldRelease) for item in results) == 1
-    assert (
-        sum(
-            isinstance(
-                item, (DisclosureHoldConflictError, DisclosureHoldAuthorityError)
-            )
-            for item in results
-        )
-        == 1
+    assert sum(isinstance(item, (DisclosureHoldConflictError, DisclosureHoldAuthorityError)) for item in results) == 1
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_current_authority_is_exact_current_and_workspace_scoped(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    assert postgresql_adapter.governance_context is not None
+    case, worker_context, decision = await _review_case(postgresql_adapter, 733300)
+    create_context = postgresql_adapter.governance_context(
+        case.source.workspace_id,
+        case.source.environment_id,
+        decision.actor_id,
+        "disclosure_hold.create",
     )
+    release_context = postgresql_adapter.governance_context(
+        case.source.workspace_id,
+        case.source.environment_id,
+        decision.actor_id,
+        "disclosure_hold.release",
+    )
+    repository = PostgreSQLDisclosureHoldRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        authority=PostgreSQLCurrentDisclosureHoldAuthority(),
+        effects=PostgreSQLDisclosureHoldEffectsWriter(),
+    )
+    hold = _hold(case, worker_context, decision, 733330)
+
+    assert await repository.create_hold(hold, create_context) == hold
+    stale = hold.model_copy(
+        update={
+            "hold_id": synthetic_uuid(733331),
+            "authority_digest": "f" * 64,
+            "audit_event_id": synthetic_uuid(733332),
+            "outbox_event_id": synthetic_uuid(733333),
+        }
+    )
+    with pytest.raises(DisclosureHoldAuthorityError):
+        await repository.create_hold(stale, create_context)
+
+    foreign_context = postgresql_adapter.governance_context(
+        synthetic_uuid(733399),
+        case.source.environment_id,
+        decision.actor_id,
+        "disclosure_hold.create",
+    )
+    with pytest.raises(DisclosureHoldAuthorityError):
+        await repository.create_hold(
+            hold.model_copy(update={"hold_id": synthetic_uuid(733398)}),
+            foreign_context,
+        )
+
+    release = _release(hold, worker_context, 733340)
+    assert await repository.release_hold(release, release_context) == release
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_active_pointer_rejects_incomplete_declared_target_set(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case, context, decision = await _review_case(postgresql_adapter, 733400)
+    hold = _hold(case, context, decision, 733430).model_copy(
+        update={"artifact_ids": (synthetic_uuid(733432), synthetic_uuid(733433))}
+    )
+
+    with pytest.raises(ConstraintConflictError):
+        async with postgresql_adapter.uow_factory(context) as uow:
+            await PostgreSQLDisclosureHoldEffectsWriter().persist_hold(
+                hold, context, uow
+            )
+            await uow._execute(  # type: ignore[attr-defined]
+                insert(disclosure_holds).values(**_hold_columns(hold))
+            )
+            await uow._execute(  # type: ignore[attr-defined]
+                insert(disclosure_hold_source_revisions).values(
+                    workspace_id=hold.workspace_id,
+                    environment_id=hold.environment_id,
+                    source_object_id=hold.source_object_id,
+                    hold_id=hold.hold_id,
+                    source_revision_id=hold.source_revision_ids[0],
+                )
+            )
+            await uow._execute(  # type: ignore[attr-defined]
+                insert(disclosure_hold_targets).values(
+                    workspace_id=hold.workspace_id,
+                    environment_id=hold.environment_id,
+                    source_object_id=hold.source_object_id,
+                    hold_id=hold.hold_id,
+                    source_revision_id=hold.source_revision_ids[0],
+                    dependency_id=hold.dependency_ids[0],
+                    artifact_id=hold.artifact_ids[0],
+                )
+            )
+            await uow._execute(  # type: ignore[attr-defined]
+                insert(current_disclosure_holds).values(
+                    workspace_id=hold.workspace_id,
+                    environment_id=hold.environment_id,
+                    source_object_id=hold.source_object_id,
+                    hold_id=hold.hold_id,
+                    current_release_id=None,
+                    state="active",
+                    generation=1,
+                    updated_at=hold.effective_from,
+                )
+            )

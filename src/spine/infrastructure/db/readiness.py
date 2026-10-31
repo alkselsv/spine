@@ -423,6 +423,9 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "disclosure_hold_source_revisions": ExpectedTablePrivileges(
             True, True, True, False, False
         ),
+        "disclosure_hold_targets": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
         "disclosure_hold_releases": ExpectedTablePrivileges(
             True, True, True, False, False
         ),

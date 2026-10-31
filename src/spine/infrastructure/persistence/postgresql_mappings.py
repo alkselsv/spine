@@ -1388,6 +1388,28 @@ disclosure_hold_source_revisions = Table(
     ),
 )
 
+disclosure_hold_targets = Table(
+    "disclosure_hold_targets",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("hold_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("dependency_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("artifact_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id",
+        "environment_id",
+        "source_object_id",
+        "hold_id",
+        "source_revision_id",
+        "dependency_id",
+        "artifact_id",
+        name="pk_disclosure_hold_targets",
+    ),
+)
+
 current_disclosure_holds = Table(
     "current_disclosure_holds",
     metadata,
