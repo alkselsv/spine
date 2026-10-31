@@ -7,6 +7,7 @@ from collections.abc import Callable
 from uuid import UUID
 
 from sqlalchemy import insert, select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
 from spine.application.lifecycle import (
