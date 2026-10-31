@@ -55,6 +55,7 @@ from spine.domain.audit import (
     OutboxDeliveryAuditPayload,
     RequestAccessDecisionAuditPayload,
     StorageOutcomeAuditPayload,
+    YandexQualificationAuthorityAuditPayload,
 )
 from spine.domain.audit.models import AUDIT_IDENTIFIER_PATTERN
 from spine.domain.common import VERSION_IDENTIFIER_PATTERN
@@ -282,6 +283,7 @@ def _is_safe_payload_annotation(
         allowed_patterns = {
             AuditFieldKind.IDENTIFIER: _IDENTIFIER_PATTERN,
             AuditFieldKind.VERSION: VERSION_IDENTIFIER_PATTERN,
+            AuditFieldKind.DIGEST: r"^[0-9a-f]{64}$",
         }
         return any(
             kind in metadata
@@ -396,6 +398,12 @@ class AuditEventRegistry:
                     }
                 ),
                 False,
+            ),
+            (
+                "yandex.qualification_authority",
+                YandexQualificationAuthorityAuditPayload,
+                frozenset({AuditOutcome.ACCEPTED, AuditOutcome.REPLAYED}),
+                True,
             ),
         ):
             registry.register(

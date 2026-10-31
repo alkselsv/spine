@@ -59,6 +59,7 @@ spine-api = "spine.api.runtime:main"
 spine-google-live-qualification = "spine.scripts.google_live_qualification:main"
 spine-yandex-identity-preflight = "spine.scripts.yandex_identity_preflight:main"
 spine-yandex-live-inventory = "spine.scripts.yandex_live_inventory:main"
+spine-yandex-qualification-connection = "spine.scripts.yandex_qualification_connection:main"
 
 [build-system]
 requires = ["hatchling"]
