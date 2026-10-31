@@ -359,6 +359,12 @@ async def _accept_canonical_tombstone(
     observation: LifecycleObservation,
     number: int,
 ) -> None:
+    async with adapter.uow_factory(case.context) as uow:
+        await uow.canonical.accept(
+            _bind_acceptance_query(case.command, _query(case, observation))
+        )
+        await uow.commit()
+
     revision = tombstone(case.source, synthetic_uuid(number + 1))
     provenance = source_provenance(case.source, revision.revision_id, "tombstone-event-2")
     source_context = adapter.source_context(
@@ -726,9 +732,6 @@ async def test_postgresql_current_eligibility_uses_tombstone_and_exact_decision_
     decision = _decision(case, observation, context, 73420)
     await _accept_canonical_tombstone(postgresql_adapter, case, observation, 73430)
     await repository.record_observation(observation, context)
-    async with postgresql_adapter.uow_factory(case.context) as uow:
-        await uow.canonical.accept(case.command)
-        await uow.commit()
     await repository.record_decision(decision, context)
 
     current = await repository.current_eligibility(_query(case, observation), context)
