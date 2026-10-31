@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from dataclasses import replace
 
 import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, text
 
 from spine.application.lifecycle import (
     LifecycleAuthorityError,
@@ -65,12 +65,22 @@ def _lifecycle_id(number: int):
 
 
 class _LockAttemptObservedUnitOfWork:
-    def __init__(self, unit_of_work, lock_attempted: asyncio.Event) -> None:
+    def __init__(
+        self,
+        unit_of_work,
+        lock_attempted: asyncio.Event,
+        backend_pids: list[int],
+    ) -> None:
         self._unit_of_work = unit_of_work
         self._lock_attempted = lock_attempted
+        self._backend_pids = backend_pids
 
     async def _execute(self, statement: object, parameters: object | None = None):
         if "pg_advisory_xact_lock" in str(statement):
+            pid_result = await self._unit_of_work._execute(
+                text("SELECT pg_backend_pid()")
+            )
+            self._backend_pids.append(pid_result.scalar_one())
             self._lock_attempted.set()
         return await self._unit_of_work._execute(statement, parameters)
 
@@ -78,13 +88,41 @@ class _LockAttemptObservedUnitOfWork:
         return getattr(self._unit_of_work, name)
 
 
-def _observe_lock_attempt(uow_factory, lock_attempted: asyncio.Event):
+def _observe_lock_attempt(
+    uow_factory,
+    lock_attempted: asyncio.Event,
+    backend_pids: list[int],
+):
     @asynccontextmanager
     async def observed_uow_factory(context):
         async with uow_factory(context) as uow:
-            yield _LockAttemptObservedUnitOfWork(uow, lock_attempted)
+            yield _LockAttemptObservedUnitOfWork(
+                uow, lock_attempted, backend_pids
+            )
 
     return observed_uow_factory
+
+
+async def _wait_for_postgresql_lock_wait(
+    adapter: PersistenceAdapter,
+    context,
+    backend_pid: int,
+    operation: asyncio.Task[object],
+) -> bool:
+    while not operation.done():
+        async with adapter.uow_factory(context) as uow:
+            result = await uow.execute_statement(
+                text(
+                    "SELECT wait_event_type FROM pg_stat_activity WHERE pid = :pid"
+                ),
+                {"pid": backend_pid},
+            )
+            wait_event_type = result.scalar_one_or_none()
+            await uow.rollback()
+        if wait_event_type == "Lock":
+            return True
+        await asyncio.sleep(0)
+    return False
 
 
 class _AllowAuthority:
@@ -450,9 +488,10 @@ async def test_postgresql_withdrawal_serializes_after_inflight_canonical_accepta
     )
     observation = _observation(case, 73250)
     lock_attempted = asyncio.Event()
+    backend_pids: list[int] = []
     repository = PostgreSQLLifecycleAuthorityRepository(
         uow_factory=_observe_lock_attempt(
-            postgresql_adapter.uow_factory, lock_attempted
+            postgresql_adapter.uow_factory, lock_attempted, backend_pids
         ),
         observation_authority=_AllowObservationAuthority(),
         decision_authority=_AllowAuthority(),
@@ -511,6 +550,12 @@ async def test_postgresql_withdrawal_serializes_after_inflight_canonical_accepta
             {withdrawal, lock_waiter}, return_when=asyncio.FIRST_COMPLETED
         )
         assert lock_waiter in completed
+        assert await _wait_for_postgresql_lock_wait(
+            postgresql_adapter,
+            context,
+            backend_pids[0],
+            withdrawal,
+        )
         assert not withdrawal.done()
         await uow.commit()
 
