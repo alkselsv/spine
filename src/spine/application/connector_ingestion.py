@@ -669,6 +669,13 @@ class ConnectorIngestionOrchestrator:
             event_identity=observation.event_identity,
             event_digest=observation.event_digest,
             connection_id=observation.connection_id,
+            source_contract_id=observation.schema_version.rsplit(":", 1)[0],
+            source_contract_version=observation.schema_version.rsplit(":", 1)[1],
+            resource_scope_reference=(
+                observation.resource_scope_reference.value
+                if hasattr(observation.resource_scope_reference, "value")
+                else observation.resource_scope_reference
+            ),
             bitrix24_disk_membership=observation.scope_membership,
             upload_command_reference=_event_reference(command, observation, "original"),
             origin_locator_kind=observation.origin_locator_kind,

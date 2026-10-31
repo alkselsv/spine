@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
 
 from spine.application.canonical_acceptance_selectors import (
     CanonicalAcceptanceSelectorError,
@@ -28,7 +29,7 @@ def source(**overrides: object) -> TrustedSourceSelectorContext:
         "source_contract_id": "google-drive-content",
         "source_contract_version": "v1",
         "authority_kind": CanonicalAcceptanceAuthorityKind.PROVIDER_CONNECTION,
-        "approved_scope_reference": ident(4),
+        "approved_scope_reference": ident(8),
         "provider_kind": "google",
         "provider_connection_id": ident(5),
         "provider_connection_version_id": ident(6),
@@ -50,14 +51,14 @@ def selected(**overrides: object) -> TrustedCanonicalAcceptanceSelector:
         "source_contract_id": "google-drive-content",
         "source_contract_version": "v1",
         "authority_kind": CanonicalAcceptanceAuthorityKind.PROVIDER_CONNECTION,
-        "approved_scope_reference": ident(4),
+        "approved_scope_reference": ident(8),
         "provider_kind": "google",
         "provider_connection_id": ident(5),
         "provider_connection_version_id": ident(6),
         "provider_approval_id": ident(7),
         "resource_scope_reference": ident(8),
         "required_canonical_acceptance_schema_version": 1,
-        "approval_reference": ident(12),
+        "approval_reference": ident(7),
         "audit_reference": ident(13),
         "idempotency_identity": "google-v1-compatibility",
         "created_at": datetime(2026, 10, 31, tzinfo=UTC),
@@ -125,6 +126,95 @@ async def test_resolver_returns_explicit_google_v1_compatibility_selector() -> N
 
 
 @pytest.mark.asyncio
+async def test_bitrix24_s2_uses_server_selected_v2_and_rejects_v1_downgrade() -> None:
+    s2_source = source(
+        source_kind="document",
+        source_contract_id="external-observation",
+        source_contract_version="v2",
+        provider_kind="bitrix24",
+        root_policy_id=ident(50),
+        root_policy_version="v1",
+        root_policy_digest="a" * 64,
+        content_policy_id=ident(51),
+        content_policy_version="v1",
+        content_policy_digest="b" * 64,
+    )
+    v2 = selected(
+        selector_id=ident(52),
+        selector_series_id=ident(53),
+        source_kind="document",
+        source_contract_id="external-observation",
+        source_contract_version="v2",
+        provider_kind="bitrix24",
+        required_canonical_acceptance_schema_version=2,
+        root_policy_id=ident(50),
+        root_policy_version="v1",
+        root_policy_digest="a" * 64,
+        content_policy_id=ident(51),
+        content_policy_version="v1",
+        content_policy_digest="b" * 64,
+        idempotency_identity="bitrix24-s2-v2",
+    )
+    result = await resolve(resolver(v2, persisted_source=s2_source))
+    assert result.selector.required_canonical_acceptance_schema_version == 2
+
+    with pytest.raises(ValidationError, match="cannot downgrade"):
+        selected(
+            selector_id=ident(54),
+            selector_series_id=ident(55),
+            source_kind="document",
+            source_contract_id="external-observation",
+            source_contract_version="v2",
+            provider_kind="bitrix24",
+            required_canonical_acceptance_schema_version=1,
+            root_policy_id=ident(50),
+            root_policy_version="v1",
+            root_policy_digest="a" * 64,
+            content_policy_id=ident(51),
+            content_policy_version="v1",
+            content_policy_digest="b" * 64,
+            idempotency_identity="bitrix24-s2-v1",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_kind", ("yandex_disk", "mounted_filesystem"))
+async def test_legacy_provider_requires_explicit_v1_compatibility_selector(provider_kind: str) -> None:
+    persisted_source = source(
+        source_kind="document",
+        source_contract_id="external-observation",
+        provider_kind=provider_kind,
+    )
+    compatibility = selected(
+        selector_id=ident(40),
+        selector_series_id=ident(41),
+        source_kind="document",
+        source_contract_id="external-observation",
+        provider_kind=provider_kind,
+        idempotency_identity=f"{provider_kind}-v1-compatibility",
+    )
+    service = resolver(compatibility, persisted_source=persisted_source)
+
+    result = await resolve(service)
+
+    assert result.selector.required_canonical_acceptance_schema_version == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_kind", ("yandex_disk", "mounted_filesystem"))
+async def test_legacy_provider_denies_without_explicit_compatibility_selector(provider_kind: str) -> None:
+    persisted_source = source(
+        source_kind="document",
+        source_contract_id="external-observation",
+        provider_kind=provider_kind,
+    )
+    service = resolver(persisted_source=persisted_source)
+
+    with pytest.raises(CanonicalAcceptanceSelectorError):
+        await resolve(service)
+
+
+@pytest.mark.asyncio
 async def test_resolver_denies_missing_compatibility_selector() -> None:
     service = resolver()
 
@@ -145,12 +235,18 @@ async def test_resolver_denies_stale_provider_version() -> None:
 
 @pytest.mark.asyncio
 async def test_resolver_denies_overlapping_authority_with_conflicting_policy() -> None:
-    one = selected(root_policy_id=ident(30), root_policy_version="v1", root_policy_digest="a" * 64,
+    persisted_source = source(provider_kind="bitrix24", source_contract_version="v2",
+                              root_policy_id=ident(30), root_policy_version="v1", root_policy_digest="a" * 64,
+                              content_policy_id=ident(31), content_policy_version="v1", content_policy_digest="b" * 64)
+    one = selected(provider_kind="bitrix24", source_contract_version="v2",
+                   required_canonical_acceptance_schema_version=2,
+                   root_policy_id=ident(30), root_policy_version="v1", root_policy_digest="a" * 64,
                    content_policy_id=ident(31), content_policy_version="v1", content_policy_digest="b" * 64)
-    two = selected(selector_id=ident(20), selector_series_id=ident(21),
+    two = selected(selector_id=ident(20), selector_series_id=ident(21), provider_kind="bitrix24", source_contract_version="v2",
+                   required_canonical_acceptance_schema_version=2,
                    root_policy_id=ident(32), root_policy_version="v2", root_policy_digest="c" * 64,
                    content_policy_id=ident(33), content_policy_version="v2", content_policy_digest="d" * 64)
-    service = resolver(one, two)
+    service = resolver(one, two, persisted_source=persisted_source)
 
     with pytest.raises(CanonicalAcceptanceSelectorError, match="missing or ambiguous"):
         await resolve(service)
@@ -172,11 +268,4 @@ async def test_resolver_denies_current_head_mismatch() -> None:
 
     service = TrustedCanonicalAcceptanceSelectorResolver(StaleHeadReader(selector), SourceReader())
     with pytest.raises(CanonicalAcceptanceSelectorError, match="head is stale"):
-        await resolve(service)
-
-
-@pytest.mark.asyncio
-async def test_resolver_rejects_unsupported_schema_version() -> None:
-    service = resolver(selected(required_canonical_acceptance_schema_version=3))
-    with pytest.raises(CanonicalAcceptanceSelectorError, match="unsupported"):
         await resolve(service)

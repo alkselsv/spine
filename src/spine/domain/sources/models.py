@@ -12,7 +12,7 @@ from uuid import UUID
 
 from pydantic import ConfigDict, Field, model_validator
 
-from spine.domain.common import DefinitionModel
+from spine.domain.common import DefinitionModel, VersionIdentifier
 from spine.domain.connections.bitrix24_disk_scope import Bitrix24DiskMembershipEvidence
 from .original_reference import ObjectReference
 from .profile import BCP47_TABLE_DIGEST, REVISION_METADATA_SCHEMA, REVISION_PROFILE, REVISION_SCHEMA, UNICODE_TABLE_DIGEST, UNICODE_WHITESPACE_CODEPOINTS, normalize_language_tag, normalize_nfc
@@ -246,6 +246,9 @@ class SourceRevisionProvenance(DefinitionModel):
     event_identity: BoundedIdentifier
     event_digest: DigestHex
     connection_id: UUID | None = None
+    source_contract_id: BoundedIdentifier | None = None
+    source_contract_version: VersionIdentifier | None = None
+    resource_scope_reference: UUID | None = None
     upload_command_reference: BoundedIdentifier | None = None
     origin_locator_kind: BoundedIdentifier | None = None
     origin_locator_value: BoundedIdentifier | None = None
@@ -264,6 +267,10 @@ class SourceRevisionProvenance(DefinitionModel):
             _nonzero(getattr(self, field_name), field_name)
         if (self.order_scheme is None) != (self.order_token is None):
             raise ValueError("order_scheme and order_token must be supplied together")
+        if (self.source_contract_id is None) != (self.source_contract_version is None):
+            raise ValueError("source contract identity and version must be supplied together")
+        if self.resource_scope_reference is not None and self.resource_scope_reference.int == 0:
+            raise ValueError("resource_scope_reference must be non-zero")
         lineage = self.bitrix24_disk_membership
         if lineage is not None and (
             lineage.workspace_id != self.workspace_id
