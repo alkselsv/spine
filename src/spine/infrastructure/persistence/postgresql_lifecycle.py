@@ -6,8 +6,7 @@ import json
 from collections.abc import Callable
 from uuid import UUID
 
-from sqlalchemy import insert, select, text
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import insert, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from spine.application.lifecycle import (
@@ -172,37 +171,39 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
                 await uow._execute(  # type: ignore[attr-defined]
                     insert(lifecycle_decisions).values(**_decision_columns(decision))
                 )
-                pointer_insert = pg_insert(current_lifecycle_authorities).values(
-                    workspace_id=decision.workspace_id,
-                    environment_id=decision.environment_id,
-                    source_object_id=decision.source_object_id,
-                    current_decision_id=decision.decision_id,
-                    predecessor_decision_id=decision.expected_current_decision_id,
-                    generation=decision.generation,
-                    updated_at=decision.decided_at,
-                )
-                pointer_write = pointer_insert.on_conflict_do_update(
-                    index_elements=[
-                        current_lifecycle_authorities.c.workspace_id,
-                        current_lifecycle_authorities.c.environment_id,
-                        current_lifecycle_authorities.c.source_object_id,
-                    ],
-                    set_={
-                        "current_decision_id": pointer_insert.excluded.current_decision_id,
-                        "predecessor_decision_id": pointer_insert.excluded.predecessor_decision_id,
-                        "generation": pointer_insert.excluded.generation,
-                        "updated_at": pointer_insert.excluded.updated_at,
-                    },
-                    where=(
-                        current_lifecycle_authorities.c.current_decision_id.is_not_distinct_from(
-                            decision.expected_current_decision_id
-                        )
-                        & (
+                if pointer is None:
+                    pointer_write = insert(current_lifecycle_authorities).values(
+                        workspace_id=decision.workspace_id,
+                        environment_id=decision.environment_id,
+                        source_object_id=decision.source_object_id,
+                        current_decision_id=decision.decision_id,
+                        predecessor_decision_id=None,
+                        generation=decision.generation,
+                        updated_at=decision.decided_at,
+                    ).returning(current_lifecycle_authorities.c.current_decision_id)
+                else:
+                    pointer_write = (
+                        update(current_lifecycle_authorities)
+                        .where(
+                            current_lifecycle_authorities.c.workspace_id
+                            == decision.workspace_id,
+                            current_lifecycle_authorities.c.environment_id
+                            == decision.environment_id,
+                            current_lifecycle_authorities.c.source_object_id
+                            == decision.source_object_id,
+                            current_lifecycle_authorities.c.current_decision_id
+                            == decision.expected_current_decision_id,
                             current_lifecycle_authorities.c.generation
-                            == decision.expected_current_generation
+                            == decision.expected_current_generation,
                         )
-                    ),
-                ).returning(current_lifecycle_authorities.c.current_decision_id)
+                        .values(
+                            current_decision_id=decision.decision_id,
+                            predecessor_decision_id=decision.expected_current_decision_id,
+                            generation=decision.generation,
+                            updated_at=decision.decided_at,
+                        )
+                        .returning(current_lifecycle_authorities.c.current_decision_id)
+                    )
                 write_result = await uow._execute(pointer_write)  # type: ignore[attr-defined]
                 if write_result.scalar_one_or_none() != decision.decision_id:
                     raise LifecycleConflictError()
