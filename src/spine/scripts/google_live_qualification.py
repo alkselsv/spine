@@ -52,7 +52,14 @@ async def _run(
         raise GoogleLiveQualificationRefused(
             "live Google qualification requires both config and environment opt-in"
         )
-    runner = _load_composition(composition_reference)(config)
+    try:
+        runner = _load_composition(composition_reference)(config)
+    except GoogleLiveQualificationRefused:
+        raise
+    except Exception:
+        raise GoogleLiveQualificationRefused(
+            "the approved live composition is unavailable"
+        ) from None
     if not isinstance(runner, GoogleLiveQualificationRunner):
         raise GoogleLiveQualificationRefused(
             "the approved live composition returned an invalid runner"
