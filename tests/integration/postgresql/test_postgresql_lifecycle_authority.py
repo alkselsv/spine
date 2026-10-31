@@ -360,9 +360,7 @@ async def _accept_canonical_tombstone(
     number: int,
 ) -> None:
     async with adapter.uow_factory(case.context) as uow:
-        await uow.canonical.accept(
-            _bind_acceptance_query(case.command, _query(case, observation))
-        )
+        await uow.canonical.accept(case.command)
         await uow.commit()
 
     revision = tombstone(case.source, synthetic_uuid(number + 1))
