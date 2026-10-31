@@ -268,6 +268,31 @@ def _query(case, observation: LifecycleObservation) -> LifecycleEligibilityQuery
     )
 
 
+def _command_with_lifecycle_query(
+    command: CanonicalAcceptanceCommand,
+    query: LifecycleEligibilityQuery,
+    *,
+    idempotency_key: IdempotencyKey | None = None,
+) -> CanonicalAcceptanceCommand:
+    return CanonicalAcceptanceCommand.create(
+        source=command.source,
+        revision=command.revision,
+        provenance=command.provenance,
+        admission_decision_id=command.admission_decision_id,
+        access_policy_version_id=command.access_policy_version_id,
+        expected_current_revision_id=command.expected_current_revision_id,
+        idempotency_key=idempotency_key or command.idempotency_key,
+        canonical_acceptance_id=command.canonical_acceptance_id,
+        audit_event_id=command.audit_event_id,
+        outbox_event_id=command.outbox_event_id,
+        accepted_at=command.accepted_at,
+        audit_event=command.audit_event,
+        outbox_intent=command.outbox_intent,
+        lifecycle_query=query,
+        operation=command.digest.operation,
+    )
+
+
 async def _prepare_lifecycle_case(adapter: PersistenceAdapter, number: int):
     workspace_id = synthetic_uuid(number)
     environment_id = synthetic_uuid(number + 1)
@@ -523,22 +548,8 @@ async def test_postgresql_withdrawal_serializes_after_inflight_canonical_accepta
     child_query = _bind_scope_authority(_query(case, observation), root_case)
 
     async with postgresql_adapter.uow_factory(case.context) as uow:
-        acceptance_command = CanonicalAcceptanceCommand.create(
-            source=case.command.source,
-            revision=case.command.revision,
-            provenance=case.command.provenance,
-            admission_decision_id=case.command.admission_decision_id,
-            access_policy_version_id=case.command.access_policy_version_id,
-            expected_current_revision_id=case.command.expected_current_revision_id,
-            idempotency_key=case.command.idempotency_key,
-            canonical_acceptance_id=case.command.canonical_acceptance_id,
-            audit_event_id=case.command.audit_event_id,
-            outbox_event_id=case.command.outbox_event_id,
-            accepted_at=case.command.accepted_at,
-            audit_event=case.command.audit_event,
-            outbox_intent=case.command.outbox_intent,
-            lifecycle_query=child_query,
-            operation=case.command.digest.operation,
+        acceptance_command = _command_with_lifecycle_query(
+            case.command, child_query
         )
         acceptance = await uow.canonical.accept(acceptance_command)
         lock_attempted.clear()
@@ -649,10 +660,10 @@ async def test_postgresql_new_source_is_eligible_before_its_first_lifecycle_deci
     with pytest.raises(CanonicalEligibilityError):
         async with postgresql_adapter.uow_factory(case.context) as uow:
             await uow.canonical.accept(
-                replace(
+                _command_with_lifecycle_query(
                     case.command,
+                    child_query,
                     idempotency_key=IdempotencyKey("root-withdrawal-first"),
-                    lifecycle_query=child_query,
                 )
             )
 
