@@ -102,7 +102,7 @@ def _verifier(
     reader: _Reader,
     *,
     max_chunk_bytes: int = 1024 * 1024,
-    max_duration_seconds: float = 1,
+    max_duration_seconds: float = 10,
     max_archive_entries: int = 10_000,
 ) -> BoundedTrustedContentVerifier:
     return BoundedTrustedContentVerifier(
