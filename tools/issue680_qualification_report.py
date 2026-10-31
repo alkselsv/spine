@@ -107,17 +107,20 @@ def build_report(
         "prerequisite_missing", "independent_evidence_review_required"
     ],
 ) -> MountedFilesystemOperatorReport:
-    scenarios = ScenarioResults(
-        preflight=_status(state, "PREFLIGHT_STATUS"),
-        containment=_status(state, "CONTAINMENT_STATUS"),
-        streaming_limits=_status(state, "LIMITS_STATUS"),
-        path_scoped_rename=_status(state, "RENAME_STATUS"),
-        unstable_read=_status(state, "UNSTABLE_STATUS"),
-        mount_interruption=_status(state, "OUTAGE_STATUS"),
-        recovery_reconciliation=_status(state, "RECOVERY_STATUS"),
-        identity=_status(state, "IDENTITY_STATUS"),
-        cleanup=_status(state, "CLEANUP_STATUS"),
-    )
+    if requested_reason == "prerequisite_missing":
+        scenarios = ScenarioResults()
+    else:
+        scenarios = ScenarioResults(
+            preflight=_status(state, "PREFLIGHT_STATUS"),
+            containment=_status(state, "CONTAINMENT_STATUS"),
+            streaming_limits=_status(state, "LIMITS_STATUS"),
+            path_scoped_rename=_status(state, "RENAME_STATUS"),
+            unstable_read=_status(state, "UNSTABLE_STATUS"),
+            mount_interruption=_status(state, "OUTAGE_STATUS"),
+            recovery_reconciliation=_status(state, "RECOVERY_STATUS"),
+            identity=_status(state, "IDENTITY_STATUS"),
+            cleanup=_status(state, "CLEANUP_STATUS"),
+        )
     values = tuple(scenarios.model_dump().values())
     failed = "FAIL" in values
     reader_identity = None

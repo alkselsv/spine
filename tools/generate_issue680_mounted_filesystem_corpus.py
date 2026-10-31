@@ -51,6 +51,16 @@ class CorpusEntry(BaseModel):
         return self
 
 
+class ExternalFixture(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    relative_path_from_package: Literal["outside-scope-synthetic.txt"]
+    placement: Literal["beside_approved_corpus_leaf"]
+    purpose: Literal["prove symlink escape rejection without following target"]
+    byte_length: int
+    sha256: str
+
+
 class SyntheticCorpusManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -60,6 +70,7 @@ class SyntheticCorpusManifest(BaseModel):
     generator: Literal["deterministic"]
     approved_adapter_profile: AdapterProfile
     entries: tuple[CorpusEntry, ...]
+    external_fixtures: tuple[ExternalFixture, ...]
 
 
 class ScenarioRules(BaseModel):
@@ -137,7 +148,14 @@ def _normalize_tar_info(info: tarfile.TarInfo) -> tarfile.TarInfo:
     return info
 
 
-def _add_tree(archive: tarfile.TarFile, source: Path, arcname: str) -> None:
+def _add_tree(
+    archive: tarfile.TarFile,
+    source: Path,
+    arcname: str,
+    excluded: frozenset[Path],
+) -> None:
+    if source in excluded:
+        return
     archive.add(
         source,
         arcname=arcname,
@@ -146,16 +164,17 @@ def _add_tree(archive: tarfile.TarFile, source: Path, arcname: str) -> None:
     )
     if source.is_dir() and not source.is_symlink():
         for child in sorted(source.iterdir(), key=lambda item: item.name):
-            _add_tree(archive, child, f"{arcname}/{child.name}")
+            _add_tree(archive, child, f"{arcname}/{child.name}", excluded)
 
 
 def _write_archive(package: Path, archive_path: Path) -> None:
+    excluded = frozenset({package / "outside-scope-synthetic.txt"})
     with archive_path.open("wb") as raw:
         with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
             with tarfile.open(
                 fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT
             ) as archive:
-                _add_tree(archive, package, PACKAGE_NAME)
+                _add_tree(archive, package, PACKAGE_NAME, excluded)
 
 
 def generate(output_dir: Path) -> tuple[Path, Path, str]:
@@ -212,6 +231,10 @@ def generate(output_dir: Path) -> tuple[Path, Path, str]:
     os.symlink("regular/stable-small.txt", corpus / "symlink-internal")
     os.symlink("../outside-scope-synthetic.txt", corpus / "symlink-escape")
     os.mkfifo(corpus / "special" / "synthetic.pipe", mode=0o600)
+    outside.write_text(
+        "Synthetic object outside the corpus root; never package or ingest this file.\n",
+        encoding="utf-8",
+    )
 
     regular_files = (
         (stable, "baseline regular read"),
@@ -253,6 +276,15 @@ def generate(output_dir: Path) -> tuple[Path, Path, str]:
                 relative_path="special/synthetic.pipe",
                 type="fifo",
                 purpose="reject non-regular special file",
+            ),
+        ),
+        external_fixtures=(
+            ExternalFixture(
+                relative_path_from_package="outside-scope-synthetic.txt",
+                placement="beside_approved_corpus_leaf",
+                purpose="prove symlink escape rejection without following target",
+                byte_length=outside.stat().st_size,
+                sha256=_sha256(outside),
             ),
         ),
     )
@@ -297,10 +329,6 @@ def generate(output_dir: Path) -> tuple[Path, Path, str]:
     )
 
     _write_archive(package, archive_path)
-    outside.write_text(
-        "Synthetic object outside the corpus root; never package or ingest this file.\n",
-        encoding="utf-8",
-    )
     checksum = _sha256(archive_path)
     checksum_path.write_text(f"{checksum}  {archive_path.name}\n", encoding="ascii")
     return package, archive_path, checksum

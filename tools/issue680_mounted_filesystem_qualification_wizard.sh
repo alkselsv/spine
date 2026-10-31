@@ -188,13 +188,13 @@ TOTAL_STAGES=8
 
 ENV_FILE="${ISSUE680_STATE_FILE:-/private/tmp/spine-issue680-qualification.env}"
 REPORT_PATH="${ISSUE680_REPORT_PATH:-/private/tmp/issue-680-mounted-filesystem-live-report.json}"
-EXPECTED_PACKAGE_SHA256="e7367a5419e65c552ea7340404cb5241b2b8022c084fa5faa58086e089d8dc71"
+EXPECTED_PACKAGE_SHA256="23ddf81990bc322334474b379209a307116283f2d2bf100d0297280c172f1331"
 WIZARD_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 REPORT_WRITER="$WIZARD_DIR/issue680_qualification_report.py"
 umask 077
 
 write_operator_report() {
-  python3 "$REPORT_WRITER" \
+  uv run python "$REPORT_WRITER" \
     --state "$ENV_FILE" \
     --report "$REPORT_PATH" \
     --reason "$1"
