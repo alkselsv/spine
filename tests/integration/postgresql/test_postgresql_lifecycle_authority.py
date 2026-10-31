@@ -12,6 +12,7 @@ from spine.application.lifecycle import (
     LifecycleEligibilityQuery,
 )
 from spine.domain.sources.lifecycle import (
+    LifecycleAuthorityKind,
     LifecycleDecision,
     LifecycleDecisionEffect,
     LifecycleEligibilityStatus,
@@ -35,6 +36,7 @@ from tests.integration.postgresql.test_postgresql_unit_of_work import (
     prepare_canonical_case,
     synthetic_uuid,
 )
+from tests.contracts.persistence.test_source_observation_contract import connector_source
 
 
 pytestmark = [pytest.mark.postgresql, pytest.mark.asyncio(loop_scope="session")]
@@ -45,6 +47,13 @@ class _AllowAuthority:
         assert transaction is not None
         assert context.service_principal_id is not None
         assert decision.actor_id == context.service_principal_id
+
+
+class _AllowObservationAuthority:
+    async def verify(self, observation, context, transaction) -> None:
+        assert transaction is not None
+        assert context.scope.workspace_id == observation.workspace_id
+        assert context.scope.environment_id == observation.environment_id
 
 
 class _DecisionEffects:
@@ -108,12 +117,13 @@ class _DecisionEffects:
 
 
 def _observation(case, base: int) -> LifecycleObservation:
+    assert case.source.connection_id is not None
     return LifecycleObservation(
         observation_id=synthetic_uuid(base),
         workspace_id=case.source.workspace_id,
         environment_id=case.source.environment_id,
         source_object_id=case.source.source_object_id,
-        connection_id=synthetic_uuid(base + 1),
+        connection_id=case.source.connection_id,
         connection_version_id=synthetic_uuid(base + 2),
         authorization_generation=1,
         configuration_generation=1,
@@ -146,6 +156,7 @@ def _decision(case, observation: LifecycleObservation, context, base: int) -> Li
         authority_reference=synthetic_uuid(base + 1),
         authority_version_id=synthetic_uuid(base + 2),
         authority_digest="c" * 64,
+        authority_kind=LifecycleAuthorityKind.SOURCE_GOVERNANCE,
         status=LifecycleEligibilityStatus.READ_WITHDRAWN,
         legal_hold_active=False,
         expected_current_decision_id=None,
@@ -171,22 +182,35 @@ def _query(case, observation: LifecycleObservation) -> LifecycleEligibilityQuery
     )
 
 
+async def _prepare_lifecycle_case(adapter: PersistenceAdapter, number: int):
+    workspace_id = synthetic_uuid(number)
+    environment_id = synthetic_uuid(number + 1)
+    source = connector_source(workspace_id, environment_id, "provider1")
+    return await prepare_canonical_case(adapter, number, source_object=source)
+
+
 @pytest.mark.asyncio(loop_scope="session")
 async def test_postgresql_lifecycle_authority_persists_current_scoped_decision(
     postgresql_adapter: PersistenceAdapter,
 ) -> None:
-    case = await prepare_canonical_case(postgresql_adapter, 73100)
+    case = await _prepare_lifecycle_case(postgresql_adapter, 73100)
     context = postgresql_adapter.ingestion_context(
         case.source.workspace_id, case.source.environment_id, "lifecycle_decision"
     )
     repository = PostgreSQLLifecycleAuthorityRepository(
         uow_factory=postgresql_adapter.uow_factory,
+        observation_authority=_AllowObservationAuthority(),
         decision_authority=_AllowAuthority(),
         decision_effects=_DecisionEffects(),
     )
     observation = _observation(case, 73110)
     decision = _decision(case, observation, context, 73120)
 
+    mismatched_connection = observation.model_copy(
+        update={"connection_id": synthetic_uuid(73119)}
+    )
+    with pytest.raises(LifecycleAuthorityError):
+        await repository.record_observation(mismatched_connection, context)
     assert await repository.record_observation(observation, context) == observation
     assert await repository.record_decision(decision, context) == decision
     current = await repository.current_eligibility(_query(case, observation), context)
@@ -203,7 +227,7 @@ async def test_postgresql_lifecycle_authority_persists_current_scoped_decision(
         assert audit_result.scalar_one_or_none() == decision.audit_event_id
         await uow.rollback()
 
-    foreign_case = await prepare_canonical_case(postgresql_adapter, 73130)
+    foreign_case = await _prepare_lifecycle_case(postgresql_adapter, 73130)
     foreign_context = postgresql_adapter.ingestion_context(
         foreign_case.source.workspace_id,
         foreign_case.source.environment_id,
@@ -223,12 +247,13 @@ async def test_postgresql_lifecycle_authority_persists_current_scoped_decision(
 async def test_postgresql_lifecycle_authority_cas_allows_only_one_winner(
     postgresql_adapter: PersistenceAdapter,
 ) -> None:
-    case = await prepare_canonical_case(postgresql_adapter, 73200)
+    case = await _prepare_lifecycle_case(postgresql_adapter, 73200)
     context = postgresql_adapter.ingestion_context(
         case.source.workspace_id, case.source.environment_id, "lifecycle_decision"
     )
     repository = PostgreSQLLifecycleAuthorityRepository(
         uow_factory=postgresql_adapter.uow_factory,
+        observation_authority=_AllowObservationAuthority(),
         decision_authority=_AllowAuthority(),
         decision_effects=_DecisionEffects(),
     )
@@ -251,7 +276,7 @@ async def test_postgresql_lifecycle_authority_cas_allows_only_one_winner(
 async def test_postgresql_lifecycle_effect_failure_rolls_back_audit_and_authority(
     postgresql_adapter: PersistenceAdapter,
 ) -> None:
-    case = await prepare_canonical_case(postgresql_adapter, 73300)
+    case = await _prepare_lifecycle_case(postgresql_adapter, 73300)
     context = postgresql_adapter.ingestion_context(
         case.source.workspace_id, case.source.environment_id, "lifecycle_decision"
     )
@@ -259,6 +284,7 @@ async def test_postgresql_lifecycle_effect_failure_rolls_back_audit_and_authorit
     decision = _decision(case, observation, context, 73320)
     repository = PostgreSQLLifecycleAuthorityRepository(
         uow_factory=postgresql_adapter.uow_factory,
+        observation_authority=_AllowObservationAuthority(),
         decision_authority=_AllowAuthority(),
         decision_effects=_DecisionEffects(fail_after_audit=True),
     )

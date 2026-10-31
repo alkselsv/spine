@@ -131,8 +131,8 @@ _Avoid_: Latest observation, mutable status row, Access Policy change
 
 **Current Lifecycle Eligibility**:
 The current governed read, disclosure, retention and identity-continuity
-disposition for a Source Object, resolved through its current authority pointer.
-It is independent from Canonical Acceptance and Access Policy.
+disposition for a Source Object. It follows the current authorized Lifecycle
+Decision; a later Lifecycle Observation does not itself change eligibility.
 _Avoid_: Latest observation, canonical currentness, content permission
 
 **Canonical Boundary**:

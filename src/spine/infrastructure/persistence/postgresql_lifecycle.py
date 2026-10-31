@@ -17,11 +17,13 @@ from spine.application.lifecycle import (
     LifecycleDecisionAuthority,
     LifecycleDecisionEffectsWriter,
     LifecycleEligibilityQuery,
+    LifecycleObservationAuthority,
 )
 from spine.application.persistence.context import (
     EnvironmentScope,
     TrustedPersistenceContext,
 )
+from spine.application.persistence.errors import ConstraintConflictError
 from spine.domain.sources.lifecycle import (
     CurrentLifecycleEligibility,
     LifecycleDecision,
@@ -42,10 +44,12 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
         self,
         *,
         uow_factory: Callable[[TrustedPersistenceContext], object],
+        observation_authority: LifecycleObservationAuthority,
         decision_authority: LifecycleDecisionAuthority,
         decision_effects: LifecycleDecisionEffectsWriter,
     ) -> None:
         self._uow_factory = uow_factory
+        self._observation_authority = observation_authority
         self._decision_authority = decision_authority
         self._decision_effects = decision_effects
 
@@ -57,6 +61,21 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
         _validate_context(context, observation.workspace_id, observation.environment_id)
         try:
             async with self._uow_factory(context) as uow:
+                existing_result = await uow._execute(  # type: ignore[attr-defined]
+                    select(lifecycle_observations).where(
+                        lifecycle_observations.c.observation_id == observation.observation_id,
+                        lifecycle_observations.c.workspace_id == observation.workspace_id,
+                        lifecycle_observations.c.environment_id == observation.environment_id,
+                    )
+                )
+                existing_row = existing_result.mappings().one_or_none()
+                if existing_row is not None:
+                    existing = _observation(existing_row)
+                    if existing != observation:
+                        raise LifecycleConflictError()
+                    await uow.rollback()  # type: ignore[attr-defined]
+                    return existing
+                await self._observation_authority.verify(observation, context, uow)
                 await uow._execute(  # type: ignore[attr-defined]
                     pg_insert(lifecycle_observations)
                     .values(**_observation_columns(observation))
@@ -77,7 +96,7 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
                     raise LifecycleConflictError()
                 await uow.commit()  # type: ignore[attr-defined]
                 return existing
-        except IntegrityError:
+        except (IntegrityError, ConstraintConflictError):
             raise LifecycleAuthorityError() from None
 
     async def record_decision(
@@ -105,7 +124,11 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
                     await uow.rollback()  # type: ignore[attr-defined]
                     return existing
 
-                await self._verify_observation(uow, decision)
+                observation = await self._verify_observation(uow, decision)
+                try:
+                    decision.validate_observation(observation)
+                except ValueError:
+                    raise LifecycleAuthorityError() from None
                 await self._decision_authority.authorize(decision, context, uow)
                 pointer_result = await uow._execute(  # type: ignore[attr-defined]
                     select(current_lifecycle_authorities).where(
@@ -172,7 +195,7 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
                     raise LifecycleConflictError()
                 await uow.commit()  # type: ignore[attr-defined]
                 return decision
-        except IntegrityError:
+        except (IntegrityError, ConstraintConflictError):
             raise LifecycleAuthorityError() from None
 
     async def current_eligibility(
@@ -204,7 +227,7 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
             row = result.mappings().one_or_none()
             await uow.rollback()  # type: ignore[attr-defined]
         decision = _decision(row) if row is not None else None
-        if decision is None or not _query_matches_decision(query, decision):
+        if decision is None or not query.matches_decision(decision):
             return _unavailable(query)
         return CurrentLifecycleEligibility(
             workspace_id=decision.workspace_id,
@@ -221,7 +244,9 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
             legal_hold_active=decision.legal_hold_active,
         )
 
-    async def _verify_observation(self, uow: object, decision: LifecycleDecision) -> None:
+    async def _verify_observation(
+        self, uow: object, decision: LifecycleDecision
+    ) -> LifecycleObservation:
         result = await uow._execute(  # type: ignore[attr-defined]
             select(lifecycle_observations).where(
                 lifecycle_observations.c.observation_id == decision.observation_id,
@@ -231,8 +256,9 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
             )
         )
         row = result.mappings().one_or_none()
-        if row is None or not _same_binding(decision, _observation(row)):
+        if row is None:
             raise LifecycleAuthorityError()
+        return _observation(row)
 
 
 def _validate_context(
@@ -288,6 +314,7 @@ def _decision_columns(decision: LifecycleDecision) -> dict[str, object]:
         "status": decision.status.value,
         "authority_reference": decision.authority_reference,
         "authority_version_id": decision.authority_version_id,
+        "authority_kind": decision.authority_kind.value,
         "actor_id": decision.actor_id,
         "audit_event_id": decision.audit_event_id,
         "outbox_event_id": decision.outbox_event_id,
@@ -310,54 +337,6 @@ def _record_value(row: object) -> object:
         return row["record"]  # type: ignore[index]
     except (KeyError, TypeError):
         return row._mapping["record"]  # type: ignore[attr-defined]
-
-
-def _same_binding(decision: LifecycleDecision, observation: LifecycleObservation) -> bool:
-    return (
-        decision.workspace_id,
-        decision.environment_id,
-        decision.source_object_id,
-        decision.connection_id,
-        decision.connection_version_id,
-        decision.scope_reference,
-        decision.scope_version_id,
-        decision.scope_digest,
-        decision.observation_id,
-    ) == (
-        observation.workspace_id,
-        observation.environment_id,
-        observation.source_object_id,
-        observation.connection_id,
-        observation.connection_version_id,
-        observation.scope_reference,
-        observation.scope_version_id,
-        observation.scope_digest,
-        observation.observation_id,
-    )
-
-
-def _query_matches_decision(
-    query: LifecycleEligibilityQuery, decision: LifecycleDecision
-) -> bool:
-    return (
-        query.workspace_id,
-        query.environment_id,
-        query.source_object_id,
-        query.connection_id,
-        query.connection_version_id,
-        query.scope_reference,
-        query.scope_version_id,
-        query.scope_digest,
-    ) == (
-        decision.workspace_id,
-        decision.environment_id,
-        decision.source_object_id,
-        decision.connection_id,
-        decision.connection_version_id,
-        decision.scope_reference,
-        decision.scope_version_id,
-        decision.scope_digest,
-    )
 
 
 def _unavailable(query: LifecycleEligibilityQuery) -> CurrentLifecycleEligibility:

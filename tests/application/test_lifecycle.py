@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
 
 from spine.application.lifecycle import (
     InMemoryLifecycleAuthorityRepository,
@@ -18,6 +19,7 @@ from spine.application.persistence.context import (
 )
 from spine.domain.common import ContextOrigin
 from spine.domain.sources.lifecycle import (
+    LifecycleAuthorityKind,
     LifecycleDecision,
     LifecycleDecisionEffect,
     LifecycleEligibilityStatus,
@@ -96,6 +98,7 @@ def _decision(
         authority_reference=_id(12),
         authority_version_id=_id(13),
         authority_digest="c" * 64,
+        authority_kind=LifecycleAuthorityKind.SOURCE_GOVERNANCE,
         status=status,
         legal_hold_active=False,
         expected_current_decision_id=expected_id,
@@ -111,6 +114,13 @@ def _decision(
 class _AllowExactAuthority:
     async def authorize(self, decision, context, transaction) -> None:
         assert context.acting_subject_id == decision.actor_id
+        assert transaction is None
+
+
+class _AllowExactObservation:
+    async def verify(self, observation, context, transaction) -> None:
+        assert context.scope.workspace_id == observation.workspace_id
+        assert context.scope.environment_id == observation.environment_id
         assert transaction is None
 
 
@@ -134,7 +144,9 @@ def _query() -> LifecycleEligibilityQuery:
 
 @pytest.mark.asyncio
 async def test_lifecycle_observation_does_not_advance_current_eligibility() -> None:
-    repository = InMemoryLifecycleAuthorityRepository(_AllowExactAuthority())
+    repository = InMemoryLifecycleAuthorityRepository(
+        _AllowExactObservation(), _AllowExactAuthority()
+    )
     context = _context()
     first = _observation()
     await repository.record_observation(first, context)
@@ -147,7 +159,9 @@ async def test_lifecycle_observation_does_not_advance_current_eligibility() -> N
 
 @pytest.mark.asyncio
 async def test_current_eligibility_follows_cas_pointer_not_observation_time() -> None:
-    repository = InMemoryLifecycleAuthorityRepository(_AllowExactAuthority())
+    repository = InMemoryLifecycleAuthorityRepository(
+        _AllowExactObservation(), _AllowExactAuthority()
+    )
     context = _context()
     observation = _observation()
     await repository.record_observation(observation, context)
@@ -167,7 +181,9 @@ async def test_current_eligibility_follows_cas_pointer_not_observation_time() ->
 
 @pytest.mark.asyncio
 async def test_lifecycle_decision_rejects_stale_expected_current_pointer() -> None:
-    repository = InMemoryLifecycleAuthorityRepository(_AllowExactAuthority())
+    repository = InMemoryLifecycleAuthorityRepository(
+        _AllowExactObservation(), _AllowExactAuthority()
+    )
     context = _context()
     await repository.record_observation(_observation(), context)
     await repository.record_decision(_decision(), context)
@@ -186,7 +202,9 @@ async def test_lifecycle_decision_rejects_stale_expected_current_pointer() -> No
 
 @pytest.mark.asyncio
 async def test_lifecycle_decision_requires_current_governance_authority() -> None:
-    repository = InMemoryLifecycleAuthorityRepository(_DenyAuthority())
+    repository = InMemoryLifecycleAuthorityRepository(
+        _AllowExactObservation(), _DenyAuthority()
+    )
     context = _context()
     await repository.record_observation(_observation(), context)
 
@@ -199,8 +217,42 @@ async def test_lifecycle_decision_requires_current_governance_authority() -> Non
 
 
 @pytest.mark.asyncio
+async def test_incomplete_absence_cannot_create_disclosure_or_legal_hold() -> None:
+    repository = InMemoryLifecycleAuthorityRepository(
+        _AllowExactObservation(), _AllowExactAuthority()
+    )
+    context = _context()
+    observation = _observation()
+    await repository.record_observation(observation, context)
+    held = _decision().model_copy(
+        update={
+            "effect": LifecycleDecisionEffect.DISCLOSURE_HELD,
+            "status": LifecycleEligibilityStatus.DISCLOSURE_HELD,
+            "legal_hold_active": True,
+        }
+    )
+
+    with pytest.raises(LifecycleAuthorityError):
+        await repository.record_decision(held, context)
+
+    current = await repository.current_eligibility(_query(), context)
+    assert current.current_decision_id is None
+    assert current.status is LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE
+
+
+def test_canonical_tombstone_status_cannot_be_written_as_lifecycle_decision() -> None:
+    values = _decision().model_dump(mode="python")
+    values["status"] = LifecycleEligibilityStatus.TOMBSTONED
+
+    with pytest.raises(ValidationError, match="canonical tombstone state"):
+        LifecycleDecision.model_validate(values)
+
+
+@pytest.mark.asyncio
 async def test_lifecycle_decision_rejects_observation_from_another_scope() -> None:
-    repository = InMemoryLifecycleAuthorityRepository(_AllowExactAuthority())
+    repository = InMemoryLifecycleAuthorityRepository(
+        _AllowExactObservation(), _AllowExactAuthority()
+    )
     context = _context()
     await repository.record_observation(_observation(), context)
 
@@ -212,7 +264,9 @@ async def test_lifecycle_decision_rejects_observation_from_another_scope() -> No
 
 @pytest.mark.asyncio
 async def test_lifecycle_observation_replay_is_idempotent_and_immutable() -> None:
-    repository = InMemoryLifecycleAuthorityRepository(_AllowExactAuthority())
+    repository = InMemoryLifecycleAuthorityRepository(
+        _AllowExactObservation(), _AllowExactAuthority()
+    )
     context = _context()
     observation = _observation()
 
@@ -227,6 +281,8 @@ async def test_lifecycle_observation_replay_is_idempotent_and_immutable() -> Non
 
 @pytest.mark.asyncio
 async def test_lifecycle_reader_denies_cross_workspace_without_returning_record() -> None:
-    repository = InMemoryLifecycleAuthorityRepository(_AllowExactAuthority())
+    repository = InMemoryLifecycleAuthorityRepository(
+        _AllowExactObservation(), _AllowExactAuthority()
+    )
     with pytest.raises(LifecycleAuthorityError, match="Lifecycle authority is unavailable"):
         await repository.current_eligibility(_query(), _context(workspace=99))

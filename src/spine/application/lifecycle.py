@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass, field
 from typing import Protocol
 from uuid import UUID
@@ -40,6 +41,23 @@ class LifecycleDecisionAuthority(Protocol):
     async def authorize(
         self,
         decision: LifecycleDecision,
+        context: TrustedPersistenceContext,
+        transaction: object | None,
+    ) -> None: ...
+
+
+class LifecycleObservationAuthority(Protocol):
+    """Verify source identity and current connection/scope authority in one UoW.
+
+    Implementations bind the Source Object to its Provider Connection, then
+    verify the exact active connection version, generations, approved scope
+    version/digest and provider-identity reference. Revocation must serialize
+    with lifecycle decisions through the same authority store.
+    """
+
+    async def verify(
+        self,
+        observation: LifecycleObservation,
         context: TrustedPersistenceContext,
         transaction: object | None,
     ) -> None: ...
@@ -99,11 +117,48 @@ class LifecycleEligibilityQuery:
     scope_version_id: UUID
     scope_digest: str
 
+    def __post_init__(self) -> None:
+        if any(
+            value.int == 0
+            for value in (
+                self.workspace_id,
+                self.environment_id,
+                self.source_object_id,
+                self.connection_id,
+                self.connection_version_id,
+                self.scope_reference,
+                self.scope_version_id,
+            )
+        ) or re.fullmatch(r"[0-9a-f]{64}", self.scope_digest) is None:
+            raise LifecycleAuthorityError()
+
+    def matches_decision(self, decision: LifecycleDecision) -> bool:
+        return (
+            self.workspace_id,
+            self.environment_id,
+            self.source_object_id,
+            self.connection_id,
+            self.connection_version_id,
+            self.scope_reference,
+            self.scope_version_id,
+            self.scope_digest,
+        ) == (
+            decision.workspace_id,
+            decision.environment_id,
+            decision.source_object_id,
+            decision.connection_id,
+            decision.connection_version_id,
+            decision.scope_reference,
+            decision.scope_version_id,
+            decision.scope_digest,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class InMemoryLifecycleAuthorityRepository(LifecycleAuthorityRepository):
     """Deterministic adapter for application and contract tests."""
 
+    observation_authority: LifecycleObservationAuthority
     decision_authority: LifecycleDecisionAuthority
     observations: dict[UUID, LifecycleObservation] = field(
         init=False, default_factory=dict, repr=False, compare=False
@@ -127,8 +182,11 @@ class InMemoryLifecycleAuthorityRepository(LifecycleAuthorityRepository):
             existing = self.observations.get(key)
             if existing is not None and existing != observation:
                 raise LifecycleConflictError()
+            if existing is not None:
+                return existing
+            await self.observation_authority.verify(observation, context, None)
             self.observations[key] = observation
-            return existing or observation
+            return observation
 
     async def record_decision(
         self,
@@ -146,8 +204,12 @@ class InMemoryLifecycleAuthorityRepository(LifecycleAuthorityRepository):
                     raise LifecycleConflictError()
                 return existing
             observation = self.observations.get(decision.observation_id)
-            if observation is None or not _same_binding(decision, observation):
+            if observation is None:
                 raise LifecycleAuthorityError()
+            try:
+                decision.validate_observation(observation)
+            except ValueError:
+                raise LifecycleAuthorityError() from None
             current = self.current.get(key)
             current_id = current.decision_id if current is not None else None
             current_generation = current.generation if current is not None else 0
@@ -171,7 +233,7 @@ class InMemoryLifecycleAuthorityRepository(LifecycleAuthorityRepository):
         decision = self.current.get(
             (query.workspace_id, query.environment_id, query.source_object_id)
         )
-        if decision is None or not _query_matches_decision(query, decision):
+        if decision is None or not query.matches_decision(decision):
             return CurrentLifecycleEligibility(
                 workspace_id=query.workspace_id,
                 environment_id=query.environment_id,
@@ -219,52 +281,6 @@ def _context_actor(context: TrustedPersistenceContext) -> UUID | None:
     return context.service_principal_id
 
 
-def _same_binding(decision: LifecycleDecision, observation: LifecycleObservation) -> bool:
-    return (
-        decision.workspace_id,
-        decision.environment_id,
-        decision.source_object_id,
-        decision.connection_id,
-        decision.connection_version_id,
-        decision.scope_reference,
-        decision.scope_version_id,
-        decision.scope_digest,
-    ) == (
-        observation.workspace_id,
-        observation.environment_id,
-        observation.source_object_id,
-        observation.connection_id,
-        observation.connection_version_id,
-        observation.scope_reference,
-        observation.scope_version_id,
-        observation.scope_digest,
-    ) and decision.observation_id == observation.observation_id
-
-
-def _query_matches_decision(
-    query: LifecycleEligibilityQuery, decision: LifecycleDecision
-) -> bool:
-    return (
-        query.workspace_id,
-        query.environment_id,
-        query.source_object_id,
-        query.connection_id,
-        query.connection_version_id,
-        query.scope_reference,
-        query.scope_version_id,
-        query.scope_digest,
-    ) == (
-        decision.workspace_id,
-        decision.environment_id,
-        decision.source_object_id,
-        decision.connection_id,
-        decision.connection_version_id,
-        decision.scope_reference,
-        decision.scope_version_id,
-        decision.scope_digest,
-    )
-
-
 __all__ = [
     "CurrentLifecycleEligibilityReader",
     "InMemoryLifecycleAuthorityRepository",
@@ -275,4 +291,5 @@ __all__ = [
     "LifecycleDecisionEffectsWriter",
     "LifecycleEligibilityQuery",
     "LifecycleObservationRecorder",
+    "LifecycleObservationAuthority",
 ]

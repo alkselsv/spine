@@ -78,6 +78,12 @@ def upgrade() -> None:
         ["workspace_id", "environment_id", "event_id"],
         schema=SCHEMA,
     )
+    op.create_unique_constraint(
+        "uq_source_objects_lifecycle_connection",
+        "source_objects",
+        ["workspace_id", "environment_id", "source_object_id", "connection_id"],
+        schema=SCHEMA,
+    )
 
     op.create_table(
         "lifecycle_observations",
@@ -110,8 +116,8 @@ def upgrade() -> None:
             name="fk_lifecycle_observations_environment",
         ),
         sa.ForeignKeyConstraint(
-            ["workspace_id", "environment_id", "source_object_id"],
-            [f"{SCHEMA}.source_objects.workspace_id", f"{SCHEMA}.source_objects.environment_id", f"{SCHEMA}.source_objects.source_object_id"],
+            ["workspace_id", "environment_id", "source_object_id", "connection_id"],
+            [f"{SCHEMA}.source_objects.workspace_id", f"{SCHEMA}.source_objects.environment_id", f"{SCHEMA}.source_objects.source_object_id", f"{SCHEMA}.source_objects.connection_id"],
             name="fk_lifecycle_observations_source",
         ),
         sa.CheckConstraint(
@@ -144,6 +150,7 @@ def upgrade() -> None:
         sa.Column("status", sa.Text(), nullable=False),
         sa.Column("authority_reference", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("authority_version_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("authority_kind", sa.Text(), nullable=False),
         sa.Column("actor_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("audit_event_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("outbox_event_id", postgresql.UUID(as_uuid=True), nullable=False),
@@ -195,6 +202,11 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint("generation >= 1", name="ck_lifecycle_decisions_generation"),
         sa.CheckConstraint("scope_digest ~ '^[0-9a-f]{64}$'", name="ck_lifecycle_decisions_scope_digest"),
+        sa.CheckConstraint(
+            "authority_kind IN ('source_governance', 'retention_governance', "
+            "'legal_compliance', 'provider_control_plane')",
+            name="ck_lifecycle_decisions_authority_kind",
+        ),
         schema=SCHEMA,
     )
 
@@ -280,3 +292,4 @@ def downgrade() -> None:
     op.execute(f"DROP FUNCTION {SCHEMA}.reject_lifecycle_observations_mutation()")
     op.drop_constraint("uq_outbox_intents_tenant_event", "outbox_intents", schema=SCHEMA, type_="unique")
     op.drop_constraint("uq_audit_events_tenant_event", "audit_events", schema=SCHEMA, type_="unique")
+    op.drop_constraint("uq_source_objects_lifecycle_connection", "source_objects", schema=SCHEMA, type_="unique")

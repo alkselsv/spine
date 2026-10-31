@@ -92,6 +92,13 @@ class LifecycleDecisionEffect(str, Enum):
     IDENTITY_CONTINUITY_UNPROVEN = "identity_continuity_unproven"
 
 
+class LifecycleAuthorityKind(str, Enum):
+    SOURCE_GOVERNANCE = "source_governance"
+    RETENTION_GOVERNANCE = "retention_governance"
+    LEGAL_COMPLIANCE = "legal_compliance"
+    PROVIDER_CONTROL_PLANE = "provider_control_plane"
+
+
 class LifecycleEligibilityStatus(str, Enum):
     ELIGIBLE = "eligible"
     READ_WITHDRAWN = "read_withdrawn"
@@ -173,6 +180,7 @@ class LifecycleDecision(DefinitionModel):
     authority_reference: UUID
     authority_version_id: UUID
     authority_digest: LifecycleDigest
+    authority_kind: LifecycleAuthorityKind
     status: LifecycleEligibilityStatus
     legal_hold_active: bool
     expected_current_decision_id: UUID | None
@@ -209,6 +217,20 @@ class LifecycleDecision(DefinitionModel):
             raise ValueError("expected decision and generation must describe the same head")
         if self.effect is LifecycleDecisionEffect.TOMBSTONE_CANDIDATE:
             raise ValueError("evidence cannot turn a tombstone candidate into a decision")
+        if self.status is LifecycleEligibilityStatus.TOMBSTONED:
+            raise ValueError("canonical tombstone state cannot be written by a lifecycle decision")
+        if self.status is LifecycleEligibilityStatus.DISCLOSURE_HELD and (
+            self.effect is not LifecycleDecisionEffect.DISCLOSURE_HELD
+            or self.authority_kind is not LifecycleAuthorityKind.SOURCE_GOVERNANCE
+        ):
+            raise ValueError("disclosure hold requires explicit source-governance authority")
+        if self.status in {
+            LifecycleEligibilityStatus.RETENTION_APPLICABILITY_UNRESOLVED,
+            LifecycleEligibilityStatus.RETENTION_INELIGIBLE,
+        } and self.authority_kind is not LifecycleAuthorityKind.RETENTION_GOVERNANCE:
+            raise ValueError("retention eligibility requires retention-governance authority")
+        if self.legal_hold_active and self.authority_kind is not LifecycleAuthorityKind.LEGAL_COMPLIANCE:
+            raise ValueError("legal hold state requires legal-compliance authority")
         if self.generation != self.expected_current_generation + 1:
             raise ValueError("lifecycle decision generation must advance the expected head")
         if self.decided_at.tzinfo is None or self.decided_at.utcoffset() is None:
@@ -218,6 +240,49 @@ class LifecycleDecision(DefinitionModel):
         ):
             raise ValueError("lifecycle digests must be lowercase SHA-256 hex")
         return self
+
+    def validate_observation(self, observation: LifecycleObservation) -> None:
+        """Require evidence and decision scope to agree without inferring authority."""
+
+        type(self).model_validate(self.model_dump(mode="python"))
+        if (
+            self.observation_id != observation.observation_id
+            or self.workspace_id != observation.workspace_id
+            or self.environment_id != observation.environment_id
+            or self.source_object_id != observation.source_object_id
+            or self.connection_id != observation.connection_id
+            or self.connection_version_id != observation.connection_version_id
+            or self.scope_reference != observation.scope_reference
+            or self.scope_version_id != observation.scope_version_id
+            or self.scope_digest != observation.scope_digest
+        ):
+            raise ValueError("lifecycle decision evidence binding is unavailable")
+        non_authorizing_observations = {
+            LifecycleObservationKind.PROVIDER_OUTAGE,
+            LifecycleObservationKind.PERMISSION_INACCESSIBLE,
+            LifecycleObservationKind.GRANT_UNCERTAIN,
+            LifecycleObservationKind.FILTERED_ABSENCE,
+            LifecycleObservationKind.INCOMPLETE_SCAN,
+        }
+        if observation.kind in non_authorizing_observations and (
+            self.effect is LifecycleDecisionEffect.DISCLOSURE_HELD
+            or self.status is LifecycleEligibilityStatus.DISCLOSURE_HELD
+            or self.legal_hold_active
+        ):
+            raise ValueError("uncertain provider evidence cannot create a hold")
+        if observation.kind is LifecycleObservationKind.SCOPE_WITHDRAWN and (
+            self.effect is LifecycleDecisionEffect.DISCLOSURE_HELD
+            or self.status is LifecycleEligibilityStatus.DISCLOSURE_HELD
+        ):
+            raise ValueError("scope withdrawal cannot create a disclosure hold")
+        if observation.kind is LifecycleObservationKind.LEGAL_HOLD_APPLIED:
+            if not self.legal_hold_active or self.authority_kind is not LifecycleAuthorityKind.LEGAL_COMPLIANCE:
+                raise ValueError("legal hold application requires legal-compliance authority")
+        elif observation.kind is LifecycleObservationKind.LEGAL_HOLD_RELEASED:
+            if self.legal_hold_active or self.authority_kind is not LifecycleAuthorityKind.LEGAL_COMPLIANCE:
+                raise ValueError("legal hold release requires legal-compliance authority")
+        elif self.legal_hold_active:
+            raise ValueError("legal hold state requires explicit legal-hold evidence")
 
 
 class CurrentLifecycleEligibility(DefinitionModel):

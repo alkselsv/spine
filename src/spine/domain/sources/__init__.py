@@ -25,6 +25,7 @@ from .access_policy import (
 from .canonical import CanonicalAcceptance, CanonicalOrdering, CurrentSourceHead
 from .lifecycle import (
     CurrentLifecycleEligibility,
+    LifecycleAuthorityKind,
     LifecycleDecision,
     LifecycleDecisionEffect,
     LifecycleEligibilityStatus,

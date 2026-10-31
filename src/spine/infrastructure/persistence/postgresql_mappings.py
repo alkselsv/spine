@@ -1243,6 +1243,7 @@ lifecycle_decisions = Table(
     Column("status", Text, nullable=False),
     Column("authority_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("authority_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("authority_kind", Text, nullable=False),
     Column("actor_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("audit_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("outbox_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
