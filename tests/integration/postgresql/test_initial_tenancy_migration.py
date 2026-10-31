@@ -1442,7 +1442,12 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                 )
             )
         )
-        if row.relname != "alembic_version" and row.relname not in policy_tables
+        if row.relname != "alembic_version"
+        and row.relname != "crm_relationship_v2_state"
+        and (
+            row.relname not in policy_tables
+            or row.relname.startswith("crm_relationship_")
+        )
     }
     policies = {
         (row.table_name, row.policy_name): (
@@ -1467,6 +1472,11 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
             )
         )
         if row.table_name not in policy_tables
+        or (
+            row.table_name.startswith("crm_relationship_")
+            and row.table_name != "crm_relationship_v2_state"
+        )
+        or row.table_name.startswith("crm_relationship_")
     }
     privilege_names = ("select_ok", "insert_ok", "update_ok", "delete_ok")
     privileges = {
@@ -1487,6 +1497,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
             )
         ).mappings()
         if row.table_name not in policy_tables
+        or (
+            row.table_name.startswith("crm_relationship_")
+            and row.table_name != "crm_relationship_v2_state"
+        )
     }
     receipt_update_columns = {
         row.column_name
@@ -1551,15 +1565,6 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "outbox_deliveries",
         "workspace_memberships",
         "workspaces",
-        "crm_relationship_identities",
-        "crm_relationship_profiles",
-        "crm_relationship_authority_heads",
-        "crm_relationship_claims",
-        "crm_relationship_receipts",
-        "crm_relationship_eligibility",
-        "crm_relationship_lifecycle_events",
-        "crm_relationship_eligibility_heads",
-        "crm_relationship_idempotency",
         "source_canonical_tables",
         "source_canonical_unicode",
         "source_canonical_compositions",
