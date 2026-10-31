@@ -222,7 +222,7 @@ async def _prepare_scope_authority(
     )
     root_case = await prepare_canonical_case(
         adapter,
-        base + 1,
+        base + 1_000_000_001,
         scope=(child_case.source.workspace_id, child_case.source.environment_id),
         source_object=root_source,
         create_scope=False,
@@ -464,9 +464,21 @@ async def test_postgresql_withdrawal_serializes_after_inflight_canonical_accepta
     assert current.status is LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE
     from spine.application.persistence.errors import CanonicalEligibilityError
 
+    unbound_source = connector_source(
+        case.source.workspace_id,
+        case.source.environment_id,
+        "provider2",
+    )
+    unbound_case = await prepare_canonical_case(
+        postgresql_adapter,
+        1_732_400_001,
+        scope=(case.source.workspace_id, case.source.environment_id),
+        source_object=unbound_source,
+        create_scope=False,
+    )
     with pytest.raises(CanonicalEligibilityError):
-        async with postgresql_adapter.uow_factory(case.context) as uow:
-            await uow.canonical.accept(case.command)
+        async with postgresql_adapter.uow_factory(unbound_case.context) as uow:
+            await uow.canonical.accept(unbound_case.command)
             await uow.commit()
 
 
@@ -591,9 +603,9 @@ async def test_postgresql_current_eligibility_uses_tombstone_and_exact_decision_
     )
     observation = _observation(case, 73410)
     decision = _decision(case, observation, context, 73420)
+    await _accept_canonical_tombstone(postgresql_adapter, case, 73430)
     await repository.record_observation(observation, context)
     await repository.record_decision(decision, context)
-    await _accept_canonical_tombstone(postgresql_adapter, case, 73430)
 
     current = await repository.current_eligibility(_query(case, observation), context)
     stale_scope = await repository.current_eligibility(
