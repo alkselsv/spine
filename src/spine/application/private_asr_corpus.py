@@ -545,6 +545,36 @@ class TwoStageSourceAdmission:
             await self._staging.discard(staging_ref)
             raise
 
+    async def recheck_current(
+        self,
+        admitted: AdmittedSourceRevision,
+        *,
+        context: TrustedPersistenceContext,
+    ) -> bool:
+        """Fence a later operation with current actor, expiry, rights and revision."""
+
+        now = self._now()
+        if now >= admitted.authority.expires_at:
+            return False
+        try:
+            trusted = self._trusted_context(
+                context,
+                workspace_id=admitted.workspace_id,
+                environment_id=admitted.environment_id,
+                actor_id=admitted.actor_id,
+            )
+        except CorpusAdmissionDenied:
+            return False
+        if not await self._authority.recheck(admitted, evaluated_at=now):
+            return False
+        if not await self._revisions.is_exact_revision_current(admitted):
+            return False
+        try:
+            await self._require_current_policy(admitted, context=trusted)
+        except CorpusAdmissionDenied:
+            return False
+        return True
+
     async def _require_current_policy(
         self, admitted: AdmittedSourceRevision, *, context: TrustedPersistenceContext
     ) -> None:
