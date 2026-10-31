@@ -235,6 +235,9 @@ target.
 - [ ] Google Sheets connector для реестра смет и Google Drive/file connector для материалов.
       `implemented: concrete governed Drive v3 / Sheets v4 REST and Desktop OAuth
       reference adapters with deterministic offline qualification (#652)`;
+      `implemented: private local Google Desktop credential store and
+      approval-bound manual reauthorization/revocation lifecycle with offline
+      fakes (#754)`;
       `implemented: provider-neutral connection configuration and safe operator
       inspection through PostgreSQL, /api/v1 and product UI with fake-provider
       qualification (#664)`;
