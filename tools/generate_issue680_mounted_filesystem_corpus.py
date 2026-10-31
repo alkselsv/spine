@@ -9,10 +9,85 @@ import json
 import os
 from pathlib import Path
 import tarfile
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, model_validator
 
 PACKAGE_NAME = "issue-680-synthetic-v1"
 MIB = 1024 * 1024
 FIXED_MTIME = 1_700_000_000
+
+
+class AdapterProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    default_max_file_bytes: int
+    hard_ceiling_bytes: int
+    read_chunk_bytes: int
+    read_timeout_seconds: int
+    scan_timeout_seconds: int
+    max_concurrent_reads_per_worker: int
+    max_reconciliation_attempts_per_item: int
+
+
+class CorpusEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    relative_path: str
+    type: Literal["regular", "symlink", "fifo"]
+    purpose: str
+    byte_length: int | None = None
+    sha256: str | None = None
+
+    @model_validator(mode="after")
+    def validate_content_metadata(self) -> CorpusEntry:
+        content_metadata = (self.byte_length, self.sha256)
+        if self.type == "regular" and any(value is None for value in content_metadata):
+            raise ValueError("regular entries require length and checksum")
+        if self.type != "regular" and any(
+            value is not None for value in content_metadata
+        ):
+            raise ValueError("non-regular entries cannot carry content metadata")
+        return self
+
+
+class SyntheticCorpusManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal["issue-680-synthetic-corpus:v1"]
+    ticket: Literal[680]
+    classification: Literal["synthetic_non_production"]
+    generator: Literal["deterministic"]
+    approved_adapter_profile: AdapterProfile
+    entries: tuple[CorpusEntry, ...]
+
+
+class ScenarioRules(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    spine_mounts_or_unmounts: Literal[False]
+    spine_writes_source: Literal[False]
+    backend_operator_controls_mutations: Literal[True]
+    expected_identity: Literal["path_scoped"]
+    missing_prerequisite_status: Literal["NOT_VERIFIED"]
+
+
+class SyntheticScenarioPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal["issue-680-scenario-plan:v1"]
+    ticket: Literal[680]
+    rules: ScenarioRules
+    phases: tuple[
+        Literal["preflight"],
+        Literal["containment"],
+        Literal["streaming_limits"],
+        Literal["rename"],
+        Literal["unstable_read"],
+        Literal["mount_interruption"],
+        Literal["recovery"],
+        Literal["cleanup"],
+    ]
 
 
 def _sha256(path: Path) -> str:
@@ -34,14 +109,14 @@ def _write_pattern(path: Path, size: int, label: str) -> None:
             remaining -= len(chunk)
 
 
-def _regular_entry(corpus: Path, path: Path, purpose: str) -> dict[str, object]:
-    return {
-        "relative_path": path.relative_to(corpus).as_posix(),
-        "type": "regular",
-        "purpose": purpose,
-        "byte_length": path.stat().st_size,
-        "sha256": _sha256(path),
-    }
+def _regular_entry(corpus: Path, path: Path, purpose: str) -> CorpusEntry:
+    return CorpusEntry(
+        relative_path=path.relative_to(corpus).as_posix(),
+        type="regular",
+        purpose=purpose,
+        byte_length=path.stat().st_size,
+        sha256=_sha256(path),
+    )
 
 
 def _normalize_tar_info(info: tarfile.TarInfo) -> tarfile.TarInfo:
@@ -89,7 +164,7 @@ def generate(output_dir: Path) -> tuple[Path, Path, str]:
     corpus = package / "corpus"
     archive_path = output_dir / f"{PACKAGE_NAME}.tar.gz"
     checksum_path = output_dir / f"{PACKAGE_NAME}.tar.gz.sha256"
-    outside = output_dir / "outside-scope-synthetic.txt"
+    outside = package / "outside-scope-synthetic.txt"
     targets = (package, archive_path, checksum_path, outside)
     if any(target.exists() or target.is_symlink() for target in targets):
         raise FileExistsError("refusing to overwrite issue #680 qualification data")
@@ -136,10 +211,6 @@ def generate(output_dir: Path) -> tuple[Path, Path, str]:
 
     os.symlink("regular/stable-small.txt", corpus / "symlink-internal")
     os.symlink("../outside-scope-synthetic.txt", corpus / "symlink-escape")
-    outside.write_text(
-        "Synthetic object outside the corpus root; never package or ingest this file.\n",
-        encoding="utf-8",
-    )
     os.mkfifo(corpus / "special" / "synthetic.pipe", mode=0o600)
 
     regular_files = (
@@ -152,53 +223,54 @@ def generate(output_dir: Path) -> tuple[Path, Path, str]:
         (over_default, "32 MiB default limit rejection"),
         (unstable, "operator-controlled unstable read"),
     )
-    manifest = {
-        "schema_version": "issue-680-synthetic-corpus:v1",
-        "ticket": 680,
-        "classification": "synthetic_non_production",
-        "generator": "deterministic",
-        "approved_adapter_profile": {
-            "default_max_file_bytes": 32 * MIB,
-            "hard_ceiling_bytes": 256 * MIB,
-            "read_chunk_bytes": 64 * 1024,
-            "read_timeout_seconds": 10,
-            "scan_timeout_seconds": 10,
-            "max_concurrent_reads_per_worker": 4,
-            "max_reconciliation_attempts_per_item": 2,
-        },
-        "entries": [
+    manifest = SyntheticCorpusManifest(
+        schema_version="issue-680-synthetic-corpus:v1",
+        ticket=680,
+        classification="synthetic_non_production",
+        generator="deterministic",
+        approved_adapter_profile=AdapterProfile(
+            default_max_file_bytes=32 * MIB,
+            hard_ceiling_bytes=256 * MIB,
+            read_chunk_bytes=64 * 1024,
+            read_timeout_seconds=10,
+            scan_timeout_seconds=10,
+            max_concurrent_reads_per_worker=4,
+            max_reconciliation_attempts_per_item=2,
+        ),
+        entries=(
             *(_regular_entry(corpus, path, purpose) for path, purpose in regular_files),
-            {
-                "relative_path": "symlink-internal",
-                "type": "symlink",
-                "purpose": "reject symlink even when target stays inside root",
-            },
-            {
-                "relative_path": "symlink-escape",
-                "type": "symlink",
-                "purpose": "reject symlink escape without following target",
-            },
-            {
-                "relative_path": "special/synthetic.pipe",
-                "type": "fifo",
-                "purpose": "reject non-regular special file",
-            },
-        ],
-    }
-    (package / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            CorpusEntry(
+                relative_path="symlink-internal",
+                type="symlink",
+                purpose="reject symlink even when target stays inside root",
+            ),
+            CorpusEntry(
+                relative_path="symlink-escape",
+                type="symlink",
+                purpose="reject symlink escape without following target",
+            ),
+            CorpusEntry(
+                relative_path="special/synthetic.pipe",
+                type="fifo",
+                purpose="reject non-regular special file",
+            ),
+        ),
     )
-    scenario_plan = {
-        "schema_version": "issue-680-scenario-plan:v1",
-        "ticket": 680,
-        "rules": {
-            "spine_mounts_or_unmounts": False,
-            "spine_writes_source": False,
-            "backend_operator_controls_mutations": True,
-            "expected_identity": "path_scoped",
-            "missing_prerequisite_status": "NOT_VERIFIED",
-        },
-        "phases": [
+    (package / "manifest.json").write_text(
+        json.dumps(manifest.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    scenario_plan = SyntheticScenarioPlan(
+        schema_version="issue-680-scenario-plan:v1",
+        ticket=680,
+        rules=ScenarioRules(
+            spine_mounts_or_unmounts=False,
+            spine_writes_source=False,
+            backend_operator_controls_mutations=True,
+            expected_identity="path_scoped",
+            missing_prerequisite_status="NOT_VERIFIED",
+        ),
+        phases=(
             "preflight",
             "containment",
             "streaming_limits",
@@ -207,10 +279,11 @@ def generate(output_dir: Path) -> tuple[Path, Path, str]:
             "mount_interruption",
             "recovery",
             "cleanup",
-        ],
-    }
+        ),
+    )
     (package / "scenario-plan.json").write_text(
-        json.dumps(scenario_plan, indent=2, sort_keys=True) + "\n",
+        json.dumps(scenario_plan.model_dump(mode="json"), indent=2, sort_keys=True)
+        + "\n",
         encoding="utf-8",
     )
     (package / "README.md").write_text(
@@ -224,6 +297,10 @@ def generate(output_dir: Path) -> tuple[Path, Path, str]:
     )
 
     _write_archive(package, archive_path)
+    outside.write_text(
+        "Synthetic object outside the corpus root; never package or ingest this file.\n",
+        encoding="utf-8",
+    )
     checksum = _sha256(archive_path)
     checksum_path.write_text(f"{checksum}  {archive_path.name}\n", encoding="ascii")
     return package, archive_path, checksum
