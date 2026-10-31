@@ -134,3 +134,38 @@ the selected non-production backend:
 
 Qualification cannot introduce a direct SMB client or claim backend-stable
 identity from path, inode or checksum evidence.
+
+## Repeatable operator procedure
+
+Generate the synthetic corpus into an approved private staging directory. The
+generator refuses to overwrite an existing package and does not write into the
+mounted namespace:
+
+```bash
+uv run python tools/generate_issue680_mounted_filesystem_corpus.py \
+  --output-dir /approved/private/staging/issue-680
+```
+
+Corpus v1 is deterministic. Its archive SHA-256 is
+`f440f989356fc0842749b1db6045e7df8878470a6476c60dbc84563bc9699faf`.
+Platform Operations verifies that checksum, stages the package on the backend,
+preserves its symlinks and FIFO, and exposes only the exact approved leaf to the
+reader. The generated outside-scope synthetic target is deliberately absent
+from the archive.
+
+Run the interactive qualification wizard on the deployment host:
+
+```bash
+ISSUE680_STATE_FILE=/approved/private/evidence/issue-680-state.env \
+ISSUE680_REPORT_PATH=/approved/private/evidence/issue-680-report.json \
+  ./tools/issue680_mounted_filesystem_qualification_wizard.sh
+```
+
+The private state contains the concrete leaf and resumable operator inputs. It
+must not be committed. The sanitized report omits the leaf, source names,
+content, share address, credentials and raw errors. The wizard performs no
+mount, unmount or source write. Platform Operations controls backend mutations;
+the operator invokes the deployment-owned
+`MountedFilesystemReconciliationWorker.reconcile` composition for each phase
+and records only opaque content-safe run references. Any missing prerequisite
+or unexercised phase remains `NOT_VERIFIED`.
