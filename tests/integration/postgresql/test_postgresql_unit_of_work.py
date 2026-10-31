@@ -134,6 +134,9 @@ from spine.domain.sources import (
     RegisterAssociationAcceptance,
     RegisterLinkRole,
     RegisterObservedLinkClaim,
+    CrmRelationshipIdentity,
+    CrmRelationshipClaim,
+    relationship_key,
     SourceObject,
 )
 from spine.domain.sources.canonicalization import content_revision
@@ -165,6 +168,13 @@ from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.postgresql import (
     PostgreSQLPersistence,
     PostgreSQLTransactionStage,
+)
+from spine.infrastructure.persistence.crm_relationship_v2 import (
+    PostgreSQLCrmRelationshipV2Repository,
+)
+from spine.domain.sources.crm_relationship_v2 import (
+    CrmRelationshipMappingProfile,
+    CrmRelationshipNaturalIdentity,
 )
 from spine.infrastructure.persistence.parsed_artifacts import (
     PostgreSQLParsedArtifactRepository,
@@ -558,6 +568,16 @@ async def postgresql_contract_database(
         dispatcher_role=DISPATCHER_ROLE,
     )
     await asyncio.to_thread(upgrade_database, migration)
+    # This module exercises the CRM v2 write API against a disposable database.
+    # Production migrations intentionally leave the reader-first gate disabled.
+    crm_engine = create_async_engine(migration_url.get_secret_value(), hide_parameters=True)
+    try:
+        async with crm_engine.begin() as connection:
+            await connection.execute(text(
+                "UPDATE spine.crm_relationship_v2_state SET enabled = true WHERE singleton"
+            ))
+    finally:
+        await crm_engine.dispose()
     database = PostgreSQLContractDatabase(
         migration_url=migration_url,
         runtime_url=_role_url(
@@ -660,6 +680,23 @@ async def postgresql_adapter(
             trace_id=synthetic_uuid(960),
         )
 
+    def interactive_environment_context(
+        workspace_id: UUID,
+        environment_id: UUID,
+        operation: PersistenceOperation,
+        trace_id: UUID,
+    ) -> TrustedPersistenceContext:
+        return boundary.interactive(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            ),
+            acting_subject_id=synthetic_uuid(961),
+            purpose=PersistencePurpose("crm_relationship_v2"),
+            operation=operation,
+            trace_id=trace_id,
+        )
+
     def worker_workspace_context(workspace_id: UUID) -> TrustedPersistenceContext:
         return boundary.worker(
             scope=WorkspaceScope(workspace_id=workspace_id),
@@ -684,6 +721,7 @@ async def postgresql_adapter(
             outbox_events=outbox_events,
             source_context=source_context,
             ingestion_context=ingestion_context,
+            interactive_environment_context=interactive_environment_context,
         )
     finally:
         await engine.dispose()
@@ -8025,3 +8063,1098 @@ async def test_requirements_artifacts_replay_successor_and_isolate_workspaces(
         await uow.commit()
     other_context = postgresql_adapter.ingestion_context(other_workspace, other_environment, "workflow.run.read")
     assert await artifacts.get(context=other_context, artifact_id=first.artifact_id) is None
+
+
+@pytest.mark.postgresql
+@pytest.mark.asyncio(loop_scope="session")
+async def test_crm_relationship_identity_registration_is_race_safe_and_tenant_scoped(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await prepare_canonical_case(postgresql_adapter, 71600)
+    workspace_id = case.source.workspace_id
+    environment_id = case.source.environment_id
+    actor_id = synthetic_uuid(961)
+    context_factory = lambda operation, trace_id: postgresql_adapter.interactive_environment_context(
+        workspace_id, environment_id, operation, trace_id
+    )
+    repository = PostgreSQLCrmRelationshipV2Repository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=context_factory,
+    )
+    identity_fields = {
+        "workspace_id": workspace_id,
+        "environment_id": environment_id,
+        "provider_instance": "synthetic.bitrix.portal",
+        "connection_id": synthetic_uuid(71601),
+        "activity_namespace": "bitrix.activity",
+        "activity_type_id": "1",
+        "activity_id": "71602",
+        "raw_entity_type_id": "2",
+        "normalizer_id": "bitrix.owner-type",
+        "normalizer_version": "v1",
+        "entity_namespace": "bitrix.company",
+        "entity_id": "71603",
+        "files_namespace": "bitrix.activity.files",
+        "files_item_id": "71604",
+        "mapping_profile_id": synthetic_uuid(71605),
+    }
+    identity = CrmRelationshipIdentity(
+        **identity_fields,
+        relationship_key=relationship_key(CrmRelationshipNaturalIdentity(**identity_fields)),
+    )
+
+    await asyncio.gather(
+        repository.register_identity(identity, actor_id=actor_id),
+        repository.register_identity(identity, actor_id=actor_id),
+    )
+    assert await repository.current_eligibility(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        claim_id=synthetic_uuid(71606),
+        actor_id=actor_id,
+    ) is None
+
+    foreign_case = await prepare_canonical_case(postgresql_adapter, 71610)
+    foreign_identity_fields = {
+        **identity_fields,
+        "workspace_id": foreign_case.source.workspace_id,
+        "environment_id": foreign_case.source.environment_id,
+        "activity_id": "71612",
+    }
+    foreign_identity = CrmRelationshipIdentity(
+        **foreign_identity_fields,
+        relationship_key=relationship_key(CrmRelationshipNaturalIdentity(**foreign_identity_fields)),
+    )
+    with pytest.raises(OptimisticConflictError):
+        await repository.register_identity(foreign_identity, actor_id=actor_id)
+
+
+@pytest.mark.postgresql
+@pytest.mark.asyncio(loop_scope="session")
+async def test_crm_relationship_profile_versions_are_immutable_and_replayable(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await prepare_canonical_case(postgresql_adapter, 71620)
+    workspace_id = case.source.workspace_id
+    environment_id = case.source.environment_id
+    actor_id = synthetic_uuid(961)
+    repository = PostgreSQLCrmRelationshipV2Repository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=lambda operation, trace_id: postgresql_adapter.interactive_environment_context(
+            workspace_id, environment_id, operation, trace_id
+        ),
+    )
+    profile_id = synthetic_uuid(71621)
+    profile = CrmRelationshipMappingProfile(
+        schema_version="bitrix24-crm-files-mapping-profile:v1",
+        record_kind="mapping_profile",
+        profile_id=profile_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        profile_version=1,
+        provider_instance="synthetic.bitrix.portal",
+        connection_id=synthetic_uuid(71622),
+        connection_approval_id=synthetic_uuid(71623),
+        qualification_reference=synthetic_uuid(71624),
+        approval_reference=synthetic_uuid(71625),
+        activity_namespace="bitrix.activity",
+        activity_type_ids=("1",),
+        raw_entity_type_ids=("2",),
+        entity_namespace="bitrix.company",
+        files_namespace="bitrix.activity.files",
+        normalizer_id="bitrix.owner-type",
+        normalizer_version="v1",
+        read_methods=("crm.activity.binding.list",),
+        mapping_strategy="direct_disk_object",
+        disk_namespace="bitrix.disk",
+    )
+    await repository.register_profile(
+        profile=profile,
+        digest="a" * 64,
+        created_at=INGESTION_CONTRACT_NOW,
+        actor_id=actor_id,
+    )
+    await repository.register_profile(
+        profile=profile,
+        digest="a" * 64,
+        created_at=INGESTION_CONTRACT_NOW,
+        actor_id=actor_id,
+    )
+    with pytest.raises(IdempotencyConflictError):
+        await repository.register_profile(
+            profile=profile.model_copy(update={"disk_namespace": "different.disk"}),
+            digest="b" * 64,
+            created_at=INGESTION_CONTRACT_NOW,
+            actor_id=actor_id,
+        )
+
+
+@pytest.mark.postgresql
+@pytest.mark.asyncio(loop_scope="session")
+async def test_crm_relationship_claim_rejects_source_without_current_lifecycle_authority(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await prepare_canonical_case(postgresql_adapter, 71630)
+    workspace_id = case.source.workspace_id
+    environment_id = case.source.environment_id
+    actor_id = synthetic_uuid(961)
+    context_factory = lambda operation, trace_id: postgresql_adapter.interactive_environment_context(
+        workspace_id, environment_id, operation, trace_id
+    )
+    repository = PostgreSQLCrmRelationshipV2Repository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=context_factory,
+    )
+    identity_fields = {
+        "workspace_id": workspace_id,
+        "environment_id": environment_id,
+        "provider_instance": "synthetic.bitrix.portal",
+        "connection_id": synthetic_uuid(71631),
+        "activity_namespace": "bitrix.activity",
+        "activity_type_id": "1",
+        "activity_id": "71632",
+        "raw_entity_type_id": "2",
+        "normalizer_id": "bitrix.owner-type",
+        "normalizer_version": "v1",
+        "entity_namespace": "bitrix.company",
+        "entity_id": "71633",
+        "files_namespace": "bitrix.activity.files",
+        "files_item_id": "71634",
+        "mapping_profile_id": synthetic_uuid(71635),
+    }
+    identity = CrmRelationshipIdentity(
+        **identity_fields,
+        relationship_key=relationship_key(CrmRelationshipNaturalIdentity(**identity_fields)),
+    )
+    await repository.register_identity(identity, actor_id=actor_id)
+    claim = CrmRelationshipClaim(
+        claim_id=synthetic_uuid(71636),
+        relationship_key=identity.relationship_key,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        connection_id=identity.connection_id,
+        connection_version_id=synthetic_uuid(71637),
+        source_object_id=case.source.source_object_id,
+        source_revision_id=case.revision.revision_id,
+        disk_namespace="bitrix.disk",
+        disk_object_id="71638",
+        disk_version_evidence="disk-version-1",
+        mapping_profile_id=identity.mapping_profile_id,
+        mapping_profile_version=1,
+        acting_human_id=actor_id,
+        authorization_generation=1,
+        configuration_generation=1,
+        idempotency_key=synthetic_uuid(71639),
+        payload_digest="a" * 64,
+        created_at=INGESTION_CONTRACT_NOW,
+    )
+    with pytest.raises(OptimisticConflictError, match="current eligible canonical source revision"):
+        await repository.append_claim(
+            claim,
+            audit_event=None,  # type: ignore[arg-type]
+            outbox_intent=None,  # type: ignore[arg-type]
+            audit_registry=AuditEventRegistry.with_default_families(),
+            outbox_registry=postgresql_adapter.outbox_events,
+        )
+    assert await repository.current_eligibility(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        claim_id=claim.claim_id,
+        actor_id=actor_id,
+    ) is None
+
+
+@pytest.mark.postgresql
+@pytest.mark.asyncio(loop_scope="session")
+async def test_crm_relationship_withdrawal_and_audit_outbox_are_atomic(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    from spine.application.persistence.outbox import OutboxEventRegistry, OutboxIntent
+    from spine.domain.audit import AuditObjectReference
+    from spine.domain.sources.crm_relationship_v2 import (
+        CrmRelationshipLifecycleEvent,
+        CrmRelationshipNaturalIdentity,
+        relationship_key,
+    )
+
+    case = await prepare_canonical_case(postgresql_adapter, 71640)
+    workspace_id = case.source.workspace_id
+    environment_id = case.source.environment_id
+    actor_id = synthetic_uuid(961)
+    identity_fields = {
+        "workspace_id": workspace_id,
+        "environment_id": environment_id,
+        "provider_instance": "synthetic.bitrix.portal",
+        "connection_id": synthetic_uuid(71641),
+        "activity_namespace": "bitrix.activity",
+        "activity_type_id": "1",
+        "activity_id": "71642",
+        "raw_entity_type_id": "2",
+        "normalizer_id": "bitrix.owner-type",
+        "normalizer_version": "v1",
+        "entity_namespace": "bitrix.company",
+        "entity_id": "71643",
+        "files_namespace": "bitrix.activity.files",
+        "files_item_id": "71644",
+        "mapping_profile_id": synthetic_uuid(71645),
+    }
+    identity = CrmRelationshipIdentity(
+        **identity_fields,
+        relationship_key=relationship_key(CrmRelationshipNaturalIdentity(**identity_fields)),
+    )
+    context_factory = lambda operation, trace_id: postgresql_adapter.interactive_environment_context(
+        workspace_id, environment_id, operation, trace_id
+    )
+    repository = PostgreSQLCrmRelationshipV2Repository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=context_factory,
+    )
+    await repository.register_identity(identity, actor_id=actor_id)
+
+    event = CrmRelationshipLifecycleEvent(
+        event_id=synthetic_uuid(71646),
+        relationship_key=identity.relationship_key,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        generation=1,
+        action="withdraw",
+        actor_id=actor_id,
+        authority_id=synthetic_uuid(71647),
+        authority_version_id=synthetic_uuid(71648),
+        authorization_generation=1,
+        expected_generation=0,
+        reason_code="human_withdrawal",
+        idempotency_key=synthetic_uuid(71649),
+        payload_digest="d" * 64,
+        created_at=INGESTION_CONTRACT_NOW,
+    )
+    audit_registry = AuditEventRegistry.with_default_families()
+    audit_id = synthetic_uuid(71650)
+    outbox_id = synthetic_uuid(71651)
+    trace_id = synthetic_uuid(71652)
+    audit = audit_registry.build_event(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_type="command.outcome",
+        schema_version=1,
+        payload=CommandAuditPayload(command_type="crm.relationship.withdraw"),
+        origin=ContextOrigin.INTERACTIVE,
+        acting_subject_id=actor_id,
+        service_principal_id=None,
+        trace_id=trace_id,
+        occurred_at=INGESTION_CONTRACT_NOW,
+        outcome=AuditOutcome.ACCEPTED,
+        reason="crm_relationship_withdrawal",
+        target=AuditObjectReference(
+            object_type="crm_relationship_lifecycle_event",
+            object_id=event.event_id,
+            schema_version=1,
+        ),
+        audit_event_id=audit_id,
+    )
+    intent = OutboxIntent(
+        event_id=outbox_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_type="crm.relationship.lifecycle",
+        schema_version=1,
+        payload=CommandAuditPayload(command_type="crm.relationship.withdraw"),
+        aggregate=OpaqueObjectReference(
+            object_type="crm_relationship_lifecycle_event",
+            object_id=event.event_id,
+            schema_version=1,
+        ),
+        trace_id=trace_id,
+    )
+    outbox_registry = OutboxEventRegistry()
+    outbox_registry.register(
+        event_type="crm.relationship.lifecycle",
+        schema_version=1,
+        payload_type=CommandAuditPayload,
+    )
+    engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    async with engine.begin() as connection:
+        await connection.execute(text("""
+            CREATE FUNCTION spine.test_fail_crm_relationship_authority_update()
+            RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                RAISE EXCEPTION 'injected CRM authority update failure'
+                    USING ERRCODE = '23514';
+            END $$
+        """))
+        await connection.execute(text("""
+            CREATE TRIGGER test_fail_crm_relationship_authority_update
+            BEFORE UPDATE ON spine.crm_relationship_authority_heads
+            FOR EACH ROW EXECUTE FUNCTION spine.test_fail_crm_relationship_authority_update()
+        """))
+
+    # Fail after audit/outbox and lifecycle rows are staged but before the
+    # authority head advances. Every insert and the idempotency reservation
+    # must roll back together.
+    try:
+        with pytest.raises(ConstraintConflictError):
+            await repository.append_lifecycle_event(
+                event,
+                audit_event=audit,
+                outbox_intent=intent,
+                audit_registry=audit_registry,
+                outbox_registry=outbox_registry,
+            )
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(text(
+                "DROP TRIGGER test_fail_crm_relationship_authority_update "
+                "ON spine.crm_relationship_authority_heads"
+            ))
+            await connection.execute(text(
+                "DROP FUNCTION spine.test_fail_crm_relationship_authority_update()"
+            ))
+    async with engine.begin() as connection:
+        authority_after_failure = (await connection.execute(text(
+            "SELECT lifecycle_generation, withdrawn FROM spine.crm_relationship_authority_heads "
+            "WHERE workspace_id = :workspace_id AND environment_id = :environment_id "
+            "AND relationship_key = :relationship_key"
+        ), {"workspace_id": workspace_id, "environment_id": environment_id,
+            "relationship_key": identity.relationship_key})).one()
+        staged_rows_after_failure = await connection.scalar(text(
+            "SELECT (SELECT count(*) FROM spine.crm_relationship_lifecycle_events WHERE event_id = :event_id) "
+            "+ (SELECT count(*) FROM spine.audit_events WHERE audit_event_id = :audit_id) "
+            "+ (SELECT count(*) FROM spine.outbox_intents WHERE event_id = :outbox_id)"
+        ), {"event_id": event.event_id, "audit_id": audit_id, "outbox_id": outbox_id})
+    assert authority_after_failure == (0, False)
+    assert staged_rows_after_failure == 0
+
+    contender = event.model_copy(update={
+        "event_id": synthetic_uuid(71653),
+        "idempotency_key": synthetic_uuid(71654),
+        "payload_digest": "e" * 64,
+    })
+    contender_audit_id = synthetic_uuid(71655)
+    contender_outbox_id = synthetic_uuid(71656)
+    contender_audit = audit_registry.build_event(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_type="command.outcome",
+        schema_version=1,
+        payload=CommandAuditPayload(command_type="crm.relationship.withdraw"),
+        origin=ContextOrigin.INTERACTIVE,
+        acting_subject_id=actor_id,
+        service_principal_id=None,
+        trace_id=trace_id,
+        occurred_at=INGESTION_CONTRACT_NOW,
+        outcome=AuditOutcome.ACCEPTED,
+        reason="crm_relationship_withdrawal",
+        target=AuditObjectReference(
+            object_type="crm_relationship_lifecycle_event",
+            object_id=contender.event_id,
+            schema_version=1,
+        ),
+        audit_event_id=contender_audit_id,
+    )
+    contender_intent = OutboxIntent(
+        event_id=contender_outbox_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_type="crm.relationship.lifecycle",
+        schema_version=1,
+        payload=CommandAuditPayload(command_type="crm.relationship.withdraw"),
+        aggregate=OpaqueObjectReference(
+            object_type="crm_relationship_lifecycle_event",
+            object_id=contender.event_id,
+            schema_version=1,
+        ),
+        trace_id=trace_id,
+    )
+    unknown_commit = [True]
+
+    class CommitResultUnknownUow:
+        def __init__(self, manager: object) -> None:
+            self._manager = manager
+            self._uow: object | None = None
+
+        async def __aenter__(self):
+            self._uow = await self._manager.__aenter__()
+            return self
+
+        async def __aexit__(self, exc_type, exc_value, traceback):
+            return await self._manager.__aexit__(exc_type, exc_value, traceback)
+
+        def __getattr__(self, name: str):
+            return getattr(self._uow, name)
+
+        async def commit(self) -> None:
+            await self._uow.commit()
+            if unknown_commit[0]:
+                unknown_commit[0] = False
+                raise PersistenceUnavailableError("Injected unknown PostgreSQL commit result.")
+
+    uncertain_commit_repository = PostgreSQLCrmRelationshipV2Repository(
+        uow_factory=lambda context: CommitResultUnknownUow(
+            postgresql_adapter.uow_factory(context)
+        ),
+        context_factory=context_factory,
+    )
+    results = await asyncio.gather(
+        uncertain_commit_repository.append_lifecycle_event(
+            event,
+            audit_event=audit,
+            outbox_intent=intent,
+            audit_registry=audit_registry,
+            outbox_registry=outbox_registry,
+        ),
+        uncertain_commit_repository.append_lifecycle_event(
+            contender,
+            audit_event=contender_audit,
+            outbox_intent=contender_intent,
+            audit_registry=audit_registry,
+            outbox_registry=outbox_registry,
+        ),
+        return_exceptions=True,
+    )
+    commit_unknowns = [result for result in results if isinstance(result, PersistenceUnavailableError)]
+    conflicts = [result for result in results if isinstance(result, OptimisticConflictError)]
+    assert len(commit_unknowns) == len(conflicts) == 1
+    engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    async with engine.connect() as connection:
+        persisted_event_id = await connection.scalar(text(
+            "SELECT last_event_id FROM spine.crm_relationship_authority_heads "
+            "WHERE workspace_id = :workspace_id AND environment_id = :environment_id "
+            "AND relationship_key = :relationship_key"
+        ), {"workspace_id": workspace_id, "environment_id": environment_id,
+            "relationship_key": identity.relationship_key})
+    winner, losing_candidate = (
+        (event, contender) if persisted_event_id == event.event_id
+        else (contender, event)
+    )
+    winning_audit_id, winning_outbox_id = (
+        (audit_id, outbox_id) if winner.event_id == event.event_id
+        else (contender_audit_id, contender_outbox_id)
+    )
+    winning_audit, winning_intent = (
+        (audit, intent) if winner.event_id == event.event_id
+        else (contender_audit, contender_intent)
+    )
+    # A retry after commit succeeded but its result was lost returns history.
+    assert await repository.append_lifecycle_event(
+        winner,
+        audit_event=winning_audit,
+        outbox_intent=winning_intent,
+        audit_registry=audit_registry,
+        outbox_registry=outbox_registry,
+    ) == winner
+    losing_audit, losing_intent = (
+        (audit, intent) if losing_candidate.event_id == event.event_id
+        else (contender_audit, contender_intent)
+    )
+    with pytest.raises(OptimisticConflictError):
+        await repository.append_lifecycle_event(
+            losing_candidate,
+            audit_event=losing_audit,
+            outbox_intent=losing_intent,
+            audit_registry=audit_registry,
+            outbox_registry=outbox_registry,
+        )
+
+    unsupported_reapproval = CrmRelationshipLifecycleEvent(
+        event_id=synthetic_uuid(71657),
+        relationship_key=identity.relationship_key,
+        claim_id=synthetic_uuid(71658),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        generation=2,
+        action="reapprove",
+        actor_id=actor_id,
+        authority_id=synthetic_uuid(71659),
+        authority_version_id=synthetic_uuid(71660),
+        authorization_generation=1,
+        expected_generation=1,
+        predecessor_event_id=winner.event_id,
+        reapproval_receipt_id=synthetic_uuid(71661),
+        reapproval_eligibility_id=synthetic_uuid(71662),
+        reason_code="reapproval_without_current_receipt",
+        idempotency_key=synthetic_uuid(71663),
+        payload_digest="f" * 64,
+        created_at=INGESTION_CONTRACT_NOW,
+    )
+    with pytest.raises(OptimisticConflictError, match="current exact positive verification receipt"):
+        await repository.append_lifecycle_event(
+            unsupported_reapproval,
+            audit_event=winning_audit,
+            outbox_intent=winning_intent,
+            audit_registry=audit_registry,
+            outbox_registry=outbox_registry,
+        )
+
+    async with engine.connect() as connection:
+        authority = (await connection.execute(text(
+            "SELECT lifecycle_generation, withdrawn FROM spine.crm_relationship_authority_heads "
+            "WHERE workspace_id = :workspace_id AND environment_id = :environment_id "
+            "AND relationship_key = :relationship_key"
+        ), {"workspace_id": workspace_id, "environment_id": environment_id,
+            "relationship_key": identity.relationship_key})).one()
+        lifecycle_count = await connection.scalar(text(
+            "SELECT count(*) FROM spine.crm_relationship_lifecycle_events WHERE event_id = :event_id"
+        ), {"event_id": winner.event_id})
+        audit_count = await connection.scalar(text(
+            "SELECT count(*) FROM spine.audit_events WHERE audit_event_id = :event_id"
+        ), {"event_id": winning_audit_id})
+        outbox_count = await connection.scalar(text(
+            "SELECT count(*) FROM spine.outbox_intents WHERE event_id = :event_id"
+        ), {"event_id": winning_outbox_id})
+    await engine.dispose()
+
+    assert authority == (1, True)
+    assert lifecycle_count == audit_count == outbox_count == 1
+
+
+@pytest.mark.postgresql
+@pytest.mark.asyncio(loop_scope="session")
+async def test_crm_relationship_receipt_reapproval_cannot_resurrect_stale_evidence(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    from spine.application.persistence.outbox import OutboxEventRegistry, OutboxIntent
+    from spine.domain.audit import AuditObjectReference
+    from spine.domain.sources.lifecycle import (
+        LifecycleAuthorityKind,
+        LifecycleDecision,
+        LifecycleDecisionEffect,
+        LifecycleEligibilityStatus,
+        LifecycleObservation,
+        LifecycleObservationConfidence,
+        LifecycleObservationKind,
+        LifecycleReasonCode,
+    )
+    from spine.domain.sources.crm_relationship_v2 import (
+        CrmEligibilityOutcome,
+        CrmRelationshipClaim,
+        CrmRelationshipEligibility,
+        CrmRelationshipLifecycleEvent,
+        CrmRelationshipMappingProfile,
+        CrmRelationshipObservationReceipt,
+        CrmRelationshipNaturalIdentity,
+        relationship_key,
+    )
+    from spine.infrastructure.persistence.postgresql_lifecycle import (
+        PostgreSQLLifecycleAuthorityRepository,
+    )
+    from spine.infrastructure.persistence.postgresql_mappings import audit_events, outbox_intents
+    from tests.contracts.persistence.test_source_observation_contract import connector_source
+    from sqlalchemy import insert
+
+    workspace_seed = synthetic_uuid(71670)
+    environment_seed = synthetic_uuid(71671)
+    case = await prepare_canonical_case(
+        postgresql_adapter,
+        71670,
+        source_object=connector_source(workspace_seed, environment_seed, "crm-v2-provider1"),
+    )
+    workspace_id, environment_id = case.source.workspace_id, case.source.environment_id
+    actor_id = synthetic_uuid(961)
+    now = INGESTION_CONTRACT_NOW
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        await uow.canonical.accept(case.command)
+        await uow.commit()
+
+    class AllowObservation:
+        async def verify(self, observation, context, transaction) -> None:
+            assert transaction is not None
+            assert context.scope.workspace_id == observation.workspace_id
+
+    class AllowDecision:
+        async def authorize(self, decision, context, transaction) -> None:
+            assert transaction is not None
+            assert decision.actor_id == context.service_principal_id
+
+    class LifecycleEffects:
+        async def persist(self, decision, context, transaction):
+            await transaction._execute(insert(audit_events).values(
+                audit_event_id=decision.audit_event_id,
+                workspace_id=decision.workspace_id,
+                environment_id=decision.environment_id,
+                event_type="source.lifecycle.decision",
+                schema_version=1,
+                origin=context.origin.value,
+                acting_subject_id=context.acting_subject_id,
+                service_principal_id=context.service_principal_id,
+                trace_id=context.trace_id,
+                correlation_id=None,
+                causation_id=None,
+                occurred_at=decision.decided_at,
+                appended_at=decision.decided_at,
+                target_type="source_object",
+                target_id=decision.source_object_id,
+                target_schema_version=1,
+                outcome="committed",
+                reason="source_lifecycle_decision",
+                producer_deduplication_id=f"crm-v2-lifecycle:{decision.decision_id}",
+                payload=decision.model_dump(mode="json"),
+            ))
+            await transaction._execute(insert(outbox_intents).values(
+                event_id=decision.outbox_event_id,
+                workspace_id=decision.workspace_id,
+                environment_id=decision.environment_id,
+                event_type="source.lifecycle.decision",
+                event_schema_version=1,
+                aggregate_type="source_object",
+                aggregate_id=decision.source_object_id,
+                aggregate_schema_version=1,
+                producer_deduplication_id=f"crm-v2-lifecycle:{decision.decision_id}",
+                payload=decision.model_dump(mode="json"),
+                trace_id=context.trace_id,
+                correlation_id=None,
+                causation_id=None,
+                created_at=decision.decided_at,
+            ))
+            return decision.audit_event_id, decision.outbox_event_id
+
+    source_context = postgresql_adapter.ingestion_context(
+        workspace_id, environment_id, "crm_v2_source_lifecycle"
+    )
+    assert case.source.connection_id is not None
+    observation = LifecycleObservation(
+        observation_id=synthetic_uuid(71671),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        source_object_id=case.source.source_object_id,
+        connection_id=case.source.connection_id,
+        connection_version_id=synthetic_uuid(71673),
+        authorization_generation=1,
+        configuration_generation=1,
+        scope_reference=synthetic_uuid(71674),
+        scope_version_id=synthetic_uuid(71675),
+        scope_digest="a" * 64,
+        provider_identity_reference=synthetic_uuid(71676),
+        kind=LifecycleObservationKind.MOVE_WITHIN_SCOPE,
+        evidence_reference=synthetic_uuid(71677),
+        evidence_digest="b" * 64,
+        confidence=LifecycleObservationConfidence.QUALIFIED,
+        reason_code=LifecycleReasonCode.MOVE_WITHIN_SCOPE,
+        observed_at=now,
+    )
+    decision = LifecycleDecision(
+        decision_id=synthetic_uuid(71678),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        source_object_id=case.source.source_object_id,
+        observation_id=observation.observation_id,
+        connection_id=observation.connection_id,
+        connection_version_id=observation.connection_version_id,
+        scope_reference=observation.scope_reference,
+        scope_version_id=observation.scope_version_id,
+        scope_digest=observation.scope_digest,
+        effect=LifecycleDecisionEffect.ELIGIBLE,
+        authority_reference=synthetic_uuid(71679),
+        authority_version_id=synthetic_uuid(71680),
+        authority_digest="c" * 64,
+        authority_kind=LifecycleAuthorityKind.SOURCE_GOVERNANCE,
+        status=LifecycleEligibilityStatus.ELIGIBLE,
+        legal_hold_active=False,
+        expected_current_decision_id=None,
+        expected_current_generation=0,
+        generation=1,
+        actor_id=source_context.service_principal_id,
+        audit_event_id=synthetic_uuid(71681),
+        outbox_event_id=synthetic_uuid(71682),
+        decided_at=now,
+    )
+    lifecycle = PostgreSQLLifecycleAuthorityRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        observation_authority=AllowObservation(),
+        decision_authority=AllowDecision(),
+        decision_effects=LifecycleEffects(),
+    )
+    await lifecycle.record_observation(observation, source_context)
+    await lifecycle.record_decision(decision, source_context)
+
+    connection_id = observation.connection_id
+    connection_version_id = observation.connection_version_id
+    approval_id = synthetic_uuid(71685)
+    qualification_ref = synthetic_uuid(71686)
+    approval_ref = synthetic_uuid(71687)
+    approved_refs = [qualification_ref, approval_ref]
+    service_principal_id = synthetic_uuid(71688)
+    engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "INSERT INTO spine.provider_connection_approvals "
+            "(approval_id, workspace_id, environment_id, service_principal_id, provider_kind, "
+            "credential_reference, grant_reference, approved_resource_scope_references, "
+            "authorization_generation, configuration_generation, status, recorded_at) "
+            "VALUES (:approval, :workspace, :environment, :principal, 'bitrix24', :credential, "
+            ":grant, :scopes, 1, 1, 'active', :now)"
+        ), {"approval": approval_id, "workspace": workspace_id, "environment": environment_id,
+            "principal": service_principal_id, "credential": synthetic_uuid(71689),
+            "grant": synthetic_uuid(71690), "scopes": approved_refs, "now": now})
+        await connection.execute(text(
+            "INSERT INTO spine.provider_connection_versions "
+            "(connection_version_id, connection_id, approval_id, version, predecessor_version_id, "
+            "workspace_id, environment_id, service_principal_id, provider_kind, credential_reference, "
+            "grant_reference, approved_resource_scope_references, authorization_generation, "
+            "configuration_generation, status, capabilities, health, diagnostic_codes, observed_at, "
+            "cursor_lag_seconds, last_successful_reconciliation_at, receipt_id, idempotency_key, "
+            "command_digest, recorded_at) VALUES (:version_id, :connection, :approval, 1, NULL, "
+            ":workspace, :environment, :principal, 'bitrix24', :credential, :grant, :scopes, "
+            "1, 1, 'active', '[]'::jsonb, 'healthy', ARRAY[]::varchar[], :now, NULL, NULL, "
+            ":receipt, 'crm-v2-profile-seed', :digest, :now)"
+        ), {"version_id": connection_version_id, "connection": connection_id,
+            "approval": approval_id, "workspace": workspace_id, "environment": environment_id,
+            "principal": service_principal_id, "credential": synthetic_uuid(71689),
+            "grant": synthetic_uuid(71690), "scopes": approved_refs, "now": now,
+            "receipt": synthetic_uuid(71691), "digest": "d" * 64})
+
+    profile_id = synthetic_uuid(71692)
+    profile = CrmRelationshipMappingProfile(
+        schema_version="bitrix24-crm-files-mapping-profile:v1",
+        record_kind="mapping_profile",
+        profile_id=profile_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        profile_version=1,
+        provider_instance="synthetic.bitrix.portal",
+        connection_id=connection_id,
+        connection_approval_id=approval_id,
+        qualification_reference=qualification_ref,
+        approval_reference=approval_ref,
+        activity_namespace="bitrix.activity",
+        activity_type_ids=("1",),
+        raw_entity_type_ids=("2",),
+        entity_namespace="bitrix.company",
+        files_namespace="bitrix.activity.files",
+        normalizer_id="bitrix.owner-type",
+        normalizer_version="v1",
+        read_methods=("crm.activity.binding.list",),
+        mapping_strategy="direct_disk_object",
+        disk_namespace="bitrix.disk",
+    )
+    identity_fields = {
+        "workspace_id": workspace_id,
+        "environment_id": environment_id,
+        "provider_instance": profile.provider_instance,
+        "connection_id": connection_id,
+        "activity_namespace": profile.activity_namespace,
+        "activity_type_id": "1",
+        "activity_id": "71693",
+        "raw_entity_type_id": "2",
+        "normalizer_id": profile.normalizer_id,
+        "normalizer_version": profile.normalizer_version,
+        "entity_namespace": profile.entity_namespace,
+        "entity_id": "71694",
+        "files_namespace": profile.files_namespace,
+        "files_item_id": "71695",
+        "mapping_profile_id": profile_id,
+    }
+    identity = CrmRelationshipIdentity(
+        **identity_fields,
+        relationship_key=relationship_key(CrmRelationshipNaturalIdentity(**identity_fields)),
+    )
+    context_factory = lambda operation, trace_id: postgresql_adapter.interactive_environment_context(
+        workspace_id, environment_id, operation, trace_id
+    )
+    repository = PostgreSQLCrmRelationshipV2Repository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=context_factory,
+    )
+    await repository.register_identity(identity, actor_id=actor_id)
+    await repository.register_profile(
+        profile=profile, digest="e" * 64, created_at=now, actor_id=actor_id
+    )
+
+    from spine.infrastructure.persistence.crm_relationship_v2 import CrmRelationshipV2Store
+
+    profile_lock_key = (
+        f"spine.crm_relationship_profile:{workspace_id}:{environment_id}:{profile_id}"
+    )
+    crm_context = context_factory(PersistenceOperation("crm_relationship_v2_read"), synthetic_uuid(71699))
+    async with postgresql_adapter.uow_factory(crm_context) as uow:
+        store = CrmRelationshipV2Store(uow)
+        await store._lock_profile_version(
+            workspace_id=workspace_id, environment_id=environment_id,
+            profile_id=profile_id, shared=True,
+        )
+        await uow._execute(text(
+            "SELECT * FROM spine.lock_provider_connection_authority("
+            ":workspace_id, :environment_id, :connection_id, :connection_version_id)"
+        ).bindparams(
+            workspace_id=workspace_id, environment_id=environment_id,
+            connection_id=connection_id, connection_version_id=connection_version_id,
+        ))
+        async with engine.begin() as lock_probe:
+            provider_writer_lock = await lock_probe.scalar(text(
+                "SELECT pg_try_advisory_xact_lock(pg_catalog.hashtextextended(:lock_key, 0))"
+            ), {"lock_key": str(connection_id)})
+            profile_writer_lock = await lock_probe.scalar(text(
+                "SELECT pg_try_advisory_xact_lock(pg_catalog.hashtextextended(:lock_key, 0))"
+            ), {"lock_key": profile_lock_key})
+        assert provider_writer_lock is False
+        assert profile_writer_lock is False
+        await uow.rollback()
+
+    audit_registry = AuditEventRegistry.with_default_families()
+    outbox_registry = OutboxEventRegistry()
+    outbox_registry.register(
+        event_type="crm.relationship.evidence",
+        schema_version=1,
+        payload_type=CommandAuditPayload,
+    )
+
+    def audit_and_outbox(record_id: UUID, seed: int):
+        trace_id = synthetic_uuid(seed)
+        audit_id = synthetic_uuid(seed + 1)
+        outbox_id = synthetic_uuid(seed + 2)
+        audit_event = audit_registry.build_event(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            event_type="command.outcome",
+            schema_version=1,
+            payload=CommandAuditPayload(command_type="crm.relationship.evidence"),
+            origin=ContextOrigin.INTERACTIVE,
+            acting_subject_id=actor_id,
+            service_principal_id=None,
+            trace_id=trace_id,
+            occurred_at=now,
+            outcome=AuditOutcome.ACCEPTED,
+            reason="crm_relationship_evidence_recorded",
+            target=AuditObjectReference(
+                object_type="crm_relationship_record", object_id=record_id, schema_version=1
+            ),
+            audit_event_id=audit_id,
+        )
+        outbox_intent = OutboxIntent(
+            event_id=outbox_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            event_type="crm.relationship.evidence",
+            schema_version=1,
+            payload=CommandAuditPayload(command_type="crm.relationship.evidence"),
+            aggregate=OpaqueObjectReference(
+                object_type="crm_relationship_record", object_id=record_id, schema_version=1
+            ),
+            trace_id=trace_id,
+        )
+        return audit_event, outbox_intent
+
+    claim = CrmRelationshipClaim(
+        claim_id=synthetic_uuid(71696),
+        relationship_key=identity.relationship_key,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        connection_id=connection_id,
+        connection_version_id=connection_version_id,
+        source_object_id=case.source.source_object_id,
+        source_revision_id=case.revision.revision_id,
+        disk_namespace="bitrix.disk",
+        disk_object_id="71697",
+        disk_version_evidence="disk-version-1",
+        mapping_profile_id=profile_id,
+        mapping_profile_version=1,
+        acting_human_id=actor_id,
+        authorization_generation=1,
+        configuration_generation=1,
+        idempotency_key=synthetic_uuid(71698),
+        payload_digest="f" * 64,
+        created_at=now,
+    )
+    claim_audit, claim_outbox = audit_and_outbox(claim.claim_id, 71700)
+    await repository.append_claim(
+        claim,
+        audit_event=claim_audit,
+        outbox_intent=claim_outbox,
+        audit_registry=audit_registry,
+        outbox_registry=outbox_registry,
+    )
+
+    def make_receipt(generation: int, lifecycle_generation: int, seed: int):
+        receipt_id = synthetic_uuid(seed)
+        receipt = CrmRelationshipObservationReceipt(
+            receipt_id=receipt_id,
+            claim_id=claim.claim_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            provider_instance=identity.provider_instance,
+            connection_id=connection_id,
+            connection_version_id=connection_version_id,
+            activity_namespace=identity.activity_namespace,
+            activity_type_id=identity.activity_type_id,
+            activity_id=identity.activity_id,
+            raw_entity_type_id=identity.raw_entity_type_id,
+            normalizer_id=identity.normalizer_id,
+            normalizer_version=identity.normalizer_version,
+            entity_namespace=identity.entity_namespace,
+            entity_id=identity.entity_id,
+            files_namespace=identity.files_namespace,
+            files_item_id=identity.files_item_id,
+            mapping_profile_id=profile_id,
+            mapping_profile_version=1,
+            binding_method="crm.activity.binding.list",
+            binding_page_count=1,
+            binding_evidence_reference=f"synthetic:binding:{seed}",
+            binding_evidence_digest="a" * 64,
+            positive_pair_observed=True,
+            disk_namespace=claim.disk_namespace,
+            disk_object_id=claim.disk_object_id,
+            disk_version_evidence=claim.disk_version_evidence,
+            source_object_id=case.source.source_object_id,
+            source_revision_id=case.revision.revision_id,
+            acting_human_id=actor_id,
+            authorization_generation=1,
+            configuration_generation=1,
+            verification_generation=generation,
+            outcome=CrmEligibilityOutcome.ELIGIBLE_VERIFIED,
+            evidence_digest="b" * 64,
+            observed_at=now,
+            idempotency_key=synthetic_uuid(seed + 1),
+            payload_digest="c" * 64,
+        )
+        eligibility = CrmRelationshipEligibility(
+            eligibility_id=synthetic_uuid(seed + 2),
+            claim_id=claim.claim_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            verification_generation=generation,
+            lifecycle_generation=lifecycle_generation,
+            outcome=CrmEligibilityOutcome.ELIGIBLE_VERIFIED,
+            evaluated_at=now,
+        )
+        audit_event, outbox_intent = audit_and_outbox(receipt_id, seed + 10)
+        return receipt, eligibility, audit_event, outbox_intent
+
+    receipt1, eligibility1, receipt_audit1, receipt_outbox1 = make_receipt(1, 0, 71710)
+    await repository.append_receipt(
+        receipt1,
+        eligibility=eligibility1,
+        audit_event=receipt_audit1,
+        outbox_intent=receipt_outbox1,
+        audit_registry=audit_registry,
+        outbox_registry=outbox_registry,
+        expected_verification_generation=0,
+        lifecycle_generation=0,
+    )
+    initial = await repository.current_eligibility(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        claim_id=claim.claim_id,
+        actor_id=actor_id,
+    )
+    assert initial is not None
+    assert initial.outcome is CrmEligibilityOutcome.ELIGIBLE_VERIFIED
+
+    withdrawal = CrmRelationshipLifecycleEvent(
+        event_id=synthetic_uuid(71730),
+        relationship_key=identity.relationship_key,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        generation=1,
+        action="withdraw",
+        actor_id=actor_id,
+        authority_id=synthetic_uuid(71731),
+        authority_version_id=synthetic_uuid(71732),
+        authorization_generation=1,
+        expected_generation=0,
+        reason_code="human_withdrawal",
+        idempotency_key=synthetic_uuid(71733),
+        payload_digest="d" * 64,
+        created_at=now,
+    )
+    withdrawal_audit, withdrawal_outbox = audit_and_outbox(withdrawal.event_id, 71734)
+    await repository.append_lifecycle_event(
+        withdrawal,
+        audit_event=withdrawal_audit,
+        outbox_intent=withdrawal_outbox,
+        audit_registry=audit_registry,
+        outbox_registry=outbox_registry,
+    )
+
+    receipt2, eligibility2, receipt_audit2, receipt_outbox2 = make_receipt(2, 1, 71740)
+    competing_receipt, competing_eligibility, competing_audit, competing_outbox = make_receipt(
+        2, 1, 71770
+    )
+    receipt_results = await asyncio.gather(
+        repository.append_receipt(
+            receipt2,
+            eligibility=eligibility2,
+            audit_event=receipt_audit2,
+            outbox_intent=receipt_outbox2,
+            audit_registry=audit_registry,
+            outbox_registry=outbox_registry,
+            expected_verification_generation=1,
+            lifecycle_generation=1,
+        ),
+        repository.append_receipt(
+            competing_receipt,
+            eligibility=competing_eligibility,
+            audit_event=competing_audit,
+            outbox_intent=competing_outbox,
+            audit_registry=audit_registry,
+            outbox_registry=outbox_registry,
+            expected_verification_generation=1,
+            lifecycle_generation=1,
+        ),
+        return_exceptions=True,
+    )
+    receipt_winners = [
+        result for result in receipt_results
+        if isinstance(result, CrmRelationshipObservationReceipt)
+    ]
+    receipt_conflicts = [
+        result for result in receipt_results if isinstance(result, OptimisticConflictError)
+    ]
+    assert len(receipt_winners) == len(receipt_conflicts) == 1
+    receipt2 = receipt_winners[0]
+    still_withdrawn = await repository.current_eligibility(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        claim_id=claim.claim_id,
+        actor_id=actor_id,
+    )
+    assert still_withdrawn is not None
+    assert still_withdrawn.outcome is CrmEligibilityOutcome.GOVERNANCE_WITHDRAWN
+
+    reapproval = CrmRelationshipLifecycleEvent(
+        event_id=synthetic_uuid(71760),
+        relationship_key=identity.relationship_key,
+        claim_id=claim.claim_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        generation=2,
+        action="reapprove",
+        actor_id=actor_id,
+        authority_id=synthetic_uuid(71761),
+        authority_version_id=synthetic_uuid(71762),
+        authorization_generation=1,
+        expected_generation=1,
+        predecessor_event_id=withdrawal.event_id,
+        reapproval_receipt_id=receipt2.receipt_id,
+        reapproval_eligibility_id=synthetic_uuid(71763),
+        reason_code="human_reapproval_after_current_verification",
+        idempotency_key=synthetic_uuid(71764),
+        payload_digest="e" * 64,
+        created_at=now,
+    )
+    reapproval_audit, reapproval_outbox = audit_and_outbox(reapproval.event_id, 71765)
+    await repository.append_lifecycle_event(
+        reapproval,
+        audit_event=reapproval_audit,
+        outbox_intent=reapproval_outbox,
+        audit_registry=audit_registry,
+        outbox_registry=outbox_registry,
+    )
+    eligible_again = await repository.current_eligibility(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        claim_id=claim.claim_id,
+        actor_id=actor_id,
+    )
+    assert eligible_again is not None
+    assert eligible_again.outcome is CrmEligibilityOutcome.ELIGIBLE_VERIFIED
+    await engine.dispose()
