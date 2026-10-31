@@ -588,11 +588,15 @@ def expected_eligible_case_ids(
 def evaluate_gate_coverage(
     coverage: tuple[GateCoverageCategory, ...],
 ) -> tuple[GateCoverageResult, ...]:
-    """Report annotation sufficiency without inventing numeric minima."""
+    """Report coverage without treating an unverified decision reference as authority.
+
+    The v2 contract has no trusted Protocol Owner decision verifier. A string
+    reference can be fabricated by a caller, so this evaluator must not emit
+    ``SUFFICIENT`` even when a numeric minimum and reference are present.
+    """
     results = []
     for item in coverage:
         minimum = item.minimum_annotation_count
-        sufficient = minimum is not None and item.annotated_count >= minimum
         results.append(
             GateCoverageResult(
                 gate_id=item.gate_id,
@@ -600,7 +604,7 @@ def evaluate_gate_coverage(
                 eligible_count=item.eligible_count,
                 annotated_count=item.annotated_count,
                 minimum_annotation_count=minimum,
-                status=CoverageStatus.SUFFICIENT if sufficient else CoverageStatus.NOT_VERIFIED,
+                status=CoverageStatus.NOT_VERIFIED,
             )
         )
     return tuple(results)

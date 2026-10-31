@@ -249,6 +249,24 @@ def test_gate_coverage_requires_a_protocol_owner_decision_for_numeric_minimum() 
         )
 
 
+def test_gate_coverage_does_not_trust_a_caller_supplied_decision_reference() -> None:
+    coverage = GateCoverageCategory(
+        gate_id="terminology",
+        category_id="all_annotated_terms",
+        eligibility_rule="A case is eligible when its transcript has a labelled term span.",
+        eligible_case_ids=("case-money",),
+        annotated_case_ids=("case-money",),
+        minimum_annotation_count=1,
+        minimum_decision_reference="fabricated-protocol-decision",
+    )
+
+    (result,) = evaluate_gate_coverage((coverage,))
+
+    assert result.annotated_count == 1
+    assert result.minimum_annotation_count == 1
+    assert result.status.value == "NOT_VERIFIED"
+
+
 def test_frozen_v2_dataset_has_offline_assets_and_reports_unapproved_minima() -> None:
     dataset = load_russian_transcription_v2_dataset()
 
