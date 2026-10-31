@@ -85,6 +85,9 @@ from spine.application.persistence.repositories import (
     SourceObservationCommand,
     SourceObservationResult,
 )
+from spine.application.persistence.trusted_content import (
+    TrustedContentEvidenceConflict,
+)
 from spine.application.persistence.ingestion import (
     IngestionBindingCommand,
     ExistingRevisionBindingCommand,
@@ -195,6 +198,7 @@ from spine.domain.sources import (
     SourceRevision,
     SourceRevisionProvenance,
     SourceRevisionReceiptAssociation,
+    TrustedContentVerificationEvidence,
     SourceSecurityDomainBinding,
 )
 from spine.domain.sources.canonicalization import assert_revision_digest
@@ -282,6 +286,7 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     source_revisions as _SOURCE_REVISIONS,
     source_revision_provenance as _SOURCE_PROVENANCE,
     source_revision_receipt_associations as _SOURCE_RECEIPT_ASSOCIATIONS,
+    trusted_content_verification_evidence as _TRUSTED_CONTENT_EVIDENCE,
     ingestion_runs as _INGESTION_RUNS,
     ingestion_run_sources as _INGESTION_ITEMS,
     ingestion_run_source_bindings as _INGESTION_BINDINGS,
@@ -2069,6 +2074,101 @@ class _PostgreSQLSourceObservationRepository:
             _SOURCE_RECEIPT_ASSOCIATIONS.c.association_id,
         ))).mappings().all()
         return tuple(self._receipt_association_from_row(row) for row in rows)
+
+
+class _PostgreSQLTrustedContentEvidenceRepository:
+    """Append-only tenant-scoped verifier evidence adapter."""
+
+    def __init__(self, uow: "PostgreSQLTenantUnitOfWork") -> None:
+        self._uow = uow
+
+    def _scope(self) -> EnvironmentScope:
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            raise InvalidPersistenceContextError("Persistence context is invalid.")
+        return scope
+
+    async def append(
+        self, evidence: TrustedContentVerificationEvidence
+    ) -> TrustedContentVerificationEvidence:
+        self._uow._guard_active()
+        scope = self._scope()
+        if (
+            evidence.workspace_id != scope.workspace_id
+            or evidence.environment_id != scope.environment_id
+        ):
+            raise TrustedContentEvidenceConflict(
+                "trusted content evidence scope mismatch"
+            )
+        existing = await self.resolve(evidence.evidence_id)
+        if existing is not None:
+            if existing != evidence:
+                raise TrustedContentEvidenceConflict(
+                    "trusted content evidence is immutable"
+                )
+            return existing
+        await self._uow._execute(
+            insert(_TRUSTED_CONTENT_EVIDENCE).values(
+                evidence_id=evidence.evidence_id,
+                workspace_id=evidence.workspace_id,
+                environment_id=evidence.environment_id,
+                source_object_id=evidence.source_object_id,
+                source_revision_id=evidence.source_revision_id,
+                receipt_association_id=evidence.receipt_association_id,
+                original_receipt_id=evidence.original_receipt_id,
+                original_upload_id=evidence.original_upload_id,
+                original_sha256=evidence.original_sha256,
+                byte_length=evidence.byte_length,
+                evidence_digest=evidence.evidence_digest,
+                verified_at=evidence.verified_at,
+                record=evidence.model_dump(mode="json"),
+            )
+        )
+        return evidence
+
+    async def resolve(
+        self, evidence_id: UUID
+    ) -> TrustedContentVerificationEvidence | None:
+        self._uow._guard_active()
+        scope = self._scope()
+        row = (
+            await self._uow._execute(
+                select(_TRUSTED_CONTENT_EVIDENCE.c.record).where(
+                    _TRUSTED_CONTENT_EVIDENCE.c.evidence_id == evidence_id,
+                    _TRUSTED_CONTENT_EVIDENCE.c.workspace_id == scope.workspace_id,
+                    _TRUSTED_CONTENT_EVIDENCE.c.environment_id == scope.environment_id,
+                )
+            )
+        ).scalar_one_or_none()
+        return (
+            TrustedContentVerificationEvidence.model_validate(row)
+            if row is not None
+            else None
+        )
+
+    async def list_for_association(
+        self, association_id: UUID
+    ) -> tuple[TrustedContentVerificationEvidence, ...]:
+        self._uow._guard_active()
+        scope = self._scope()
+        rows = (
+            await self._uow._execute(
+                select(_TRUSTED_CONTENT_EVIDENCE.c.record)
+                .where(
+                    _TRUSTED_CONTENT_EVIDENCE.c.receipt_association_id
+                    == association_id,
+                    _TRUSTED_CONTENT_EVIDENCE.c.workspace_id == scope.workspace_id,
+                    _TRUSTED_CONTENT_EVIDENCE.c.environment_id == scope.environment_id,
+                )
+                .order_by(
+                    _TRUSTED_CONTENT_EVIDENCE.c.verified_at,
+                    _TRUSTED_CONTENT_EVIDENCE.c.evidence_id,
+                )
+            )
+        ).scalars().all()
+        return tuple(
+            TrustedContentVerificationEvidence.model_validate(row) for row in rows
+        )
 
 
 class _PostgreSQLCanonicalAcceptanceRepository:
@@ -6339,6 +6439,7 @@ class PostgreSQLTenantUnitOfWork:
         self._disclosure_validations = PostgreSQLDisclosureValidationRepository(self)
         self._answer_disclosures = PostgreSQLAnswerDisclosureRepository(self)
         self._sources = _PostgreSQLSourceObservationRepository(self)
+        self._trusted_content_evidence = _PostgreSQLTrustedContentEvidenceRepository(self)
         self._canonical = _PostgreSQLCanonicalAcceptanceRepository(self)
         self._boundaries = _PostgreSQLCanonicalBoundaryRepository(self)
         self._projections = _PostgreSQLProjectionRepository(self)
@@ -6424,6 +6525,11 @@ class PostgreSQLTenantUnitOfWork:
     def sources(self) -> _PostgreSQLSourceObservationRepository:
         self._guard_active()
         return self._sources
+
+    @property
+    def trusted_content_evidence(self) -> _PostgreSQLTrustedContentEvidenceRepository:
+        self._guard_active()
+        return self._trusted_content_evidence
 
     @property
     def canonical(self) -> _PostgreSQLCanonicalAcceptanceRepository:

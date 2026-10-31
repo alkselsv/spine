@@ -5,6 +5,7 @@ from .contracts import *
 from .errors import *
 from .filesystem import FilesystemOriginalObjectStore, FilesystemStorageProfile
 from .port import AuthorizedOriginalReadService, OriginalObjectStore
+from .trusted_content import ExactAssociationContentReader
 
 __all__ = [
     *contracts.__all__,
@@ -13,4 +14,5 @@ __all__ = [
     "OriginalObjectStore",
     "FilesystemOriginalObjectStore",
     "FilesystemStorageProfile",
+    "ExactAssociationContentReader",
 ]

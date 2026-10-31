@@ -1509,6 +1509,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "source_revisions",
         "source_revision_provenance",
         "source_revision_receipt_associations",
+        "trusted_content_verification_evidence",
         "ingestion_runs",
         "ingestion_run_sources",
         "ingestion_run_source_bindings",
@@ -1741,6 +1742,13 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "fk_source_receipt_associations_receipt",
         "ck_source_receipt_associations_verified",
         "ck_source_receipt_associations_reference",
+        "uq_source_receipt_associations_verifier_binding",
+        "pk_trusted_content_evidence",
+        "uq_trusted_content_evidence_digest",
+        "fk_trusted_content_evidence_exact_receipt",
+        "ck_trusted_content_evidence_length",
+        "ck_trusted_content_evidence_digests",
+        "ck_trusted_content_evidence_record_binding",
         "pk_ingestion_runs",
         "uq_ingestion_runs_scope_id",
         "uq_ingestion_runs_command",
@@ -2357,8 +2365,11 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_source_receipt_associations",
         "uq_source_receipt_associations_receipt",
         "uq_source_receipt_associations_provenance",
+        "uq_source_receipt_associations_verifier_binding",
         "ix_source_receipt_associations_revision",
         "ix_source_receipt_associations_object_digest",
+        "pk_trusted_content_evidence",
+        "uq_trusted_content_evidence_digest",
         "pk_ingestion_runs",
         "uq_ingestion_runs_scope_id",
         "uq_ingestion_runs_command",
@@ -2590,6 +2601,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "source_revisions": (True, True),
         "source_revision_provenance": (True, True),
         "source_revision_receipt_associations": (True, True),
+        "trusted_content_verification_evidence": (True, True),
         "ingestion_runs": (True, True),
         "ingestion_run_sources": (True, True),
         "ingestion_run_source_bindings": (True, True),
@@ -2745,6 +2757,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "source_revisions": (True, True, False, False),
         "source_revision_provenance": (True, True, False, False),
         "source_revision_receipt_associations": (True, True, False, False),
+        "trusted_content_verification_evidence": (True, True, False, False),
         "ingestion_runs": (True, True, False, False),
         "ingestion_run_sources": (True, True, False, False),
         "ingestion_run_source_bindings": (True, True, False, False),
@@ -2937,7 +2950,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "WHERE source_namespace.nspname = 'spine' AND relation.relname IN "
                             "('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
-                         "'source_revision_receipt_associations', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', 'ingestion_runs', "
+                         "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', 'ingestion_runs', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_run_sources', 'ingestion_run_source_bindings', "
                         "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', "
@@ -2977,7 +2990,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "AND table_name NOT LIKE 'source_canonical%' "
                             "AND table_name NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
-                            "'source_revision_receipt_associations', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
+                            "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
@@ -3010,7 +3023,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "AND indexname NOT LIKE 'pk_source_canonical%' "
                         "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
-                         "'source_revision_receipt_associations', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
+                         "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
@@ -3042,7 +3055,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "AND tablename NOT LIKE 'source_canonical%' "
                             "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
-                         "'source_revision_receipt_associations', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
+                         "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                                 "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
@@ -3074,7 +3087,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "AND tablename NOT LIKE 'source_canonical%' "
                             "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
-                         "'source_revision_receipt_associations', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
+                         "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
@@ -3754,7 +3767,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'bitrix24_crm_material_revocations', "
                         "'admission_decisions', "
                         "'source_objects', 'source_revisions', "
-                         "'source_revision_provenance', 'source_revision_receipt_associations', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
+                         "'source_revision_provenance', 'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'ingestion_runs', "
                         "'ingestion_run_sources', 'ingestion_run_source_bindings', "
                         "'ingestion_transitions', 'ingestion_warnings', "
@@ -3854,6 +3867,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "source_revisions": (True, True),
         "source_revision_provenance": (True, True),
         "source_revision_receipt_associations": (True, True),
+        "trusted_content_verification_evidence": (True, True),
         "ingestion_runs": (True, True),
         "ingestion_run_sources": (True, True),
         "ingestion_run_source_bindings": (True, True),
@@ -5257,13 +5271,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261216_84_corrected_transcript_publication.py",
         "20261217_85_mounted_filesystem_reconciliation.py",
         "20261218_86_bitrix24_oauth_authority.py",
+        "20261219_87_trusted_content_verification.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261219_87_injected_failure.py").write_text(
+    (target / "versions" / "20261220_88_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261219_87'\n"
-        "down_revision = '20261218_86'\n"
+        "revision = '20261220_88'\n"
+        "down_revision = '20261219_87'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
@@ -5366,3 +5381,90 @@ async def test_every_retained_revision_upgrades_to_one_final_head(
             await connection.execute(text("DROP SCHEMA IF EXISTS spine CASCADE"))
             await connection.commit()
         await asyncio.to_thread(upgrade_database, migrated_database.migration)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_trusted_content_evidence_has_exact_binding_and_content_free_constraints(
+    migrated_database: MigratedDatabase,
+) -> None:
+    table = "trusted_content_verification_evidence"
+    async with _connection(migrated_database.migration.url) as connection:
+        constraints = set(
+            (
+                await connection.execute(
+                    text(
+                        "SELECT constraint_record.conname FROM pg_constraint AS constraint_record "
+                        "JOIN pg_class AS relation ON relation.oid = constraint_record.conrelid "
+                        "JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' AND relation.relname = :table"
+                    ),
+                    {"table": table},
+                )
+            ).scalars()
+        )
+        assert {
+            "pk_trusted_content_evidence",
+            "uq_trusted_content_evidence_digest",
+            "fk_trusted_content_evidence_exact_receipt",
+            "ck_trusted_content_evidence_length",
+            "ck_trusted_content_evidence_digests",
+            "ck_trusted_content_evidence_record_binding",
+        } <= constraints, constraints
+        record_binding = await connection.scalar(
+            text(
+                "SELECT pg_get_constraintdef(constraint_record.oid) "
+                "FROM pg_constraint AS constraint_record "
+                "JOIN pg_class AS relation ON relation.oid = constraint_record.conrelid "
+                "JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
+                "WHERE namespace.nspname = 'spine' AND relation.relname = :table "
+                "AND constraint_record.conname = 'ck_trusted_content_evidence_record_binding'"
+            ),
+            {"table": table},
+        )
+        assert record_binding is not None
+        assert "record - ARRAY[" in record_binding
+        assert "evidence_digest" in record_binding
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_trusted_content_evidence_rows_are_immutable(
+    migrated_database: MigratedDatabase,
+) -> None:
+    table = "trusted_content_verification_evidence"
+    async with _connection(migrated_database.migration.url) as connection:
+        trigger = await connection.scalar(
+            text(
+                "SELECT pg_get_triggerdef(trigger.oid) FROM pg_trigger AS trigger "
+                "JOIN pg_class AS relation ON relation.oid = trigger.tgrelid "
+                "JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
+                "WHERE namespace.nspname = 'spine' AND relation.relname = :table "
+                "AND trigger.tgname = 'trg_trusted_content_evidence_immutable'"
+            ),
+            {"table": table},
+        )
+        assert trigger is not None
+        assert "BEFORE DELETE OR UPDATE" in trigger
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_trusted_content_evidence_has_forced_rls_and_append_only_privileges(
+    migrated_database: MigratedDatabase,
+) -> None:
+    table = "trusted_content_verification_evidence"
+    async with _connection(migrated_database.migration.url) as connection:
+        security = (
+            await connection.execute(
+                text(
+                    "SELECT relation.relrowsecurity, relation.relforcerowsecurity, "
+                    "has_table_privilege(:runtime, relation.oid, 'SELECT'), "
+                    "has_table_privilege(:runtime, relation.oid, 'INSERT'), "
+                    "has_table_privilege(:runtime, relation.oid, 'UPDATE'), "
+                    "has_table_privilege(:runtime, relation.oid, 'DELETE') "
+                    "FROM pg_class AS relation JOIN pg_namespace AS namespace "
+                    "ON namespace.oid = relation.relnamespace "
+                    "WHERE namespace.nspname = 'spine' AND relation.relname = :table"
+                ),
+                {"runtime": RUNTIME_ROLE, "table": table},
+            )
+        ).one()
+        assert tuple(security) == (True, True, True, True, False, False)
