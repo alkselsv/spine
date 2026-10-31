@@ -7,6 +7,7 @@ import pytest
 from spine.application.connections.google import (
     GoogleConnectionCommand,
     GoogleConnectionConflictError,
+    confirmed_google_revocation_successor,
     is_valid_google_connection_successor,
 )
 from spine.application.persistence import (
@@ -116,6 +117,17 @@ async def test_in_memory_unfenced_successor_conflicts() -> None:
 @pytest.mark.asyncio
 async def test_in_memory_fenced_successor_becomes_current() -> None:
     await assert_google_connection_successor_contract(_scenario)
+
+
+@pytest.mark.asyncio
+async def test_worker_cannot_record_confirmed_manual_google_revocation() -> None:
+    scenario = await _scenario()
+    command = confirmed_google_revocation_successor(
+        scenario.initial, occurred_at=OCCURRED_AT
+    )
+
+    with pytest.raises(GoogleConnectionConflictError):
+        await scenario.repository.register_revoked(command, scenario.context)
 
 
 def test_reauthorization_advances_exactly_one_generation_and_keeps_connection_identity() -> None:

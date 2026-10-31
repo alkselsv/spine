@@ -183,6 +183,17 @@ class PostgreSQLGoogleConnectionRepository:
     ) -> GoogleConnectionMutationResult:
         if command.connection.status is not GoogleConnectionStatus.REVOKED:
             raise GoogleConnectionConflictError()
+        try:
+            trusted = self._context_verifier.verify(context)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            raise GoogleConnectionConflictError() from None
+        if (
+            trusted.origin is not ContextOrigin.INTERACTIVE
+            or trusted.operation.value != "google_connection_register"
+        ):
+            raise GoogleConnectionConflictError()
         return await self._register(command, context, allow_revoked=True)
 
     async def _register(
