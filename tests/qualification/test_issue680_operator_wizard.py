@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,7 @@ WIZARD_PATH = ROOT / "tools/issue680_mounted_filesystem_qualification_wizard.sh"
 REPORT_WRITER_PATH = ROOT / "tools/issue680_qualification_report.py"
 RUNBOOK_PATH = ROOT / "docs/runbooks/r2-mounted-filesystem.md"
 EXPECTED_ARCHIVE_SHA256 = (
-    "e7367a5419e65c552ea7340404cb5241b2b8022c084fa5faa58086e089d8dc71"
+    "23ddf81990bc322334474b379209a307116283f2d2bf100d0297280c172f1331"
 )
 
 
@@ -71,6 +72,12 @@ def test_generator_builds_the_approved_deterministic_synthetic_corpus(
     outside = package / "outside-scope-synthetic.txt"
     assert outside.is_file()
     assert (package / "corpus" / "symlink-escape").resolve(strict=True) == outside
+    external_fixture = manifest["external_fixtures"][0]
+    assert external_fixture["relative_path_from_package"] == outside.name
+    assert external_fixture["byte_length"] == outside.stat().st_size
+    assert (
+        external_fixture["sha256"] == hashlib.sha256(outside.read_bytes()).hexdigest()
+    )
 
     with tarfile.open(archive_path, "r:gz") as archive:
         members = archive.getmembers()
@@ -116,6 +123,11 @@ def test_operator_wizard_writes_not_verified_report_when_prerequisite_is_missing
 ) -> None:
     report_path = tmp_path / "operator-report.json"
     state_path = tmp_path / "private-state.env"
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_python3 = fake_bin / "python3"
+    fake_python3.write_text("#!/bin/sh\nexit 77\n", encoding="utf-8")
+    fake_python3.chmod(0o755)
     result = subprocess.run(
         ["bash", str(WIZARD_PATH)],
         input="\n",
@@ -127,6 +139,7 @@ def test_operator_wizard_writes_not_verified_report_when_prerequisite_is_missing
             "ISSUE680_STATE_FILE": str(state_path),
             "ISSUE680_REPORT_PATH": str(report_path),
             "NO_COLOR": "1",
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
         },
     )
 
@@ -183,6 +196,23 @@ def test_operator_report_preserves_failure_as_fail() -> None:
 
     assert report.status == "FAIL"
     assert report.reason_code == "operator_failure"
+
+
+def test_missing_prerequisite_discards_stale_scenario_results() -> None:
+    module = _report_writer_module()
+
+    report = module.build_report(
+        {
+            "PREFLIGHT_STATUS": "PASS",
+            "CONTAINMENT_STATUS": "FAIL",
+            "RECOVERY_STATUS": "PASS",
+        },
+        "prerequisite_missing",
+    )
+
+    assert report.status == "NOT_VERIFIED"
+    assert report.reason_code == "prerequisite_missing"
+    assert set(report.scenarios.model_dump().values()) == {"NOT_VERIFIED"}
 
 
 def test_runbook_routes_the_operator_through_generator_and_wizard() -> None:

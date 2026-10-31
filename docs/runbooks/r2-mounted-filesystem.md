@@ -147,14 +147,16 @@ uv run python tools/generate_issue680_mounted_filesystem_corpus.py \
 ```
 
 Corpus v1 is deterministic. Its archive SHA-256 is
-`e7367a5419e65c552ea7340404cb5241b2b8022c084fa5faa58086e089d8dc71`.
+`23ddf81990bc322334474b379209a307116283f2d2bf100d0297280c172f1331`.
 Platform Operations verifies that checksum, stages the package on the backend,
 preserves its symlinks and FIFO, and exposes only the exact approved leaf to the
 reader. The generator also creates `outside-scope-synthetic.txt` beside the
 approved `corpus` leaf in the staging package. Platform Operations preserves
 that placement so the escape symlink resolves to an existing object;
 the target is deliberately excluded from the archive and must never be exposed
-or ingested through the approved leaf.
+or ingested through the approved leaf. Its byte length and SHA-256 are bound in
+the archive's checksum-protected `manifest.json`; Platform Operations verifies
+both before staging the target.
 
 Run the interactive qualification wizard on the deployment host:
 
