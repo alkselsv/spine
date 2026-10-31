@@ -109,20 +109,36 @@ async def _wait_for_postgresql_lock_wait(
     backend_pid: int,
     operation: asyncio.Task[object],
 ) -> bool:
-    while not operation.done():
-        async with adapter.uow_factory(context) as uow:
-            result = await uow.execute_statement(
-                text(
-                    "SELECT cardinality(pg_blocking_pids(:pid)) > 0"
-                ),
-                {"pid": backend_pid},
-            )
-            is_blocked = result.scalar_one_or_none()
-            await uow.rollback()
-        if is_blocked:
-            return True
-        await asyncio.sleep(0)
-    return False
+    last_observation: list[tuple[bool | None, str | None] | None] = []
+
+    async def observe_blocker() -> bool:
+        while not operation.done():
+            async with adapter.uow_factory(context) as uow:
+                result = await uow.execute_statement(
+                    text(
+                        "SELECT cardinality(pg_blocking_pids(:pid)) > 0, "
+                        "wait_event_type FROM pg_stat_activity WHERE pid = :pid"
+                    ),
+                    {"pid": backend_pid},
+                )
+                row = result.one_or_none()
+                observation = (
+                    (row[0], row[1]) if row is not None else None
+                )
+                last_observation.append(observation)
+                await uow.rollback()
+            if observation is not None and observation[0]:
+                return True
+            await asyncio.sleep(0)
+        return False
+
+    try:
+        return await asyncio.wait_for(observe_blocker(), timeout=10)
+    except asyncio.TimeoutError as error:
+        raise AssertionError(
+            "PostgreSQL backend did not report a blocking lock; "
+            f"last observation: {last_observation[-1:]!r}"
+        ) from error
 
 
 class _AllowAuthority:
