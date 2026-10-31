@@ -59,6 +59,7 @@ from .crm_relationship_v2 import (
     CrmRelationshipIdentity,
     CrmRelationshipKind,
     CrmRelationshipLifecycleEvent,
+    CrmRelationshipMappingProfile,
     CrmRelationshipObservationReceipt,
     relationship_key,
 )
@@ -154,6 +155,7 @@ __all__ = [
     "CrmRelationshipIdentity",
     "CrmRelationshipKind",
     "CrmRelationshipLifecycleEvent",
+    "CrmRelationshipMappingProfile",
     "CrmRelationshipObservationReceipt",
     "relationship_key",
     "CanonicalBoundary",

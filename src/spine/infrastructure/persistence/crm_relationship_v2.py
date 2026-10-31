@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any, TypeVar
 from uuid import UUID, uuid5
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
@@ -32,6 +32,7 @@ from spine.domain.sources.crm_relationship_v2 import (
     CrmRelationshipEligibilityHead,
     CrmRelationshipIdentity,
     CrmRelationshipLifecycleEvent,
+    CrmRelationshipMappingProfile,
     CrmRelationshipObservationReceipt,
 )
 
@@ -58,6 +59,25 @@ class CrmRelationshipV2Store:
 
     def __init__(self, connection: Any) -> None:
         self._connection = connection
+
+    @staticmethod
+    def _profile_matches_identity(
+        profile: CrmRelationshipMappingProfile,
+        identity: CrmRelationshipIdentity,
+    ) -> bool:
+        return (
+            profile.profile_id == identity.mapping_profile_id
+            and profile.workspace_id == identity.workspace_id
+            and profile.environment_id == identity.environment_id
+            and profile.provider_instance == identity.provider_instance
+            and profile.connection_id == identity.connection_id
+            and profile.activity_namespace == identity.activity_namespace
+            and identity.raw_entity_type_id in profile.raw_entity_type_ids
+            and profile.entity_namespace == identity.entity_namespace
+            and profile.files_namespace == identity.files_namespace
+            and profile.normalizer_id == identity.normalizer_id
+            and profile.normalizer_version == identity.normalizer_version
+        )
 
     async def _execute(self, statement: Any) -> Any:
         executor = getattr(self._connection, "_execute", None)
@@ -93,6 +113,8 @@ class CrmRelationshipV2Store:
             crm_relationship_claims.c.mapping_profile_version,
             crm_relationship_claims.c.authorization_generation,
             crm_relationship_claims.c.configuration_generation,
+            crm_relationship_claims.c.relationship_key,
+            crm_relationship_claims.c.record,
             crm_relationship_claims.c.relationship_key,
         ).where(
             crm_relationship_claims.c.workspace_id == workspace_id,
@@ -142,7 +164,8 @@ class CrmRelationshipV2Store:
             current_source_heads.c.source_object_id == claim.source_object_id,
         ).with_for_update(read=True, of=current_source_heads))).mappings().one_or_none()
         connection = (await self._execute(text(
-            "SELECT version_record.authorization_generation, version_record.configuration_generation, "
+            "SELECT version_record.approval_id, version_record.authorization_generation, "
+            "version_record.configuration_generation, "
             "version_record.status, approval.status AS approval_status, version_record.version "
             "FROM spine.provider_connection_versions AS version_record "
             "JOIN spine.provider_connection_approvals AS approval "
@@ -167,13 +190,40 @@ class CrmRelationshipV2Store:
             workspace_id=workspace_id, environment_id=environment_id,
             connection_id=claim.connection_id,
         ))
-        latest_profile_version = await self._scalar(select(
+        current_profile = (await self._execute(select(
             crm_relationship_profiles.c.profile_version,
+            crm_relationship_profiles.c.record,
         ).where(
             crm_relationship_profiles.c.workspace_id == workspace_id,
             crm_relationship_profiles.c.environment_id == environment_id,
             crm_relationship_profiles.c.profile_id == claim.mapping_profile_id,
-        ).order_by(crm_relationship_profiles.c.profile_version.desc()).limit(1).with_for_update(read=True))
+        ).order_by(crm_relationship_profiles.c.profile_version.desc()).limit(1)
+        .with_for_update(read=True))).one_or_none()
+        identity_record = await self._scalar(select(
+            crm_relationship_identities.c.natural_identity,
+        ).where(
+            crm_relationship_identities.c.workspace_id == workspace_id,
+            crm_relationship_identities.c.environment_id == environment_id,
+            crm_relationship_identities.c.relationship_key == claim.relationship_key,
+        ))
+        try:
+            identity = CrmRelationshipIdentity.model_validate(identity_record)
+            profile = CrmRelationshipMappingProfile.model_validate(
+                current_profile.record if current_profile is not None else None
+            )
+        except ValidationError:
+            identity = None
+            profile = None
+        profile_is_current = (
+            current_profile is not None
+            and current_profile.profile_version == claim.mapping_profile_version
+            and profile is not None
+            and profile.profile_version == claim.mapping_profile_version
+            and connection is not None
+            and profile.connection_approval_id == connection.approval_id
+            and identity is not None
+            and self._profile_matches_identity(profile, identity)
+        )
         if source is None or source["current_revision_kind"] != "content":
             return current.model_copy(update={"outcome": CrmEligibilityOutcome.SOURCE_INELIGIBLE})
         if source["current_revision_id"] != claim.source_revision_id:
@@ -188,7 +238,7 @@ class CrmRelationshipV2Store:
             or connection.status != "active"
             or connection.approval_status != "active"
             or connection.version != latest_connection_version
-            or latest_profile_version != claim.mapping_profile_version
+            or not profile_is_current
         ):
             return current.model_copy(update={"outcome": CrmEligibilityOutcome.STALE_CONTEXT})
         return current
@@ -300,23 +350,22 @@ class CrmRelationshipV2Store:
         return result_type.model_validate(prior.result)
 
     async def register_profile(
-        self, *, profile_id: UUID, workspace_id: UUID, environment_id: UUID,
-        version: int, digest: str, record: dict[str, Any], created_at: datetime,
-        actor_id: UUID,
+        self, *, profile: CrmRelationshipMappingProfile, digest: str,
+        created_at: datetime, actor_id: UUID,
     ) -> None:
         self._assert_current_human(
-            workspace_id=workspace_id, environment_id=environment_id, actor_id=actor_id,
+            workspace_id=profile.workspace_id, environment_id=profile.environment_id,
+            actor_id=actor_id,
         )
         await self._assert_enabled()
-        if (
-            record.get("schema_version") != "bitrix24-crm-files-mapping-profile:v1"
-            or record.get("record_kind") != "mapping_profile"
-        ):
-            raise OptimisticConflictError("CRM mapping profile has an unsupported schema or record kind.")
+        if (profile.workspace_id.int == 0 or profile.environment_id.int == 0):
+            raise OptimisticConflictError("CRM mapping profile has an invalid tenant scope.")
+        record = profile.model_dump(mode="json")
         table = crm_relationship_profiles
         values = {
-            "profile_id": profile_id, "workspace_id": workspace_id,
-            "environment_id": environment_id, "profile_version": version,
+            "profile_id": profile.profile_id, "workspace_id": profile.workspace_id,
+            "environment_id": profile.environment_id,
+            "profile_version": profile.profile_version,
             "profile_digest": digest, "record": record, "created_at": created_at,
         }
         result = await self._execute(
@@ -327,8 +376,10 @@ class CrmRelationshipV2Store:
         )
         if result.scalar_one_or_none() is None:
             existing = (await self._execute(select(table.c.profile_digest, table.c.record).where(
-                table.c.workspace_id == workspace_id, table.c.environment_id == environment_id,
-                table.c.profile_id == profile_id, table.c.profile_version == version,
+                table.c.workspace_id == profile.workspace_id,
+                table.c.environment_id == profile.environment_id,
+                table.c.profile_id == profile.profile_id,
+                table.c.profile_version == profile.profile_version,
             ))).one()
             if existing.profile_digest != digest or existing.record != record:
                 raise IdempotencyConflictError("CRM mapping profile version already has different content.")
@@ -401,14 +452,18 @@ class CrmRelationshipV2Store:
         ).bindparams(lock_key=(
             f"{claim.workspace_id}:{claim.environment_id}:{claim.connection_id}"
         )))
-        identity_connection_id = await self._scalar(select(
-            crm_relationship_identities.c.natural_identity["connection_id"].astext,
+        identity_record = await self._scalar(select(
+            crm_relationship_identities.c.natural_identity,
         ).where(
             crm_relationship_identities.c.workspace_id == claim.workspace_id,
             crm_relationship_identities.c.environment_id == claim.environment_id,
             crm_relationship_identities.c.relationship_key == claim.relationship_key,
         ))
-        if identity_connection_id != str(claim.connection_id):
+        try:
+            identity = CrmRelationshipIdentity.model_validate(identity_record)
+        except ValidationError as error:
+            raise OptimisticConflictError("CRM logical relationship identity is unsupported.") from error
+        if identity.connection_id != claim.connection_id:
             raise OptimisticConflictError("CRM claim connection does not match its logical relationship identity.")
         authority = (await self._execute(select(
             crm_relationship_authority_heads.c.lifecycle_generation,
@@ -460,7 +515,7 @@ class CrmRelationshipV2Store:
         if authorization_generation != claim.authorization_generation:
             raise OptimisticConflictError("CRM claim authorization generation is stale.")
         connection_version = (await self._execute(text(
-            "SELECT version_record.authorization_generation, "
+            "SELECT version_record.approval_id, version_record.authorization_generation, "
             "version_record.configuration_generation, version_record.status, "
             "approval.status AS approval_status, version_record.version "
             "FROM spine.provider_connection_versions AS version_record "
@@ -498,15 +553,26 @@ class CrmRelationshipV2Store:
         ))
         if current_connection_version != connection_version.version:
             raise OptimisticConflictError("CRM claim connection version is no longer current.")
-        current_profile_version = await self._scalar(select(
+        current_profile = (await self._execute(select(
             crm_relationship_profiles.c.profile_version,
+            crm_relationship_profiles.c.record,
         ).where(
             crm_relationship_profiles.c.workspace_id == claim.workspace_id,
             crm_relationship_profiles.c.environment_id == claim.environment_id,
             crm_relationship_profiles.c.profile_id == claim.mapping_profile_id,
-        ).order_by(crm_relationship_profiles.c.profile_version.desc()).limit(1).with_for_update())
-        if current_profile_version != claim.mapping_profile_version:
+        ).order_by(crm_relationship_profiles.c.profile_version.desc()).limit(1).with_for_update())).one_or_none()
+        if current_profile is None or current_profile.profile_version != claim.mapping_profile_version:
             raise OptimisticConflictError("CRM claim mapping profile version is no longer current.")
+        try:
+            profile = CrmRelationshipMappingProfile.model_validate(current_profile.record)
+        except ValidationError as error:
+            raise OptimisticConflictError("CRM mapping profile is unsupported.") from error
+        if (
+            profile.profile_version != claim.mapping_profile_version
+            or profile.connection_approval_id != connection_version.approval_id
+            or not self._profile_matches_identity(profile, identity)
+        ):
+            raise OptimisticConflictError("CRM mapping profile approval or exact relationship scope is stale.")
         audit_id, outbox_id = await self._persist_audit_outbox(
             audit_event=audit_event, outbox_intent=outbox_intent,
             audit_registry=audit_registry, outbox_registry=outbox_registry,
@@ -585,6 +651,36 @@ class CrmRelationshipV2Store:
             or claim_scope.configuration_generation != receipt.configuration_generation
         ):
             raise OptimisticConflictError("CRM receipt does not pin the exact claim configuration and human authority.")
+        try:
+            claim_record = CrmRelationshipClaim.model_validate(claim_scope.record)
+            identity_record = await self._scalar(select(
+                crm_relationship_identities.c.natural_identity,
+            ).where(
+                crm_relationship_identities.c.workspace_id == receipt.workspace_id,
+                crm_relationship_identities.c.environment_id == receipt.environment_id,
+                crm_relationship_identities.c.relationship_key == claim_scope.relationship_key,
+            ))
+            identity = CrmRelationshipIdentity.model_validate(identity_record)
+        except ValidationError as error:
+            raise OptimisticConflictError("CRM receipt identity evidence is unavailable or unsupported.") from error
+        if (
+            receipt.source_object_id != claim_scope.source_object_id
+            or receipt.source_revision_id != claim_scope.source_revision_id
+            or receipt.disk_namespace != claim_record.disk_namespace
+            or receipt.disk_object_id != claim_record.disk_object_id
+            or receipt.disk_version_evidence != claim_record.disk_version_evidence
+            or receipt.provider_instance != identity.provider_instance
+            or receipt.activity_namespace != identity.activity_namespace
+            or receipt.activity_id != identity.activity_id
+            or receipt.raw_entity_type_id != identity.raw_entity_type_id
+            or receipt.normalizer_id != identity.normalizer_id
+            or receipt.normalizer_version != identity.normalizer_version
+            or receipt.entity_namespace != identity.entity_namespace
+            or receipt.entity_id != identity.entity_id
+            or receipt.files_namespace != identity.files_namespace
+            or receipt.files_item_id != identity.files_item_id
+        ):
+            raise OptimisticConflictError("CRM receipt evidence does not pin the exact claimed relationship and source.")
         prior = await self._reserve_idempotency(
             workspace_id=receipt.workspace_id, environment_id=receipt.environment_id,
             idempotency_key=receipt.idempotency_key, payload_digest=receipt.payload_digest,
@@ -643,7 +739,8 @@ class CrmRelationshipV2Store:
             workspace_id=receipt.workspace_id, environment_id=receipt.environment_id,
         ))
         current_connection = (await self._execute(text(
-            "SELECT version_record.authorization_generation, version_record.configuration_generation, "
+            "SELECT version_record.approval_id, version_record.authorization_generation, "
+            "version_record.configuration_generation, "
             "version_record.status, approval.status AS approval_status, version_record.version "
             "FROM spine.provider_connection_versions AS version_record "
             "JOIN spine.provider_connection_approvals AS approval "
@@ -670,13 +767,15 @@ class CrmRelationshipV2Store:
             environment_id=receipt.environment_id,
             connection_id=receipt.connection_id,
         ))
-        current_profile_version = await self._scalar(select(
+        current_profile = (await self._execute(select(
             crm_relationship_profiles.c.profile_version,
+            crm_relationship_profiles.c.record,
         ).where(
             crm_relationship_profiles.c.workspace_id == receipt.workspace_id,
             crm_relationship_profiles.c.environment_id == receipt.environment_id,
             crm_relationship_profiles.c.profile_id == claim_scope.mapping_profile_id,
-        ).order_by(crm_relationship_profiles.c.profile_version.desc()).limit(1).with_for_update())
+        ).order_by(crm_relationship_profiles.c.profile_version.desc()).limit(1)
+        .with_for_update())).one_or_none()
         source_is_current = (
             source_result is not None
             and source_result["current_revision_id"] == claim_scope.source_revision_id
@@ -695,7 +794,25 @@ class CrmRelationshipV2Store:
             and current_connection.version == latest_connection_version
             and authorization_generation == receipt.authorization_generation
         )
-        profile_is_current = current_profile_version == claim_scope.mapping_profile_version
+        try:
+            profile = CrmRelationshipMappingProfile.model_validate(
+                current_profile.record if current_profile is not None else None
+            )
+        except ValidationError:
+            profile = None
+        profile_is_current = (
+            current_profile is not None
+            and current_profile.profile_version == claim_scope.mapping_profile_version
+            and profile is not None
+            and profile.profile_version == claim_scope.mapping_profile_version
+            and current_connection is not None
+            and profile.connection_approval_id == current_connection.approval_id
+            and self._profile_matches_identity(profile, identity)
+            and (
+                profile.mapping_strategy != "attached_object"
+                or receipt.ownership_proof_reference is not None
+            )
+        )
         current_head = (await self._execute(select(
             head.c.outcome,
         ).where(
@@ -1096,18 +1213,16 @@ class PostgreSQLCrmRelationshipV2Repository:
             await uow.commit()
 
     async def register_profile(
-        self, *, profile_id: UUID, workspace_id: UUID, environment_id: UUID,
-        version: int, digest: str, record: dict[str, Any], created_at: datetime,
-        actor_id: UUID,
+        self, *, profile: CrmRelationshipMappingProfile, digest: str,
+        created_at: datetime, actor_id: UUID,
     ) -> None:
         async with self._uow(
-            "crm_relationship_v2_write", profile_id, actor_id=actor_id,
-            workspace_id=workspace_id, environment_id=environment_id,
+            "crm_relationship_v2_write", profile.profile_id, actor_id=actor_id,
+            workspace_id=profile.workspace_id, environment_id=profile.environment_id,
         ) as uow:
             await CrmRelationshipV2Store(uow).register_profile(
-                profile_id=profile_id, workspace_id=workspace_id,
-                environment_id=environment_id, version=version, digest=digest,
-                record=record, created_at=created_at, actor_id=actor_id,
+                profile=profile, digest=digest, created_at=created_at,
+                actor_id=actor_id,
             )
             await uow.commit()
 

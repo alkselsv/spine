@@ -172,6 +172,7 @@ from spine.infrastructure.persistence.postgresql import (
 from spine.infrastructure.persistence.crm_relationship_v2 import (
     PostgreSQLCrmRelationshipV2Repository,
 )
+from spine.domain.sources.crm_relationship_v2 import CrmRelationshipMappingProfile
 from spine.infrastructure.persistence.parsed_artifacts import (
     PostgreSQLParsedArtifactRepository,
 )
@@ -8140,40 +8141,44 @@ async def test_crm_relationship_profile_versions_are_immutable_and_replayable(
         ),
     )
     profile_id = synthetic_uuid(71621)
-    profile_record = {
-        "schema_version": "bitrix24-crm-files-mapping-profile:v1",
-        "record_kind": "mapping_profile",
-        "profile_id": str(profile_id),
-        "mapping": "synthetic",
-    }
-    await repository.register_profile(
+    profile = CrmRelationshipMappingProfile(
+        schema_version="bitrix24-crm-files-mapping-profile:v1",
+        record_kind="mapping_profile",
         profile_id=profile_id,
         workspace_id=workspace_id,
         environment_id=environment_id,
-        version=1,
+        profile_version=1,
+        provider_instance="synthetic.bitrix.portal",
+        connection_id=synthetic_uuid(71622),
+        connection_approval_id=synthetic_uuid(71623),
+        qualification_reference=synthetic_uuid(71624),
+        approval_reference=synthetic_uuid(71625),
+        activity_namespace="bitrix.activity",
+        raw_entity_type_ids=("2",),
+        entity_namespace="bitrix.company",
+        files_namespace="bitrix.activity.files",
+        normalizer_id="bitrix.owner-type",
+        normalizer_version="v1",
+        read_methods=("crm.activity.binding.list",),
+        mapping_strategy="direct_disk_object",
+        disk_namespace="bitrix.disk",
+    )
+    await repository.register_profile(
+        profile=profile,
         digest="a" * 64,
-        record=profile_record,
         created_at=INGESTION_CONTRACT_NOW,
         actor_id=actor_id,
     )
     await repository.register_profile(
-        profile_id=profile_id,
-        workspace_id=workspace_id,
-        environment_id=environment_id,
-        version=1,
+        profile=profile,
         digest="a" * 64,
-        record=profile_record,
         created_at=INGESTION_CONTRACT_NOW,
         actor_id=actor_id,
     )
     with pytest.raises(IdempotencyConflictError):
         await repository.register_profile(
-            profile_id=profile_id,
-            workspace_id=workspace_id,
-            environment_id=environment_id,
-            version=1,
+            profile=profile.model_copy(update={"disk_namespace": "different.disk"}),
             digest="b" * 64,
-            record={**profile_record, "mapping": "changed"},
             created_at=INGESTION_CONTRACT_NOW,
             actor_id=actor_id,
         )

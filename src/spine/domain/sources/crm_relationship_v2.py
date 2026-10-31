@@ -72,6 +72,50 @@ class CrmRelationshipIdentity(DefinitionModel):
         return self
 
 
+class CrmRelationshipMappingProfile(DefinitionModel):
+    """Immutable, exact-flow mapping with retained approval references."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["bitrix24-crm-files-mapping-profile:v1"]
+    record_kind: Literal["mapping_profile"]
+    profile_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    profile_version: int = Field(ge=1)
+    provider_instance: str = Field(min_length=1, max_length=128)
+    connection_id: UUID
+    connection_approval_id: UUID
+    qualification_reference: UUID
+    approval_reference: UUID
+    activity_namespace: str = Field(min_length=1, max_length=128)
+    raw_entity_type_ids: tuple[str, ...] = Field(min_length=1, max_length=64)
+    entity_namespace: str = Field(min_length=1, max_length=128)
+    files_namespace: str = Field(min_length=1, max_length=128)
+    normalizer_id: str = Field(min_length=1, max_length=128)
+    normalizer_version: str = Field(min_length=1, max_length=64)
+    read_methods: tuple[str, ...] = Field(min_length=1, max_length=16)
+    mapping_strategy: Literal["direct_disk_object", "attached_object"]
+    ownership_proof_reference: str | None = Field(default=None, max_length=255)
+    disk_namespace: str = Field(min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_profile(self) -> "CrmRelationshipMappingProfile":
+        for name in (
+            "profile_id", "workspace_id", "environment_id", "connection_id",
+            "connection_approval_id", "qualification_reference", "approval_reference",
+        ):
+            if getattr(self, name).int == 0:
+                raise ValueError(f"{name} must be non-zero")
+        if "crm.activity.binding.list" not in self.read_methods:
+            raise ValueError("mapping profile must qualify exact activity binding reads")
+        if len(set(self.read_methods)) != len(self.read_methods):
+            raise ValueError("mapping profile read methods must be unique")
+        if self.mapping_strategy == "attached_object" and not self.ownership_proof_reference:
+            raise ValueError("attached-object mapping requires an ownership proof reference")
+        return self
+
+
 def relationship_key(identity: CrmRelationshipIdentity | Mapping[str, object]) -> str:
     """Return the ADR-0053 key from identity natural-key fields only."""
     names = (
@@ -144,10 +188,32 @@ class CrmRelationshipObservationReceipt(DefinitionModel):
     claim_id: UUID
     workspace_id: UUID
     environment_id: UUID
+    provider_instance: str = Field(min_length=1, max_length=128)
     connection_id: UUID
     connection_version_id: UUID
+    activity_namespace: str = Field(min_length=1, max_length=128)
+    activity_id: str = Field(min_length=1, max_length=256)
+    raw_entity_type_id: str = Field(min_length=1, max_length=128)
+    normalizer_id: str = Field(min_length=1, max_length=128)
+    normalizer_version: str = Field(min_length=1, max_length=64)
+    entity_namespace: str = Field(min_length=1, max_length=128)
+    entity_id: str = Field(min_length=1, max_length=256)
+    files_namespace: str = Field(min_length=1, max_length=128)
+    files_item_id: str = Field(min_length=1, max_length=256)
     mapping_profile_id: UUID
     mapping_profile_version: int = Field(ge=1)
+    binding_method: Literal["crm.activity.binding.list"]
+    binding_page_count: int = Field(ge=1, le=100)
+    binding_evidence_reference: str = Field(min_length=1, max_length=255)
+    binding_evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    positive_pair_observed: bool
+    ownership_proof_reference: str | None = Field(default=None, max_length=255)
+    ownership_proof_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    disk_namespace: str = Field(min_length=1, max_length=128)
+    disk_object_id: str = Field(min_length=1, max_length=256)
+    disk_version_evidence: str = Field(min_length=1, max_length=256)
+    source_object_id: UUID
+    source_revision_id: UUID
     acting_human_id: UUID
     authorization_generation: int = Field(ge=1)
     configuration_generation: int = Field(ge=1)
@@ -163,12 +229,16 @@ class CrmRelationshipObservationReceipt(DefinitionModel):
         for name in (
             "receipt_id", "claim_id", "workspace_id", "environment_id",
             "connection_id", "connection_version_id", "mapping_profile_id", "acting_human_id",
-            "idempotency_key",
+            "source_object_id", "source_revision_id", "idempotency_key",
         ):
             if getattr(self, name).int == 0:
                 raise ValueError(f"{name} must be non-zero")
         if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
             raise ValueError("observed_at must be timezone-aware")
+        if (self.ownership_proof_reference is None) != (self.ownership_proof_digest is None):
+            raise ValueError("ownership proof reference and digest must be provided together")
+        if self.outcome is CrmEligibilityOutcome.ELIGIBLE_VERIFIED and not self.positive_pair_observed:
+            raise ValueError("positive eligibility requires exact binding-pair evidence")
         return self
 
 
@@ -278,5 +348,6 @@ __all__ = [
     "CRM_RELATIONSHIP_V2", "CrmEligibilityOutcome", "CrmRelationshipClaim",
     "CrmRelationshipEligibility", "CrmRelationshipEligibilityHead",
     "CrmRelationshipIdentity", "CrmRelationshipKind",
-    "CrmRelationshipLifecycleEvent", "CrmRelationshipObservationReceipt", "relationship_key",
+    "CrmRelationshipLifecycleEvent", "CrmRelationshipMappingProfile",
+    "CrmRelationshipObservationReceipt", "relationship_key",
 ]
