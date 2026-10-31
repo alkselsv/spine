@@ -40,6 +40,7 @@ from spine.evals.asr_candidate_qualification_runner import _network_boundary_mis
 import spine.evals.asr_candidate_qualification_runner as qualification_runner
 from spine.evals.transcription_russian_v2 import (
     load_russian_transcription_v2_dataset,
+    TRANSCRIPTION_DATASET_ID,
     TRANSCRIPTION_V1_SHA256,
     transcription_dataset_v2_sha256,
 )
@@ -564,6 +565,34 @@ def test_historical_v1_dataset_is_recognized_without_inference(tmp_path: Path) -
     assert report.dataset_sha256 == TRANSCRIPTION_V1_SHA256
     assert report.overall_status.value == "NOT_VERIFIED"
     assert report.case_observations == ()
+
+
+@pytest.mark.parametrize(
+    ("dataset_id", "dataset_sha256"),
+    (
+        ("unrelated-dataset", TRANSCRIPTION_V1_SHA256),
+        (TRANSCRIPTION_DATASET_ID, "d" * 64),
+    ),
+)
+def test_historical_v1_rejects_unpinned_dataset_identity(
+    tmp_path: Path,
+    dataset_id: str,
+    dataset_sha256: str,
+) -> None:
+    payload = _runtime_manifest(tmp_path).model_dump(mode="json")
+    payload.update({
+        "dataset_id": dataset_id,
+        "dataset_version": "1.0.0",
+        "dataset_sha256": dataset_sha256,
+        "configuration_digest": "0" * 64,
+    })
+    manifest = CandidateRuntimeManifest.model_validate(payload)
+    manifest = manifest.model_copy(update={"configuration_digest": canonical_configuration_digest(manifest)})
+    manifest_path = tmp_path / "untrusted-historical.json"
+    manifest_path.write_text(manifest.model_dump_json(), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="historical v1 dataset identity or digest"):
+        run_preflight_from_file(manifest_path, tmp_path / "unused-assets")
 
 
 def test_runtime_failure_returns_not_verified_evidence_without_exception_payload(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

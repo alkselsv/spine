@@ -61,7 +61,10 @@ from spine.evals.transcription_russian_v2 import (
     transcription_dataset_v2_sha256,
     validate_transcription_v2_assets,
 )
-from spine.evals.transcription_russian_v2 import TRANSCRIPTION_V1_SHA256
+from spine.evals.transcription_russian_v2 import (
+    TRANSCRIPTION_DATASET_ID,
+    TRANSCRIPTION_V1_SHA256,
+)
 from spine.infrastructure.asr_candidates import (
     CandidateAudioResolver,
     CandidateHostEvidence,
@@ -487,6 +490,11 @@ def save_immutable_report(report: CandidateQualificationReport, output_path: Pat
 def run_preflight_from_file(manifest_path: Path, asset_root: Path) -> CandidateQualificationReport:
     manifest = CandidateRuntimeManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
     if manifest.dataset_version == "1.0.0":
+        if (
+            manifest.dataset_id != TRANSCRIPTION_DATASET_ID
+            or manifest.dataset_sha256 != TRANSCRIPTION_V1_SHA256
+        ):
+            raise ValueError("historical v1 dataset identity or digest does not match the pinned dataset")
         return _not_verified_report(
             _candidate_profile(manifest),
             dataset_id=manifest.dataset_id,
