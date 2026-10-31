@@ -64,6 +64,8 @@ class DisclosureRevalidationFailureCode(str, Enum):
     SOURCE_SUPERSEDED = "source_superseded"
     SOURCE_TOMBSTONED = "source_tombstoned"
     RETENTION_INELIGIBLE = "retention_ineligible"
+    DISCLOSURE_REVIEW_REQUIRED = "disclosure_review_required"
+    DISCLOSURE_HELD = "disclosure_held"
     SNAPSHOT_CHANGED = "snapshot_changed"
     BOUNDARY_CHANGED = "boundary_changed"
     AS_OF_CHANGED = "as_of_changed"
@@ -259,6 +261,8 @@ class DisclosureDependencyObservation(DefinitionModel):
     superseded: bool = False
     tombstoned: bool = False
     retention_eligible: bool = False
+    lifecycle_disclosure_eligible: bool
+    active_disclosure_hold: bool
     historical_revision_available: bool = False
 
     @model_validator(mode="after")

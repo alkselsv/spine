@@ -139,6 +139,8 @@ class CurrentState:
             "current_revision_digest": dependency.source_revision_digest,
             "revision_current": True,
             "retention_eligible": True,
+            "lifecycle_disclosure_eligible": True,
+            "active_disclosure_hold": False,
             "historical_revision_available": True,
             "historical_revision_id": dependency.source_revision_id,
             "historical_revision_digest": dependency.source_revision_digest,

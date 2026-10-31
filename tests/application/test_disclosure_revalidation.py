@@ -29,7 +29,6 @@ from spine.infrastructure.persistence.qa_sessions import InMemoryQASessionReposi
 
 from tests.domain.context_bundle.test_context_bundle_models import context_bundle
 
-
 WORKSPACE = UUID(int=1)
 ENVIRONMENT = UUID(int=2)
 REQUESTER = UUID(int=30)
@@ -55,6 +54,8 @@ def observation(**overrides: object) -> DisclosureRevalidationObservation:
         "current_revision_digest": dependency.source_revision_digest,
         "revision_current": True,
         "retention_eligible": True,
+        "lifecycle_disclosure_eligible": True,
+        "active_disclosure_hold": False,
     }
     values.update(overrides.pop("dependency", {}))  # type: ignore[arg-type]
     publication = DisclosurePublicationObservation(
@@ -92,26 +93,20 @@ class FakeStateProvider:
         self.value = value
         self.calls = 0
 
-    async def resolve(
-        self, _request: DisclosureRevalidationRequest
-    ) -> DisclosureRevalidationObservation:
+    async def resolve(self, _request: DisclosureRevalidationRequest) -> DisclosureRevalidationObservation:
         self.calls += 1
         return self.value
 
 
 class InterruptedStateProvider:
-    async def resolve(
-        self, _request: DisclosureRevalidationRequest
-    ) -> DisclosureRevalidationObservation:
+    async def resolve(self, _request: DisclosureRevalidationRequest) -> DisclosureRevalidationObservation:
         raise RuntimeError("validation interrupted")
 
 
 @pytest.mark.asyncio
 async def test_current_authority_allows_complete_stored_answer_reuse() -> None:
     provider = FakeStateProvider(observation())
-    service = DisclosureRevalidationService(
-        provider, InMemoryDisclosureValidationResultRepository(), clock=lambda: NOW
-    )
+    service = DisclosureRevalidationService(provider, InMemoryDisclosureValidationResultRepository(), clock=lambda: NOW)
 
     result = await service.revalidate(request())
 
@@ -124,8 +119,26 @@ async def test_current_authority_allows_complete_stored_answer_reuse() -> None:
 @pytest.mark.parametrize(
     ("field", "value", "failure"),
     (
-        ("contributor_authorized", False, DisclosureRevalidationFailureCode.CONTRIBUTOR_UNAUTHORIZED),
-        ("retention_eligible", False, DisclosureRevalidationFailureCode.RETENTION_INELIGIBLE),
+        (
+            "contributor_authorized",
+            False,
+            DisclosureRevalidationFailureCode.CONTRIBUTOR_UNAUTHORIZED,
+        ),
+        (
+            "retention_eligible",
+            False,
+            DisclosureRevalidationFailureCode.RETENTION_INELIGIBLE,
+        ),
+        (
+            "lifecycle_disclosure_eligible",
+            False,
+            DisclosureRevalidationFailureCode.DISCLOSURE_REVIEW_REQUIRED,
+        ),
+        (
+            "active_disclosure_hold",
+            True,
+            DisclosureRevalidationFailureCode.DISCLOSURE_HELD,
+        ),
         ("tombstoned", True, DisclosureRevalidationFailureCode.SOURCE_TOMBSTONED),
     ),
 )
@@ -203,11 +216,7 @@ async def test_revision_replacement_requires_revalidation_without_disclosing_old
 async def test_material_later_publication_requires_revalidation() -> None:
     state = observation()
     state = state.model_copy(
-        update={
-            "publication": state.publication.model_copy(
-                update={"impact": DisclosurePublicationImpact.MATERIAL}
-            )
-        }
+        update={"publication": state.publication.model_copy(update={"impact": DisclosurePublicationImpact.MATERIAL})}
     )
     service = DisclosureRevalidationService(
         FakeStateProvider(state),
@@ -232,9 +241,11 @@ async def test_authority_generation_change_requires_revalidation(field: str) -> 
         FakeStateProvider(
             observation(
                 **{
-                    field: getattr(dependency, field.replace("current_", "")) + 1
-                    if field != "current_policy_generation"
-                    else dependency.policy_generation + 1
+                    field: (
+                        getattr(dependency, field.replace("current_", "")) + 1
+                        if field != "current_policy_generation"
+                        else dependency.policy_generation + 1
+                    )
                 }
             )
         ),
@@ -290,9 +301,7 @@ async def test_missing_dependency_fails_closed_and_does_not_reuse_stored_answer(
         InMemoryDisclosureValidationResultRepository(),
         clock=lambda: NOW,
     )
-    missing = request(
-        dependencies=DisclosureDependencySet(dependencies=())
-    )
+    missing = request(dependencies=DisclosureDependencySet(dependencies=()))
     # An empty dependency set is safe for a question-only history read, but an
     # answer request must be represented by its complete dependency set.  The
     # provider's missing observation is the fail-closed case covered here.
@@ -325,9 +334,7 @@ async def test_exact_replay_is_idempotent_and_isolated_by_workspace() -> None:
 @pytest.mark.asyncio
 async def test_fresh_revalidation_rechecks_authority_after_lifecycle_change() -> None:
     provider = FakeStateProvider(observation())
-    service = DisclosureRevalidationService(
-        provider, InMemoryDisclosureValidationResultRepository(), clock=lambda: NOW
-    )
+    service = DisclosureRevalidationService(provider, InMemoryDisclosureValidationResultRepository(), clock=lambda: NOW)
 
     first = await service.revalidate(request(force_fresh=True))
     provider.value = observation(tombstoned=True)

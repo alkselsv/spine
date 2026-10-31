@@ -142,6 +142,12 @@ disposition for a Source Object. It follows the current authorized Lifecycle
 Decision; a later Lifecycle Observation does not itself change eligibility.
 _Avoid_: Latest observation, canonical currentness, content permission
 
+**Disclosure Hold**:
+An immutable, temporary source-governance denial over an exact set of source
+revisions, disclosure dependencies and derived artifacts. Its separate release
+clears only that hold and grants no provider or content access.
+_Avoid_: Legal hold, Access Policy denial, source deletion, mutable hold flag
+
 **Canonical Boundary**:
 A durable, commit-consistent cut of accepted-current source state for one
 workspace and environment, with a server-recorded boundary time.

@@ -10,6 +10,7 @@ the trusted context.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from uuid import UUID
 
 from spine.application.persistence.idempotency import IdempotencyKey
@@ -57,6 +58,9 @@ from spine.domain.feedback import FeedbackOutcome, FeedbackTargetKind
 from spine.domain.projections import PublishedActivePublication
 from spine.domain.qa_sessions import QAMessage, QASession
 from spine.domain.sources import RevisionKind
+from spine.infrastructure.disclosure_constraints import (
+    resolve_final_disclosure_constraints,
+)
 from spine.infrastructure.persistence.parsed_artifacts import (
     ParsedArtifactCitationExcerptResolver,
     PostgreSQLParsedArtifactRepository,
@@ -115,6 +119,9 @@ class _CurrentSessionDisclosureState:
         if request.requester_id != self.requester.subject_id:
             raise RuntimeError("Q&A disclosure requester changed")
         dependencies = tuple(request.dependencies.dependencies)
+        artifact_id = request.message_id or request.attempt_id or request.run_id
+        if artifact_id is None:
+            raise RuntimeError("disclosure artifact identity is unavailable")
         observations = []
         requester_authorized = True
         for dependency in dependencies:
@@ -144,6 +151,12 @@ class _CurrentSessionDisclosureState:
                     self.requester.subject_id,
                     frozenset(),
                 )
+            )
+            lifecycle_eligible, active_hold = await resolve_final_disclosure_constraints(
+                self.uow,
+                dependency,
+                artifact_id=artifact_id,
+                evaluated_at=datetime.now(timezone.utc),
             )
             requester_authorized = requester_authorized and contributor_authorized
             observations.append(
@@ -190,6 +203,8 @@ class _CurrentSessionDisclosureState:
                         head is not None
                         and head.current_revision_kind is RevisionKind.CONTENT
                     ),
+                    lifecycle_disclosure_eligible=lifecycle_eligible,
+                    active_disclosure_hold=active_hold,
                 )
             )
         publication = await self.uow.projections.resolve_active_publication(  # type: ignore[attr-defined]

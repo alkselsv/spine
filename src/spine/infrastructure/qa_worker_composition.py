@@ -136,6 +136,7 @@ from spine.domain.context_profiles import (
 )
 from spine.domain.projections import PublishedActivePublication
 from spine.domain.sources import RevisionKind
+from spine.domain.sources.disclosure_holds import disclosure_hold_dependency_id
 from spine.domain.context_bundles import (
     RevalidationCheckpointResult,
     RevalidationDisposition,
@@ -162,6 +163,10 @@ from spine.infrastructure.persistence.postgresql_authorization import (
     PostgreSQLQualificationAuthorityResolver,
 )
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
+from spine.infrastructure.disclosure_constraints import (
+    resolve_final_disclosure_constraints,
+    retrieval_disclosure_allowed,
+)
 from spine.infrastructure.qa_agent_runtime import (
     ConfiguredGroundedConflictValidator,
     ConfiguredMissingCoverageImpactValidator,
@@ -2021,6 +2026,35 @@ class _ValidationPlans:
         )
 
 
+class _CurrentRetrievalDisclosureConstraint(_ScopedPort):
+    async def allows(self, context, member, evaluated_at: datetime) -> bool:
+        persistence = self.context()
+        if (
+            context.workspace_id != persistence.scope.workspace_id
+            or context.environment_id != persistence.scope.environment_id
+        ):
+            return False
+        dependency_id = disclosure_hold_dependency_id(
+            context.workspace_id,
+            context.environment_id,
+            member.source_object_id,
+            member.source_revision_id,
+        )
+        async with self._uow_factory(persistence) as uow:  # type: ignore[operator]
+            allowed = await retrieval_disclosure_allowed(
+                uow,
+                workspace_id=context.workspace_id,
+                environment_id=context.environment_id,
+                source_object_id=member.source_object_id,
+                source_revision_id=member.source_revision_id,
+                dependency_id=dependency_id,
+                artifact_id=member.projection_snapshot_member_id,
+                evaluated_at=evaluated_at,
+            )
+            await uow.commit()
+            return allowed
+
+
 class _CurrentDisclosureStateProvider(_ScopedPort):
     def __init__(self, *, authorization: ContentAuthorizationDecisionService, **kwargs: object) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
@@ -2042,6 +2076,9 @@ class _CurrentDisclosureStateProvider(_ScopedPort):
         )
         human = TrustedAuthorizationContext.model_validate(human_values)
         dependencies = tuple(request.dependencies.dependencies)
+        artifact_id = request.message_id or request.attempt_id or request.run_id
+        if artifact_id is None:
+            raise RuntimeError("disclosure artifact identity is unavailable")
         decision = await self._authorization.decide_human_disclosure(
             human, tuple(item.source_object_id for item in dependencies)
         )
@@ -2060,6 +2097,12 @@ class _CurrentDisclosureStateProvider(_ScopedPort):
                     dependency.source_object_id
                 )
                 auth = evidence_by_source.get(dependency.source_object_id)
+                lifecycle_eligible, active_hold = await resolve_final_disclosure_constraints(
+                    uow,
+                    dependency,
+                    artifact_id=artifact_id,
+                    evaluated_at=datetime.now(timezone.utc),
+                )
                 observations.append(
                     DisclosureDependencyObservation(
                         dependency_id=dependency.dependency_id,
@@ -2098,6 +2141,8 @@ class _CurrentDisclosureStateProvider(_ScopedPort):
                             head is not None
                             and head.current_revision_kind is RevisionKind.CONTENT
                         ),
+                        lifecycle_disclosure_eligible=lifecycle_eligible,
+                        active_disclosure_hold=active_hold,
                     )
                 )
             await uow.commit()
@@ -2461,6 +2506,10 @@ async def build_production_qa_capability_graph(
         authorization=broker_content_authorization,
         snapshot_members=snapshot_members,  # type: ignore[arg-type]
         provider_scope_safety=_CanonicalSourceIsolation(),
+        disclosure_constraint=_CurrentRetrievalDisclosureConstraint(
+            **port_values,
+            operation="resolve_retrieval_disclosure_constraints",
+        ),
     )
     profile_resolver = ServerApprovedContextProfileResolver(
         repository=_ProfileRepository(**port_values),

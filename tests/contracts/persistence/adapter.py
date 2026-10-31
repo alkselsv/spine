@@ -31,6 +31,9 @@ class PersistenceAdapter:
     ingestion_context: Callable[[UUID, UUID, str], TrustedPersistenceContext] | None = field(
         default=None, kw_only=True
     )
+    governance_context: Callable[
+        [UUID, UUID, UUID, str], TrustedPersistenceContext
+    ] | None = field(default=None, kw_only=True)
 @dataclass(frozen=True)
 class AuditPersistenceAdapter(PersistenceAdapter):
     """In-memory audit capabilities owned by Issue #63 contract tests."""

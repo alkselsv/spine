@@ -345,6 +345,24 @@ class LifecycleDecision(DefinitionModel):
                 LifecycleAuthorityKind.PROVIDER_CONTROL_PLANE,
             }:
                 raise ValueError("scope withdrawal requires governance authority")
+        if (
+            self.effect is LifecycleDecisionEffect.DISCLOSURE_REVIEW_REQUIRED
+            or self.status is LifecycleEligibilityStatus.DISCLOSURE_REVIEW_REQUIRED
+        ) and (
+            observation.kind
+            not in {
+                LifecycleObservationKind.MOVE_OUTSIDE_SCOPE,
+                LifecycleObservationKind.TRASHED,
+                LifecycleObservationKind.DELETED_METADATA,
+            }
+            or observation.confidence is not LifecycleObservationConfidence.QUALIFIED
+            or self.effect is not LifecycleDecisionEffect.DISCLOSURE_REVIEW_REQUIRED
+            or self.status is not LifecycleEligibilityStatus.DISCLOSURE_REVIEW_REQUIRED
+            or self.authority_kind is not LifecycleAuthorityKind.SOURCE_GOVERNANCE
+        ):
+            raise ValueError(
+                "disclosure review requires exact positive lifecycle evidence"
+            )
         if observation.kind in non_authorizing_observations and (
             self.effect is LifecycleDecisionEffect.READ_WITHDRAWN
             or self.status is LifecycleEligibilityStatus.READ_WITHDRAWN

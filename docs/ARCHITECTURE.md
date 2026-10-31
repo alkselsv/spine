@@ -413,6 +413,21 @@ Policy или membership change, повышающий effective `read_content` �
 требует отдельного approval другого независимо авторизованного administrator.
 Self-approval запрещён также через team membership и service-principal
 configuration. Если approver недоступен, change остаётся pending или denied.
+
+Qualified positive move-out, trash or deleted metadata may advance the existing
+source lifecycle authority to `DISCLOSURE_REVIEW_REQUIRED`; outage, filtered
+absence, scope withdrawal and fabricated or stale evidence cannot. A persistent
+`DisclosureHold:v1` is a separate immutable, finite source-governance decision
+over exact source-revision, disclosure-dependency and artifact identities.
+PostgreSQL stores append-only hold/release history plus a tenant-scoped release
+CAS; retrieval and final disclosure consume it only as an additional deny
+constraint. `AccessPolicy` remains the sole positive content authority. Release
+clears one exact hold but does not resolve lifecycle review, restore provider
+access or grant disclosure. Legal holds remain a separate Legal/Compliance
+contract. The additive migration is reader-first; rollback disables new writes
+and may remove the new schema only before hold history exists. Once populated,
+history is retained and rollback uses the previous application with the additive
+tables left in place until an explicit compatible contraction is approved.
 Break-glass access в R1 отсутствует; initial bootstrap использует отдельную
 контролируемую и аудируемую процедуру.
 

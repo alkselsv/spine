@@ -35,6 +35,13 @@ from .lifecycle import (
     LifecycleReasonCode,
     lifecycle_status_for_observation,
 )
+from .disclosure_holds import (
+    DisclosureHold,
+    DisclosureHoldEffect,
+    DisclosureHoldReason,
+    DisclosureHoldRelease,
+    disclosure_hold_dependency_id,
+)
 from .register_associations import (
     RegisterAssociationAcceptance,
     RegisterAssociationFutureOwner,
@@ -121,6 +128,11 @@ from .google import (
 )
 
 __all__ = [
+    "DisclosureHold",
+    "DisclosureHoldEffect",
+    "DisclosureHoldReason",
+    "DisclosureHoldRelease",
+    "disclosure_hold_dependency_id",
     "AccessGrant",
     "CanonicalAcceptance",
     "RegisterAssociationAcceptance",

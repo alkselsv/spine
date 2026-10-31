@@ -198,6 +198,8 @@ class DisclosureRevalidationService:
                 DisclosureRevalidationFailureCode.CONTRIBUTOR_UNAUTHORIZED,
                 DisclosureRevalidationFailureCode.SOURCE_TOMBSTONED,
                 DisclosureRevalidationFailureCode.RETENTION_INELIGIBLE,
+                DisclosureRevalidationFailureCode.DISCLOSURE_REVIEW_REQUIRED,
+                DisclosureRevalidationFailureCode.DISCLOSURE_HELD,
                 DisclosureRevalidationFailureCode.REQUESTER_UNAUTHORIZED,
                 DisclosureRevalidationFailureCode.DEPENDENCY_MISSING,
                 DisclosureRevalidationFailureCode.SOURCE_REVISION_UNAVAILABLE,
@@ -359,6 +361,10 @@ def _dependency_failures(
         failures.append(DisclosureRevalidationFailureCode.SOURCE_SUPERSEDED)
     if not observation.retention_eligible:
         failures.append(DisclosureRevalidationFailureCode.RETENTION_INELIGIBLE)
+    if not observation.lifecycle_disclosure_eligible:
+        failures.append(DisclosureRevalidationFailureCode.DISCLOSURE_REVIEW_REQUIRED)
+    if observation.active_disclosure_hold:
+        failures.append(DisclosureRevalidationFailureCode.DISCLOSURE_HELD)
     if allow_historical_revision:
         if (
             not observation.historical_revision_available
