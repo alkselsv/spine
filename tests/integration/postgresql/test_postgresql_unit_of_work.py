@@ -228,6 +228,7 @@ from tests.contracts.persistence.test_projection_contract import (
     test_projection_recovery_result_bridge_persists_and_replays_canonical_evidence as contract_projection_recovery_result_bridge,
 )
 from tests.contracts.persistence.test_source_observation_contract import (
+    connector_source as source_contract_connector_source,
     prepare as prepare_source_scope,
     provenance as source_contract_provenance,
     revision as source_contract_revision,
@@ -8025,3 +8026,564 @@ async def test_requirements_artifacts_replay_successor_and_isolate_workspaces(
         await uow.commit()
     other_context = postgresql_adapter.ingestion_context(other_workspace, other_environment, "workflow.run.read")
     assert await artifacts.get(context=other_context, artifact_id=first.artifact_id) is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_selector_postgresql_publish_replays_and_serializes_cas(postgresql_adapter: PersistenceAdapter) -> None:
+    from sqlalchemy import func, insert, select, update
+    from spine.application.canonical_acceptance_selectors import CanonicalAcceptanceSelectorError
+    from spine.application.diagnostics.audit import AuditEventRegistry
+    from spine.domain.audit import AuditOutcome, CommandAuditPayload
+    from spine.domain.sources.canonical_acceptance_selector import (
+        CanonicalAcceptanceAuthorityKind,
+        TrustedCanonicalAcceptanceSelector,
+    )
+    from spine.infrastructure.persistence.postgresql_canonical_acceptance_selectors import (
+        PostgreSQLCanonicalAcceptanceSelectorRepository,
+    )
+    from spine.infrastructure.persistence.postgresql_mappings import (
+        audit_events,
+        original_upload_records,
+        trusted_canonical_acceptance_selector_versions,
+    )
+    from spine.application.persistence.errors import UnexpectedPersistenceError
+    from spine.application.persistence.context import (
+        EnvironmentScope,
+        PersistenceOperation,
+        PersistencePurpose,
+    )
+
+    workspace_id, environment_id = synthetic_uuid(72500), synthetic_uuid(72501)
+    await prepare_source_scope(postgresql_adapter, workspace_id, environment_id)
+    context = postgresql_adapter.environment_context(workspace_id, environment_id)
+    boundary = postgresql_adapter.uow_factory._context_verifier  # type: ignore[attr-defined]
+
+    def selector_publish_context(_operation, workspace, environment):
+        return boundary.interactive(
+            scope=EnvironmentScope(workspace_id=workspace, environment_id=environment),
+            acting_subject_id=synthetic_uuid(72525),
+            purpose=PersistencePurpose("canonical_acceptance_selector"),
+            operation=PersistenceOperation("canonical_acceptance_selector.publish"),
+            trace_id=synthetic_uuid(72526),
+        )
+
+    publication_context = selector_publish_context(
+        "canonical_acceptance_selector.publish", workspace_id, environment_id
+    )
+    upload_id = synthetic_uuid(72502)
+    async with postgresql_adapter.uow_factory(context) as uow:
+        await uow._execute(insert(original_upload_records).values(
+            upload_id=upload_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            record_version=1,
+            record={"schema_version": "original-upload:v1", "upload_id": str(upload_id)},
+        ))
+        await uow.commit()
+
+    registry = AuditEventRegistry.with_default_families()
+    repository = PostgreSQLCanonicalAcceptanceSelectorRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=selector_publish_context,
+    )
+    recorded_at = datetime(2026, 10, 31, tzinfo=timezone.utc)
+
+    def build_selector(selector_id: UUID, version: int, predecessor: UUID | None,
+                       audit_id: UUID, idempotency_identity: str) -> TrustedCanonicalAcceptanceSelector:
+        return TrustedCanonicalAcceptanceSelector(
+            selector_id=selector_id,
+            selector_series_id=synthetic_uuid(72503),
+            selector_version=version,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            source_kind="document",
+            source_contract_id="original_upload",
+            source_contract_version="v1",
+            authority_kind=CanonicalAcceptanceAuthorityKind.UPLOAD,
+            approved_scope_reference=upload_id,
+            upload_authority_reference=upload_id,
+            required_canonical_acceptance_schema_version=1,
+            approval_reference=upload_id,
+            predecessor_selector_id=predecessor,
+            audit_reference=audit_id,
+            idempotency_identity=idempotency_identity,
+            created_at=recorded_at,
+        )
+
+    def build_audit(audit_id: UUID):
+        return registry.build_event(
+            audit_event_id=audit_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            event_type="command.outcome",
+            schema_version=1,
+            payload=CommandAuditPayload(command_type="canonical_acceptance_selector.publish"),
+            origin=publication_context.origin,
+            acting_subject_id=publication_context.acting_subject_id,
+            service_principal_id=publication_context.service_principal_id,
+            trace_id=publication_context.trace_id,
+            occurred_at=recorded_at,
+            outcome=AuditOutcome.ACCEPTED,
+            reason="selector_published",
+        )
+
+    first = build_selector(synthetic_uuid(72504), 1, None, synthetic_uuid(72505), "selector:725:first")
+    worker_repository = PostgreSQLCanonicalAcceptanceSelectorRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=lambda _operation, workspace, environment: postgresql_adapter.environment_context(workspace, environment),
+    )
+    with pytest.raises(CanonicalAcceptanceSelectorError, match="interactive context"):
+        await worker_repository.publish(
+            first, expected_current_selector_id=None, expected_cas_version=None,
+            recorded_at=recorded_at, audit_event=build_audit(first.audit_reference),
+        )
+    with pytest.raises(CanonicalAcceptanceSelectorError, match="head changed"):
+        await repository.publish(
+            first,
+            expected_current_selector_id=synthetic_uuid(72527),
+            expected_cas_version=1,
+            recorded_at=recorded_at,
+            audit_event=build_audit(first.audit_reference),
+        )
+    async with postgresql_adapter.uow_factory(context) as uow:
+        assert (await uow._execute(  # type: ignore[attr-defined]
+            select(func.count()).select_from(audit_events).where(
+                audit_events.c.audit_event_id == first.audit_reference
+            )
+        )).scalar_one() == 0
+        assert (await uow._execute(  # type: ignore[attr-defined]
+            select(func.count()).select_from(trusted_canonical_acceptance_selector_versions).where(
+                trusted_canonical_acceptance_selector_versions.c.selector_id == first.selector_id
+            )
+        )).scalar_one() == 0
+        await uow.rollback()  # type: ignore[attr-defined]
+    first_result = await repository.publish(
+        first, expected_current_selector_id=None, expected_cas_version=None,
+        recorded_at=recorded_at, audit_event=build_audit(first.audit_reference),
+    )
+    replay = await repository.publish(
+        first, expected_current_selector_id=None, expected_cas_version=None,
+        recorded_at=recorded_at, audit_event=build_audit(first.audit_reference),
+    )
+    assert first_result.replayed is False
+    assert replay.replayed is True
+    assert replay.selector == first
+    async with postgresql_adapter.uow_factory(context) as uow:
+        persisted_audit_id = await uow._execute(  # type: ignore[attr-defined]
+            select(audit_events.c.audit_event_id).where(
+                audit_events.c.audit_event_id == first.audit_reference
+            )
+        )
+        assert persisted_audit_id.scalar_one() == first.audit_reference
+        with pytest.raises(UnexpectedPersistenceError):
+            await uow._execute(  # type: ignore[attr-defined]
+                update(trusted_canonical_acceptance_selector_versions)
+                .where(trusted_canonical_acceptance_selector_versions.c.selector_id == first.selector_id)
+                .values(record={"tampered": True})
+            )
+
+    second = build_selector(synthetic_uuid(72506), 2, first.selector_id, synthetic_uuid(72507), "selector:725:second")
+    await repository.publish(
+        second, expected_current_selector_id=first.selector_id,
+        expected_cas_version=1, recorded_at=recorded_at,
+        audit_event=build_audit(second.audit_reference),
+    )
+    left = build_selector(synthetic_uuid(72508), 3, second.selector_id, synthetic_uuid(72509), "selector:725:left")
+    right = build_selector(synthetic_uuid(72510), 3, second.selector_id, synthetic_uuid(72511), "selector:725:right")
+    outcomes = await asyncio.gather(
+        repository.publish(left, expected_current_selector_id=second.selector_id,
+                           expected_cas_version=2, recorded_at=recorded_at,
+                           audit_event=build_audit(left.audit_reference)),
+        repository.publish(right, expected_current_selector_id=second.selector_id,
+                           expected_cas_version=2, recorded_at=recorded_at,
+                           audit_event=build_audit(right.audit_reference)),
+        return_exceptions=True,
+    )
+    assert sum(not isinstance(outcome, Exception) for outcome in outcomes) == 1
+    assert sum(isinstance(outcome, CanonicalAcceptanceSelectorError) for outcome in outcomes) == 1
+    other_workspace, other_environment = synthetic_uuid(72512), synthetic_uuid(72513)
+    await prepare_source_scope(postgresql_adapter, other_workspace, other_environment)
+    cross_tenant_repository = PostgreSQLCanonicalAcceptanceSelectorRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=lambda _operation, _workspace, _environment: postgresql_adapter.environment_context(
+            other_workspace, other_environment
+        ),
+    )
+    other_scope = await cross_tenant_repository.list_current(
+        workspace_id=workspace_id, environment_id=environment_id
+    )
+    assert other_scope == ()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_trusted_source_context_reader_uses_receipt_provenance_and_tenant_scope(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    from sqlalchemy import insert
+    from spine.domain.sources.canonical_acceptance_selector import CanonicalAcceptanceAuthorityKind
+    from spine.infrastructure.persistence.postgresql_canonical_acceptance_source import (
+        PostgreSQLTrustedCanonicalSourceContextReader,
+    )
+    from spine.infrastructure.persistence.postgresql_mappings import original_upload_records
+
+    workspace_id, environment_id = synthetic_uuid(72520), synthetic_uuid(72521)
+    await prepare_source_scope(postgresql_adapter, workspace_id, environment_id)
+    source_object = source_contract_source(workspace_id, environment_id)
+    source_revision = source_contract_revision(source_object, synthetic_uuid(72522))
+    provenance = source_contract_provenance(
+        source_object, source_revision.revision_id, "event-1"
+    ).model_copy(update={
+        "producer_kind": "upload",
+        "producer_reference": "upload-service",
+        "source_contract_id": "original_upload",
+        "source_contract_version": "v1",
+    })
+    context = postgresql_adapter.source_context(workspace_id, environment_id)
+    receipt_id = await _original_receipt(postgresql_adapter, context, 72520)
+    association = _receipt_association(
+        source_object,
+        source_revision,
+        provenance,
+        receipt_id=receipt_id,
+        number=72520,
+    )
+    async with postgresql_adapter.uow_factory(context) as uow:
+        await uow.sources.record_observation(SourceObservationCommand.create(
+            source=source_object,
+            revision=source_revision,
+            provenance=provenance,
+            idempotency_key=IdempotencyKey("selector-source-reader-72520"),
+            receipt_association=association,
+        ))
+        await uow._execute(insert(original_upload_records).values(
+            upload_id=association.original_upload_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            record_version=1,
+            record={"schema_version": "original-upload:v1", "upload_id": str(association.original_upload_id)},
+        ))
+        await uow.commit()
+
+    reader = PostgreSQLTrustedCanonicalSourceContextReader(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=lambda _operation, workspace, environment: postgresql_adapter.environment_context(workspace, environment),
+    )
+    result = await reader.get_source_context(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        source_object_id=source_object.source_object_id,
+        source_revision_id=source_revision.revision_id,
+    )
+    assert result is not None
+    assert result.authority_kind is CanonicalAcceptanceAuthorityKind.UPLOAD
+    assert result.upload_authority_reference == association.original_upload_id
+
+    other_workspace, other_environment = synthetic_uuid(72523), synthetic_uuid(72524)
+    await prepare_source_scope(postgresql_adapter, other_workspace, other_environment)
+    isolated = await reader.get_source_context(
+        workspace_id=other_workspace,
+        environment_id=other_environment,
+        source_object_id=source_object.source_object_id,
+        source_revision_id=source_revision.revision_id,
+    )
+    assert isolated is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_trusted_source_context_reader_requires_current_bitrix_authority_and_policy_heads(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    from sqlalchemy import insert
+    from spine.domain.connections.bitrix24_disk_scope import (
+        Bitrix24DiskContentPolicy,
+        Bitrix24DiskMembershipEvidence,
+        Bitrix24DiskRootPolicy,
+        Bitrix24DiskStorageClass,
+    )
+    from spine.domain.connections.provider import OpaqueProviderReference
+    from spine.infrastructure.connections.postgresql_provider_management import (
+        provider_connection_approvals,
+        provider_connection_versions,
+    )
+    from spine.infrastructure.persistence.postgresql_bitrix24_disk_policies import (
+        PostgreSQLBitrix24DiskPolicyRepository,
+    )
+    from spine.infrastructure.persistence.postgresql_canonical_acceptance_source import (
+        PostgreSQLTrustedCanonicalSourceContextReader,
+    )
+
+    workspace_id, environment_id = synthetic_uuid(72540), synthetic_uuid(72541)
+    await prepare_source_scope(postgresql_adapter, workspace_id, environment_id)
+    context = postgresql_adapter.environment_context(workspace_id, environment_id)
+    connection_id = synthetic_uuid(72542)
+    connection_version_id = synthetic_uuid(72543)
+    approval_id = synthetic_uuid(72544)
+    service_principal_id = synthetic_uuid(72545)
+    credential_reference, grant_reference = synthetic_uuid(72546), synthetic_uuid(72547)
+    scope_id = synthetic_uuid(72548)
+    recorded_at = datetime(2026, 10, 31, tzinfo=timezone.utc)
+    migration_engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with migration_engine.begin() as connection:
+            await connection.execute(
+                insert(provider_connection_approvals).values(
+                    approval_id=approval_id,
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                    service_principal_id=service_principal_id,
+                    provider_kind="bitrix24",
+                    credential_reference=credential_reference,
+                    grant_reference=grant_reference,
+                    approved_resource_scope_references=[scope_id],
+                    authorization_generation=3,
+                    configuration_generation=4,
+                    status="active",
+                    recorded_at=recorded_at,
+                )
+            )
+            await connection.execute(
+                insert(provider_connection_versions).values(
+                    connection_version_id=connection_version_id,
+                    connection_id=connection_id,
+                    approval_id=approval_id,
+                    version=1,
+                    predecessor_version_id=None,
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                    service_principal_id=service_principal_id,
+                    provider_kind="bitrix24",
+                    credential_reference=credential_reference,
+                    grant_reference=grant_reference,
+                    approved_resource_scope_references=[scope_id],
+                    authorization_generation=3,
+                    configuration_generation=4,
+                    status="active",
+                    capabilities=[],
+                    health="healthy",
+                    diagnostic_codes=[],
+                    observed_at=recorded_at,
+                    cursor_lag_seconds=None,
+                    last_successful_reconciliation_at=None,
+                    receipt_id=synthetic_uuid(72549),
+                    idempotency_key="selector-reader-bitrix24-72540",
+                    command_digest="c" * 64,
+                    recorded_at=recorded_at,
+                )
+            )
+    finally:
+        await migration_engine.dispose()
+
+    content = Bitrix24DiskContentPolicy(
+        policy_id=synthetic_uuid(72550),
+        version="content-v1",
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        connection_id=connection_id,
+        connection_version_id=connection_version_id,
+        resource_scope_reference=OpaqueProviderReference(value=scope_id),
+        allowed_formats=("pdf",),
+    )
+    root = Bitrix24DiskRootPolicy(
+        policy_id=synthetic_uuid(72551),
+        version="root-v1",
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        connection_id=connection_id,
+        connection_version_id=connection_version_id,
+        resource_scope_reference=OpaqueProviderReference(value=scope_id),
+        storage_id="disk",
+        storage_class=Bitrix24DiskStorageClass.COMMON,
+        storage_root_object_id="storage-root",
+        approved_root_folder_id="root-folder",
+        recurse=False,
+        future_discovery=False,
+        manifest_object_ids=("file-1",),
+        content_policy_id=content.policy_id,
+        content_policy_version=content.version,
+        content_policy_digest=content.digest,
+        traversal_profile_reference=OpaqueProviderReference(value=synthetic_uuid(72552)),
+    )
+    policy_repository = PostgreSQLBitrix24DiskPolicyRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=lambda _operation, workspace, environment: postgresql_adapter.environment_context(workspace, environment),
+    )
+    await policy_repository.publish_content_policy(
+        content, expected_version=None, expected_digest=None, recorded_at=recorded_at
+    )
+    await policy_repository.publish_root_policy(
+        root, expected_version=None, expected_digest=None, recorded_at=recorded_at
+    )
+
+    source_object = source_contract_connector_source(
+        workspace_id, environment_id, "generation-1"
+    ).model_copy(update={"connection_id": connection_id})
+    source_revision = source_contract_revision(source_object, synthetic_uuid(72553))
+    membership = Bitrix24DiskMembershipEvidence(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        connection_id=connection_id,
+        connection_version_id=connection_version_id,
+        resource_scope_reference=OpaqueProviderReference(value=scope_id),
+        root_policy_id=root.policy_id,
+        root_policy_version=root.version,
+        root_policy_digest=root.digest,
+        content_policy_id=content.policy_id,
+        content_policy_version=content.version,
+        content_policy_digest=content.digest,
+        authorization_generation=3,
+        configuration_generation=4,
+        grant_binding_id=synthetic_uuid(72554),
+        grant_token_epoch=1,
+        grant_security_fence=0,
+        storage_id="disk",
+        storage_class=Bitrix24DiskStorageClass.COMMON,
+        storage_root_object_id="storage-root",
+        approved_root_folder_id="root-folder",
+        object_id="file-1",
+        parent_folder_ids=("root-folder",),
+    )
+    provenance = source_contract_provenance(
+        source_object, source_revision.revision_id, "event-1"
+    ).model_copy(update={
+        "connection_id": connection_id,
+        "source_contract_id": "bitrix24_disk",
+        "source_contract_version": "v2",
+        "resource_scope_reference": scope_id,
+        "bitrix24_disk_membership": membership,
+    })
+    async with postgresql_adapter.uow_factory(
+        postgresql_adapter.source_context(workspace_id, environment_id)
+    ) as uow:
+        await uow.sources.record_observation(SourceObservationCommand.create(
+            source=source_object,
+            revision=source_revision,
+            provenance=provenance,
+            idempotency_key=IdempotencyKey("selector-bitrix-source-72540"),
+        ))
+        await uow.commit()
+
+    reader = PostgreSQLTrustedCanonicalSourceContextReader(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=lambda _operation, workspace, environment: postgresql_adapter.environment_context(workspace, environment),
+    )
+    arguments = dict(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        source_object_id=source_object.source_object_id,
+        source_revision_id=source_revision.revision_id,
+    )
+    current = await reader.get_source_context(**arguments)
+    assert current is not None
+    assert current.root_policy_digest == root.digest
+    assert current.content_policy_digest == content.digest
+
+    next_content = Bitrix24DiskContentPolicy(
+        policy_id=content.policy_id,
+        version="content-v2",
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        connection_id=connection_id,
+        connection_version_id=connection_version_id,
+        resource_scope_reference=OpaqueProviderReference(value=scope_id),
+        allowed_formats=("pdf",),
+    )
+    await policy_repository.publish_content_policy(
+        next_content,
+        expected_version=content.version,
+        expected_digest=content.digest,
+        recorded_at=recorded_at,
+    )
+    next_root = Bitrix24DiskRootPolicy(
+        policy_id=root.policy_id,
+        version="root-v2",
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        connection_id=connection_id,
+        connection_version_id=connection_version_id,
+        resource_scope_reference=OpaqueProviderReference(value=scope_id),
+        storage_id="disk",
+        storage_class=Bitrix24DiskStorageClass.COMMON,
+        storage_root_object_id="storage-root",
+        approved_root_folder_id="root-folder",
+        recurse=False,
+        future_discovery=False,
+        manifest_object_ids=("file-1",),
+        content_policy_id=next_content.policy_id,
+        content_policy_version=next_content.version,
+        content_policy_digest=next_content.digest,
+        traversal_profile_reference=OpaqueProviderReference(value=synthetic_uuid(72552)),
+    )
+    await policy_repository.publish_root_policy(
+        next_root,
+        expected_version=root.version,
+        expected_digest=root.digest,
+        recorded_at=recorded_at,
+    )
+    assert await reader.get_source_context(**arguments) is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_selector_migration_rollback_preserves_existing_v1_acceptance(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import select
+    from spine.infrastructure.db.migrations import locate_migration_assets, upgrade_database
+    from spine.infrastructure.db.settings import MigrationDatabaseSettings
+    from spine.infrastructure.persistence.postgresql_mappings import canonical_acceptances
+
+    case = await prepare_canonical_case(postgresql_adapter, 72530)
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        accepted = await uow.canonical.accept(case.command)
+        await uow.commit()
+    assert accepted.acceptance is not None
+    accepted_id = accepted.acceptance.canonical_acceptance_id
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        before = (await uow._execute(  # type: ignore[attr-defined]
+            select(canonical_acceptances).where(
+                canonical_acceptances.c.canonical_acceptance_id == accepted_id
+            )
+        )).mappings().one()
+        await uow.rollback()  # type: ignore[attr-defined]
+
+    migration_settings = MigrationDatabaseSettings(
+        url=postgresql_contract_database.migration_url,
+        migration_role=MIGRATION_ROLE,
+        runtime_role=RUNTIME_ROLE,
+        dispatcher_role=DISPATCHER_ROLE,
+    )
+    config_path, script_location = locate_migration_assets()
+    config = Config(str(config_path))
+    config.set_main_option("script_location", str(script_location))
+    config.attributes["migration_settings"] = migration_settings
+    await asyncio.to_thread(command.downgrade, config, "20261222_90")
+
+    migration_engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with migration_engine.connect() as connection:
+            after_downgrade = (await connection.execute(
+                text("SELECT * FROM spine.canonical_acceptances WHERE canonical_acceptance_id = :id"),
+                {"id": accepted_id},
+            )).mappings().one()
+            assert dict(after_downgrade) == dict(before)
+    finally:
+        await migration_engine.dispose()
+
+    await asyncio.to_thread(upgrade_database, migration_settings)
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        after_upgrade = (await uow._execute(  # type: ignore[attr-defined]
+            select(canonical_acceptances).where(
+                canonical_acceptances.c.canonical_acceptance_id == accepted_id
+            )
+        )).mappings().one()
+        await uow.rollback()  # type: ignore[attr-defined]
+    assert dict(after_upgrade) == dict(before)
