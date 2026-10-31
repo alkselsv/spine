@@ -11,6 +11,7 @@ from spine.application.connections.provider import (
     ProviderConnectionRepository,
     ProviderReadAdmission,
 )
+from spine.application.lifecycle import CurrentLifecycleEligibilityReader
 from spine.connectors.yandex_disk import (
     YandexDiskCredentialResolver,
     YandexDiskProviderAdapter,
@@ -42,6 +43,7 @@ def compose_yandex_qualification_reader(
     credential_resolver: YandexDiskCredentialResolver,
     transport: YandexDiskApiTransport,
     connection_repository: ProviderConnectionRepository,
+    lifecycle_reader: CurrentLifecycleEligibilityReader,
     clock: Callable[[], datetime],
     sleep: Callable[[float], Awaitable[None]],
     monotonic: Callable[[], float] = time.monotonic,
@@ -89,6 +91,7 @@ def compose_yandex_qualification_reader(
         admission=ProviderReadAdmission(
             repository=connection_repository,
             provider=provider,
+            lifecycle_reader=lifecycle_reader,
         ),
         provider=provider,
         service=service,

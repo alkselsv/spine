@@ -16,6 +16,7 @@ from spine.application.persistence.context import (
     PersistenceOperation,
     TrustedPersistenceContext,
 )
+from spine.application.lifecycle import LifecycleEligibilityQuery
 from spine.application.connector_ingestion import (
     ConnectorIngestionCommand,
     ConnectorIngestionOrchestrator,
@@ -102,6 +103,7 @@ class GoogleSheetsReconciliationCommand(BaseModel):
     authorization_generation: int = Field(gt=0)
     configuration_generation: int = Field(gt=0)
     access_policy_version_id: UUID
+    lifecycle_query: LifecycleEligibilityQuery | None = None
     command_identity: str = Field(min_length=1, max_length=128)
     idempotency_key: str = Field(min_length=1, max_length=255)
     prior_committed_cursor: str | None = Field(default=None, max_length=4096)
@@ -127,6 +129,18 @@ class GoogleSheetsReconciliationCommand(BaseModel):
                 raise ValueError(f"{name} must be a non-zero UUID")
         if len({scope.identity for scope in self.scopes}) != len(self.scopes):
             raise ValueError("configured Google Sheets ranges must be unique")
+        if self.lifecycle_query is not None and (
+            self.lifecycle_query.workspace_id != self.workspace_id
+            or self.lifecycle_query.environment_id != self.environment_id
+            or self.lifecycle_query.connection_id != self.connection_id
+            or self.lifecycle_query.scope_reference != self.resource_scope_reference
+            or any(
+                scope.spreadsheet_id
+                != self.lifecycle_query.provider_object_reference
+                for scope in self.scopes
+            )
+        ):
+            raise ValueError("lifecycle query must bind the exact Sheets source scope")
         return self
 
 
@@ -182,6 +196,7 @@ class GoogleSheetsAdmittedPageReader:
                 a1_range=scope.a1_range,
                 provider_page_token=page_token,
                 sheet_id=scope.sheet_id,
+                lifecycle_query=command.lifecycle_query,
             ),
             context,
         )

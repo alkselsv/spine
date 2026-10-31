@@ -175,6 +175,9 @@ class GoogleReadCommand:
         if self.lifecycle_query is not None and (
             self.lifecycle_query.connection_id != self.connection_id
             or self.lifecycle_query.scope_reference != self.resource_scope_reference.value
+            or self.resource_object_reference is None
+            or self.lifecycle_query.provider_object_reference
+            != self.resource_object_reference
         ):
             raise ValueError("lifecycle query must match the exact Google read scope")
 
@@ -312,6 +315,8 @@ class GoogleReadAdmission(Generic[ProviderResultT]):
     ) -> None:
         query = command.lifecycle_query
         if query is None:
+            if self._lifecycle_reader is not None:
+                raise GoogleConnectionDeniedError()
             return
         if (
             self._lifecycle_reader is None

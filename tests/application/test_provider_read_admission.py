@@ -180,6 +180,7 @@ def _command(
         authorization_generation=2,
         configuration_generation=3,
         required_capabilities=required,
+        resource_object_reference="file-1",
     )
 
 
@@ -193,6 +194,7 @@ def _lifecycle_query() -> LifecycleEligibilityQuery:
         scope_reference=_id(9),
         scope_version_id=_id(3),
         scope_digest="a" * 64,
+        provider_object_reference="file-1",
     )
 
 
@@ -238,6 +240,35 @@ async def test_withdrawn_source_is_denied_before_provider_read() -> None:
 
     assert lifecycle.calls == 1
     assert provider.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_configured_lifecycle_authority_rejects_unbound_provider_read() -> None:
+    connection = _connection(
+        _capability(ProviderCapabilityKind.BINARY_READ, ProviderCapabilityStatus.SUPPORTED)
+    )
+    provider = _Provider(_observation(assurance=ExternalIdentityAssurance.UNPROVEN))
+    lifecycle = _LifecycleReader(LifecycleEligibilityStatus.ELIGIBLE)
+    admission = ProviderReadAdmission(
+        repository=_Repository(connection),
+        provider=provider,
+        lifecycle_reader=lifecycle,
+    )
+
+    with pytest.raises(ProviderReadDeniedError):
+        await admission.read(_command(ProviderCapabilityKind.BINARY_READ), _context())
+
+    assert provider.calls == 0
+    assert lifecycle.calls == 0
+
+
+def test_lifecycle_query_rejects_different_requested_provider_object() -> None:
+    with pytest.raises(ValueError, match="exact provider read scope"):
+        replace(
+            _command(),
+            resource_object_reference="another-file",
+            lifecycle_query=_lifecycle_query(),
+        )
 
 
 @pytest.mark.asyncio

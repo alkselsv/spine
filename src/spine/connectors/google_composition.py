@@ -10,6 +10,7 @@ from spine.application.connections.google import (
     GoogleConnectionRepository,
     GoogleReadAdmission,
 )
+from spine.application.lifecycle import CurrentLifecycleEligibilityReader
 from spine.application.diagnostics import (
     DiagnosticEventRegistry,
     DiagnosticSink,
@@ -60,6 +61,7 @@ def compose_google_api_readers(
     transport: GoogleApiTransport,
     retry_observer: GoogleApiRetryObserver,
     connection_repository: GoogleConnectionRepository,
+    lifecycle_reader: CurrentLifecycleEligibilityReader,
     diagnostic_sink: DiagnosticSink,
     diagnostic_registry: DiagnosticEventRegistry,
     clock: Callable[[], datetime],
@@ -82,6 +84,7 @@ def compose_google_api_readers(
     )
     drive_admission: GoogleReadAdmission[GoogleDriveObservation] = GoogleReadAdmission(
         repository=connection_repository,
+        lifecycle_reader=lifecycle_reader,
         provider=GoogleDriveProviderAdapter(
             service=service,
             profile=drive_profile,
@@ -94,6 +97,7 @@ def compose_google_api_readers(
     sheets_admission: GoogleReadAdmission[GoogleSheetsProviderPage] = (
         GoogleReadAdmission(
             repository=connection_repository,
+            lifecycle_reader=lifecycle_reader,
             provider=GoogleSheetsReconciliationProviderAdapter(
                 service=service,
                 profiles=sheet_profiles,

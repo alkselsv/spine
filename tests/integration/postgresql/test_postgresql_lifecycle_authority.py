@@ -353,6 +353,37 @@ async def test_postgresql_lifecycle_authority_cas_allows_only_one_winner(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_withdrawal_serializes_after_inflight_canonical_acceptance(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await _prepare_lifecycle_case(postgresql_adapter, 73240)
+    context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id, case.source.environment_id, "lifecycle_decision"
+    )
+    observation = _observation(case, 73250)
+    decision = _decision(case, observation, context, 73260)
+    repository = PostgreSQLLifecycleAuthorityRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        observation_authority=_AllowObservationAuthority(),
+        decision_authority=_AllowAuthority(),
+        decision_effects=_DecisionEffects(),
+    )
+    await repository.record_observation(observation, context)
+
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        acceptance = await uow.canonical.accept(case.command)
+        withdrawal = asyncio.create_task(repository.record_decision(decision, context))
+        await asyncio.sleep(0.05)
+        assert not withdrawal.done()
+        await uow.commit()
+
+    assert acceptance.advanced is True
+    assert await withdrawal == decision
+    current = await repository.current_eligibility(_query(case, observation), context)
+    assert current.status is LifecycleEligibilityStatus.READ_WITHDRAWN
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_postgresql_lifecycle_effect_failure_rolls_back_audit_and_authority(
     postgresql_adapter: PersistenceAdapter,
 ) -> None:

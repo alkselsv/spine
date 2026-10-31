@@ -572,8 +572,14 @@ async def test_scope_withdrawal_blocks_connector_before_provider_read():
         scope_reference=SCOPE,
         scope_version_id=_id("scope-version"),
         scope_digest="a" * 64,
+        provider_object_reference="estimate-42",
     )
-    command = _command().model_copy(update={"lifecycle_query": lifecycle_query})
+    command = _command().model_copy(
+        update={
+            "resource_object_reference": "estimate-42",
+            "lifecycle_query": lifecycle_query,
+        }
+    )
     orchestrator, reader, uploader, _, _ = _orchestrator(
         observation, lifecycle_reader=_WithdrawnLifecycleReader()
     )

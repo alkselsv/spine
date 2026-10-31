@@ -162,6 +162,9 @@ class ConnectorIngestionCommand(BaseModel):
             or self.lifecycle_query.environment_id != self.environment_id
             or self.lifecycle_query.connection_id != self.connection_id
             or self.lifecycle_query.scope_reference != self.resource_scope_reference
+            or self.resource_object_reference is None
+            or self.lifecycle_query.provider_object_reference
+            != self.resource_object_reference
         ):
             raise ValueError("lifecycle query must match the exact ingestion scope")
         return self
@@ -491,7 +494,15 @@ class ConnectorIngestionOrchestrator:
         context: TrustedPersistenceContext,
     ) -> None:
         if command.lifecycle_query is None:
+            if self.lifecycle_reader is not None:
+                raise LifecycleAuthorityError()
             return
+        if (
+            command.resource_object_reference is None
+            or command.lifecycle_query.provider_object_reference
+            != command.resource_object_reference
+        ):
+            raise LifecycleAuthorityError()
         if self.lifecycle_reader is None:
             raise LifecycleAuthorityError()
         await require_current_read_eligibility(

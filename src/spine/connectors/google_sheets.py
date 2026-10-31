@@ -592,6 +592,8 @@ class GoogleSheetsObservationReader:
                 ),
                 authorization_generation=command.authorization_generation,
                 configuration_generation=command.configuration_generation,
+                resource_object_reference=getattr(command, "resource_object_reference", None),
+                lifecycle_query=getattr(command, "lifecycle_query", None),
             ),
             context,
         )

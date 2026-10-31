@@ -181,6 +181,7 @@ def _lifecycle_query(connection: GoogleConnection) -> LifecycleEligibilityQuery:
         scope_reference=RESOURCE_SCOPE.value,
         scope_version_id=connection.approval_id,
         scope_digest="a" * 64,
+        provider_object_reference="file-1",
     )
 
 
@@ -253,6 +254,7 @@ async def test_withdrawn_google_source_is_denied_before_provider_call() -> None:
             resource_scope_reference=RESOURCE_SCOPE,
             authorization_generation=7,
             configuration_generation=11,
+            resource_object_reference="file-1",
         ),
         lifecycle_query=_lifecycle_query(connection),
     )
@@ -262,6 +264,29 @@ async def test_withdrawn_google_source_is_denied_before_provider_call() -> None:
 
     assert lifecycle.calls == 1
     assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_configured_lifecycle_authority_rejects_unbound_google_read() -> None:
+    connection = _connection()
+    _, repository = await _repository_with(connection)
+    provider = RecordingGoogleProvider()
+    lifecycle = LifecycleReader(LifecycleEligibilityStatus.ELIGIBLE)
+    admission, _ = _admission(repository, provider, lifecycle_reader=lifecycle)
+
+    with pytest.raises(GoogleConnectionDeniedError):
+        await admission.read(
+            GoogleReadCommand(
+                connection_id=CONNECTION_ID,
+                resource_scope_reference=RESOURCE_SCOPE,
+                authorization_generation=7,
+                configuration_generation=11,
+            ),
+            _context(),
+        )
+
+    assert provider.calls == []
+    assert lifecycle.calls == 0
 
 
 @pytest.mark.asyncio
@@ -280,6 +305,7 @@ async def test_google_download_is_discarded_when_scope_withdraws_during_read() -
             resource_scope_reference=RESOURCE_SCOPE,
             authorization_generation=7,
             configuration_generation=11,
+            resource_object_reference="file-1",
         ),
         lifecycle_query=_lifecycle_query(connection),
     )

@@ -96,18 +96,7 @@ class IngestionBindingCommand:
                 "original_receipt_digest": binding.original_receipt_digest,
                 "observation_digest": observation.digest.value,
                 **(
-                    {
-                        "lifecycle_query": {
-                            "workspace_id": lifecycle_query.workspace_id,
-                            "environment_id": lifecycle_query.environment_id,
-                            "source_object_id": lifecycle_query.source_object_id,
-                            "connection_id": lifecycle_query.connection_id,
-                            "connection_version_id": lifecycle_query.connection_version_id,
-                            "scope_reference": lifecycle_query.scope_reference,
-                            "scope_version_id": lifecycle_query.scope_version_id,
-                            "scope_digest": lifecycle_query.scope_digest,
-                        }
-                    }
+                    {"lifecycle_query": lifecycle_query.digest_payload()}
                     if lifecycle_query is not None
                     else {}
                 ),

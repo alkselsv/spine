@@ -192,6 +192,7 @@ class LifecycleEligibilityQuery:
     scope_reference: UUID
     scope_version_id: UUID
     scope_digest: str
+    provider_object_reference: str | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -207,6 +208,27 @@ class LifecycleEligibilityQuery:
             )
         ) or re.fullmatch(r"[0-9a-f]{64}", self.scope_digest) is None:
             raise LifecycleAuthorityError()
+        if self.provider_object_reference is not None and not (
+            1 <= len(self.provider_object_reference) <= 1024
+        ):
+            raise LifecycleAuthorityError()
+
+    def digest_payload(self) -> dict[str, object]:
+        """Return the stable exact binding used by command idempotency digests."""
+
+        payload: dict[str, object] = {
+            "workspace_id": self.workspace_id,
+            "environment_id": self.environment_id,
+            "source_object_id": self.source_object_id,
+            "connection_id": self.connection_id,
+            "connection_version_id": self.connection_version_id,
+            "scope_reference": self.scope_reference,
+            "scope_version_id": self.scope_version_id,
+            "scope_digest": self.scope_digest,
+        }
+        if self.provider_object_reference is not None:
+            payload["provider_object_reference"] = self.provider_object_reference
+        return payload
 
     def matches_decision(self, decision: LifecycleDecision) -> bool:
         return (

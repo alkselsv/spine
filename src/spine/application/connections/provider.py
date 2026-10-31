@@ -91,6 +91,9 @@ class ProviderReadCommand:
             or self.lifecycle_query.connection_id != self.connection_id
             or self.lifecycle_query.connection_version_id != self.connection_version_id
             or self.lifecycle_query.scope_reference != self.resource_scope_reference.value
+            or self.resource_object_reference is None
+            or self.lifecycle_query.provider_object_reference
+            != self.resource_object_reference
         ):
             raise ValueError("lifecycle query must match the exact provider read scope")
 
@@ -147,6 +150,8 @@ class ProviderReadAdmission:
     ) -> None:
         query = command.lifecycle_query
         if query is None:
+            if self._lifecycle_reader is not None:
+                raise ProviderReadDeniedError()
             return
         if self._lifecycle_reader is None:
             raise ProviderReadDeniedError()
@@ -217,6 +222,14 @@ class ProviderReadAdmission:
             command.configuration_generation,
         ):
             raise ProviderReadDeniedError()
+        query = command.lifecycle_query
+        if query is not None:
+            key = observation.external_identity.provider_key
+            observed_reference = getattr(key, "provider_object_id", None) or getattr(
+                key, "record_id", None
+            )
+            if observed_reference != query.provider_object_reference:
+                raise ProviderReadDeniedError()
 
     @staticmethod
     def _require_capabilities(
