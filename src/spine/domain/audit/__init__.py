@@ -4,6 +4,7 @@ from spine.domain.audit.models import (
     AccessDecisionAuditPayload,
     AuditEvent,
     AuditFieldKind,
+    AuditDigest,
     AuditIdentifier,
     AuditVersion,
     AuditObjectReference,
@@ -15,12 +16,14 @@ from spine.domain.audit.models import (
     OutboxDeliveryAuditPayload,
     RequestAccessDecisionAuditPayload,
     StorageOutcomeAuditPayload,
+    YandexQualificationAuthorityAuditPayload,
 )
 
 __all__ = [
     "AccessDecisionAuditPayload",
     "AuditEvent",
     "AuditFieldKind",
+    "AuditDigest",
     "AuditIdentifier",
     "AuditVersion",
     "AuditObjectReference",
@@ -32,4 +35,5 @@ __all__ = [
     "OutboxDeliveryAuditPayload",
     "RequestAccessDecisionAuditPayload",
     "StorageOutcomeAuditPayload",
+    "YandexQualificationAuthorityAuditPayload",
 ]

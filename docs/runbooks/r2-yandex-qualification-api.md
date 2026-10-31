@@ -99,6 +99,40 @@ identity before it is promoted into the runtime API binding. Until that approval
 is recorded, no `cloud-api.yandex.net` request is permitted and #678 remains
 `NOT_VERIFIED` for Disk behavior.
 
+### Canonical qualification connection bootstrap
+
+A fresh disposable qualification database has no Yandex Provider Connection
+authority. After the tenant/environment qualification authority has been
+provisioned and verified, the operator uses
+`spine-yandex-qualification-connection` with a strict
+`yandex-qualification-connection-config:v1` document. The application use case
+first re-verifies the existing qualification identity, workspace, environment
+and target binding through the runtime role. A dedicated operator repository
+then records the refs-only approval, its lineage Audit Event, the initial
+connection version and its command Audit Event in one migration-role
+transaction. It never resolves a credential or calls Yandex.
+
+The process must provide both `SPINE_MIGRATION_DATABASE_URL` and
+`SPINE_QUALIFICATION_RUNTIME_DATABASE_URL`. The config pins the exact workspace,
+environment and operator identity from the existing qualification authority.
+The service principal, approval, connection, credential/grant, resource-scope
+and qualification references are fixed #678 UUIDv5 values enforced by the
+contract rather than caller-selected identifiers. The config also pins
+generations, the fixed root, and
+the #701/#702 approval references. The input and the `--report` destination are
+local private files. The report is created without replacement at mode `0600`
+and contains only refs-only authority and capability metadata.
+
+Provisioning is idempotent only for the identical immutable approval, lineage
+and connection command. Any conflicting or partial canonical approval, Audit
+Event, connection, tenant, service principal, scope or generation fails closed
+without mutation. If private report creation fails after the atomic commit, a
+retry observes the stable replay and writes the report without a second logical
+effect. The existing qualification
+authority has a database-time hard expiry; refresh it through the normal
+disposable qualification provisioning flow before bootstrap instead of editing
+history or bypassing the resolver with SQL.
+
 ### Recursive metadata inventory
 
 After the acting identity is approved, the recursive inventory runner is the

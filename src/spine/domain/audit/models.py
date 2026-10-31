@@ -15,6 +15,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -36,6 +37,7 @@ class AuditFieldKind(str, Enum):
 
     IDENTIFIER = "identifier"
     VERSION = "version"
+    DIGEST = "digest"
 
 
 AuditIdentifier = Annotated[
@@ -49,6 +51,12 @@ AuditIdentifier = Annotated[
 ]
 
 AuditVersion = Annotated[VersionIdentifier, AuditFieldKind.VERSION]
+
+AuditDigest = Annotated[
+    str,
+    AuditFieldKind.DIGEST,
+    StringConstraints(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"),
+]
 
 
 def _require_identifier(value: str, *, field_name: str) -> str:
@@ -119,6 +127,27 @@ class CommandAuditPayload(BaseModel):
     @classmethod
     def validate_command_type(cls, value: str) -> str:
         return _require_identifier(value, field_name="command_type")
+
+
+class YandexQualificationAuthorityAuditPayload(BaseModel):
+    """Content-free lineage for the fixed Yandex qualification authority."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    security_approval_reference: AuditIdentifier
+    data_approval_reference: AuditIdentifier
+    fixture_manifest_version: AuditIdentifier
+    scope_version: AuditIdentifier
+    resource_scope_reference_id: UUID
+    qualification_reference_id: UUID
+    approved_root_digest: AuditDigest
+
+    @field_validator("resource_scope_reference_id", "qualification_reference_id")
+    @classmethod
+    def validate_ids(cls, value: UUID, info: ValidationInfo) -> UUID:
+        checked = _require_non_zero_uuid(value, field_name=info.field_name)
+        assert checked is not None
+        return checked
 
 
 class CanonicalTransitionAuditPayload(BaseModel):

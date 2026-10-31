@@ -627,9 +627,34 @@ def _inspection_from_row(row) -> ProviderConnectionInspection:
     )
 
 
+def provider_connection_version_values(
+    request: ProviderConnectionConfigurationRequest,
+    result: ProviderConnectionConfigurationResult,
+    context: TrustedPersistenceContext,
+) -> dict[str, object]:
+    """Serialize a validated connection result for atomic external transactions."""
+
+    return _version_values(request, result, context)
+
+
+def audit_event_values(audit: AuditEvent) -> dict[str, object]:
+    """Serialize a validated Audit Event for atomic external transactions."""
+
+    return _audit_event_values(audit)
+
+
+def provider_connection_inspection_from_row(row) -> ProviderConnectionInspection:
+    """Map a provider connection persistence row to its stable contract."""
+
+    return _inspection_from_row(row)
+
+
 __all__ = [
     "PostgreSQLProviderConnectionManagementRepository",
     "PostgreSQLProviderConnectionRepository",
     "provider_connection_approvals",
     "provider_connection_versions",
+    "audit_event_values",
+    "provider_connection_inspection_from_row",
+    "provider_connection_version_values",
 ]
