@@ -436,6 +436,16 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "bitrix24_crm_material_revocations": ExpectedTablePrivileges(
             True, True, True, False, False
         ),
+        "crm_relationship_identities": ExpectedTablePrivileges(True, True, True, False, False),
+        "crm_relationship_profiles": ExpectedTablePrivileges(True, True, True, False, False),
+        "crm_relationship_claims": ExpectedTablePrivileges(True, True, True, False, False),
+        "crm_relationship_receipts": ExpectedTablePrivileges(True, True, True, False, False),
+        "crm_relationship_eligibility": ExpectedTablePrivileges(True, True, True, False, False),
+        "crm_relationship_lifecycle_events": ExpectedTablePrivileges(True, True, True, False, False),
+        "crm_relationship_idempotency": ExpectedTablePrivileges(True, True, True, False, False),
+        "crm_relationship_eligibility_heads": ExpectedTablePrivileges(True, True, True, True, False),
+        "crm_relationship_authority_heads": ExpectedTablePrivileges(True, True, True, True, False),
+        "crm_relationship_v2_state": ExpectedTablePrivileges(False, False, False, False, False),
         "google_sheets_identity_dispositions": ExpectedTablePrivileges(
             True, True, True, False, False
         ),

@@ -134,6 +134,9 @@ from spine.domain.sources import (
     RegisterAssociationAcceptance,
     RegisterLinkRole,
     RegisterObservedLinkClaim,
+    CrmRelationshipIdentity,
+    CrmRelationshipClaim,
+    relationship_key,
     SourceObject,
 )
 from spine.domain.sources.canonicalization import content_revision
@@ -165,6 +168,9 @@ from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.postgresql import (
     PostgreSQLPersistence,
     PostgreSQLTransactionStage,
+)
+from spine.infrastructure.persistence.crm_relationship_v2 import (
+    PostgreSQLCrmRelationshipV2Repository,
 )
 from spine.infrastructure.persistence.parsed_artifacts import (
     PostgreSQLParsedArtifactRepository,
@@ -558,6 +564,16 @@ async def postgresql_contract_database(
         dispatcher_role=DISPATCHER_ROLE,
     )
     await asyncio.to_thread(upgrade_database, migration)
+    # This module exercises the CRM v2 write API against a disposable database.
+    # Production migrations intentionally leave the reader-first gate disabled.
+    crm_engine = create_async_engine(migration_url.get_secret_value(), hide_parameters=True)
+    try:
+        async with crm_engine.begin() as connection:
+            await connection.execute(text(
+                "UPDATE spine.crm_relationship_v2_state SET enabled = true WHERE singleton"
+            ))
+    finally:
+        await crm_engine.dispose()
     database = PostgreSQLContractDatabase(
         migration_url=migration_url,
         runtime_url=_role_url(
@@ -660,6 +676,23 @@ async def postgresql_adapter(
             trace_id=synthetic_uuid(960),
         )
 
+    def interactive_environment_context(
+        workspace_id: UUID,
+        environment_id: UUID,
+        operation: PersistenceOperation,
+        trace_id: UUID,
+    ) -> TrustedPersistenceContext:
+        return boundary.interactive(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            ),
+            acting_subject_id=synthetic_uuid(961),
+            purpose=PersistencePurpose("crm_relationship_v2"),
+            operation=operation,
+            trace_id=trace_id,
+        )
+
     def worker_workspace_context(workspace_id: UUID) -> TrustedPersistenceContext:
         return boundary.worker(
             scope=WorkspaceScope(workspace_id=workspace_id),
@@ -684,6 +717,7 @@ async def postgresql_adapter(
             outbox_events=outbox_events,
             source_context=source_context,
             ingestion_context=ingestion_context,
+            interactive_environment_context=interactive_environment_context,
         )
     finally:
         await engine.dispose()
@@ -8025,3 +8059,195 @@ async def test_requirements_artifacts_replay_successor_and_isolate_workspaces(
         await uow.commit()
     other_context = postgresql_adapter.ingestion_context(other_workspace, other_environment, "workflow.run.read")
     assert await artifacts.get(context=other_context, artifact_id=first.artifact_id) is None
+
+
+@pytest.mark.postgresql
+@pytest.mark.asyncio(loop_scope="session")
+async def test_crm_relationship_identity_registration_is_race_safe_and_tenant_scoped(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await prepare_canonical_case(postgresql_adapter, 71600)
+    workspace_id = case.source.workspace_id
+    environment_id = case.source.environment_id
+    actor_id = synthetic_uuid(961)
+    context_factory = lambda operation, trace_id: postgresql_adapter.interactive_environment_context(
+        workspace_id, environment_id, operation, trace_id
+    )
+    repository = PostgreSQLCrmRelationshipV2Repository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=context_factory,
+    )
+    identity_fields = {
+        "workspace_id": workspace_id,
+        "environment_id": environment_id,
+        "provider_instance": "synthetic.bitrix.portal",
+        "connection_id": synthetic_uuid(71601),
+        "activity_namespace": "bitrix.activity",
+        "activity_id": "71602",
+        "raw_entity_type_id": "2",
+        "normalizer_id": "bitrix.owner-type",
+        "normalizer_version": "v1",
+        "entity_namespace": "bitrix.company",
+        "entity_id": "71603",
+        "files_namespace": "bitrix.activity.files",
+        "files_item_id": "71604",
+        "mapping_profile_id": synthetic_uuid(71605),
+    }
+    identity = CrmRelationshipIdentity(
+        **identity_fields,
+        relationship_key=relationship_key(identity_fields),
+    )
+
+    await asyncio.gather(
+        repository.register_identity(identity, actor_id=actor_id),
+        repository.register_identity(identity, actor_id=actor_id),
+    )
+    assert await repository.current_eligibility(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        claim_id=synthetic_uuid(71606),
+        actor_id=actor_id,
+    ) is None
+
+    foreign_case = await prepare_canonical_case(postgresql_adapter, 71610)
+    foreign_identity_fields = {
+        **identity_fields,
+        "workspace_id": foreign_case.source.workspace_id,
+        "environment_id": foreign_case.source.environment_id,
+        "activity_id": "71612",
+    }
+    foreign_identity = CrmRelationshipIdentity(
+        **foreign_identity_fields,
+        relationship_key=relationship_key(foreign_identity_fields),
+    )
+    with pytest.raises(OptimisticConflictError):
+        await repository.register_identity(foreign_identity, actor_id=actor_id)
+
+
+@pytest.mark.postgresql
+@pytest.mark.asyncio(loop_scope="session")
+async def test_crm_relationship_profile_versions_are_immutable_and_replayable(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await prepare_canonical_case(postgresql_adapter, 71620)
+    workspace_id = case.source.workspace_id
+    environment_id = case.source.environment_id
+    actor_id = synthetic_uuid(961)
+    repository = PostgreSQLCrmRelationshipV2Repository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=lambda operation, trace_id: postgresql_adapter.interactive_environment_context(
+            workspace_id, environment_id, operation, trace_id
+        ),
+    )
+    profile_id = synthetic_uuid(71621)
+    profile_record = {
+        "schema_version": "bitrix24-crm-files-mapping-profile:v1",
+        "record_kind": "mapping_profile",
+        "profile_id": str(profile_id),
+        "mapping": "synthetic",
+    }
+    await repository.register_profile(
+        profile_id=profile_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        version=1,
+        digest="a" * 64,
+        record=profile_record,
+        created_at=INGESTION_CONTRACT_NOW,
+        actor_id=actor_id,
+    )
+    await repository.register_profile(
+        profile_id=profile_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        version=1,
+        digest="a" * 64,
+        record=profile_record,
+        created_at=INGESTION_CONTRACT_NOW,
+        actor_id=actor_id,
+    )
+    with pytest.raises(IdempotencyConflictError):
+        await repository.register_profile(
+            profile_id=profile_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            version=1,
+            digest="b" * 64,
+            record={**profile_record, "mapping": "changed"},
+            created_at=INGESTION_CONTRACT_NOW,
+            actor_id=actor_id,
+        )
+
+
+@pytest.mark.postgresql
+@pytest.mark.asyncio(loop_scope="session")
+async def test_crm_relationship_claim_rejects_source_without_current_lifecycle_authority(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await prepare_canonical_case(postgresql_adapter, 71630)
+    workspace_id = case.source.workspace_id
+    environment_id = case.source.environment_id
+    actor_id = synthetic_uuid(961)
+    context_factory = lambda operation, trace_id: postgresql_adapter.interactive_environment_context(
+        workspace_id, environment_id, operation, trace_id
+    )
+    repository = PostgreSQLCrmRelationshipV2Repository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=context_factory,
+    )
+    identity_fields = {
+        "workspace_id": workspace_id,
+        "environment_id": environment_id,
+        "provider_instance": "synthetic.bitrix.portal",
+        "connection_id": synthetic_uuid(71631),
+        "activity_namespace": "bitrix.activity",
+        "activity_id": "71632",
+        "raw_entity_type_id": "2",
+        "normalizer_id": "bitrix.owner-type",
+        "normalizer_version": "v1",
+        "entity_namespace": "bitrix.company",
+        "entity_id": "71633",
+        "files_namespace": "bitrix.activity.files",
+        "files_item_id": "71634",
+        "mapping_profile_id": synthetic_uuid(71635),
+    }
+    identity = CrmRelationshipIdentity(
+        **identity_fields,
+        relationship_key=relationship_key(identity_fields),
+    )
+    await repository.register_identity(identity, actor_id=actor_id)
+    claim = CrmRelationshipClaim(
+        claim_id=synthetic_uuid(71636),
+        relationship_key=identity.relationship_key,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        connection_id=identity.connection_id,
+        connection_version_id=synthetic_uuid(71637),
+        source_object_id=case.source.source_object_id,
+        source_revision_id=case.revision.revision_id,
+        disk_namespace="bitrix.disk",
+        disk_object_id="71638",
+        disk_version_evidence="disk-version-1",
+        mapping_profile_id=identity.mapping_profile_id,
+        mapping_profile_version=1,
+        acting_human_id=actor_id,
+        authorization_generation=1,
+        configuration_generation=1,
+        idempotency_key=synthetic_uuid(71639),
+        payload_digest="a" * 64,
+        created_at=INGESTION_CONTRACT_NOW,
+    )
+    with pytest.raises(OptimisticConflictError, match="current eligible canonical source revision"):
+        await repository.append_claim(
+            claim,
+            audit_event=None,  # type: ignore[arg-type]
+            outbox_intent=None,  # type: ignore[arg-type]
+            audit_registry=AuditEventRegistry.with_default_families(),
+            outbox_registry=postgresql_adapter.outbox_events,
+        )
+    assert await repository.current_eligibility(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        claim_id=claim.claim_id,
+        actor_id=actor_id,
+    ) is None

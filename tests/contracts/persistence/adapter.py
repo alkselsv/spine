@@ -6,7 +6,7 @@ from typing import AsyncContextManager, Awaitable
 from uuid import UUID
 
 from spine.application.diagnostics.audit import AuditEvent, AuditEventRegistry
-from spine.application.persistence.context import TrustedPersistenceContext
+from spine.application.persistence.context import PersistenceOperation, TrustedPersistenceContext
 from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.application.persistence.delivery import (
     OutboxDeliveryRepository,
@@ -31,6 +31,9 @@ class PersistenceAdapter:
     ingestion_context: Callable[[UUID, UUID, str], TrustedPersistenceContext] | None = field(
         default=None, kw_only=True
     )
+    interactive_environment_context: Callable[
+        [UUID, UUID, PersistenceOperation, UUID], TrustedPersistenceContext
+    ] | None = field(default=None, kw_only=True)
 @dataclass(frozen=True)
 class AuditPersistenceAdapter(PersistenceAdapter):
     """In-memory audit capabilities owned by Issue #63 contract tests."""
