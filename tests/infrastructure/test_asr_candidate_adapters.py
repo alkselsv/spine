@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
+import subprocess
 import threading
 from types import SimpleNamespace
 from uuid import UUID
@@ -31,8 +33,11 @@ from spine.infrastructure.asr_candidates import (
     ResolvedAudioChunk,
     canonical_configuration_digest,
     validate_runtime_manifest,
+    _FasterWhisperRuntime,
+    _GigaAMRuntime,
 )
-from spine.evals.asr_candidate_qualification_runner import _reassemble_segments, preflight_candidate, run_preflight_from_file, save_immutable_report
+from spine.evals.asr_candidate_qualification_runner import _network_boundary_mismatches, _reassemble_segments, preflight_candidate, run_preflight_from_file, save_immutable_report
+import spine.evals.asr_candidate_qualification_runner as qualification_runner
 from spine.evals.transcription_russian_v2 import (
     load_russian_transcription_v2_dataset,
     TRANSCRIPTION_V1_SHA256,
@@ -53,13 +58,30 @@ def _write_wav(path: Path) -> bytes:
     return path.read_bytes()
 
 
+def _git_checkout(path: Path, repository: str, source_text: str) -> str:
+    path.mkdir(parents=True)
+    subprocess.run(["git", "-C", str(path), "init", "--quiet"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(path), "config", "user.name", "ASR Test"], check=True)
+    subprocess.run(["git", "-C", str(path), "config", "user.email", "asr-test@example.invalid"], check=True)
+    (path / "source.txt").write_text(source_text, encoding="utf-8")
+    subprocess.run(["git", "-C", str(path), "add", "source.txt"], check=True)
+    subprocess.run(["git", "-C", str(path), "commit", "--quiet", "-m", "synthetic checkout"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(path), "remote", "add", "origin", repository], check=True)
+    return subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+
+
 def _runtime_manifest(tmp_path: Path) -> CandidateRuntimeManifest:
     asset_root = tmp_path / "assets"
     asset_root.mkdir()
     checkpoint = asset_root / "model.ckpt"
     checkpoint.write_bytes(b"synthetic checkpoint bytes")
     lock = tmp_path / "candidate.lock"
-    lock.write_text("pinned offline dependency lock\n", encoding="utf-8")
+    lock.write_text(json.dumps({
+        "schema_version": "asr-candidate-dependency-lock:v1",
+        "candidate_id": "gigaam-v3-rnnt",
+        "python_version": platform.python_version(),
+        "packages": [{"name": "gigaam", "version": "0.0.test", "installed_tree_sha256": "e" * 64}],
+    }), encoding="utf-8")
     preprocessor = tmp_path / "ffmpeg"
     preprocessor.write_bytes(b"synthetic local ffmpeg binary")
     attestation = NoEgressEvidence(
@@ -73,15 +95,20 @@ def _runtime_manifest(tmp_path: Path) -> CandidateRuntimeManifest:
     )
     evidence = tmp_path / "no-egress.json"
     evidence.write_text(attestation.model_dump_json(), encoding="utf-8")
+    source_repository = "https://github.com/salute-developers/GigaAM"
+    source_revision = _git_checkout(tmp_path / "gigaam-source", source_repository, "synthetic GigaAM source revision")
+    runtime_revision = _git_checkout(tmp_path / "gigaam-runtime", source_repository, "synthetic GigaAM runtime revision")
     payload = {
         "schema_version": "asr-candidate-runtime:v1",
         "candidate_id": "gigaam-v3-rnnt",
         "adapter_reference": "gigaam-v3-rnnt-adapter:v1",
         "model_config_reference": "gigaam-v3-rnnt-frozen:v1",
-        "source_repository": "https://github.com/salute-developers/GigaAM",
-        "source_revision": "a" * 40,
+        "source_repository": source_repository,
+        "source_checkout_path": str(tmp_path / "gigaam-source"),
+        "source_revision": source_revision,
+        "runtime_checkout_path": str(tmp_path / "gigaam-runtime"),
         "runtime_reference": "official-gigaam-runtime:v1",
-        "runtime_revision": "b" * 40,
+        "runtime_revision": runtime_revision,
         "dependency_lock_path": str(lock),
         "dependency_lock_sha256": _sha(lock.read_bytes()),
         "preprocessing_executable": str(preprocessor),
@@ -109,7 +136,7 @@ def _runtime_manifest(tmp_path: Path) -> CandidateRuntimeManifest:
             "cpu": "synthetic test CPU",
             "ram_mb": 4096,
             "operating_system": "Linux test",
-            "python_version": "3.14.4",
+            "python_version": platform.python_version(),
         },
         "license_review_reference": "local-test-license-review:v1",
         "license_commercial_use_approved": True,
@@ -249,6 +276,33 @@ async def test_gigaam_adapter_marks_chunk_window_timestamp_fallback(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_gigaam_runtime_loads_only_the_pinned_local_checkpoint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    manifest = _runtime_manifest(tmp_path)
+    calls: dict[str, object] = {}
+
+    class FakeGigaAM:
+        @staticmethod
+        def load_model(path: str, **kwargs: object) -> object:
+            calls["path"] = path
+            calls["kwargs"] = kwargs
+            return SimpleNamespace(transcribe=lambda audio_path, **options: SimpleNamespace(text="Привет", words=()))
+
+    monkeypatch.setitem(__import__("sys").modules, "gigaam", FakeGigaAM)
+    audio_path = tmp_path / "local-gigaam-chunk.wav"
+    audio_bytes = _write_wav(audio_path)
+    adapter = GigaAMV3RNNTAdapter(
+        manifest,
+        _Resolver(ResolvedAudioChunk(path=str(audio_path), sha256=_sha(audio_bytes), byte_length=len(audio_bytes), duration_ms=1000)),
+        backend=_GigaAMRuntime(),
+    )
+
+    await adapter.transcribe(_request(audio_path, audio_bytes))
+
+    assert calls["path"] == manifest.checkpoint_path
+    assert calls["kwargs"] == {"fp16_encoder": False, "device": "cpu"}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [RuntimeError("backend failed"), asyncio.CancelledError()])
 async def test_adapter_maps_partial_runtime_failure_and_cancellation(tmp_path: Path, failure: BaseException) -> None:
     manifest = _runtime_manifest(tmp_path)
@@ -317,6 +371,34 @@ def test_candidate_runtime_manifest_binds_its_frozen_configuration(tmp_path: Pat
     assert "configuration_digest_mismatch" in validate_runtime_manifest(changed)
 
 
+def test_candidate_runtime_rejects_unverified_source_revision(tmp_path: Path) -> None:
+    manifest = _runtime_manifest(tmp_path)
+    changed = manifest.model_copy(update={"source_revision": "a" * 40})
+
+    assert "candidate_source_checkout_revision_mismatch" in validate_runtime_manifest(changed)
+
+
+def test_candidate_runtime_rejects_dirty_pinned_checkout(tmp_path: Path) -> None:
+    manifest = _runtime_manifest(tmp_path)
+    Path(manifest.runtime_checkout_path, "source.txt").write_text("modified runtime bytes", encoding="utf-8")
+
+    assert "candidate_runtime_checkout_revision_mismatch" in validate_runtime_manifest(manifest)
+
+
+def test_preflight_does_not_trust_unobservable_firewall_attestation(tmp_path: Path) -> None:
+    manifest = _runtime_manifest(tmp_path)
+    firewall_evidence = NoEgressEvidence(
+        schema_version="asr-no-egress-attestation:v1",
+        boundary_reference="firewall-boundary:v1",
+        enforcement="firewall_policy",
+        network_egress_disabled=True,
+    )
+
+    assert _network_boundary_mismatches(manifest.model_copy(update={"no_egress": firewall_evidence})) == (
+        "no_egress_boundary_not_independently_observable",
+    )
+
+
 def test_qualification_preflight_preserves_not_verified_for_missing_coverage(tmp_path: Path) -> None:
     manifest = _runtime_manifest(tmp_path)
     dataset = load_russian_transcription_v2_dataset()
@@ -334,6 +416,9 @@ def test_qualification_preflight_preserves_not_verified_for_missing_coverage(tmp
     assert not ready
     assert report.dataset_version == "2.0.0"
     assert report.overall_status.value == "NOT_VERIFIED"
+    assert len(report.annotation_coverage) == len(dataset.coverage)
+    assert all(item.status.value == "NOT_VERIFIED" for item in report.annotation_coverage)
+    assert all(item.minimum_annotation_count is None for item in report.annotation_coverage)
     assert "lack approved, met annotation minima" in next(
         item.detail for item in report.prerequisites if item.name == "qualification_coverage_sufficient"
     )
@@ -384,10 +469,25 @@ async def test_whisper_runtime_pins_local_russian_transcription(monkeypatch: pyt
         "adapter_reference": "whisper-large-v3-adapter:v1",
         "model_config_reference": "whisper-large-v3-frozen:v1",
         "source_repository": "https://github.com/SYSTRAN/faster-whisper",
+        "source_checkout_path": str(tmp_path / "whisper-source"),
+        "source_revision": _git_checkout(tmp_path / "whisper-source", "https://github.com/SYSTRAN/faster-whisper", "synthetic faster-whisper source revision"),
+        "runtime_checkout_path": str(tmp_path / "whisper-runtime"),
+        "runtime_revision": _git_checkout(tmp_path / "whisper-runtime", "https://github.com/SYSTRAN/faster-whisper", "synthetic faster-whisper runtime revision"),
         "runtime_reference": "faster-whisper-ctranslate2:v1",
         "precision": "float32",
         "configuration_digest": "0" * 64,
     })
+    lock_path = Path(payload["dependency_lock_path"])
+    lock_path.write_text(json.dumps({
+        "schema_version": "asr-candidate-dependency-lock:v1",
+        "candidate_id": "whisper-large-v3-faster-whisper",
+        "python_version": platform.python_version(),
+        "packages": [
+            {"name": "faster-whisper", "version": "0.0.test", "installed_tree_sha256": "f" * 64},
+            {"name": "ctranslate2", "version": "0.0.test", "installed_tree_sha256": "d" * 64},
+        ],
+    }), encoding="utf-8")
+    payload["dependency_lock_sha256"] = _sha(lock_path.read_bytes())
     whisper_manifest = CandidateRuntimeManifest.model_validate(payload)
     whisper_manifest = whisper_manifest.model_copy(update={
         "configuration_digest": canonical_configuration_digest(whisper_manifest)
@@ -407,7 +507,7 @@ async def test_whisper_runtime_pins_local_russian_transcription(monkeypatch: pyt
     audio_path = tmp_path / "whisper-chunk.wav"
     payload_bytes = _write_wav(audio_path)
     audio = ResolvedAudioChunk(path=str(audio_path), sha256=_sha(payload_bytes), byte_length=len(payload_bytes), duration_ms=1000)
-    adapter = WhisperLargeV3Adapter(whisper_manifest, _Resolver(audio))
+    adapter = WhisperLargeV3Adapter(whisper_manifest, _Resolver(audio), backend=_FasterWhisperRuntime())
     request = _request(audio_path, payload_bytes).model_copy(update={
         "adapter_reference": whisper_manifest.adapter_reference,
         "model_config_reference": whisper_manifest.model_config_reference,
@@ -436,4 +536,37 @@ def test_historical_v1_dataset_is_recognized_without_inference(tmp_path: Path) -
     assert report.dataset_version == "1.0.0"
     assert report.dataset_sha256 == TRANSCRIPTION_V1_SHA256
     assert report.overall_status.value == "NOT_VERIFIED"
+    assert report.case_observations == ()
+
+
+def test_runtime_failure_returns_not_verified_evidence_without_exception_payload(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    manifest = _runtime_manifest(tmp_path)
+    dataset = load_russian_transcription_v2_dataset()
+    manifest = manifest.model_copy(update={
+        "dataset_id": dataset.dataset_id,
+        "dataset_version": dataset.version,
+        "dataset_sha256": transcription_dataset_v2_sha256(dataset),
+        "configuration_digest": "0" * 64,
+    })
+    manifest = manifest.model_copy(update={"configuration_digest": canonical_configuration_digest(manifest)})
+    manifest_path = tmp_path / "runtime-failure.json"
+    manifest_path.write_text(manifest.model_dump_json(), encoding="utf-8")
+    baseline, _ = preflight_candidate(
+        manifest,
+        dataset,
+        asset_root=Path(__file__).parents[2] / "src/spine/evals/data",
+    )
+
+    async def fail_inference(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("private runtime details must not enter the report")
+
+    monkeypatch.setattr(qualification_runner, "preflight_candidate", lambda *args, **kwargs: (baseline, True))
+    monkeypatch.setattr(qualification_runner, "_run_real_candidate", fail_inference)
+
+    report = run_preflight_from_file(manifest_path, Path(__file__).parents[2] / "src/spine/evals/data")
+
+    check = next(item for item in report.prerequisites if item.name == "inference_execution")
+    assert check.status.value == "NOT_VERIFIED"
+    assert "RuntimeError" in check.detail
+    assert "private runtime details" not in check.detail
     assert report.case_observations == ()

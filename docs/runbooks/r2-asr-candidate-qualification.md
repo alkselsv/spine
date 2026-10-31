@@ -71,10 +71,19 @@ Owner decision and are intentionally unset. Therefore the shipped command does
 not load either ASR runtime or perform inference against the current dataset.
 
 When a future frozen dataset has approved minima, the operator must stage each
-candidate separately and provide a manifest that pins official source commit,
-runtime commit, complete model asset inventory and SHA-256 hashes, candidate
-dependency lock, local preprocessing executable, language/decoder/precision
-configuration, host profile, license review, and hash-bound no-egress evidence.
+candidate separately and provide a manifest that pins official source and
+runtime commits plus local checkout paths. The runner verifies each checkout's
+Git `origin` and `HEAD` without network access and verifies that the installed
+candidate module resolves from the pinned, clean runtime checkout before
+importing it. The dependency lock uses `asr-candidate-dependency-lock:v1`: it
+records the Python version, exact installed distribution set and versions, and
+each distribution's installed file-tree digest. The runner checks those values
+against local package metadata/files before loading either model runtime.
+Stage the locked candidate dependencies in the isolated environment before the
+run; do not install packages from the qualification command. Also pin the
+complete model asset inventory and SHA-256 hashes, candidate dependency lock,
+local preprocessing executable, language/decoder/precision configuration,
+host profile, license review, and hash-bound no-egress evidence.
 The runner independently checks host facts, namespace/routes/interfaces where
 the declared boundary is a network namespace, dataset split and asset hashes,
 and the immutable configuration digest before loading a runtime. Reports use

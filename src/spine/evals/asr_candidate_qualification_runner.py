@@ -23,6 +23,7 @@ import subprocess
 import tempfile
 import time
 import wave
+import threading
 from uuid import NAMESPACE_URL, UUID, uuid5
 from typing import Sequence, cast
 
@@ -36,6 +37,7 @@ from spine.domain.artifacts.transcription import (
 from spine.domain.sources.original_reference import ObjectReference
 from spine.evals.asr_candidate_qualification import (
     ASR_CANDIDATE_QUALIFICATION_SCHEMA,
+    AnnotationCoverageEvidence,
     AssetEvidence,
     CandidateCaseObservation,
     CandidateProfile,
@@ -133,7 +135,7 @@ def _network_boundary_mismatches(manifest: CandidateRuntimeManifest) -> tuple[st
     if not evidence.network_egress_disabled:
         return ("no_egress_attestation_denied",)
     if evidence.enforcement != "network_namespace":
-        return ()
+        return ("no_egress_boundary_not_independently_observable",)
     mismatches: list[str] = []
     try:
         current_inode = os.stat("/proc/self/ns/net").st_ino
@@ -175,6 +177,60 @@ def _asset_inventory_digest(manifest: CandidateRuntimeManifest) -> str:
     payload = [item.model_dump(mode="json") for item in manifest.asset_inventory]
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+class _GpuMemorySampler:
+    """Sample whole-device VRAM; the benchmark host must be dedicated to this run."""
+
+    def __init__(self) -> None:
+        self.executable = shutil.which("nvidia-smi")
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.baseline_mb: int | None = None
+        self.peak_mb: int | None = None
+
+    def _sample(self) -> int | None:
+        if self.executable is None:
+            return None
+        try:
+            output = subprocess.run(
+                [self.executable, "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            ).stdout.splitlines()
+            return int(output[0].strip()) if output else None
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
+
+    def start(self) -> None:
+        self.baseline_mb = self._sample()
+        if self.baseline_mb is None:
+            return
+
+        def poll() -> None:
+            while not self._stop.wait(0.25):
+                sample = self._sample()
+                if sample is not None:
+                    self.peak_mb = max(self.peak_mb or sample, sample)
+
+        self._thread = threading.Thread(target=poll, name="spine-asr-vram-sampler", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> int | None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+        final = self._sample()
+        if final is not None:
+            self.peak_mb = max(self.peak_mb or final, final)
+        if self.baseline_mb is None or self.peak_mb is None:
+            return None
+        return max(0, self.peak_mb - self.baseline_mb)
+
+    def __del__(self) -> None:
+        self._stop.set()
 
 
 def _candidate_profile(manifest: CandidateRuntimeManifest) -> CandidateProfile:
@@ -234,6 +290,7 @@ def _not_verified_report(
     reason: str,
     prerequisites: tuple[PrerequisiteCheck, ...],
     asset_inventory: tuple[AssetEvidence, ...] = (),
+    annotation_coverage: tuple[AnnotationCoverageEvidence, ...] = (),
     no_egress_sha256: str | None = None,
 ) -> CandidateQualificationReport:
     gates = tuple(
@@ -270,6 +327,7 @@ def _not_verified_report(
         gates=gates,
         metrics=metrics,
         asset_inventory=asset_inventory,
+        annotation_coverage=annotation_coverage,
         no_egress_evidence_sha256=no_egress_sha256,
         unsupported_capabilities=(
             "speaker_diarization",
@@ -297,7 +355,7 @@ def preflight_candidate(
 ) -> tuple[CandidateQualificationReport, bool]:
     """Return a report and true only when real inference is permitted to start."""
 
-    problems = list(validate_runtime_manifest(manifest))
+    problems = list(validate_runtime_manifest(manifest, verify_runtime_import_location=True))
     problems.extend(_host_profile_mismatches(manifest))
     problems.extend(_network_boundary_mismatches(manifest))
     observed_dataset_digest = transcription_dataset_v2_sha256(dataset)
@@ -322,6 +380,8 @@ def preflight_candidate(
         "silence",
         "long_form_chunking",
         "preprocessing_effects",
+        "performance",
+        "offline_integrity",
     }
     missing_coverage = tuple(
         item for item in dataset.coverage
@@ -350,8 +410,8 @@ def preflight_candidate(
         ),
         PrerequisiteCheck(
             name="dependency_lock_verified",
-            status=QualificationStatus.PASS if "dependency_lock_missing_or_digest_mismatch" not in problems else QualificationStatus.NOT_VERIFIED,
-            detail="The candidate-specific lock file digest is checked before the runtime import.",
+            status=QualificationStatus.PASS if not any("dependency_lock" in item or "installed_dependency" in item for item in problems) else QualificationStatus.NOT_VERIFIED,
+            detail="The candidate-specific lock schema, digest, Python version, installed distribution set, versions and file-tree hashes are checked before runtime import.",
         ),
         PrerequisiteCheck(
             name="no_egress_attestation_verified",
@@ -375,8 +435,8 @@ def preflight_candidate(
         ),
         PrerequisiteCheck(
             name="candidate_runtime_available",
-            status=QualificationStatus.NOT_VERIFIED if "candidate_runtime_not_installed" in problems else QualificationStatus.PASS,
-            detail="Candidate runtime availability is checked without importing it during failed preflight.",
+            status=QualificationStatus.NOT_VERIFIED if any(item in problems for item in ("candidate_runtime_not_installed", "candidate_runtime_module_not_from_pinned_checkout", "candidate_runtime_checkout_revision_mismatch")) else QualificationStatus.PASS,
+            detail="The installed candidate module must resolve from the clean, locally verified runtime checkout before runtime import.",
         ),
         PrerequisiteCheck(
             name="configuration_digest_verified",
@@ -388,6 +448,7 @@ def preflight_candidate(
         AssetEvidence(relative_path=item.path, sha256=item.sha256, byte_length=item.byte_length)
         for item in manifest.asset_inventory
     )
+    annotation_coverage = _annotation_coverage(dataset)
     reason = "Candidate inference was not exercised: " + ",".join(dict.fromkeys(problems)) if problems else "All preflight checks passed."
     report = _not_verified_report(
         _candidate_profile(manifest),
@@ -398,6 +459,7 @@ def preflight_candidate(
         reason=reason,
         prerequisites=prerequisites,
         asset_inventory=asset_inventory,
+        annotation_coverage=annotation_coverage,
         no_egress_sha256=manifest.no_egress_evidence_sha256 if "no_egress_evidence_missing_or_digest_mismatch" not in problems else None,
     )
     return report, not problems
@@ -443,7 +505,18 @@ def run_preflight_from_file(manifest_path: Path, asset_root: Path) -> CandidateQ
     dataset = load_russian_transcription_v2_dataset()
     report, ready = preflight_candidate(manifest, dataset, asset_root=asset_root)
     if ready:
-        return asyncio.run(_run_real_candidate(manifest, dataset, asset_root=asset_root))
+        try:
+            return asyncio.run(_run_real_candidate(manifest, dataset, asset_root=asset_root))
+        except Exception as error:
+            failure = PrerequisiteCheck(
+                name="inference_execution",
+                status=QualificationStatus.NOT_VERIFIED,
+                detail=f"Real local inference aborted with {type(error).__name__}; partial outputs were not qualified.",
+            )
+            return report.model_copy(update={
+                "prerequisites": (*report.prerequisites, failure),
+                "limitations": (*report.limitations, "Inference aborted before a complete measured report; raw exception details were omitted."),
+            })
     return report
 
 
@@ -564,6 +637,9 @@ async def _run_real_candidate(
 
     data_root = asset_root
     cold_started = time.perf_counter()
+    gpu_sampler = _GpuMemorySampler() if manifest.device == "cuda" else None
+    if gpu_sampler is not None:
+        gpu_sampler.start()
     adapter = (
         GigaAMV3RNNTAdapter(manifest, _EmptyResolver())
         if manifest.candidate_id == "gigaam-v3-rnnt"
@@ -701,7 +777,7 @@ async def _run_real_candidate(
                     warm_duration_ms += case.duration_ms
                 inference_run_count += 1
     candidate = _candidate_profile(manifest)
-    metrics, gates = _evaluate_observations(dataset, observations, prediction_by_case, predicted_segments_by_case, manifest)
+    peak_vram_mb = gpu_sampler.stop() if gpu_sampler is not None else 0
     try:
         import resource
 
@@ -710,6 +786,20 @@ async def _run_real_candidate(
     except (ImportError, AttributeError, OSError):
         peak_ram_mb = 0
         peak_ram_observed = False
+    metrics, gates = _evaluate_observations(
+        dataset,
+        observations,
+        prediction_by_case,
+        predicted_segments_by_case,
+        manifest,
+        offline_integrity_observed=True,
+        performance_observed=(
+            peak_vram_mb is not None
+            and peak_ram_observed
+            and warm_duration_ms > 0
+            and bool(observations)
+        ),
+    )
     metrics.update({
         "preprocessing_ms": _observed_metric(float(all_preprocessing_ms), "milliseconds", len(observations), len(observations)),
         "inference_ms": _observed_metric(float(all_inference_ms), "milliseconds", len(observations), len(observations)),
@@ -718,7 +808,7 @@ async def _run_real_candidate(
         "warm_inference_rtf": _observed_metric(float(warm_inference_ms / warm_duration_ms), "ratio", max(0, len(observations) - 1), max(0, len(observations) - 1)) if warm_duration_ms else MetricObservation(status=QualificationStatus.NOT_VERIFIED, value=None, unit="ratio", coverage=Coverage(annotated=0, eligible=max(0, len(observations) - 1)), detail="A warm run after the first inference was not available."),
         "end_to_end_rtf": _observed_metric(float((all_preprocessing_ms + all_inference_ms + all_reassembly_ms) / max(all_duration_ms, 1)), "ratio", len(observations), len(observations)),
         "peak_ram_mb": _observed_metric(float(peak_ram_mb), "megabytes", len(observations), len(observations)) if peak_ram_observed else MetricObservation(status=QualificationStatus.NOT_VERIFIED, value=None, unit="megabytes", coverage=Coverage(annotated=0, eligible=len(observations)), detail="Peak RAM measurement is unavailable on this host."),
-        "peak_vram_mb": MetricObservation(status=QualificationStatus.NOT_VERIFIED, value=None, unit="megabytes", coverage=Coverage(annotated=0, eligible=len(observations)), detail="Peak VRAM sampling is not implemented for this runtime profile."),
+        "peak_vram_mb": _observed_metric(float(peak_vram_mb), "megabytes", len(observations), len(observations)) if peak_vram_mb is not None else MetricObservation(status=QualificationStatus.NOT_VERIFIED, value=None, unit="megabytes", coverage=Coverage(annotated=0, eligible=len(observations)), detail="NVIDIA VRAM sampling was unavailable; the performance gate remains NOT_VERIFIED."),
     })
     prerequisite_checks = tuple(
         PrerequisiteCheck(name=name, status=QualificationStatus.PASS, detail=detail)
@@ -741,6 +831,7 @@ async def _run_real_candidate(
         gates=gates,
         metrics=metrics,
         asset_inventory=tuple(AssetEvidence(relative_path=item.path, sha256=item.sha256, byte_length=item.byte_length) for item in manifest.asset_inventory),
+        annotation_coverage=_annotation_coverage(dataset),
         no_egress_evidence_sha256=manifest.no_egress_evidence_sha256,
         case_observations=tuple(observations),
         unsupported_capabilities=("speaker_diarization", "speaker_identification", "confidence_scores"),
@@ -772,6 +863,24 @@ def _observed_metric(value: float, unit: str, annotated: int, eligible: int) -> 
     )
 
 
+def _annotation_coverage(dataset: RussianTranscriptionDatasetV2) -> tuple[AnnotationCoverageEvidence, ...]:
+    return tuple(
+        AnnotationCoverageEvidence(
+            gate_id=item.gate_id,
+            category_id=item.category_id,
+            annotated_count=item.annotated_count,
+            eligible_count=item.eligible_count,
+            minimum_annotation_count=item.minimum_annotation_count,
+            status=(
+                QualificationStatus.PASS
+                if item.minimum_annotation_count is not None and item.annotated_count >= item.minimum_annotation_count
+                else QualificationStatus.NOT_VERIFIED
+            ),
+        )
+        for item in dataset.coverage
+    )
+
+
 def _edit_distance(left: Sequence[str], right: Sequence[str]) -> int:
     previous = list(range(len(right) + 1))
     for index, left_item in enumerate(left, start=1):
@@ -794,6 +903,9 @@ def _evaluate_observations(
     prediction_by_case: dict[str, str],
     predicted_segments_by_case: dict[str, list[SegmentObservation]],
     manifest: CandidateRuntimeManifest,
+    *,
+    offline_integrity_observed: bool = False,
+    performance_observed: bool = False,
 ) -> tuple[dict[str, MetricObservation], tuple[GateResult, ...]]:
     references = {case.case_id: case for case in dataset.cases if case.split is QualificationSplit.QUALIFICATION}
     all_qualification_cases_observed = set(references).issubset(prediction_by_case)
@@ -824,18 +936,35 @@ def _evaluate_observations(
         for term in (annotation.expected_text, annotation.canonical_term, *annotation.permissible_variants)
         if _normalized_tokens(term)
     }
+    reference_segments_by_id = {
+        segment.segment_id: segment
+        for case in references.values()
+        for segment in case.reference_segments
+    }
+    def hypothesis_for_segment(case_id: str, segment_id: str) -> str:
+        reference_segment = reference_segments_by_id[segment_id]
+        overlapping = [
+            segment
+            for segment in predicted_segments_by_case.get(case_id, ())
+            if segment.start_ms < reference_segment.end_ms
+            and reference_segment.start_ms < segment.end_ms
+        ]
+        return " ".join(_normalized_tokens(" ".join(item.text for item in overlapping)))
+
     for case_id, reference_case in references.items():
         hypothesis = _normalized_tokens(prediction_by_case.get(case_id, ""))
         transcript = " ".join(hypothesis)
         for annotation in reference_case.critical_spans:
             critical_total += 1
             expected = " ".join(_normalized_tokens(annotation.expected_text))
-            critical_exact += int(bool(expected) and expected in transcript)
+            local_transcript = hypothesis_for_segment(case_id, annotation.segment_id)
+            critical_exact += int(bool(expected) and expected in local_transcript)
         case_terms = 0
         for annotation in reference_case.terminology_spans:
             term_total += 1
             acceptable = {annotation.expected_text, annotation.canonical_term, *annotation.permissible_variants}
-            matched = int(any(" ".join(_normalized_tokens(term)) in transcript for term in acceptable))
+            local_transcript = hypothesis_for_segment(case_id, annotation.segment_id)
+            matched = int(any(" ".join(_normalized_tokens(term)) in local_transcript for term in acceptable))
             case_terms += matched
         case_term_predictions = sum(1 for term in terminology_lexicon if term in transcript)
         term_predictions += case_term_predictions
@@ -858,20 +987,40 @@ def _evaluate_observations(
                 if item.text.strip() and item.start_ms >= interval.start_ms and item.end_ms <= interval.end_ms
             )
         predicted = predicted_segments_by_case.get(case_id, [])
-        for expected_segment, actual_segment in zip(reference_case.reference_segments, predicted, strict=False):
-            if " ".join(_normalized_tokens(expected_segment.reference_text)) in " ".join(_normalized_tokens(actual_segment.text)):
-                timestamp_errors.extend((abs(expected_segment.start_ms - actual_segment.start_ms), abs(expected_segment.end_ms - actual_segment.end_ms)))
+        for expected_segment in reference_case.reference_segments:
+            overlapping = [
+                item for item in predicted
+                if item.start_ms < expected_segment.end_ms and expected_segment.start_ms < item.end_ms
+            ]
+            observed_text = " ".join(_normalized_tokens(" ".join(item.text for item in overlapping)))
+            expected_text = " ".join(_normalized_tokens(expected_segment.reference_text))
+            if overlapping and expected_text and expected_text in observed_text:
+                observed_start = min(item.start_ms for item in overlapping)
+                observed_end = max(item.end_ms for item in overlapping)
+                timestamp_errors.extend((abs(expected_segment.start_ms - observed_start), abs(expected_segment.end_ms - observed_end)))
     has_minima = { (item.gate_id, item.category_id): item.minimum_annotation_count is not None and item.annotated_count >= item.minimum_annotation_count for item in dataset.coverage }
+    russian_coverage_sufficient = all(has_minima.get(("russian_transcription", category), False) for category in ("clean", "noisy", "overlap", "long_form"))
+    critical_coverage_sufficient = all(has_minima.get(("critical_business_fragments", category), False) for category in ("amount_currency", "quantity", "date_deadline", "unit", "negation", "obligation", "permission", "condition", "constraint"))
+    adversarial_coverage_sufficient = all(has_minima.get(("adversarial_semantic_inversions", category), False) for category in ("negation", "bounds", "permission", "inclusion", "obligation"))
+    timestamp_coverage_sufficient = all(has_minima.get(("segment_timestamps", category), False) for category in ("boundary_error", "alignment_coverage"))
+    silence_coverage_sufficient = all(has_minima.get(("silence", category), False) for category in ("pure_silence", "verified_silence_intervals"))
+    timestamp_alignment_complete = bool(observations) and all(
+        item.timestamps_supported
+        and item.missing_reference_segments == 0
+        and item.matched_reference_segments == len(references[item.case_id].reference_segments)
+        for item in observations
+    )
+    term_coverage_sufficient = has_minima.get(("terminology", "all_annotated_terms"), False)
     metric_values: dict[str, tuple[float | None, str, int | None, Coverage, QualificationStatus]] = {
-        "wer": (wer, "ratio", word_errors, Coverage(annotated=len(prediction_by_case), eligible=len(references)), QualificationStatus.FAIL if wer > 0.15 else QualificationStatus.NOT_VERIFIED),
-        "cer": (cer, "ratio", char_errors, Coverage(annotated=len(prediction_by_case), eligible=len(references)), QualificationStatus.FAIL if cer > 0.08 else QualificationStatus.NOT_VERIFIED),
-        "critical_fragment_accuracy": (critical_exact / critical_total if critical_total else None, "ratio", critical_total-critical_exact if critical_total else None, Coverage(annotated=critical_total, eligible=sum(len(c.critical_spans) for c in references.values())), QualificationStatus.FAIL if critical_total and critical_exact / critical_total < 0.98 else QualificationStatus.NOT_VERIFIED),
-        "semantic_inversions": (float(semantic_inversions), "count", semantic_inversions, Coverage(annotated=adversarial_observed, eligible=adversarial_total), QualificationStatus.FAIL if semantic_inversions else QualificationStatus.NOT_VERIFIED),
-        "terminology_precision": (term_exact / max(term_predictions, 1) if term_total else None, "ratio", term_predictions-term_exact if term_total else None, Coverage(annotated=term_exact, eligible=term_predictions), QualificationStatus.FAIL if term_predictions and term_exact / term_predictions < 0.95 else QualificationStatus.NOT_VERIFIED),
-        "terminology_recall": (term_exact / term_total if term_total else None, "ratio", term_total-term_exact if term_total else None, Coverage(annotated=term_total, eligible=sum(len(c.terminology_spans) for c in references.values())), QualificationStatus.FAIL if term_total and term_exact / term_total < 0.95 else QualificationStatus.NOT_VERIFIED),
-        "segment_timestamp_p50_ms": (statistics.median(timestamp_errors) if timestamp_errors else None, "milliseconds", None, Coverage(annotated=len(timestamp_errors)//2, eligible=sum(len(c.reference_segments) for c in references.values())), QualificationStatus.FAIL if timestamp_errors and statistics.median(timestamp_errors) > 500 else QualificationStatus.NOT_VERIFIED),
-        "segment_timestamp_p95_ms": (sorted(timestamp_errors)[min(len(timestamp_errors)-1, round((len(timestamp_errors)-1)*0.95))] if timestamp_errors else None, "milliseconds", None, Coverage(annotated=len(timestamp_errors)//2, eligible=sum(len(c.reference_segments) for c in references.values())), QualificationStatus.FAIL if timestamp_errors and sorted(timestamp_errors)[min(len(timestamp_errors)-1, round((len(timestamp_errors)-1)*0.95))] > 1500 else QualificationStatus.NOT_VERIFIED),
-        "silence_hallucinations": (float(silence_words + silence_segments), "count", silence_words + silence_segments, Coverage(annotated=sum(c.media_category == "silence" for c in references.values()), eligible=sum(c.media_category == "silence" for c in references.values())), QualificationStatus.FAIL if silence_words + silence_segments else QualificationStatus.NOT_VERIFIED),
+        "wer": (wer, "ratio", word_errors, Coverage(annotated=len(prediction_by_case), eligible=len(references)), QualificationStatus.FAIL if all_qualification_cases_observed and wer > 0.15 else QualificationStatus.PASS if all_qualification_cases_observed and russian_coverage_sufficient else QualificationStatus.NOT_VERIFIED),
+        "cer": (cer, "ratio", char_errors, Coverage(annotated=len(prediction_by_case), eligible=len(references)), QualificationStatus.FAIL if all_qualification_cases_observed and cer > 0.08 else QualificationStatus.PASS if all_qualification_cases_observed and russian_coverage_sufficient else QualificationStatus.NOT_VERIFIED),
+        "critical_fragment_accuracy": (critical_exact / critical_total if critical_total else None, "ratio", critical_total-critical_exact if critical_total else None, Coverage(annotated=critical_total, eligible=sum(len(c.critical_spans) for c in references.values())), QualificationStatus.FAIL if all_qualification_cases_observed and critical_total and critical_exact / critical_total < 0.98 else QualificationStatus.PASS if all_qualification_cases_observed and critical_coverage_sufficient and critical_total else QualificationStatus.NOT_VERIFIED),
+        "semantic_inversions": (float(semantic_inversions), "count", semantic_inversions, Coverage(annotated=adversarial_observed, eligible=adversarial_total), QualificationStatus.FAIL if semantic_inversions else QualificationStatus.PASS if adversarial_coverage_sufficient and adversarial_observed == adversarial_total and adversarial_total > 0 else QualificationStatus.NOT_VERIFIED),
+        "terminology_precision": (term_exact / term_predictions if term_predictions else 0.0 if term_total else None, "ratio", term_predictions-term_exact if term_total else None, Coverage(annotated=term_exact, eligible=term_predictions), QualificationStatus.FAIL if term_predictions and term_exact / term_predictions < 0.95 else QualificationStatus.PASS if term_coverage_sufficient and all_qualification_cases_observed and term_predictions > 0 else QualificationStatus.NOT_VERIFIED),
+        "terminology_recall": (term_exact / term_total if term_total else None, "ratio", term_total-term_exact if term_total else None, Coverage(annotated=term_total, eligible=sum(len(c.terminology_spans) for c in references.values())), QualificationStatus.FAIL if term_total and term_exact / term_total < 0.95 else QualificationStatus.PASS if term_coverage_sufficient and all_qualification_cases_observed else QualificationStatus.NOT_VERIFIED),
+        "segment_timestamp_p50_ms": (statistics.median(timestamp_errors) if timestamp_errors else None, "milliseconds", None, Coverage(annotated=len(timestamp_errors)//2, eligible=sum(len(c.reference_segments) for c in references.values())), QualificationStatus.FAIL if timestamp_errors and statistics.median(timestamp_errors) > 500 else QualificationStatus.PASS if timestamp_coverage_sufficient and timestamp_alignment_complete and timestamp_errors else QualificationStatus.NOT_VERIFIED),
+        "segment_timestamp_p95_ms": (sorted(timestamp_errors)[min(len(timestamp_errors)-1, round((len(timestamp_errors)-1)*0.95))] if timestamp_errors else None, "milliseconds", None, Coverage(annotated=len(timestamp_errors)//2, eligible=sum(len(c.reference_segments) for c in references.values())), QualificationStatus.FAIL if timestamp_errors and sorted(timestamp_errors)[min(len(timestamp_errors)-1, round((len(timestamp_errors)-1)*0.95))] > 1500 else QualificationStatus.PASS if timestamp_coverage_sufficient and timestamp_alignment_complete and timestamp_errors else QualificationStatus.NOT_VERIFIED),
+        "silence_hallucinations": (float(silence_words + silence_segments), "count", silence_words + silence_segments, Coverage(annotated=sum(c.media_category == "silence" for c in references.values()), eligible=sum(c.media_category == "silence" for c in references.values())), QualificationStatus.FAIL if silence_words + silence_segments else QualificationStatus.PASS if silence_coverage_sufficient and all_qualification_cases_observed else QualificationStatus.NOT_VERIFIED),
     }
     metrics = {
         name: MetricObservation(status=status, value=value, unit=unit, error_count=errors, coverage=coverage, detail="Computed from real candidate outputs; NOT_VERIFIED remains until coverage sufficiency is approved and met.")
@@ -907,6 +1056,7 @@ def _evaluate_observations(
             required_coverage.append(False)
         elif gate_id == "segment_timestamps":
             required_coverage = [has_minima.get(("segment_timestamps", category), False) for category in ("boundary_error", "alignment_coverage")]
+            required_coverage.append(timestamp_alignment_complete)
             measured_failure = bool(timestamp_errors) and (statistics.median(timestamp_errors) > 500 or sorted(timestamp_errors)[min(len(timestamp_errors)-1, round((len(timestamp_errors)-1)*0.95))] > 1500)
             required_coverage.append(all(item.timestamps_supported for item in observations))
         elif gate_id == "silence":
@@ -914,10 +1064,22 @@ def _evaluate_observations(
             required_coverage.append(all_qualification_cases_observed)
             measured_failure = all_qualification_cases_observed and bool(silence_words + silence_segments)
         elif gate_id == "long_form_chunking":
-            required_coverage = [has_minima.get(("long_form_chunking", category), False) for category in ("chunk_boundaries", "pause_handling", "reassembly", "partial_recovery")]
+            required_coverage = []
             measured_failure = False
         elif gate_id == "preprocessing_effects":
-            required_coverage = [has_minima.get(("preprocessing_effects", category), False) for category in ("baseline", "preprocessing_comparison")]
+            required_coverage = []
+            measured_failure = False
+        elif gate_id == "performance":
+            performance_categories = ("cold_start", "warm_inference", "preprocessing", "inference", "reassembly", "end_to_end", "resources")
+            required_coverage = [has_minima.get(("performance", category), False) for category in performance_categories]
+            required_coverage.append(performance_observed and all_qualification_cases_observed)
+            measured_failure = False
+        elif gate_id == "offline_integrity":
+            offline_categories = ("asset_loading", "source_provenance", "dependency_provenance", "supported_wav_pcm", "supported_mp3", "supported_m4a", "network_egress")
+            formats_present = {item.input_format for item in observations}
+            required_formats = {"wav_pcm", "mp3_layer_iii", "m4a_aac_lc"}
+            required_coverage = [has_minima.get(("offline_integrity", category), False) for category in offline_categories]
+            required_coverage.append(offline_integrity_observed and required_formats.issubset(formats_present))
             measured_failure = False
         else:
             required_coverage = []

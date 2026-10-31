@@ -166,6 +166,17 @@ class AssetEvidence(DefinitionModel):
     byte_length: StrictInt = Field(gt=0)
 
 
+class AnnotationCoverageEvidence(DefinitionModel):
+    """One dataset category's eligibility and approved sufficiency evidence."""
+
+    gate_id: VersionIdentifier
+    category_id: VersionIdentifier
+    annotated_count: StrictInt = Field(ge=0)
+    eligible_count: StrictInt = Field(ge=0)
+    minimum_annotation_count: StrictInt | None = Field(default=None, gt=0)
+    status: QualificationStatus
+
+
 class SegmentObservation(DefinitionModel):
     start_ms: StrictInt = Field(ge=0)
     end_ms: StrictInt = Field(gt=0)
@@ -310,6 +321,7 @@ class CandidateQualificationReport(DefinitionModel):
     gates: tuple[GateResult, ...] = Field(min_length=1)
     metrics: dict[str, MetricObservation]
     asset_inventory: tuple[AssetEvidence, ...] = ()
+    annotation_coverage: tuple[AnnotationCoverageEvidence, ...] = ()
     no_egress_evidence_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     case_observations: tuple[CandidateCaseObservation, ...] = ()
     unsupported_capabilities: tuple[VersionIdentifier, ...]

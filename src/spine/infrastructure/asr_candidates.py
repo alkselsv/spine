@@ -9,10 +9,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import importlib
+import importlib.metadata
+import importlib.util
 import json
 import os
 import platform
 from pathlib import Path, PurePosixPath
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 import re
 from typing import Literal, Protocol, cast
@@ -83,6 +86,29 @@ class CandidateHostEvidence(DefinitionModel):
     production_capacity_claim: Literal[False] = False
 
 
+class CandidateDependencyPin(DefinitionModel):
+    name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+    version: str = Field(min_length=1, max_length=128)
+    installed_tree_sha256: str = Field(pattern=_SHA256)
+
+
+class CandidateDependencyLock(DefinitionModel):
+    schema_version: Literal["asr-candidate-dependency-lock:v1"]
+    candidate_id: Literal["gigaam-v3-rnnt", "whisper-large-v3-faster-whisper"]
+    python_version: str = Field(min_length=1, max_length=32)
+    packages: tuple[CandidateDependencyPin, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def package_inventory_is_complete_and_unique(self) -> "CandidateDependencyLock":
+        names = [_normalize_distribution_name(item.name) for item in self.packages]
+        if len(names) != len(set(names)):
+            raise ValueError("dependency lock package names must be unique")
+        required = {"gigaam"} if self.candidate_id == "gigaam-v3-rnnt" else {"faster-whisper", "ctranslate2"}
+        if not required.issubset(names):
+            raise ValueError("dependency lock omits a required candidate runtime package")
+        return self
+
+
 class CandidateRuntimeManifest(DefinitionModel):
     """Operator supplied identity for a single, immutable candidate run."""
 
@@ -94,7 +120,9 @@ class CandidateRuntimeManifest(DefinitionModel):
         "https://github.com/salute-developers/GigaAM",
         "https://github.com/SYSTRAN/faster-whisper",
     ]
+    source_checkout_path: str = Field(min_length=1)
     source_revision: str = Field(pattern=_GIT_REVISION)
+    runtime_checkout_path: str = Field(min_length=1)
     runtime_reference: VersionIdentifier
     runtime_revision: str = Field(pattern=_GIT_REVISION)
     dependency_lock_path: str = Field(min_length=1)
@@ -183,17 +211,39 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def validate_runtime_manifest(manifest: CandidateRuntimeManifest) -> tuple[str, ...]:
+def validate_runtime_manifest(
+    manifest: CandidateRuntimeManifest,
+    *,
+    verify_runtime_import_location: bool = False,
+) -> tuple[str, ...]:
     """Verify every staged byte and attestation before any optional import."""
 
     problems: list[str] = []
     if canonical_configuration_digest(manifest) != manifest.configuration_digest:
         problems.append("configuration_digest_mismatch")
+    if not _checkout_matches(manifest.source_checkout_path, manifest.source_repository, manifest.source_revision):
+        problems.append("candidate_source_checkout_revision_mismatch")
+    if not _checkout_matches(manifest.runtime_checkout_path, manifest.source_repository, manifest.runtime_revision):
+        problems.append("candidate_runtime_checkout_revision_mismatch")
+    if verify_runtime_import_location and not _runtime_module_is_from_checkout(manifest):
+        problems.append("candidate_runtime_module_not_from_pinned_checkout")
     if manifest.license_commercial_use_approved is not True:
         problems.append("license_review_not_approved")
     lock_path = Path(manifest.dependency_lock_path)
     if lock_path.is_symlink() or not lock_path.is_file() or sha256_file(lock_path) != manifest.dependency_lock_sha256:
         problems.append("dependency_lock_missing_or_digest_mismatch")
+    else:
+        try:
+            lock = CandidateDependencyLock.model_validate_json(lock_path.read_text(encoding="utf-8"))
+        except Exception:
+            problems.append("dependency_lock_invalid")
+        else:
+            if lock.candidate_id != manifest.candidate_id:
+                problems.append("dependency_lock_candidate_mismatch")
+            if lock.python_version != manifest.host.python_version:
+                problems.append("dependency_lock_python_version_mismatch")
+            if verify_runtime_import_location:
+                problems.extend(_installed_dependency_mismatches(lock))
     preprocessing_executable = Path(manifest.preprocessing_executable)
     if (
         preprocessing_executable.is_symlink()
@@ -244,6 +294,109 @@ def validate_runtime_manifest(manifest: CandidateRuntimeManifest) -> tuple[str, 
             if evidence != manifest.no_egress:
                 problems.append("no_egress_evidence_mismatch")
     return tuple(dict.fromkeys(problems))
+
+
+def _normalize_distribution_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _installed_distribution_digest(distribution: importlib.metadata.Distribution) -> str | None:
+    files = distribution.files
+    if files is None:
+        return None
+    inventory: list[tuple[str, str, int]] = []
+    for item in sorted(files, key=str):
+        path = Path(distribution.locate_file(item))
+        if path.is_symlink() or not path.is_file():
+            return None
+        try:
+            inventory.append((str(item), sha256_file(path), path.stat().st_size))
+        except OSError:
+            return None
+    if not inventory:
+        return None
+    payload = json.dumps(inventory, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _installed_dependency_mismatches(lock: CandidateDependencyLock) -> list[str]:
+    installed: dict[str, importlib.metadata.Distribution] = {}
+    try:
+        for distribution in importlib.metadata.distributions():
+            name = distribution.metadata.get("Name")
+            if name:
+                installed[_normalize_distribution_name(name)] = distribution
+    except (OSError, importlib.metadata.PackageNotFoundError):
+        return ["installed_dependency_inventory_unavailable"]
+    locked = {_normalize_distribution_name(item.name): item for item in lock.packages}
+    problems = ["installed_dependency_set_mismatch"] if set(installed) != set(locked) else []
+    for name, pin in locked.items():
+        distribution = installed.get(name)
+        if distribution is None:
+            problems.append(f"installed_dependency_missing:{name}")
+        elif distribution.version != pin.version:
+            problems.append(f"installed_dependency_version_mismatch:{name}")
+        elif _installed_distribution_digest(distribution) != pin.installed_tree_sha256:
+            problems.append(f"installed_dependency_digest_mismatch:{name}")
+    return problems
+
+
+def _checkout_matches(path_value: str, repository: str, revision: str) -> bool:
+    """Verify a staged local checkout's origin and HEAD without network access."""
+
+    path = Path(path_value)
+    if path.is_symlink() or not path.is_dir():
+        return False
+    try:
+        remote = subprocess.run(
+            ["git", "-C", str(path), "config", "--get", "remote.origin.url"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+        head = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--verify", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "-C", str(path), "status", "--porcelain", "--untracked-files=all"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return (
+        remote.rstrip("/").removesuffix(".git") == repository.rstrip("/").removesuffix(".git")
+        and head == revision
+        and not dirty
+    )
+
+
+def _runtime_module_is_from_checkout(manifest: CandidateRuntimeManifest) -> bool:
+    module_name = "gigaam" if manifest.candidate_id == "gigaam-v3-rnnt" else "faster_whisper"
+    try:
+        spec = importlib.util.find_spec(module_name)
+        if spec is None or spec.origin is None:
+            return False
+        origin = Path(spec.origin).resolve(strict=True)
+        checkout = Path(manifest.runtime_checkout_path).resolve(strict=True)
+        relative_origin = origin.relative_to(checkout).as_posix()
+        subprocess.run(
+            ["git", "-C", str(checkout), "ls-files", "--error-unmatch", "--", relative_origin],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (ImportError, OSError, ValueError, subprocess.SubprocessError):
+        return False
+    return True
 
 
 def canonical_configuration_digest(manifest: CandidateRuntimeManifest) -> str:
@@ -338,7 +491,10 @@ class _LocalAdapter(SpeechToTextPort):
         *,
         backend: RuntimeBackend | None = None,
     ) -> None:
-        problems = validate_runtime_manifest(manifest)
+        problems = validate_runtime_manifest(
+            manifest,
+            verify_runtime_import_location=backend is None,
+        )
         if problems:
             raise ValueError("candidate preflight failed: " + ",".join(problems))
         if manifest.candidate_id != self.candidate_id:
