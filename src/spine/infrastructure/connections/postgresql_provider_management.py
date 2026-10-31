@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from uuid import UUID
 
@@ -34,6 +36,10 @@ from spine.application.connections.management import (
     build_provider_connection_audit,
     provider_connection_command_digest,
     require_provider_connection_successor,
+)
+from spine.application.connections.provider import (
+    ProviderReadCommand,
+    ProviderReadDeniedError,
 )
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -309,6 +315,115 @@ class PostgreSQLProviderConnectionManagementRepository:
         return trusted
 
 
+class PostgreSQLProviderConnectionRepository:
+    """Admit an exact current provider connection under tenant RLS."""
+
+    def __init__(
+        self,
+        *,
+        session_factory: SessionFactory,
+        context_verifier: TrustedContextVerifier,
+    ) -> None:
+        self._session_factory = session_factory
+        self._context_verifier = context_verifier
+
+    @asynccontextmanager
+    async def admit_read(
+        self,
+        command: ProviderReadCommand,
+        context: TrustedPersistenceContext,
+    ) -> AsyncIterator[ProviderConnection]:
+        try:
+            trusted = self._context_verifier.verify(context)
+            if (
+                trusted.origin is not ContextOrigin.WORKER
+                or not isinstance(trusted.scope, EnvironmentScope)
+                or trusted.service_principal_id is None
+                or trusted.purpose.value != "yandex_qualification"
+                or trusted.operation.value != "provider_connection_read"
+                or trusted.scope.workspace_id != command.workspace_id
+                or trusted.scope.environment_id != command.environment_id
+            ):
+                raise ProviderReadDeniedError()
+        except asyncio.CancelledError:
+            raise
+        except ProviderReadDeniedError:
+            raise
+        except Exception:
+            raise ProviderReadDeniedError() from None
+
+        async with self._session_factory() as session:
+            async with session.begin():
+                try:
+                    await session.execute(
+                        _BIND_SCOPE, _scope_parameters(trusted.scope)
+                    )
+                    await session.execute(
+                        text(
+                            "SELECT pg_advisory_xact_lock_shared("
+                            "hashtextextended(:connection_lock, 0))"
+                        ),
+                        {"connection_lock": str(command.connection_id)},
+                    )
+                    row = (
+                        await session.execute(
+                            select(provider_connection_versions)
+                            .where(
+                                provider_connection_versions.c.connection_id
+                                == command.connection_id,
+                                provider_connection_versions.c.connection_version_id
+                                == command.connection_version_id,
+                                provider_connection_versions.c.workspace_id
+                                == command.workspace_id,
+                                provider_connection_versions.c.environment_id
+                                == command.environment_id,
+                                provider_connection_versions.c.service_principal_id
+                                == trusted.service_principal_id,
+                                provider_connection_versions.c.provider_kind
+                                == ProviderKind.YANDEX_DISK.value,
+                                provider_connection_versions.c.authorization_generation
+                                == command.authorization_generation,
+                                provider_connection_versions.c.configuration_generation
+                                == command.configuration_generation,
+                                provider_connection_versions.c.status
+                                == ProviderConnectionStatus.ACTIVE.value,
+                                provider_connection_versions.c[
+                                    "approved_resource_scope_references"
+                                ].any(
+                                    command.resource_scope_reference.value
+                                ),
+                            )
+                            .limit(1)
+                        )
+                    ).mappings().one_or_none()
+                    latest_version_id = await session.scalar(
+                        select(provider_connection_versions.c.connection_version_id)
+                        .where(
+                            provider_connection_versions.c.connection_id
+                            == command.connection_id,
+                            provider_connection_versions.c.workspace_id
+                            == command.workspace_id,
+                            provider_connection_versions.c.environment_id
+                            == command.environment_id,
+                        )
+                        .order_by(provider_connection_versions.c.version.desc())
+                        .limit(1)
+                    )
+                    if (
+                        row is None
+                        or latest_version_id != command.connection_version_id
+                    ):
+                        raise ProviderReadDeniedError()
+                    admitted = _inspection_from_row(row).connection
+                except asyncio.CancelledError:
+                    raise
+                except ProviderReadDeniedError:
+                    raise
+                except Exception:
+                    raise ProviderReadDeniedError() from None
+                yield admitted
+
+
 def _allows_context(
     context: TrustedPersistenceContext, operations: set[str]
 ) -> bool:
@@ -514,6 +629,7 @@ def _inspection_from_row(row) -> ProviderConnectionInspection:
 
 __all__ = [
     "PostgreSQLProviderConnectionManagementRepository",
+    "PostgreSQLProviderConnectionRepository",
     "provider_connection_approvals",
     "provider_connection_versions",
 ]

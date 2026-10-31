@@ -442,6 +442,7 @@ def _config() -> YandexQualificationInventoryConfig:
         ),
         connection_id=connection.connection_id,
         connection_version_id=connection.connection_version_id,
+        service_principal_id=connection.service_principal_id,
         resource_scope_reference=SCOPE,
         authorization_generation=connection.authorization_generation,
         configuration_generation=connection.configuration_generation,
@@ -582,12 +583,16 @@ async def test_inventory_runner_writes_private_candidate_and_safe_aggregate_repo
     assert report.status == "ready_for_manifest_approval"
     assert report.workspace_id == _config().credential_binding.workspace_id
     assert report.environment_id == _config().credential_binding.environment_id
+    assert report.service_principal_id == _config().service_principal_id
     assert (report.file_count, report.directory_count, report.file_bytes) == (5, 4, 1416)
     assert report.identity_requests == report.disk_requests == 10
     assert candidate.stat().st_mode & 0o777 == 0o600
     candidate_payload = json.loads(candidate.read_text(encoding="utf-8"))
     assert candidate_payload["workspace_id"] == str(report.workspace_id)
     assert candidate_payload["environment_id"] == str(report.environment_id)
+    assert candidate_payload["service_principal_id"] == str(
+        report.service_principal_id
+    )
     serialized_report = report.model_dump_json()
     assert "root.txt" not in serialized_report
     assert "/Spine-Qualification" not in serialized_report
@@ -653,6 +658,13 @@ async def test_inventory_runner_denies_missing_execution_lease_before_network(
         ),
         _live_connection().model_copy(
             update={"status": ProviderConnectionStatus.REVOKED}
+        ),
+        _live_connection().model_copy(
+            update={
+                "service_principal_id": UUID(
+                    "00000000-0000-4000-8000-000000000998"
+                )
+            }
         ),
     ),
 )

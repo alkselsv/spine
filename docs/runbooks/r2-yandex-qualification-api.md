@@ -107,9 +107,11 @@ tenant-scoped `ProviderConnectionRepository.admit_read` result before resolving
 the credential or calling Yandex. It also requires an injected cross-process
 execution lease for the exact connection/scope/generations and an injected
 request governor shared by all service instances in the local worker. Missing
-or contended coordination fails closed before a provider request. No standalone
-CLI is exposed until a canonical connection repository composition exists. The
-runner performs two complete
+or contended coordination fails closed before a provider request. The
+`spine-yandex-live-inventory` command is the only approved live composition: it
+uses the canonical PostgreSQL Provider Connection repository and requires both
+the configuration opt-in and `SPINE_YANDEX_LIVE_INVENTORY_OPT_IN=1`. The runner
+performs two complete
 recursive metadata traversals of the exact root. Every folder page is path-confined, every
 listed item must be a direct child of that page, and the two ordered inventories
 must be identical. The two passes share the approved ten-page, 32-resource and
