@@ -121,3 +121,5 @@ generated synthetic speech is needed for the missing categories. Such audio must
 be staged from approved local voice assets and separately hashed; this generator
 does not acquire those assets. The #661 thresholds remain unchanged. Until then,
 the #758 runner must report qualification-dependent gates as `NOT_VERIFIED`.
+The unresolved minima and alignment-coverage questions are captured in
+[`issue-759-protocol-owner-decision.md`](issue-759-protocol-owner-decision.md).
