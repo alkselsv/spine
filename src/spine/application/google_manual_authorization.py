@@ -18,7 +18,6 @@ from spine.application.connections.google import (
     GoogleConnectionConflictError,
     GoogleConnectionMutationResult,
     GoogleConnectionRepository,
-    confirmed_google_revocation_successor,
     revoked_connection_successor,
 )
 from spine.application.persistence.context import TrustedPersistenceContext
@@ -112,6 +111,7 @@ class GoogleManualReauthorization:
         command: GoogleReauthorizationCommand,
         context: TrustedPersistenceContext,
     ) -> GoogleConnectionMutationResult:
+        await self._repository.get_current(current.connection_id, context)
         if (
             current.connection_id != command.connection_id
             or current.connection_version_id != command.expected_current_version_id
@@ -257,7 +257,7 @@ class GoogleManualRevocation:
         occurred_at: datetime,
     ) -> GoogleManualRevocationResult:
         canonical = await self._repository.get_current(current.connection_id, context)
-        if canonical != current:
+        if current.status is not GoogleConnectionStatus.ACTIVE and canonical != current:
             raise GoogleConnectionConflictError()
         admitted_connection = current
         replay = False
@@ -268,30 +268,22 @@ class GoogleManualRevocation:
             admitted_connection = mutation.connection
             replay = mutation.replay
         elif current.status is GoogleConnectionStatus.SUSPENDED:
+            if canonical != current:
+                raise GoogleConnectionConflictError()
             pass
-        elif current.status is not GoogleConnectionStatus.REVOKED:
+        else:
             raise GoogleConnectionConflictError()
 
-        remote_confirmed = current.status is GoogleConnectionStatus.REVOKED
+        remote_confirmed = await self._grant_lifecycle.revoke_remote(
+            current.grant_reference
+        )
         if not remote_confirmed:
-            remote_confirmed = await self._grant_lifecycle.revoke_remote(
-                current.grant_reference
+            return GoogleManualRevocationResult(
+                connection=admitted_connection,
+                remote_revocation_confirmed=False,
+                local_cleanup_verified=False,
+                replay=replay,
             )
-            if not remote_confirmed:
-                return GoogleManualRevocationResult(
-                    connection=admitted_connection,
-                    remote_revocation_confirmed=False,
-                    local_cleanup_verified=False,
-                    replay=replay,
-                )
-            revoked = await self._repository.register_revoked(
-                confirmed_google_revocation_successor(
-                    admitted_connection, occurred_at=occurred_at
-                ),
-                context,
-            )
-            admitted_connection = revoked.connection
-            replay = replay or revoked.replay
 
         cleanup_verified = await self._grant_lifecycle.delete_local(
             current.credential_reference, current.grant_reference

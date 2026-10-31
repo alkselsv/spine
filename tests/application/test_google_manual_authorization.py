@@ -11,7 +11,6 @@ from spine.application.connections.google import (
     GoogleConnectionCommand,
     GoogleConnectionConflictError,
     GoogleConnectionMutationResult,
-    confirmed_google_revocation_successor,
 )
 from spine.application.google_manual_authorization import (
     GoogleConsentResult,
@@ -79,9 +78,21 @@ def _command(**overrides: object) -> GoogleReauthorizationCommand:
 
 
 class RecordingRepository:
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        current: GoogleConnection | None = None,
+        fail: bool = False,
+    ) -> None:
         self.calls: list[tuple[GoogleConnectionCommand, object]] = []
+        self.current = current
         self.fail = fail
+
+    async def get_current(self, connection_id, context):
+        del context
+        if self.current is None or self.current.connection_id != connection_id:
+            raise GoogleConnectionConflictError()
+        return self.current
 
     async def register(self, command, context):
         self.calls.append((command, context))
@@ -134,9 +145,10 @@ async def _registered_connection_repository():
 
 @pytest.mark.asyncio
 async def test_reauthorization_registers_exact_next_generation_successor() -> None:
-    repository = RecordingRepository()
+    current = _connection()
+    repository = RecordingRepository(current=current)
     result = await GoogleManualReauthorization(repository).execute(
-        _connection(), _command(), _context()
+        current, _command(), _context()
     )
 
     registered = repository.calls[0][0]
@@ -166,7 +178,7 @@ async def test_reauthorization_registers_exact_next_generation_successor() -> No
 async def test_invalid_or_revoked_reauthorization_is_rejected_before_register(
     current: GoogleConnection, command: GoogleReauthorizationCommand
 ) -> None:
-    repository = RecordingRepository()
+    repository = RecordingRepository(current=_connection())
 
     with pytest.raises(GoogleConnectionConflictError):
         await GoogleManualReauthorization(repository).execute(current, command, _context())
@@ -176,7 +188,7 @@ async def test_invalid_or_revoked_reauthorization_is_rejected_before_register(
 
 @pytest.mark.asyncio
 async def test_repository_approval_conflict_is_preserved_for_reauthorization() -> None:
-    repository = RecordingRepository(fail=True)
+    repository = RecordingRepository(current=_connection(), fail=True)
 
     with pytest.raises(GoogleConnectionConflictError):
         await GoogleManualReauthorization(repository).execute(
@@ -385,8 +397,8 @@ async def test_manual_revocation_persists_denied_state_before_local_cleanup() ->
         grant_lifecycle=GoogleGrantLifecycle(credentials=credentials, revocation=revocation),
     ).execute(current, context, occurred_at=NOW)
 
-    assert result.connection.status is GoogleConnectionStatus.REVOKED
-    assert result.connection.version == 3
+    assert result.connection.status is GoogleConnectionStatus.SUSPENDED
+    assert result.connection.version == 2
     assert result.remote_revocation_confirmed is True
     assert result.local_cleanup_verified is True
     assert credentials.deleted == [(current.credential_reference, current.grant_reference)]
@@ -394,14 +406,6 @@ async def test_manual_revocation_persists_denied_state_before_local_cleanup() ->
 
 
 @pytest.mark.asyncio
-async def test_generic_registration_cannot_assert_remote_revocation() -> None:
-    current, context, repository = await _registered_connection_repository()
-    revoked_command = confirmed_google_revocation_successor(current, occurred_at=NOW)
-
-    with pytest.raises(GoogleConnectionConflictError):
-        await repository.register(revoked_command, context)
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "status",

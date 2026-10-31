@@ -7,8 +7,11 @@ import pytest
 from spine.application.connections.google import (
     GoogleConnectionCommand,
     GoogleConnectionConflictError,
-    confirmed_google_revocation_successor,
     is_valid_google_connection_successor,
+)
+from spine.application.google_manual_authorization import (
+    GoogleManualReauthorization,
+    GoogleReauthorizationCommand,
 )
 from spine.application.persistence import (
     EnvironmentScope,
@@ -120,14 +123,35 @@ async def test_in_memory_fenced_successor_becomes_current() -> None:
 
 
 @pytest.mark.asyncio
-async def test_worker_cannot_record_confirmed_manual_google_revocation() -> None:
+async def test_worker_cannot_read_or_reauthorize_manual_google_connection() -> None:
     scenario = await _scenario()
-    command = confirmed_google_revocation_successor(
-        scenario.initial, occurred_at=OCCURRED_AT
+    await scenario.repository.register(
+        GoogleConnectionCommand(
+            connection=scenario.initial,
+            idempotency_key="worker-test-initial",
+            audit_event_id=_id(70),
+            occurred_at=OCCURRED_AT,
+        ),
+        scenario.context,
+    )
+    command = GoogleReauthorizationCommand(
+        connection_id=scenario.initial.connection_id,
+        expected_current_version_id=scenario.initial.connection_version_id,
+        approval_id=scenario.successor.approval_id,
+        credential_reference=scenario.successor.credential_reference,
+        grant_reference=scenario.successor.grant_reference,
+        approved_resource_scope_references=scenario.successor.approved_resource_scope_references,
+        authorization_generation=scenario.successor.authorization_generation,
+        configuration_generation=scenario.successor.configuration_generation,
+        idempotency_key="worker-manual-reauthorization",
+        audit_event_id=_id(71),
+        occurred_at=OCCURRED_AT,
     )
 
     with pytest.raises(GoogleConnectionConflictError):
-        await scenario.repository.register_revoked(command, scenario.context)
+        await GoogleManualReauthorization(scenario.repository).execute(
+            scenario.initial, command, scenario.context
+        )
 
 
 def test_reauthorization_advances_exactly_one_generation_and_keeps_connection_identity() -> None:

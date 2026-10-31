@@ -43,9 +43,10 @@ is not part of ordinary tests or this offline qualification.
 
 Remote revoke and local cleanup are explicit operations behind ports. The local
 connection is first suspended through `GoogleConnectionRepository.register`,
-which blocks further reads. After the fixed-endpoint revocation adapter confirms
-the remote revoke, a restricted `register_revoked` path records a REVOKED
-successor. Only then are local files removed. The two outcomes are reported
+which blocks further reads. The canonical record remains `SUSPENDED` before and
+after a successful remote revoke, matching the repository's PostgreSQL
+successor invariant. After the fixed-endpoint revocation adapter confirms the
+remote revoke, local files are removed. The two outcomes are reported
 separately, so a failed cleanup remains visible after remote revocation. A failed
 or unverified revoke leaves the connection suspended and local files in place
 for an explicit retry. Cancellation is propagated; the persisted state remains
