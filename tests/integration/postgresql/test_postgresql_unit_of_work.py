@@ -172,7 +172,10 @@ from spine.infrastructure.persistence.postgresql import (
 from spine.infrastructure.persistence.crm_relationship_v2 import (
     PostgreSQLCrmRelationshipV2Repository,
 )
-from spine.domain.sources.crm_relationship_v2 import CrmRelationshipMappingProfile
+from spine.domain.sources.crm_relationship_v2 import (
+    CrmRelationshipMappingProfile,
+    CrmRelationshipNaturalIdentity,
+)
 from spine.infrastructure.persistence.parsed_artifacts import (
     PostgreSQLParsedArtifactRepository,
 )
@@ -8084,6 +8087,7 @@ async def test_crm_relationship_identity_registration_is_race_safe_and_tenant_sc
         "provider_instance": "synthetic.bitrix.portal",
         "connection_id": synthetic_uuid(71601),
         "activity_namespace": "bitrix.activity",
+        "activity_type_id": "1",
         "activity_id": "71602",
         "raw_entity_type_id": "2",
         "normalizer_id": "bitrix.owner-type",
@@ -8096,7 +8100,7 @@ async def test_crm_relationship_identity_registration_is_race_safe_and_tenant_sc
     }
     identity = CrmRelationshipIdentity(
         **identity_fields,
-        relationship_key=relationship_key(identity_fields),
+        relationship_key=relationship_key(CrmRelationshipNaturalIdentity(**identity_fields)),
     )
 
     await asyncio.gather(
@@ -8119,7 +8123,7 @@ async def test_crm_relationship_identity_registration_is_race_safe_and_tenant_sc
     }
     foreign_identity = CrmRelationshipIdentity(
         **foreign_identity_fields,
-        relationship_key=relationship_key(foreign_identity_fields),
+        relationship_key=relationship_key(CrmRelationshipNaturalIdentity(**foreign_identity_fields)),
     )
     with pytest.raises(OptimisticConflictError):
         await repository.register_identity(foreign_identity, actor_id=actor_id)
@@ -8154,6 +8158,7 @@ async def test_crm_relationship_profile_versions_are_immutable_and_replayable(
         qualification_reference=synthetic_uuid(71624),
         approval_reference=synthetic_uuid(71625),
         activity_namespace="bitrix.activity",
+        activity_type_ids=("1",),
         raw_entity_type_ids=("2",),
         entity_namespace="bitrix.company",
         files_namespace="bitrix.activity.files",
@@ -8206,6 +8211,7 @@ async def test_crm_relationship_claim_rejects_source_without_current_lifecycle_a
         "provider_instance": "synthetic.bitrix.portal",
         "connection_id": synthetic_uuid(71631),
         "activity_namespace": "bitrix.activity",
+        "activity_type_id": "1",
         "activity_id": "71632",
         "raw_entity_type_id": "2",
         "normalizer_id": "bitrix.owner-type",
@@ -8218,7 +8224,7 @@ async def test_crm_relationship_claim_rejects_source_without_current_lifecycle_a
     }
     identity = CrmRelationshipIdentity(
         **identity_fields,
-        relationship_key=relationship_key(identity_fields),
+        relationship_key=relationship_key(CrmRelationshipNaturalIdentity(**identity_fields)),
     )
     await repository.register_identity(identity, actor_id=actor_id)
     claim = CrmRelationshipClaim(
