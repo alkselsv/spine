@@ -83,6 +83,12 @@ from spine.connectors.google_api import (
     HttpxGoogleApiTransport,
     ReferenceGoogleCredentialResolver,
 )
+from spine.connectors.google_execution_envelope import (
+    GoogleExecutionApprovalVerifier,
+    GoogleExecutionDeadlineExceeded,
+    GoogleExecutionEnvelope,
+    GoogleExecutionLimitExceeded,
+)
 from spine.connectors.yandex_disk import (
     YandexDiskAuthorizationRevokedError,
     YandexDiskConcurrentModificationError,
@@ -214,6 +220,10 @@ __all__ = [
     "GoogleSheetsSnapshot",
     "GoogleSheetsUnsafeIdentityError",
     "GoogleApiEndpoints",
+    "GoogleExecutionApprovalVerifier",
+    "GoogleExecutionDeadlineExceeded",
+    "GoogleExecutionEnvelope",
+    "GoogleExecutionLimitExceeded",
     "GoogleApiRequestPolicy",
     "GoogleApiRetryEvent",
     "GoogleApiRetryObserver",

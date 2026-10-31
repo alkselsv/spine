@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,11 +19,16 @@ from spine.connectors.google_live_qualification import (
     GoogleLiveFileTarget,
     GoogleLiveQualificationConfig,
     GoogleLiveQualificationRefused,
+    GoogleLiveQualificationProvider,
     GoogleLiveQualificationRunner,
     GoogleLiveProbeCounts,
+    GoogleLiveSheetTarget,
     compose_google_live_qualification_runner,
     write_google_live_report,
 )
+from spine.application.connections.google import GoogleReadCommand
+from spine.connectors.google_execution_envelope import GoogleExecutionEnvelope
+from spine.connectors.google_sheets import GoogleSheetsColumn, GoogleSheetsReadProfile
 from spine.application.diagnostics import DiagnosticEventRegistry
 from spine.infrastructure.diagnostics import RecordingDiagnosticSink
 from spine.domain.connections.google import (
@@ -99,6 +105,19 @@ def _config(*, opt_in: bool) -> GoogleLiveQualificationConfig:
             ),
         ),
         shared_drive_approved=False,
+        execution_envelope=GoogleExecutionEnvelope(
+            max_run_duration_seconds=30.0,
+            max_response_body_bytes=1024,
+            max_drive_content_bytes=512,
+            max_aggregate_response_bytes=4096,
+            max_drive_file_targets=2,
+            max_exports=2,
+            max_spreadsheets=2,
+            max_numeric_sheets=4,
+            max_aggregate_rows=100,
+            max_api_pages=20,
+            max_configured_ranges=8,
+        ),
     )
 
 
@@ -110,6 +129,22 @@ class RecordingAdmission:
         del context
         self.calls.append(str(command.connection_id))
         return GoogleLiveProbeCounts(metadata_reads=1)
+
+
+class CancelledAdmission(RecordingAdmission):
+    async def read(self, command, context):
+        await super().read(command, context)
+        raise asyncio.CancelledError
+
+
+class ApprovedEnvelopeVerifier:
+    def __init__(self, approved: bool = True) -> None:
+        self.approved = approved
+        self.fingerprints: list[str] = []
+
+    def is_approved(self, fingerprint: str) -> bool:
+        self.fingerprints.append(fingerprint)
+        return self.approved
 
 
 class RecordingService:
@@ -145,6 +180,7 @@ def _runner(
         config=config,
         admission=admission,  # type: ignore[arg-type]
         context=object(),  # type: ignore[arg-type]
+        approval_verifier=ApprovedEnvelopeVerifier(),
     )
 
 
@@ -162,6 +198,210 @@ async def test_live_harness_refuses_before_provider_calls_without_double_opt_in(
             environment_opt_in=environment_opt_in
         )
 
+    assert admission.calls == []
+
+
+@pytest.mark.asyncio
+async def test_live_harness_refuses_unapproved_envelope_before_provider_calls() -> None:
+    admission = RecordingAdmission()
+    runner = GoogleLiveQualificationRunner(
+        config=_config(opt_in=True),
+        admission=admission,  # type: ignore[arg-type]
+        context=object(),  # type: ignore[arg-type]
+        approval_verifier=ApprovedEnvelopeVerifier(approved=False),
+    )
+
+    with pytest.raises(GoogleLiveQualificationRefused):
+        await runner.run(environment_opt_in=True)
+
+    assert admission.calls == []
+
+
+@pytest.mark.asyncio
+async def test_live_harness_returns_typed_cancelled_outcome() -> None:
+    admission = CancelledAdmission()
+    report = await _runner(_config(opt_in=True), admission).run(
+        environment_opt_in=True
+    )
+
+    assert report.status == "failed"
+    assert report.failure_code == "cancelled"
+    assert len(admission.calls) == 1
+
+
+def _expire_provider_run(service):
+    async def expire(awaitable, timeout: float):
+        del timeout
+        task = asyncio.ensure_future(awaitable)
+        await service.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        raise asyncio.TimeoutError
+
+    return expire
+
+
+@pytest.mark.asyncio
+async def test_live_harness_deadline_cancels_provider_and_starts_no_later_calls() -> None:
+    config = _config(opt_in=True)
+
+    class BlockingService:
+        configuration_fingerprint = config.api_configuration_fingerprint
+        transport = object()
+        calls: list[str] = []
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        @property
+        def sleep(self):
+            async def no_sleep(delay: float) -> None:
+                del delay
+
+            return no_sleep
+
+        @contextmanager
+        def using_transport(self, transport, *, sleep=None):
+            del transport, sleep
+            yield
+
+        async def get_metadata_for_file(self, connection, scope, file_id):
+            del connection, scope
+            self.calls.append(file_id)
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.cancelled.set()
+
+    service = BlockingService()
+    provider = GoogleLiveQualificationProvider(
+        config=config,
+        service=service,  # type: ignore[arg-type]
+        monotonic=lambda: 0.0,
+        wait_for=_expire_provider_run(service),
+    )
+
+    class ProviderAdmission:
+        async def read(self, command, context):
+            del context
+            return await provider.read(config.connection, command)
+
+    runner = GoogleLiveQualificationRunner(
+        config=config,
+        admission=ProviderAdmission(),  # type: ignore[arg-type]
+        context=object(),  # type: ignore[arg-type]
+        approval_verifier=ApprovedEnvelopeVerifier(),
+    )
+
+    report = await runner.run(environment_opt_in=True)
+
+    assert report.failure_code == "deadline_exceeded"
+    assert service.calls == ["synthetic-file"]
+    assert service.cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_live_harness_deadline_includes_admission_and_cancels_it() -> None:
+    config = _config(opt_in=True)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class BlockingAdmission:
+        async def read(self, command, context):
+            del command, context
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    async def expire_admission(awaitable, timeout: float):
+        assert timeout == config.execution_envelope.max_run_duration_seconds
+        task = asyncio.ensure_future(awaitable)
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        raise asyncio.TimeoutError
+
+    runner = GoogleLiveQualificationRunner(
+        config=config,
+        admission=BlockingAdmission(),  # type: ignore[arg-type]
+        context=object(),  # type: ignore[arg-type]
+        approval_verifier=ApprovedEnvelopeVerifier(),
+        monotonic=lambda: 0.0,
+        wait_for=expire_admission,
+    )
+
+    report = await runner.run(environment_opt_in=True)
+
+    assert report.failure_code == "deadline_exceeded"
+    assert cancelled.is_set()
+
+
+def _sheet_target(
+    spreadsheet_id: str, sheet_id: int, ranges: tuple[str, ...] = ("A1:A2",)
+) -> GoogleLiveSheetTarget:
+    return GoogleLiveSheetTarget(
+        profile=GoogleSheetsReadProfile(
+            spreadsheet_id=spreadsheet_id,
+            sheet_id=sheet_id,
+            business_id_column="business_id",
+            columns=(GoogleSheetsColumn(column_key="business_id", coordinate="A"),),
+        ),
+        a1_ranges=ranges,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "resource_kind", ("files", "exports", "spreadsheets", "numeric_sheets", "ranges")
+)
+async def test_live_harness_rejects_configured_resource_caps_before_admission(
+    resource_kind: str,
+) -> None:
+    config = _config(opt_in=True)
+    envelope = config.execution_envelope
+    updates: dict[str, object] = {}
+    if resource_kind == "files":
+        updates["file_targets"] = (
+            *config.file_targets,
+            GoogleLiveFileTarget(file_id="another-file", download=False),
+        )
+        envelope = envelope.model_copy(update={"max_drive_file_targets": 1})
+    elif resource_kind == "exports":
+        updates["file_targets"] = (
+            GoogleLiveFileTarget(
+                file_id="synthetic-file",
+                download=False,
+                export_mime_types=("application/pdf", "text/csv"),
+            ),
+        )
+        envelope = envelope.model_copy(update={"max_exports": 1})
+    elif resource_kind == "spreadsheets":
+        updates["sheet_targets"] = (
+            _sheet_target("sheet-a", 1),
+            _sheet_target("sheet-b", 1),
+        )
+        envelope = envelope.model_copy(update={"max_spreadsheets": 1})
+    elif resource_kind == "numeric_sheets":
+        updates["sheet_targets"] = (
+            _sheet_target("sheet-a", 1),
+            _sheet_target("sheet-a", 2),
+        )
+        envelope = envelope.model_copy(update={"max_numeric_sheets": 1})
+    else:
+        updates["sheet_targets"] = (_sheet_target("sheet-a", 1, ("A1:A2", "A3:A4")),)
+        envelope = envelope.model_copy(update={"max_configured_ranges": 1})
+    updates["execution_envelope"] = envelope
+    over_limit_config = config.model_copy(update=updates)
+    admission = RecordingAdmission()
+
+    report = await _runner(over_limit_config, admission).run(environment_opt_in=True)
+
+    assert report.status == "failed"
+    assert report.failure_code == "resource_limit_exceeded"
     assert admission.calls == []
 
 
@@ -200,6 +440,19 @@ def test_live_config_rejects_targets_that_do_not_equal_exact_allowlist() -> None
         GoogleLiveQualificationConfig.model_validate(payload)
 
 
+def test_live_effective_fingerprint_includes_every_envelope_field() -> None:
+    config = _config(opt_in=True)
+    changed = config.model_copy(
+        update={
+            "execution_envelope": config.execution_envelope.model_copy(
+                update={"max_aggregate_rows": 101}
+            )
+        }
+    )
+
+    assert config.effective_configuration_fingerprint != changed.effective_configuration_fingerprint
+
+
 @pytest.mark.asyncio
 async def test_live_harness_rejects_noncurrent_connection_before_provider_calls() -> (
     None
@@ -223,6 +476,7 @@ async def test_live_harness_rejects_noncurrent_connection_before_provider_calls(
         diagnostic_registry=registry,
         clock=lambda: datetime(2026, 10, 29, tzinfo=timezone.utc),
         context=object(),  # type: ignore[arg-type]
+        approval_verifier=ApprovedEnvelopeVerifier(),
     )
 
     report = await runner.run(environment_opt_in=True)
@@ -247,6 +501,7 @@ async def test_live_harness_rejects_mismatched_effective_configuration() -> None
         diagnostic_registry=registry,
         clock=lambda: datetime(2026, 10, 29, tzinfo=timezone.utc),
         context=object(),  # type: ignore[arg-type]
+        approval_verifier=ApprovedEnvelopeVerifier(),
     )
 
     report = await runner.run(environment_opt_in=True)
