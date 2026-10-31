@@ -57,7 +57,8 @@ decision and effective version.
 
 | Gate/category | Proposed minimum qualification evidence | Why this minimum is useful | Current limitation |
 |---|---|---|---|
-| Russian WER/CER, separately for clean, noisy, overlap and long-form | 100 independent utterance lineages per category; at least 10 approved synthetic voice profiles and 10 speech-recipe families across the category; report word/character denominators and a lineage-cluster bootstrap interval | 100 distinct utterances provides a nontrivial corpus denominator and supports category-specific resampling. Re-encodes and noise variants of one source utterance remain one lineage. | Current qualification split has 3 clean and 1 long-form lineage; noisy and overlap each have 0. |
+| Russian WER/CER, separately for clean, noisy, overlap and long-form | 100 independent utterance lineages per category; at least 10 approved synthetic voice profiles and 10 speech-recipe families across the category; report word/character denominators and a lineage-cluster bootstrap interval. Per category, target 40 short (5–30 s), 30 medium (>30–300 s), and 30 long (>300 s) recordings. | 100 distinct utterances provides a nontrivial corpus denominator and supports category-specific resampling. The duration strata expose short-form and chunk/reassembly behavior instead of letting many short files dominate. Re-encodes and noise variants of one source utterance remain one lineage. | Current qualification split has 3 clean and 1 long-form lineage; noisy and overlap each have 0. |
+| Noisy and overlapping Russian speech diversity | Within 100 noisy lineages, target 30/40/30 cases at 5/10/20 dB controlled additive-noise SNR and at least 3 frozen noise classes. Within 100 overlap lineages, target 50 cases at 10–25% and 50 at >25–50% temporal speech overlap; each has at least two anonymous voices and separately timed references. | Controlled buckets make noise and overlap severity auditable and prevent a nominal category label from standing in for varied acoustic difficulty. The same 10-profile/10-recipe minimum applies; variants from one clean source remain one lineage. | No noisy qualification speech, overlap fixture, noise metadata, or per-speaker overlap timing is present. |
 | Each critical fragment category, including amount/currency, quantity, date/deadline, unit, negation, obligation, permission, condition and constraint | 150 independently generated positive spans per category, across at least 100 utterance lineages and 10 approved voice profiles; publish exact numerator/denominator and per-category errors | With zero misses, 150 independent Bernoulli opportunities give a one-sided 95% upper miss-rate bound of about 1.98% (rule-of-three approximation), close to the fixed 98% exact-match target. | Current categories have 0–3 annotated cases; several categories have no positive span. |
 | Each adversarial dimension: negation, bounds, permission, inclusion and obligation | 150 independent counterfactual pairs per dimension. Count a pair once as the sampling unit; an inversion in any pair is a run failure under #661. | Zero inversions across 150 independent pairs gives an approximate one-sided 95% upper inversion-rate bound of 1.98%; the strict zero-inversion rule remains unchanged. Pair members and paraphrases are not separate independent samples. | Current coverage is one negation and one obligation case; bounds, permission and inclusion have none. |
 | Terminology precision/recall | At least 100 positive terminology spans over at least 20 canonical terms (at least 5 distinct contexts per term) and 100 explicitly annotated hard-negative/distractor contexts; report micro-average and per-term/category results | Positive contexts support recall; explicit negative opportunities and observed predictions make false positives auditable. 100 opportunities also avoids treating one or two terms as a representative vocabulary. | Current data has one annotated terminology case and no declared exhaustive vocabulary or hard-negative inventory. |
@@ -78,6 +79,14 @@ future-error rate, generalize to human speakers, or replace production monitorin
 and human review. The #661 point thresholds and strict zero-inversion rule remain
 unchanged; intervals are additional uncertainty reporting unless the Protocol
 Owner separately approves an acceptance-rule change.
+
+The proposed duration strata are measured from the source speech interval before
+codec conversion. For noisy fixtures, SNR is measured against the clean source;
+the exact noise asset/hash and mixing rule are frozen. Overlap percentage is the
+intersection duration of two reference speech timelines divided by their union
+duration; both anonymous speaker streams require segment references. A derived
+noisy or overlapping rendition retains its clean-source lineage and cannot add
+another independent clean WER sample.
 
 ### Denominator and split rules proposed for approval
 
