@@ -8,13 +8,15 @@ this connector module and never cross into canonical Spine records.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import hashlib
 import json
 import re
+from contextvars import ContextVar, Token
 from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlsplit
 from uuid import UUID
@@ -233,6 +235,18 @@ class GoogleApiRequest:
     query: Mapping[str, str]
     form: Mapping[str, str] | None
     timeout_seconds: float
+    body_observer: Callable[[bytes], None] | None = None
+
+    def with_body_observer(
+        self, observer: Callable[[bytes], None], timeout_seconds: float
+    ) -> "GoogleApiRequest":
+        from dataclasses import replace
+
+        return replace(
+            self,
+            body_observer=observer,
+            timeout_seconds=min(self.timeout_seconds, timeout_seconds),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +255,7 @@ class GoogleApiResponse:
     json_body: Mapping[str, Any] | None = None
     content: bytes = b""
     headers: Mapping[str, str] | None = None
+    stream_observed: bool = False
 
 
 class GoogleApiTransport(Protocol):
@@ -273,14 +288,32 @@ class HttpxGoogleApiTransport:
 
     async def request(self, request: GoogleApiRequest) -> GoogleApiResponse:
         try:
-            response = await self.client.request(
-                request.method,
-                request.url,
-                headers=dict(request.headers),
-                params=dict(request.query),
-                data=dict(request.form) if request.form is not None else None,
-                timeout=request.timeout_seconds,
-            )
+            if request.body_observer is None:
+                response = await self.client.request(
+                    request.method,
+                    request.url,
+                    headers=dict(request.headers),
+                    params=dict(request.query),
+                    data=dict(request.form) if request.form is not None else None,
+                    timeout=request.timeout_seconds,
+                )
+                content = response.content
+                stream_observed = False
+            else:
+                chunks: list[bytes] = []
+                async with self.client.stream(
+                    request.method,
+                    request.url,
+                    headers=dict(request.headers),
+                    params=dict(request.query),
+                    data=dict(request.form) if request.form is not None else None,
+                    timeout=request.timeout_seconds,
+                ) as response:
+                    async for chunk in response.aiter_bytes():
+                        request.body_observer(chunk)
+                        chunks.append(chunk)
+                    content = b"".join(chunks)
+                stream_observed = True
         except httpx.TimeoutException:
             raise TimeoutError("Google provider request timed out.") from None
         except httpx.RequestError:
@@ -289,7 +322,7 @@ class HttpxGoogleApiTransport:
         json_body: Mapping[str, Any] | None = None
         if "json" in content_type.lower():
             try:
-                candidate = response.json()
+                candidate = json.loads(content)
             except ValueError:
                 candidate = None
             if isinstance(candidate, Mapping):
@@ -297,8 +330,9 @@ class HttpxGoogleApiTransport:
         return GoogleApiResponse(
             status_code=response.status_code,
             json_body=json_body,
-            content=response.content,
+            content=content,
             headers=({"content-type": content_type} if content_type else {}),
+            stream_observed=stream_observed,
         )
 
 
@@ -366,7 +400,10 @@ class GoogleApiService:
         self._policy = request_policy
         self._scopes = {scope.reference.value: scope for scope in resource_scopes}
         self._resolver = credential_resolver
-        self._transport = transport
+        self._base_transport = transport
+        self._transport_override: ContextVar[GoogleApiTransport | None] = ContextVar(
+            f"google-api-transport-{id(self)}", default=None
+        )
         self._retry_observer = retry_observer
         profile_keys = tuple(
             (profile.spreadsheet_id, profile.sheet_id) for profile in sheet_profiles
@@ -386,13 +423,43 @@ class GoogleApiService:
             sheet_profiles=sheet_profiles,
         )
         self._clock = clock
-        self._sleep = sleep
+        self._base_sleep = sleep
+        self._sleep_override: ContextVar[Callable[[float], Awaitable[None]] | None] = (
+            ContextVar(f"google-api-sleep-{id(self)}", default=None)
+        )
         self._tokens: dict[tuple[object, ...], _AccessToken] = {}
         self._discovered_files: dict[tuple[object, ...], set[str]] = {}
 
     @property
     def configuration_fingerprint(self) -> str:
         return self._configuration_fingerprint
+
+    @contextmanager
+    def using_transport(
+        self,
+        transport: GoogleApiTransport,
+        *,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
+    ) -> Iterator[None]:
+        """Install a per-run transport decorator for the duration of one probe."""
+        transport_token = self._transport_override.set(transport)
+        sleep_token: Token[Callable[[float], Awaitable[None]] | None] | None = None
+        if sleep is not None:
+            sleep_token = self._sleep_override.set(sleep)
+        try:
+            yield
+        finally:
+            self._transport_override.reset(transport_token)
+            if sleep_token is not None:
+                self._sleep_override.reset(sleep_token)
+
+    @property
+    def transport(self) -> GoogleApiTransport:
+        return self._transport_override.get() or self._base_transport
+
+    @property
+    def sleep(self) -> Callable[[float], Awaitable[None]]:
+        return self._sleep_override.get() or self._base_sleep
 
     async def get_metadata(
         self,
@@ -887,7 +954,7 @@ class GoogleApiService:
         for attempt in range(self._policy.max_attempts):
             token = await self._access_token(connection)
             try:
-                response = await self._transport.request(
+                response = await self.transport.request(
                     GoogleApiRequest(
                         method=method,
                         url=url,
@@ -901,7 +968,7 @@ class GoogleApiService:
                 if attempt + 1 == self._policy.max_attempts:
                     raise GoogleProviderReadError() from None
                 await self._record_retry(connection, "provider", "transient", attempt)
-                await self._sleep(self._policy.backoff_seconds[attempt])
+                await self.sleep(self._policy.backoff_seconds[attempt])
                 continue
             if 200 <= response.status_code < 300:
                 if json_expected and response.json_body is None:
@@ -918,7 +985,7 @@ class GoogleApiService:
                     raise GoogleProviderAuthorizationError()
                 refreshed_after_unauthorized = True
                 await self._record_retry(connection, "provider", "reauthorize", attempt)
-                await self._sleep(self._policy.backoff_seconds[attempt])
+                await self.sleep(self._policy.backoff_seconds[attempt])
                 continue
             if response.status_code == 404:
                 if drive_not_found:
@@ -955,7 +1022,7 @@ class GoogleApiService:
                 ),
                 attempt,
             )
-            await self._sleep(self._policy.backoff_seconds[attempt])
+            await self.sleep(self._policy.backoff_seconds[attempt])
         raise AssertionError("bounded Google request must return or raise")
 
     def _token_key(self, connection: GoogleConnection) -> tuple[object, ...]:
@@ -974,7 +1041,7 @@ class GoogleApiService:
     ) -> GoogleApiResponse:
         for attempt in range(self._policy.max_attempts):
             try:
-                response = await self._transport.request(request)
+                response = await self.transport.request(request)
             except (
                 TimeoutError,
                 asyncio.TimeoutError,
@@ -1010,7 +1077,7 @@ class GoogleApiService:
                 else "transient"
             )
             await self._record_retry(connection, "oauth", reason, attempt)
-            await self._sleep(self._policy.backoff_seconds[attempt])
+            await self.sleep(self._policy.backoff_seconds[attempt])
         raise AssertionError("bounded OAuth request must return or raise")
 
     async def _record_retry(
