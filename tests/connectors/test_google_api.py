@@ -1617,6 +1617,35 @@ async def test_credential_resolver_failure_is_sanitized_before_transport() -> No
             2,
         ),
         (
+            [
+                GoogleApiResponse(
+                    status_code=403,
+                    json_body={
+                        "error": {"errors": [{"reason": "quotaExceeded"}]}
+                    },
+                ),
+                GoogleApiResponse(
+                    status_code=200,
+                    json_body={"id": "file-1", "name": "unexpected retry", "mimeType": "text/plain", "version": "1"},
+                ),
+            ],
+            GoogleProviderQuotaError,
+            1,
+        ),
+        (
+            [
+                GoogleApiResponse(
+                    status_code=403,
+                    json_body={
+                        "error": {"errors": [{"reason": "dailyLimitExceeded"}]}
+                    },
+                ),
+                GoogleApiResponse(status_code=200, json_body={}),
+            ],
+            GoogleProviderQuotaError,
+            1,
+        ),
+        (
             [GoogleApiResponse(status_code=400, json_body={"error": {}})],
             GoogleProviderContractError,
             1,

@@ -1101,10 +1101,12 @@ class GoogleApiService:
                     )
                 raise GoogleProviderNotFoundError()
             if response.status_code == 403:
-                if _provider_reason(response) in {
+                reason = _provider_reason(response)
+                if reason in _TERMINAL_PROVIDER_QUOTA_REASONS:
+                    raise GoogleProviderQuotaError()
+                if reason in {
                     "ratelimitexceeded",
                     "userratelimitexceeded",
-                    "quotaexceeded",
                 }:
                     failure: Exception = GoogleProviderQuotaError()
                 else:
@@ -1112,6 +1114,8 @@ class GoogleApiService:
                 if not isinstance(failure, GoogleProviderQuotaError):
                     raise failure
             elif response.status_code == 429:
+                if _provider_reason(response) in _TERMINAL_PROVIDER_QUOTA_REASONS:
+                    raise GoogleProviderQuotaError()
                 failure = GoogleProviderQuotaError()
             elif response.status_code >= 500:
                 failure = GoogleProviderReadError()
@@ -1357,6 +1361,9 @@ def _retry_after_seconds(
 
 
 _MAX_RETRY_AFTER_SECONDS = 30.0
+_TERMINAL_PROVIDER_QUOTA_REASONS = frozenset(
+    {"quotaexceeded", "dailylimitexceeded", "dailylimitexceededunreg"}
+)
 
 def _required_string(payload: Mapping[str, Any], key: str) -> str:
     value = payload.get(key)
