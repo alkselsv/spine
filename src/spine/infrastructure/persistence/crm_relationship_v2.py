@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any
+from typing import Any, TypeVar
 from uuid import UUID, uuid5
 
+from pydantic import BaseModel
 from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
@@ -33,6 +34,8 @@ from spine.domain.sources.crm_relationship_v2 import (
     CrmRelationshipLifecycleEvent,
     CrmRelationshipObservationReceipt,
 )
+
+TRecord = TypeVar("TRecord", bound=BaseModel)
 from spine.infrastructure.persistence.postgresql_mappings import (
     audit_events,
     crm_relationship_authority_heads,
@@ -270,13 +273,15 @@ class CrmRelationshipV2Store:
     async def _reserve_idempotency(
         self, *, workspace_id: UUID, environment_id: UUID,
         idempotency_key: UUID, payload_digest: str, record_kind: str,
-        record_id: UUID, result: dict[str, Any], created_at: datetime,
-    ) -> dict[str, Any] | None:
+        record_id: UUID, result: TRecord, result_type: type[TRecord],
+        created_at: datetime,
+    ) -> TRecord | None:
         table = crm_relationship_idempotency
         inserted = await self._execute(insert(table).values(
             workspace_id=workspace_id, environment_id=environment_id,
             idempotency_key=idempotency_key, payload_digest=payload_digest,
-            record_kind=record_kind, record_id=record_id, result=result,
+            record_kind=record_kind, record_id=record_id,
+            result=result.model_dump(mode="json"),
             created_at=created_at,
         ).on_conflict_do_nothing(index_elements=[
             table.c.workspace_id, table.c.environment_id, table.c.idempotency_key,
@@ -292,7 +297,7 @@ class CrmRelationshipV2Store:
         ))).one()
         if prior.payload_digest != payload_digest or prior.record_kind != record_kind:
             raise IdempotencyConflictError("CRM idempotency key conflicts with a different payload.")
-        return prior.result
+        return result_type.model_validate(prior.result)
 
     async def register_profile(
         self, *, profile_id: UUID, workspace_id: UUID, environment_id: UUID,
@@ -373,7 +378,7 @@ class CrmRelationshipV2Store:
         self, claim: CrmRelationshipClaim, *,
         audit_event: AuditEvent, outbox_intent: OutboxIntent,
         audit_registry: AuditEventRegistry, outbox_registry: OutboxEventRegistry,
-    ) -> dict[str, Any]:
+    ) -> CrmRelationshipClaim:
         self._assert_current_human(
             workspace_id=claim.workspace_id, environment_id=claim.environment_id,
             actor_id=claim.acting_human_id,
@@ -384,7 +389,8 @@ class CrmRelationshipV2Store:
         prior = await self._reserve_idempotency(
             workspace_id=claim.workspace_id, environment_id=claim.environment_id,
             idempotency_key=claim.idempotency_key, payload_digest=claim.payload_digest,
-            record_kind="claim", record_id=claim.claim_id, result=record,
+            record_kind="claim", record_id=claim.claim_id,
+            result=claim, result_type=CrmRelationshipClaim,
             created_at=claim.created_at,
         )
         if prior is not None:
@@ -529,7 +535,7 @@ class CrmRelationshipV2Store:
             outcome=("GOVERNANCE_WITHDRAWN" if authority.withdrawn else "NOT_VERIFIED"), receipt_id=None,
             updated_at=claim.created_at,
         ))
-        return record
+        return claim
 
     async def append_receipt(
         self, receipt: CrmRelationshipObservationReceipt, *,
@@ -537,7 +543,7 @@ class CrmRelationshipV2Store:
         audit_event: AuditEvent, outbox_intent: OutboxIntent,
         audit_registry: AuditEventRegistry, outbox_registry: OutboxEventRegistry,
         expected_verification_generation: int, lifecycle_generation: int,
-    ) -> dict[str, Any]:
+    ) -> CrmRelationshipObservationReceipt:
         self._assert_current_human(
             workspace_id=receipt.workspace_id, environment_id=receipt.environment_id,
             actor_id=receipt.acting_human_id,
@@ -583,7 +589,8 @@ class CrmRelationshipV2Store:
             workspace_id=receipt.workspace_id, environment_id=receipt.environment_id,
             idempotency_key=receipt.idempotency_key, payload_digest=receipt.payload_digest,
             record_kind="observation_receipt", record_id=receipt.receipt_id,
-            result=record, created_at=receipt.observed_at,
+            result=receipt, result_type=CrmRelationshipObservationReceipt,
+            created_at=receipt.observed_at,
         )
         if prior is not None:
             return prior
@@ -756,7 +763,7 @@ class CrmRelationshipV2Store:
         ).returning(head.c.claim_id))
         if changed.scalar_one_or_none() != receipt.claim_id:
             raise OptimisticConflictError("CRM eligibility head changed during verification.")
-        return record
+        return receipt
 
     async def append_lifecycle_event(
         self,
@@ -766,32 +773,13 @@ class CrmRelationshipV2Store:
         outbox_intent: OutboxIntent,
         audit_registry: AuditEventRegistry,
         outbox_registry: OutboxEventRegistry,
-    ) -> dict[str, Any]:
+    ) -> CrmRelationshipLifecycleEvent:
         """Append a human governance event and advance its lifecycle CAS atomically."""
         self._assert_current_human(
             workspace_id=event.workspace_id, environment_id=event.environment_id,
             actor_id=event.actor_id,
         )
         await self._assert_enabled()
-        audit = audit_registry.validate(audit_event)
-        outbox = outbox_registry.validate(outbox_intent)
-        if (
-            audit.origin is not ContextOrigin.INTERACTIVE
-            or audit.acting_subject_id != event.actor_id
-            or audit.service_principal_id is not None
-            or audit.workspace_id != event.workspace_id
-            or audit.environment_id != event.environment_id
-            or audit.audit_event_id is None
-            or audit.target is None
-            or audit.target.object_id != event.event_id
-            or audit.trace_id != outbox.trace_id
-            or outbox.workspace_id != event.workspace_id
-            or outbox.environment_id != event.environment_id
-            or outbox.event_id is None
-            or outbox.aggregate is None
-            or outbox.aggregate.object_id != event.event_id
-        ):
-            raise OptimisticConflictError("CRM lifecycle requires a current acting-human audit and matching outbox.")
         if event.generation != event.expected_generation + 1:
             raise OptimisticConflictError("CRM lifecycle generation is not the next expected value.")
         auth_result = await self._execute(text(
@@ -808,7 +796,8 @@ class CrmRelationshipV2Store:
         prior = await self._reserve_idempotency(
             workspace_id=event.workspace_id, environment_id=event.environment_id,
             idempotency_key=event.idempotency_key, payload_digest=event.payload_digest,
-            record_kind="lifecycle_event", record_id=event.event_id, result=record,
+            record_kind="lifecycle_event", record_id=event.event_id,
+            result=event, result_type=CrmRelationshipLifecycleEvent,
             created_at=event.created_at,
         )
         if prior is not None:
@@ -1045,34 +1034,13 @@ class CrmRelationshipV2Store:
                     updated_at=event.created_at,
                 ))
 
-        aggregate = outbox.aggregate
-        await self._execute(insert(audit_events).values(
-            audit_event_id=audit.audit_event_id, workspace_id=audit.workspace_id,
-            environment_id=audit.environment_id, event_type=str(audit.event_type),
-            schema_version=audit.schema_version, origin=audit.origin.value,
-            acting_subject_id=audit.acting_subject_id, service_principal_id=None,
-            trace_id=audit.trace_id, correlation_id=audit.correlation_id,
-            causation_id=audit.causation_id, occurred_at=audit.occurred_at,
-            appended_at=audit.appended_at or event.created_at,
-            target_type=audit.target.object_type if audit.target else None,
-            target_id=audit.target.object_id if audit.target else None,
-            target_schema_version=audit.target.schema_version if audit.target else None,
-            outcome=audit.outcome.value, reason=str(audit.reason),
-            producer_deduplication_id=str(audit.producer_deduplication_id) if audit.producer_deduplication_id else None,
-            payload=audit.payload_json(),
-        ))
-        await self._execute(insert(outbox_intents).values(
-            event_id=outbox.event_id, workspace_id=outbox.workspace_id,
-            environment_id=outbox.environment_id, event_type=outbox.event_type,
-            event_schema_version=outbox.schema_version,
-            aggregate_type=aggregate.object_type if aggregate else None,
-            aggregate_id=aggregate.object_id if aggregate else None,
-            aggregate_schema_version=aggregate.schema_version if aggregate else None,
-            producer_deduplication_id=outbox.producer_deduplication_id,
-            payload=outbox.payload_json(), trace_id=outbox.trace_id,
-            correlation_id=outbox.correlation_id, causation_id=outbox.causation_id,
-            created_at=event.created_at,
-        ))
+        audit_id, outbox_id = await self._persist_audit_outbox(
+            audit_event=audit_event, outbox_intent=outbox_intent,
+            audit_registry=audit_registry, outbox_registry=outbox_registry,
+            workspace_id=event.workspace_id, environment_id=event.environment_id,
+            actor_id=event.actor_id, created_at=event.created_at,
+            record_id=event.event_id,
+        )
         await self._execute(insert(crm_relationship_lifecycle_events).values(
             event_id=event.event_id, workspace_id=event.workspace_id,
             environment_id=event.environment_id, relationship_key=event.relationship_key,
@@ -1084,10 +1052,10 @@ class CrmRelationshipV2Store:
             reapproval_receipt_id=event.reapproval_receipt_id,
             reapproval_eligibility_id=event.reapproval_eligibility_id,
             idempotency_key=event.idempotency_key, payload_digest=event.payload_digest,
-            audit_event_id=audit.audit_event_id, outbox_event_id=outbox.event_id,
+            audit_event_id=audit_id, outbox_event_id=outbox_id,
             record=record, created_at=event.created_at,
         ))
-        return record
+        return event
 
 
 __all__ = ["CrmRelationshipV2Store"]
@@ -1147,7 +1115,7 @@ class PostgreSQLCrmRelationshipV2Repository:
         self, claim: CrmRelationshipClaim, *,
         audit_event: AuditEvent, outbox_intent: OutboxIntent,
         audit_registry: AuditEventRegistry, outbox_registry: OutboxEventRegistry,
-    ) -> dict[str, Any]:
+    ) -> CrmRelationshipClaim:
         async with self._uow(
             "crm_relationship_v2_write", claim.claim_id, actor_id=claim.acting_human_id,
             workspace_id=claim.workspace_id, environment_id=claim.environment_id,
@@ -1165,7 +1133,7 @@ class PostgreSQLCrmRelationshipV2Repository:
         audit_event: AuditEvent, outbox_intent: OutboxIntent,
         audit_registry: AuditEventRegistry, outbox_registry: OutboxEventRegistry,
         expected_verification_generation: int, lifecycle_generation: int,
-    ) -> dict[str, Any]:
+    ) -> CrmRelationshipObservationReceipt:
         async with self._uow(
             "crm_relationship_v2_write", receipt.receipt_id,
             actor_id=receipt.acting_human_id,
@@ -1185,7 +1153,7 @@ class PostgreSQLCrmRelationshipV2Repository:
         self, event: CrmRelationshipLifecycleEvent, *,
         audit_event: AuditEvent, outbox_intent: OutboxIntent,
         audit_registry: AuditEventRegistry, outbox_registry: OutboxEventRegistry,
-    ) -> dict[str, Any]:
+    ) -> CrmRelationshipLifecycleEvent:
         async with self._uow(
             "crm_relationship_v2_write", event.event_id, actor_id=event.actor_id,
             workspace_id=event.workspace_id, environment_id=event.environment_id,
