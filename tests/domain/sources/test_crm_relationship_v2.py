@@ -10,7 +10,9 @@ from spine.domain.sources.crm_relationship_v2 import (
     CrmRelationshipEligibilityHead,
     CrmRelationshipIdentity,
     CrmRelationshipMappingProfile,
+    CrmRelationshipNaturalIdentity,
     CrmRelationshipObservationReceipt,
+    CrmRelationshipReceiptAssessment,
     relationship_key,
 )
 
@@ -24,6 +26,7 @@ def _identity_values() -> dict[str, object]:
         "provider_instance": "portal-a",
         "connection_id": UUID(int=3),
         "activity_namespace": "bitrix.activity",
+        "activity_type_id": "1",
         "activity_id": "17",
         "raw_entity_type_id": "2",
         "normalizer_id": "bitrix.enum.ownertype",
@@ -37,18 +40,22 @@ def _identity_values() -> dict[str, object]:
 
 
 def test_relationship_key_uses_stable_natural_identity() -> None:
-    values = _identity_values()
-    key = relationship_key(values)
+    identity = _natural_identity()
+    key = relationship_key(identity)
 
-    assert key == relationship_key(dict(reversed(tuple(values.items()))))
+    assert key == relationship_key(identity)
     assert len(key) == 64
     assert key == key.lower()
 
 
 def test_relationship_key_separates_tenant_and_exact_files_item() -> None:
-    values = _identity_values()
-    assert relationship_key(values) != relationship_key({**values, "workspace_id": UUID(int=11)})
-    assert relationship_key(values) != relationship_key({**values, "files_item_id": "10"})
+    identity = _natural_identity()
+    assert relationship_key(identity) != relationship_key(
+        identity.model_copy(update={"workspace_id": UUID(int=11)})
+    )
+    assert relationship_key(identity) != relationship_key(
+        identity.model_copy(update={"files_item_id": "10"})
+    )
 
 
 def test_identity_rejects_digest_that_does_not_match_natural_key() -> None:
@@ -62,8 +69,16 @@ def test_identity_rejects_digest_that_does_not_match_natural_key() -> None:
 def test_relationship_key_fails_closed_for_missing_natural_key_field() -> None:
     values = _identity_values()
     del values["normalizer_version"]
-    with pytest.raises(KeyError):
-        relationship_key(values)
+    with pytest.raises(ValueError, match="normalizer_version"):
+        _natural_identity(values)
+
+
+def _natural_identity(values: dict[str, object] | None = None) -> CrmRelationshipNaturalIdentity:
+    values = values or _identity_values()
+    return CrmRelationshipNaturalIdentity(**{
+        key: value for key, value in values.items()
+        if key not in {"schema_version", "record_kind"}
+    })
 
 
 def test_eligibility_head_requires_receipt_for_positive_generation() -> None:
@@ -94,6 +109,7 @@ def test_mapping_profile_requires_ownership_proof_for_attached_objects() -> None
             qualification_reference=UUID(int=6),
             approval_reference=UUID(int=7),
             activity_namespace="bitrix.activity",
+            activity_type_ids=("1",),
             raw_entity_type_ids=("2",),
             entity_namespace="bitrix.company",
             files_namespace="bitrix.activity.files",
@@ -116,6 +132,7 @@ def test_positive_receipt_requires_exact_binding_pair_evidence() -> None:
             connection_id=UUID(int=5),
             connection_version_id=UUID(int=6),
             activity_namespace="bitrix.activity",
+            activity_type_id="1",
             activity_id="17",
             raw_entity_type_id="2",
             normalizer_id="bitrix.enum.ownertype",
@@ -146,6 +163,61 @@ def test_positive_receipt_requires_exact_binding_pair_evidence() -> None:
             idempotency_key=UUID(int=11),
             payload_digest="c" * 64,
         )
+
+
+def test_receipt_assessment_rejects_positive_eligibility_for_uncertain_receipt() -> None:
+    receipt = CrmRelationshipObservationReceipt(
+        receipt_id=UUID(int=12),
+        claim_id=UUID(int=1),
+        workspace_id=UUID(int=2),
+        environment_id=UUID(int=3),
+        provider_instance="portal-test",
+        connection_id=UUID(int=5),
+        connection_version_id=UUID(int=6),
+        activity_namespace="bitrix.activity",
+        activity_type_id="1",
+        activity_id="17",
+        raw_entity_type_id="2",
+        normalizer_id="bitrix.enum.ownertype",
+        normalizer_version="1",
+        entity_namespace="bitrix.company",
+        entity_id="42",
+        files_namespace="bitrix.activity.files",
+        files_item_id="9",
+        mapping_profile_id=UUID(int=7),
+        mapping_profile_version=1,
+        binding_method="crm.activity.binding.list",
+        binding_page_count=1,
+        binding_evidence_reference="synthetic:binding:page:1",
+        binding_evidence_digest="a" * 64,
+        positive_pair_observed=True,
+        disk_namespace="bitrix.disk",
+        disk_object_id="disk-1",
+        disk_version_evidence="version-1",
+        source_object_id=UUID(int=8),
+        source_revision_id=UUID(int=9),
+        acting_human_id=UUID(int=10),
+        authorization_generation=1,
+        configuration_generation=1,
+        verification_generation=1,
+        outcome=CrmEligibilityOutcome.NOT_VERIFIED,
+        evidence_digest="b" * 64,
+        observed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        idempotency_key=UUID(int=11),
+        payload_digest="c" * 64,
+    )
+    eligibility = CrmRelationshipEligibility(
+        eligibility_id=UUID(int=4),
+        claim_id=UUID(int=1),
+        workspace_id=UUID(int=2),
+        environment_id=UUID(int=3),
+        verification_generation=1,
+        lifecycle_generation=0,
+        outcome=CrmEligibilityOutcome.ELIGIBLE_VERIFIED,
+        evaluated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    with pytest.raises(ValueError, match="same current observation"):
+        CrmRelationshipReceiptAssessment(receipt=receipt, eligibility=eligibility)
 
 
 def test_eligibility_contract_pins_its_derived_record_identity() -> None:

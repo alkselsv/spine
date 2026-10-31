@@ -10,7 +10,7 @@ import hashlib
 import json
 from datetime import datetime
 from enum import Enum
-from typing import Literal, Mapping
+from typing import Literal
 from uuid import UUID
 
 from pydantic import ConfigDict, Field, model_validator
@@ -38,18 +38,17 @@ class CrmEligibilityOutcome(str, Enum):
     PROVIDER_REVOCATION_UNQUALIFIED = "PROVIDER_REVOCATION_UNQUALIFIED"
 
 
-class CrmRelationshipIdentity(DefinitionModel):
-    """Stable identity for an exact activity/entity/FILES item association."""
+class CrmRelationshipNaturalIdentity(DefinitionModel):
+    """Typed natural-key fields for an exact CRM relationship."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["spine.crm-relationship-evidence:v2"] = CRM_RELATIONSHIP_V2
-    record_kind: Literal["logical_relationship"] = "logical_relationship"
     workspace_id: UUID
     environment_id: UUID
     provider_instance: str = Field(min_length=1, max_length=128)
     connection_id: UUID
     activity_namespace: str = Field(min_length=1, max_length=128)
+    activity_type_id: str = Field(min_length=1, max_length=128)
     activity_id: str = Field(min_length=1, max_length=256)
     raw_entity_type_id: str = Field(min_length=1, max_length=128)
     normalizer_id: str = Field(min_length=1, max_length=128)
@@ -59,13 +58,24 @@ class CrmRelationshipIdentity(DefinitionModel):
     files_namespace: str = Field(min_length=1, max_length=128)
     files_item_id: str = Field(min_length=1, max_length=256)
     mapping_profile_id: UUID
+
+    @model_validator(mode="after")
+    def validate_natural_identity(self) -> "CrmRelationshipNaturalIdentity":
+        for name in ("workspace_id", "environment_id", "connection_id", "mapping_profile_id"):
+            if getattr(self, name).int == 0:
+                raise ValueError(f"{name} must be non-zero")
+        return self
+
+
+class CrmRelationshipIdentity(CrmRelationshipNaturalIdentity):
+    """Stable identity for an exact activity/entity/FILES item association."""
+
+    schema_version: Literal["spine.crm-relationship-evidence:v2"] = CRM_RELATIONSHIP_V2
+    record_kind: Literal["logical_relationship"] = "logical_relationship"
     relationship_key: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def key_matches_fields(self) -> "CrmRelationshipIdentity":
-        for name in ("workspace_id", "environment_id", "connection_id", "mapping_profile_id"):
-            if getattr(self, name).int == 0:
-                raise ValueError(f"{name} must be non-zero")
         expected = relationship_key(self)
         if expected != self.relationship_key:
             raise ValueError("relationship_key does not match natural identity")
@@ -89,6 +99,7 @@ class CrmRelationshipMappingProfile(DefinitionModel):
     qualification_reference: UUID
     approval_reference: UUID
     activity_namespace: str = Field(min_length=1, max_length=128)
+    activity_type_ids: tuple[str, ...] = Field(min_length=1, max_length=64)
     raw_entity_type_ids: tuple[str, ...] = Field(min_length=1, max_length=64)
     entity_namespace: str = Field(min_length=1, max_length=128)
     files_namespace: str = Field(min_length=1, max_length=128)
@@ -116,7 +127,7 @@ class CrmRelationshipMappingProfile(DefinitionModel):
         return self
 
 
-def relationship_key(identity: CrmRelationshipIdentity | Mapping[str, object]) -> str:
+def relationship_key(identity: CrmRelationshipNaturalIdentity) -> str:
     """Return the ADR-0053 key from identity natural-key fields only."""
     names = (
         "workspace_id", "environment_id", "provider_instance", "connection_id",
@@ -124,13 +135,7 @@ def relationship_key(identity: CrmRelationshipIdentity | Mapping[str, object]) -
         "normalizer_id", "normalizer_version", "entity_namespace", "entity_id",
         "files_namespace", "files_item_id", "mapping_profile_id",
     )
-    fields = {
-        key: identity[key] if isinstance(identity, Mapping) else getattr(identity, key)
-        for key in names
-    }
-    for key in names:
-        if fields[key] is None or not str(fields[key]).strip():
-            raise ValueError(f"{key} is required for CRM relationship identity")
+    fields = {key: getattr(identity, key) for key in names}
     canonical = json.dumps(
         {key: str(value) for key, value in fields.items()},
         sort_keys=True,
@@ -192,6 +197,7 @@ class CrmRelationshipObservationReceipt(DefinitionModel):
     connection_id: UUID
     connection_version_id: UUID
     activity_namespace: str = Field(min_length=1, max_length=128)
+    activity_type_id: str = Field(min_length=1, max_length=128)
     activity_id: str = Field(min_length=1, max_length=256)
     raw_entity_type_id: str = Field(min_length=1, max_length=128)
     normalizer_id: str = Field(min_length=1, max_length=128)
@@ -313,6 +319,28 @@ class CrmRelationshipEligibility(DefinitionModel):
         return self
 
 
+class CrmRelationshipReceiptAssessment(DefinitionModel):
+    """One receipt and the eligibility outcome derived from that attempt."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    receipt: CrmRelationshipObservationReceipt
+    eligibility: CrmRelationshipEligibility
+
+    @model_validator(mode="after")
+    def validate_assessment(self) -> "CrmRelationshipReceiptAssessment":
+        receipt, eligibility = self.receipt, self.eligibility
+        if (
+            receipt.claim_id != eligibility.claim_id
+            or receipt.workspace_id != eligibility.workspace_id
+            or receipt.environment_id != eligibility.environment_id
+            or receipt.verification_generation != eligibility.verification_generation
+            or receipt.outcome != eligibility.outcome
+        ):
+            raise ValueError("receipt and eligibility must describe the same current observation")
+        return self
+
+
 class CrmRelationshipEligibilityHead(DefinitionModel):
     """Mutable pointer to the latest locally ordered eligibility projection."""
 
@@ -348,6 +376,8 @@ __all__ = [
     "CRM_RELATIONSHIP_V2", "CrmEligibilityOutcome", "CrmRelationshipClaim",
     "CrmRelationshipEligibility", "CrmRelationshipEligibilityHead",
     "CrmRelationshipIdentity", "CrmRelationshipKind",
+    "CrmRelationshipNaturalIdentity",
     "CrmRelationshipLifecycleEvent", "CrmRelationshipMappingProfile",
-    "CrmRelationshipObservationReceipt", "relationship_key",
+    "CrmRelationshipObservationReceipt", "CrmRelationshipReceiptAssessment",
+    "relationship_key",
 ]

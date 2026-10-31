@@ -33,6 +33,7 @@ from spine.domain.sources.crm_relationship_v2 import (
     CrmRelationshipIdentity,
     CrmRelationshipLifecycleEvent,
     CrmRelationshipMappingProfile,
+    CrmRelationshipReceiptAssessment,
     CrmRelationshipObservationReceipt,
 )
 
@@ -72,6 +73,7 @@ class CrmRelationshipV2Store:
             and profile.provider_instance == identity.provider_instance
             and profile.connection_id == identity.connection_id
             and profile.activity_namespace == identity.activity_namespace
+            and identity.activity_type_id in profile.activity_type_ids
             and identity.raw_entity_type_id in profile.raw_entity_type_ids
             and profile.entity_namespace == identity.entity_namespace
             and profile.files_namespace == identity.files_namespace
@@ -166,7 +168,8 @@ class CrmRelationshipV2Store:
         connection = (await self._execute(text(
             "SELECT version_record.approval_id, version_record.authorization_generation, "
             "version_record.configuration_generation, "
-            "version_record.status, approval.status AS approval_status, version_record.version "
+            "version_record.status, approval.status AS approval_status, version_record.version, "
+            "version_record.approved_resource_scope_references "
             "FROM spine.provider_connection_versions AS version_record "
             "JOIN spine.provider_connection_approvals AS approval "
             "ON approval.approval_id = version_record.approval_id "
@@ -221,6 +224,8 @@ class CrmRelationshipV2Store:
             and profile.profile_version == claim.mapping_profile_version
             and connection is not None
             and profile.connection_approval_id == connection.approval_id
+            and profile.qualification_reference in connection.approved_resource_scope_references
+            and profile.approval_reference in connection.approved_resource_scope_references
             and identity is not None
             and self._profile_matches_identity(profile, identity)
         )
@@ -517,7 +522,8 @@ class CrmRelationshipV2Store:
         connection_version = (await self._execute(text(
             "SELECT version_record.approval_id, version_record.authorization_generation, "
             "version_record.configuration_generation, version_record.status, "
-            "approval.status AS approval_status, version_record.version "
+            "approval.status AS approval_status, version_record.version, "
+            "version_record.approved_resource_scope_references "
             "FROM spine.provider_connection_versions AS version_record "
             "JOIN spine.provider_connection_approvals AS approval "
             "ON approval.approval_id = version_record.approval_id "
@@ -570,6 +576,8 @@ class CrmRelationshipV2Store:
         if (
             profile.profile_version != claim.mapping_profile_version
             or profile.connection_approval_id != connection_version.approval_id
+            or profile.qualification_reference not in connection_version.approved_resource_scope_references
+            or profile.approval_reference not in connection_version.approved_resource_scope_references
             or not self._profile_matches_identity(profile, identity)
         ):
             raise OptimisticConflictError("CRM mapping profile approval or exact relationship scope is stale.")
@@ -627,6 +635,12 @@ class CrmRelationshipV2Store:
             or eligibility.lifecycle_generation != lifecycle_generation
         ):
             raise OptimisticConflictError("CRM eligibility must pin this receipt and current lifecycle generation.")
+        try:
+            CrmRelationshipReceiptAssessment(receipt=receipt, eligibility=eligibility)
+        except ValidationError as error:
+            raise OptimisticConflictError(
+                "CRM eligibility outcome must match its exact observation receipt."
+            ) from error
         claim_scope = (await self._execute(select(
             crm_relationship_claims.c.connection_id,
             crm_relationship_claims.c.connection_version_id,
@@ -671,6 +685,7 @@ class CrmRelationshipV2Store:
             or receipt.disk_version_evidence != claim_record.disk_version_evidence
             or receipt.provider_instance != identity.provider_instance
             or receipt.activity_namespace != identity.activity_namespace
+            or receipt.activity_type_id != identity.activity_type_id
             or receipt.activity_id != identity.activity_id
             or receipt.raw_entity_type_id != identity.raw_entity_type_id
             or receipt.normalizer_id != identity.normalizer_id
@@ -741,7 +756,8 @@ class CrmRelationshipV2Store:
         current_connection = (await self._execute(text(
             "SELECT version_record.approval_id, version_record.authorization_generation, "
             "version_record.configuration_generation, "
-            "version_record.status, approval.status AS approval_status, version_record.version "
+            "version_record.status, approval.status AS approval_status, version_record.version, "
+            "version_record.approved_resource_scope_references "
             "FROM spine.provider_connection_versions AS version_record "
             "JOIN spine.provider_connection_approvals AS approval "
             "ON approval.approval_id = version_record.approval_id "
@@ -807,6 +823,8 @@ class CrmRelationshipV2Store:
             and profile.profile_version == claim_scope.mapping_profile_version
             and current_connection is not None
             and profile.connection_approval_id == current_connection.approval_id
+            and profile.qualification_reference in current_connection.approved_resource_scope_references
+            and profile.approval_reference in current_connection.approved_resource_scope_references
             and self._profile_matches_identity(profile, identity)
             and (
                 profile.mapping_strategy != "attached_object"
@@ -997,13 +1015,15 @@ class CrmRelationshipV2Store:
                 workspace_id=event.workspace_id, environment_id=event.environment_id,
                 source_object_id=evidence.source_object_id,
             ))).one_or_none()
-            latest_profile_version = await self._scalar(select(
+            current_profile = (await self._execute(select(
                 crm_relationship_profiles.c.profile_version,
+                crm_relationship_profiles.c.record,
             ).where(
                 crm_relationship_profiles.c.workspace_id == event.workspace_id,
                 crm_relationship_profiles.c.environment_id == event.environment_id,
                 crm_relationship_profiles.c.profile_id == evidence.mapping_profile_id,
-            ).order_by(crm_relationship_profiles.c.profile_version.desc()).limit(1).with_for_update())
+            ).order_by(crm_relationship_profiles.c.profile_version.desc()).limit(1)
+            .with_for_update())).one_or_none()
             latest_connection_version = await self._scalar(text(
                 "SELECT max(version) FROM spine.provider_connection_versions "
                 "WHERE workspace_id = :workspace_id AND environment_id = :environment_id "
@@ -1017,13 +1037,16 @@ class CrmRelationshipV2Store:
                 or current_source.current_revision_id != evidence.source_revision_id
                 or current_source.current_revision_kind != "content"
                 or current_source.status != "eligible"
-                or latest_profile_version != evidence.mapping_profile_version
+                or current_profile is None
+                or current_profile.profile_version != evidence.mapping_profile_version
                 or evidence.authorization_generation != event.authorization_generation
             ):
                 raise OptimisticConflictError("CRM reapproval authority, source, or profile is no longer current.")
             current_connection = (await self._execute(text(
-                "SELECT version_record.authorization_generation, version_record.configuration_generation, "
-                "version_record.status, approval.status AS approval_status, version_record.version "
+                "SELECT version_record.approval_id, version_record.authorization_generation, "
+                "version_record.configuration_generation, version_record.status, "
+                "approval.status AS approval_status, version_record.version, "
+                "version_record.approved_resource_scope_references "
                 "FROM spine.provider_connection_versions AS version_record "
                 "JOIN spine.provider_connection_approvals AS approval "
                 "ON approval.approval_id = version_record.approval_id "
@@ -1039,6 +1062,18 @@ class CrmRelationshipV2Store:
                 connection_id=evidence.connection_id,
                 connection_version_id=evidence.connection_version_id,
             ))).one_or_none()
+            try:
+                profile = CrmRelationshipMappingProfile.model_validate(current_profile.record)
+                identity_record = await self._scalar(select(
+                    crm_relationship_identities.c.natural_identity,
+                ).where(
+                    crm_relationship_identities.c.workspace_id == event.workspace_id,
+                    crm_relationship_identities.c.environment_id == event.environment_id,
+                    crm_relationship_identities.c.relationship_key == event.relationship_key,
+                ))
+                identity = CrmRelationshipIdentity.model_validate(identity_record)
+            except ValidationError as error:
+                raise OptimisticConflictError("CRM reapproval profile or identity is unsupported.") from error
             if (
                 current_connection is None
                 or current_connection.authorization_generation != event.authorization_generation
@@ -1046,6 +1081,10 @@ class CrmRelationshipV2Store:
                 or current_connection.status != "active"
                 or current_connection.approval_status != "active"
                 or current_connection.version != latest_connection_version
+                or current_connection.approval_id != profile.connection_approval_id
+                or profile.qualification_reference not in current_connection.approved_resource_scope_references
+                or profile.approval_reference not in current_connection.approved_resource_scope_references
+                or not self._profile_matches_identity(profile, identity)
             ):
                 raise OptimisticConflictError("CRM reapproval connection authority is no longer current.")
             reapproved_eligibility = CrmRelationshipEligibility(
