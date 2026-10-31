@@ -23,6 +23,18 @@ from .access_policy import (
     SourceSecurityDomainBinding,
 )
 from .canonical import CanonicalAcceptance, CanonicalOrdering, CurrentSourceHead
+from .lifecycle import (
+    CurrentLifecycleEligibility,
+    LifecycleAuthorityKind,
+    LifecycleDecision,
+    LifecycleDecisionEffect,
+    LifecycleEligibilityStatus,
+    LifecycleObservation,
+    LifecycleObservationConfidence,
+    LifecycleObservationKind,
+    LifecycleReasonCode,
+    lifecycle_status_for_observation,
+)
 from .register_associations import (
     RegisterAssociationAcceptance,
     RegisterAssociationFutureOwner,

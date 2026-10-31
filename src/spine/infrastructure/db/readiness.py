@@ -408,6 +408,11 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         ),
         "google_sheets_sync_runs": ExpectedTablePrivileges(True, True, True, True, False),
         "drive_lifecycle_decisions": ExpectedTablePrivileges(True, True, True, True, False),
+        "lifecycle_observations": ExpectedTablePrivileges(True, True, True, False, False),
+        "lifecycle_decisions": ExpectedTablePrivileges(True, True, True, False, False),
+        "current_lifecycle_authorities": ExpectedTablePrivileges(
+            True, True, True, True, False
+        ),
         "google_sheets_absence_candidates": ExpectedTablePrivileges(True, True, True, True, False),
         "google_sheets_removal_decisions": ExpectedTablePrivileges(True, True, True, True, False),
         "register_link_claims": ExpectedTablePrivileges(

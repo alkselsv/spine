@@ -1020,6 +1020,7 @@ async def test_source_observation_catalog_and_runtime_security_contract(
         )
         expected_source_constraints = {
             "pk_source_objects", "uq_source_objects_scope_id", "fk_source_objects_scope",
+            "uq_source_objects_lifecycle_connection",
             "ck_source_objects_identity_mode", "ck_source_objects_identity_complete",
             "ck_source_objects_kind_format", "ck_source_objects_identity_format",
             "pk_source_revisions", "fk_source_revisions_source", "fk_source_revisions_reappearance",
@@ -1074,6 +1075,7 @@ async def test_source_observation_catalog_and_runtime_security_contract(
         )
         assert indexes == {
             "pk_source_objects", "uq_source_objects_scope_id", "uq_source_objects_connector_identity",
+            "uq_source_objects_lifecycle_connection",
             "uq_source_objects_upload_identity", "ix_source_objects_connection_lookup",
             "pk_source_revisions", "uq_source_revisions_digest", "uq_source_revisions_scope_id",
             "ix_source_revisions_source_observed", "ix_source_revisions_original_digest",
@@ -1327,6 +1329,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "bitrix24_oauth_callback_receipts",
         "register_link_claims",
         "register_association_acceptances",
+        "lifecycle_observations",
+        "lifecycle_decisions",
+        "current_lifecycle_authorities",
     }
     tables = set(
         (
@@ -1353,7 +1358,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                     "'google_connection_versions','google_connection_approvals',"
                     "'provider_connection_versions','provider_connection_approvals',"
                     "'bitrix24_grant_bindings','bitrix24_grant_authorities',"
-                    "'bitrix24_oauth_attempts','bitrix24_oauth_callback_receipts'))"
+                    "'bitrix24_oauth_attempts','bitrix24_oauth_callback_receipts',"
+                    "'lifecycle_observations','lifecycle_decisions','current_lifecycle_authorities'))"
                 )
             )
         ).scalars()
@@ -1369,7 +1375,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                      "'google_connection_versions','google_connection_approvals',"
                      "'provider_connection_versions','provider_connection_approvals',"
                      "'bitrix24_grant_bindings','bitrix24_grant_authorities',"
-                     "'bitrix24_oauth_attempts','bitrix24_oauth_callback_receipts')")
+                     "'bitrix24_oauth_attempts','bitrix24_oauth_callback_receipts',"
+                     "'lifecycle_observations','lifecycle_decisions','current_lifecycle_authorities')")
             )
         ).scalars()
     )
@@ -2550,7 +2557,11 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_transcript_reviews_command",
         "pk_corrected_transcript_artifacts",
         "uq_corrected_transcript_artifacts_review",
-    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES | CANONICAL_BOUNDARY_INDEXES
+    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES | CANONICAL_BOUNDARY_INDEXES | {
+        "uq_audit_events_tenant_event",
+        "uq_outbox_intents_tenant_event",
+        "uq_source_objects_lifecycle_connection",
+    }
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
         "workspaces": (True, True),
@@ -2960,7 +2971,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'access_policy_grants', 'policy_proposals', 'policy_approvals', "
                             "'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
-                            "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', 'backup_fence_leases', "
+                            "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
+                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'backup_fence_leases', "
                             "'fence_operation_tickets', 'recovery_quiescence_evidence', "
                             "'storage_recovery_manifests', 'recovery_evidence_invalidations', "
                             "'parsed_documents', 'parsed_document_segments', 'ontology_versions', "
@@ -2999,7 +3011,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
-                            "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', 'backup_fence_leases', 'fence_operation_tickets', "
+                            "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
+                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
@@ -3032,7 +3045,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
-                            "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', 'backup_fence_leases', 'fence_operation_tickets', "
+                            "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
+                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
@@ -3064,7 +3078,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
-                            "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', 'backup_fence_leases', 'fence_operation_tickets', "
+                            "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
+                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
@@ -3095,7 +3110,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
-                            "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', 'backup_fence_leases', 'fence_operation_tickets', "
+                            "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
+                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
@@ -3185,7 +3201,10 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "uq_initial_workspace_bootstrap_action_id",
         "uq_initial_workspace_bootstrap_workspace_id",
         "uq_workspaces_slug",
-    } | AUTHORIZATION_DIRECTORY_CONSTRAINTS | AUDIT_CONSTRAINTS | DELIVERY_CONSTRAINTS | ADMISSION_CONSTRAINTS
+    } | AUTHORIZATION_DIRECTORY_CONSTRAINTS | AUDIT_CONSTRAINTS | DELIVERY_CONSTRAINTS | ADMISSION_CONSTRAINTS | {
+        "uq_audit_events_tenant_event",
+        "uq_outbox_intents_tenant_event",
+    }
     assert set(columns) == {
         ("alembic_version", "version_num"),
         ("environments", "created_at"),
@@ -3339,7 +3358,10 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "uq_context_bundles_exact_identity",
         "ix_context_bundles_attempt",
         "ix_context_bundles_snapshot_generation",
-    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES
+    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | {
+        "uq_audit_events_tenant_event",
+        "uq_outbox_intents_tenant_event",
+    }
     assert owners == {MIGRATION_ROLE}
 
 
@@ -3781,6 +3803,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'recovery_evidence_invalidations', "
                         "'canonical_generation_counters', 'canonical_acceptances', 'current_source_heads', "
                         "'canonical_boundaries', 'canonical_boundary_members', "
+                        "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', "
                         "'parsed_documents', 'parsed_document_segments', 'ontology_versions', "
                         "'projection_config_versions', 'projection_runs', 'projection_run_transitions', "
                         "'projection_partitions', 'projection_receipts', 'source_projection_references', "
@@ -3891,6 +3914,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "canonical_generation_counters": (True, True),
             "canonical_acceptances": (True, True),
             "current_source_heads": (True, True),
+        "lifecycle_observations": (True, True),
+        "lifecycle_decisions": (True, True),
+        "current_lifecycle_authorities": (True, True),
             "parsed_documents": (True, True),
             "parsed_document_segments": (True, True),
             "canonical_boundaries": (True, True),
@@ -5272,13 +5298,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261217_85_mounted_filesystem_reconciliation.py",
         "20261218_86_bitrix24_oauth_authority.py",
         "20261219_87_trusted_content_verification.py",
+        "20261220_88_source_lifecycle_authority.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261220_88_injected_failure.py").write_text(
+    (target / "versions" / "20261221_89_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261220_88'\n"
-        "down_revision = '20261219_87'\n"
+        "revision = '20261221_89'\n"
+        "down_revision = '20261220_88'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

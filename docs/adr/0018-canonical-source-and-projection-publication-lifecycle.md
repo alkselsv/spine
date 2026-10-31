@@ -515,3 +515,41 @@ blocked until the separate implementation and PostgreSQL gates pass. Existing v1
 readers/replay remain intact; any new v1 writer requires explicit approved selector
 mode. This amendment changes no provider behavior, production source allowlist,
 retention period, legal authority or physical cleanup policy.
+
+## Provider-neutral source lifecycle eligibility authority
+
+Provider observations and governance decisions about source lifecycle are persisted
+separately from canonical source state. A `LifecycleObservation:v1` is immutable,
+provider-neutral evidence bound to the exact workspace, environment, `SourceObject`,
+connection and connection version, approved scope version/digest, provider identity,
+and evidence reference/digest. An observation alone changes no eligibility. Uncertain,
+incomplete or inaccessible provider evidence cannot be converted into a deletion,
+disclosure hold or legal hold.
+
+An authorized `LifecycleDecision:v1` references one exact observation and the current
+versioned governance authority. It may govern read eligibility, disclosure review,
+retention applicability or legal-hold state only within its recorded source and scope.
+Immutable decisions advance a tenant-scoped `CurrentLifecycleAuthority` through an
+expected-current compare-and-swap. Decision authorization, current-pointer mutation,
+Audit Event and outbox intent commit in one PostgreSQL unit of work. Workers may
+produce observations but cannot authorize their own decisions; current governance
+must be revalidated in the same transaction. Replays are idempotent, stale heads and
+authority fail closed, and cross-workspace or cross-environment reads remain isolated.
+
+Canonical deletion remains governed only by the versioned tombstone authorization
+and canonical acceptance contract above. A lifecycle decision cannot write
+`TOMBSTONED`, mutate `CurrentSourceHead`, or authorize physical deletion. The current
+eligibility reader resolves the canonical head and current lifecycle decision in one
+database statement: an exact canonical tombstone overrides ordinary lifecycle status,
+while a non-tombstoned source requires an exact persisted lifecycle decision binding.
+The returned tombstone retains the matching decision's connection/scope binding and
+legal-hold state. No decision, stale scope/version or mismatched connection yields a
+content-free unavailable result. In-memory implementations follow the same override
+and binding rules.
+
+`LifecycleObservation:v1`, `LifecycleDecision:v1` and current lifecycle authority are
+new records under this amendment; none rewrites historical source observations,
+canonical acceptance, tombstones or projection publication history. The projection,
+retrieval and final-disclosure boundaries continue to treat canonical current
+tombstone as the authoritative deletion fence and lifecycle eligibility as an
+additional deny constraint.
