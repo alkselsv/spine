@@ -24,6 +24,13 @@ class YandexDiskTransientError(YandexDiskReadError):
         super().__init__("Yandex Disk is temporarily unavailable.")
 
 
+class YandexDiskProviderUnavailableError(YandexDiskReadError):
+    """A provider HTTP failure that the approved qualification must not retry."""
+
+    def __init__(self) -> None:
+        super().__init__("Yandex Disk provider request failed.")
+
+
 class YandexDiskAuthorizationRevokedError(YandexDiskReadError):
     def __init__(self) -> None:
         super().__init__("Yandex Disk authorization was revoked.")

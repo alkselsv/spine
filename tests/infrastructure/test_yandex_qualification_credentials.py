@@ -12,6 +12,7 @@ from spine.infrastructure.yandex_qualification_credentials import (
     LocalYandexQualificationCredentialResolver,
     YandexQualificationCredentialBinding,
     YandexQualificationCredentialDeniedError,
+    load_approved_yandex_user_id,
 )
 
 NOW = datetime(2026, 10, 30, 20, 0, tzinfo=timezone.utc)
@@ -91,6 +92,32 @@ async def test_exact_active_binding_resolves_secret_without_repr_disclosure(
 
 
 @pytest.mark.asyncio
+async def test_approved_qualification_settings_can_share_the_private_file(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env.qualification"
+    _write_env(
+        env_file,
+        extra="\n".join(
+            (
+                "SPINE_QUALIFICATION_AUTHORITY_EXPIRES_AT=2026-11-07T21:00:00Z",
+                "SPINE_COGNEE_QUALIFICATION_RUN_ID=synthetic-run",
+                "SPINE_INGESTION_FAULT_PROFILE_JSON=",
+            )
+        ),
+    )
+    resolver = LocalYandexQualificationCredentialResolver(
+        env_file=env_file,
+        binding=_binding(),
+        clock=lambda: NOW,
+    )
+
+    secret = await _resolve(resolver)
+
+    assert secret.get_secret_value() == TOKEN
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("workspace_id", "environment_id", "reference"),
     (
@@ -155,7 +182,7 @@ async def test_cross_scope_or_reference_request_is_denied_before_file_read(
             0o600,
             "SPINE_YANDEX_QUALIFICATION_OAUTH_TOKEN=second-synthetic-token",
         ),
-        (0o600, "SPINE_UNAPPROVED_SETTING=value"),
+        (0o600, "SPINE_YANDEX_QUALIFICATION_UNAPPROVED_SETTING=value"),
     ),
 )
 async def test_unsafe_permissions_duplicate_or_extra_configuration_is_denied(
@@ -280,3 +307,44 @@ async def test_symlinked_configuration_is_denied(tmp_path: Path) -> None:
 
     with pytest.raises(YandexQualificationCredentialDeniedError):
         await _resolve(resolver)
+
+
+def test_approved_user_id_loader_accepts_only_private_numeric_identity(
+    tmp_path: Path,
+) -> None:
+    identity_file = (tmp_path / "identity-approved.env").resolve()
+    identity_file.write_text(
+        "SPINE_YANDEX_QUALIFICATION_EXPECTED_USER_ID=123456789\n",
+        encoding="utf-8",
+    )
+    identity_file.chmod(0o600)
+
+    identity = load_approved_yandex_user_id(identity_file)
+
+    assert identity.get_secret_value() == "123456789"
+    assert "123456789" not in repr(identity)
+
+
+@pytest.mark.parametrize(
+    ("content", "mode"),
+    (
+        ("SPINE_YANDEX_QUALIFICATION_EXPECTED_USER_ID=123456789\n", 0o640),
+        ("SPINE_YANDEX_QUALIFICATION_EXPECTED_USER_ID=not-numeric\n", 0o600),
+        (
+            "SPINE_YANDEX_QUALIFICATION_EXPECTED_USER_ID=123456789\nEXTRA=value\n",
+            0o600,
+        ),
+    ),
+)
+def test_approved_user_id_loader_denies_unsafe_file_without_disclosure(
+    tmp_path: Path, content: str, mode: int
+) -> None:
+    identity_file = (tmp_path / "identity-approved.env").resolve()
+    identity_file.write_text(content, encoding="utf-8")
+    identity_file.chmod(mode)
+
+    with pytest.raises(YandexQualificationCredentialDeniedError) as raised:
+        load_approved_yandex_user_id(identity_file)
+
+    assert str(raised.value) == "qualification credential denied"
+    assert "123456789" not in str(raised.value)

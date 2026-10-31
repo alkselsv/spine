@@ -32,12 +32,22 @@ The immutable profile `spine-yandex-disk-qualification-ops:v1` enforces:
 - one request per second with burst two;
 - at most 10 pages and 32 resources;
 - at most 256 KiB per file and 2 MiB per provider JSON response;
-- two adapter attempts with one explicit backoff interval;
+- three adapter attempts (initial plus two retries) with full-jitter ceilings of
+  one and two seconds; only transport/timeouts and HTTP 429 are retryable;
 - bounded request timeout and bounded `Retry-After` handling.
 
 HTTP/provider payloads, signed URLs and authorization headers are absent from
 object representations and raised errors. Statuses map only to the existing
 content-free Yandex port errors.
+
+This qualification probe is intentionally exempt from the connector-ingestion
+rule that retains raw provider payloads. It does not create a `SourceRevision`
+or canonical source observation, and the approved #700 evidence profile forbids
+raw provider responses and protected names/paths in reports, diagnostics and
+alerts. The private identity and manifest candidates retain only the minimum
+typed values required for local owner approval; `provider_payloads_recorded`
+therefore remains `false`. A later ingestion run must preserve its own raw
+payload and provenance through the normal observation contract.
 
 ## Offline verification
 
@@ -56,8 +66,76 @@ and the qualification composition's fixed limits.
 
 ## Live boundary
 
-No live call is part of #741. Real endpoint availability, the acting account ID,
-the issued token's actual Disk scope, shared-folder behavior and provider rate
-limits remain `NOT_VERIFIED` until a separately approved live qualification run.
-The local `.env.qualification` token must never be committed or copied into a
-report. Production, customer and personal data remain forbidden.
+No live call was part of #741. No Disk API call is part of the later identity
+preflight. Real Disk endpoint
+availability, the issued token's actual Disk scope, shared-folder behavior and
+provider rate limits remain `NOT_VERIFIED` until the separately approved live
+qualification run. The local `.env.qualification` token must never be committed
+or copied into a report. Production, customer and personal data remain
+forbidden.
+
+### Identity-only preflight
+
+`spine-yandex-identity-preflight` is the only approved bootstrap path for the
+private acting-user binding. It has two independent gates: `opt_in: true` in a
+strict configuration document and
+`SPINE_YANDEX_IDENTITY_PREFLIGHT_OPT_IN=1` in the invoking process. It resolves
+only `local-env:yandex-disk-qa:v1` and can issue exactly one request to
+`GET https://login.yandex.ru/info?format=json`; it has no Disk operation or
+configurable provider endpoint.
+
+The command checks the returned `client_id` against the approved ClientID. On
+success it creates, without replacement, a mode-`0600` identity-candidate file
+containing the private Yandex User ID. Its separate mode-`0600` report contains
+only a SHA-256 identity fingerprint, counts of one identity request and zero
+Disk requests, and content-free status fields. It explicitly records that the
+raw identity is absent from the report and present only in the private candidate.
+If report creation fails, the CLI removes the newly created candidate so the
+operator can retry without manual recovery. Neither file may be committed or
+attached to GitHub; `.env.qualification.*` is ignored for that reason.
+
+The operator must inspect the candidate locally and explicitly approve that
+identity before it is promoted into the runtime API binding. Until that approval
+is recorded, no `cloud-api.yandex.net` request is permitted and #678 remains
+`NOT_VERIFIED` for Disk behavior.
+
+### Recursive metadata inventory
+
+After the acting identity is approved, the recursive inventory runner is the
+first Disk phase. It requires a strict configuration opt-in and a current
+tenant-scoped `ProviderConnectionRepository.admit_read` result before resolving
+the credential or calling Yandex. It also requires an injected cross-process
+execution lease for the exact connection/scope/generations and an injected
+request governor shared by all service instances in the local worker. Missing
+or contended coordination fails closed before a provider request. No standalone
+CLI is exposed until a canonical connection repository composition exists. The
+runner performs two complete
+recursive metadata traversals of the exact root. Every folder page is path-confined, every
+listed item must be a direct child of that page, and the two ordered inventories
+must be identical. The two passes share the approved ten-page, 32-resource and
+retry budgets. The combined two-pass scan attempt has a five-minute deadline
+and the logical run has a ten-minute deadline; authority is re-admitted before
+every retry. Cancellation produces terminal `NOT_VERIFIED` evidence. The run also stops as `NOT_VERIFIED`
+if it observes a changing inventory, does not match the approved aggregate
+baseline of five files, four child directories and 1,416 bytes, or differs from
+the exact owner-approved opaque manifest digest.
+
+This phase does not request download links or file bytes. On success it writes a
+mode-`0600` manifest candidate containing the protected exact paths and provider
+metadata for local Fixture Owner review. Its separate safe report contains only
+aggregate counts, request counts, fixed version identifiers and content-free
+status fields. The manifest candidate must never be committed or attached to
+GitHub. No content import is permitted until the Fixture Owner has inspected and
+explicitly approved that candidate as the exact
+`spine-yandex-qualification-fixtures-v1` manifest.
+
+Both the identity report and inventory report carry the exact `workspace_id`
+and `environment_id`. The private inventory candidate carries the same tenant,
+connection/version and generation binding as the safe report.
+
+Any metadata probe made before canonical Provider Connection admission is
+preliminary operator evidence only. It cannot qualify the adapter, authorize a
+content download, or be published as a passing #678 result. The admitted rerun's
+safe report binds the provider/request-policy versions, connection/version,
+authorization/configuration generations, acting-identity fingerprint and opaque
+manifest digest; the private candidate carries the same configuration binding.

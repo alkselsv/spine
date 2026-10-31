@@ -148,6 +148,7 @@ class YandexDiskService(Protocol):
         connection: ProviderConnection,
         resource_scope_reference: OpaqueProviderReference,
         *,
+        path: str | None = None,
         offset: int,
         limit: int,
     ) -> YandexDiskResourcePage: ...
@@ -424,7 +425,7 @@ class YandexDiskProviderAdapter:
                 jitter = self._jitter(backoff)
                 if jitter < 0:
                     raise ValueError("Yandex Disk retry jitter cannot be negative")
-                await self._sleep(max(backoff, provider_delay) + jitter)
+                await self._sleep(max(provider_delay, jitter))
         raise AssertionError("bounded Yandex Disk retry loop did not terminate")
 
     async def _read_once(

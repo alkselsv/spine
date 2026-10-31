@@ -7,81 +7,33 @@ import stat
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
 from uuid import UUID
 
-from pydantic import SecretStr, ValidationInfo, field_validator
+from pydantic import SecretStr
 
 from spine.auth import ExternalSecretReference
-from spine.domain.common import DefinitionModel
-
-YANDEX_QUALIFICATION_CLIENT_ID = "9b7e91e61c894ad896570742978cf5ce"
-YANDEX_QUALIFICATION_OAUTH_SCOPE = "cloud_api:disk.read"
-YANDEX_QUALIFICATION_ROOT = "/Spine-Qualification-678-v1"
-YANDEX_QUALIFICATION_PROVIDER_REFERENCE = "provider:local-env:v1"
-YANDEX_QUALIFICATION_SECRET_REFERENCE = "local-env:yandex-disk-qa:v1"
+from spine.application.yandex_qualification_credentials import (
+    YANDEX_QUALIFICATION_CLIENT_ID,
+    YANDEX_QUALIFICATION_OAUTH_SCOPE,
+    YANDEX_QUALIFICATION_PROVIDER_REFERENCE,
+    YANDEX_QUALIFICATION_ROOT,
+    YANDEX_QUALIFICATION_SECRET_REFERENCE,
+    YandexQualificationCredentialBinding,
+    YandexQualificationCredentialDeniedError,
+)
 
 _CLIENT_ID_KEY = "SPINE_YANDEX_QUALIFICATION_CLIENT_ID"
 _SCOPE_KEY = "SPINE_YANDEX_QUALIFICATION_SCOPE"
 _ROOT_KEY = "SPINE_YANDEX_QUALIFICATION_ROOT"
 _REFERENCE_KEY = "SPINE_YANDEX_QUALIFICATION_CREDENTIAL_REFERENCE"
 _TOKEN_KEY = "SPINE_YANDEX_QUALIFICATION_OAUTH_TOKEN"
+_EXPECTED_USER_ID_KEY = "SPINE_YANDEX_QUALIFICATION_EXPECTED_USER_ID"
 _REQUIRED_KEYS = frozenset(
     (_CLIENT_ID_KEY, _SCOPE_KEY, _ROOT_KEY, _REFERENCE_KEY, _TOKEN_KEY)
 )
+_YANDEX_QUALIFICATION_PREFIX = "SPINE_YANDEX_QUALIFICATION_"
 _MAXIMUM_FILE_BYTES = 16 * 1024
 _MAXIMUM_VALUE_CHARACTERS = 8 * 1024
-
-
-def _non_nil_uuid(value: UUID, info: ValidationInfo) -> UUID:
-    if value.int == 0:
-        raise ValueError(f"{info.field_name} must be a non-nil UUID")
-    return value
-
-
-class YandexQualificationCredentialBinding(DefinitionModel):
-    """Trusted, expiring operator binding for one qualification scope."""
-
-    schema_version: Literal["yandex-qualification-credential-binding:v1"]
-    deployment_mode: Literal["qualification"]
-    workspace_id: UUID
-    environment_id: UUID
-    reference: ExternalSecretReference
-    client_id: Literal[YANDEX_QUALIFICATION_CLIENT_ID]
-    oauth_scope: Literal[YANDEX_QUALIFICATION_OAUTH_SCOPE]
-    approved_root: Literal[YANDEX_QUALIFICATION_ROOT]
-    expires_at: datetime
-
-    @field_validator("workspace_id", "environment_id")
-    @classmethod
-    def validate_ids(cls, value: UUID, info: ValidationInfo) -> UUID:
-        return _non_nil_uuid(value, info)
-
-    @field_validator("reference")
-    @classmethod
-    def validate_reference(
-        cls, value: ExternalSecretReference
-    ) -> ExternalSecretReference:
-        if (
-            value.provider_reference != YANDEX_QUALIFICATION_PROVIDER_REFERENCE
-            or value.secret_reference != YANDEX_QUALIFICATION_SECRET_REFERENCE
-        ):
-            raise ValueError("reference must select the approved qualification secret")
-        return value
-
-    @field_validator("expires_at")
-    @classmethod
-    def validate_expiry(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("credential binding expiry must be timezone-aware")
-        return value
-
-
-class YandexQualificationCredentialDeniedError(RuntimeError):
-    """Sanitized denial that cannot disclose file contents or secret values."""
-
-    def __init__(self) -> None:
-        super().__init__("qualification credential denied")
 
 
 class LocalYandexQualificationCredentialResolver:
@@ -132,7 +84,36 @@ class LocalYandexQualificationCredentialResolver:
         return SecretStr(values[_TOKEN_KEY])
 
 
+def load_approved_yandex_user_id(path: Path) -> SecretStr:
+    """Load the separately human-approved acting identity from a private file."""
+
+    try:
+        values = _read_private_environment(path)
+        if frozenset(values) != {_EXPECTED_USER_ID_KEY}:
+            raise YandexQualificationCredentialDeniedError()
+        identifier = values[_EXPECTED_USER_ID_KEY]
+        if (
+            not identifier.isascii()
+            or not identifier.isdigit()
+            or len(identifier) > 255
+        ):
+            raise YandexQualificationCredentialDeniedError()
+        return SecretStr(identifier)
+    except YandexQualificationCredentialDeniedError:
+        raise
+    except (KeyError, TypeError, ValueError):
+        raise YandexQualificationCredentialDeniedError() from None
+
+
 def _read_exact_qualification_environment(path: Path) -> dict[str, str]:
+    return _parse_exact_environment(_read_private_text(path))
+
+
+def _read_private_environment(path: Path) -> dict[str, str]:
+    return _parse_environment(_read_private_text(path))
+
+
+def _read_private_text(path: Path) -> str:
     if not path.is_absolute():
         raise YandexQualificationCredentialDeniedError()
     flags = os.O_RDONLY
@@ -170,7 +151,7 @@ def _read_exact_qualification_environment(path: Path) -> dict[str, str]:
     finally:
         if descriptor is not None:
             os.close(descriptor)
-    return _parse_exact_environment(text)
+    return text
 
 
 def _parse_exact_environment(content: str) -> dict[str, str]:
@@ -183,9 +164,12 @@ def _parse_exact_environment(content: str) -> dict[str, str]:
             if "=" not in line:
                 raise YandexQualificationCredentialDeniedError()
             name, value = line.split("=", 1)
+            if name not in _REQUIRED_KEYS:
+                if name.startswith(_YANDEX_QUALIFICATION_PREFIX):
+                    raise YandexQualificationCredentialDeniedError()
+                continue
             if (
-                name not in _REQUIRED_KEYS
-                or name in values
+                name in values
                 or value != value.strip()
                 or not value
                 or len(value) > _MAXIMUM_VALUE_CHARACTERS
@@ -202,8 +186,35 @@ def _parse_exact_environment(content: str) -> dict[str, str]:
     return values
 
 
+def _parse_environment(content: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    try:
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                raise YandexQualificationCredentialDeniedError()
+            name, value = line.split("=", 1)
+            if (
+                name in values
+                or value != value.strip()
+                or not value
+                or len(value) > _MAXIMUM_VALUE_CHARACTERS
+                or "\x00" in value
+            ):
+                raise YandexQualificationCredentialDeniedError()
+            values[name] = value
+    except YandexQualificationCredentialDeniedError:
+        raise
+    except (TypeError, ValueError):
+        raise YandexQualificationCredentialDeniedError() from None
+    return values
+
+
 __all__ = [
     "LocalYandexQualificationCredentialResolver",
+    "load_approved_yandex_user_id",
     "YANDEX_QUALIFICATION_CLIENT_ID",
     "YANDEX_QUALIFICATION_OAUTH_SCOPE",
     "YANDEX_QUALIFICATION_PROVIDER_REFERENCE",

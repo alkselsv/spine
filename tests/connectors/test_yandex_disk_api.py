@@ -14,6 +14,7 @@ from spine.application.yandex_disk_scan import (
     YandexDiskContractError,
     YandexDiskFileTooLargeError,
     YandexDiskPermissionLostError,
+    YandexDiskProviderUnavailableError,
     YandexDiskResourceNotFoundError,
     YandexDiskScopeOutOfScopeError,
     YandexDiskThrottleError,
@@ -27,6 +28,7 @@ from spine.connectors.yandex_disk_api import (
     YandexDiskApiResponse,
     YandexDiskApiService,
     YandexQualificationApiBinding,
+    YandexQualificationRequestGovernor,
     YandexQualificationRequestPolicy,
 )
 from spine.connectors.yandex_disk_composition import (
@@ -123,6 +125,10 @@ class Transport:
         return self.responses.pop(0)
 
 
+async def _no_sleep() -> None:
+    return None
+
+
 def _identity(
     *,
     user_id: str = "dedicated-user-id",
@@ -152,14 +158,41 @@ def _resource_payload(
     }
 
 
+def _listing_response() -> YandexDiskApiResponse:
+    return YandexDiskApiResponse(
+        status_code=200,
+        json_body={
+            "_embedded": {
+                "path": "disk:/Spine-Qualification-678-v1",
+                "items": [_resource_payload()],
+                "limit": 32,
+                "offset": 0,
+                "total": 1,
+            }
+        },
+    )
+
+
 def _service(
     transport: Transport, resolver: CredentialResolver | None = None
 ) -> YandexDiskApiService:
+    policy = YandexQualificationRequestPolicy()
+    now = 0.0
+
+    async def advance(delay: float) -> None:
+        nonlocal now
+        now += delay
+
     return YandexDiskApiService(
         binding=_binding(),
         credential_resolver=resolver or CredentialResolver(),
         transport=transport,
-        request_policy=YandexQualificationRequestPolicy(),
+        request_policy=policy,
+        request_governor=YandexQualificationRequestGovernor(
+            policy=policy,
+            monotonic=lambda: now,
+            sleep=advance,
+        ),
     )
 
 
@@ -205,6 +238,53 @@ async def test_list_resources_verifies_identity_before_disk_and_maps_shape() -> 
     )
     assert page.embedded.items[0].revision == "1700000000000000"
     assert page.embedded.path == "disk:/Spine-Qualification-678-v1"
+
+
+@pytest.mark.asyncio
+async def test_list_resources_allows_only_an_explicit_descendant_directory() -> None:
+    directory = "disk:/Spine-Qualification-678-v1/nested"
+    transport = Transport(
+        [
+            _identity(),
+            YandexDiskApiResponse(
+                status_code=200,
+                json_body={
+                    "_embedded": {
+                        "path": directory,
+                        "items": [_resource_payload(path=f"{directory}/brief.pdf")],
+                        "limit": 32,
+                        "offset": 0,
+                        "total": 1,
+                    }
+                },
+            ),
+        ]
+    )
+
+    page = await _service(transport).list_resources(
+        _connection(), SCOPE, path=directory, offset=0, limit=32
+    )
+
+    assert page.embedded.path == directory
+    assert transport.requests[1].query["path"] == directory
+
+
+@pytest.mark.asyncio
+async def test_list_resources_rejects_sibling_directory_before_secret_resolution() -> None:
+    resolver = CredentialResolver()
+    transport = Transport([])
+
+    with pytest.raises(YandexDiskScopeOutOfScopeError):
+        await _service(transport, resolver).list_resources(
+            _connection(),
+            SCOPE,
+            path="disk:/Spine-Qualification-678-other",
+            offset=0,
+            limit=32,
+        )
+
+    assert resolver.calls == []
+    assert transport.requests == []
 
 
 @pytest.mark.asyncio
@@ -333,7 +413,7 @@ async def test_download_rejects_unapproved_signed_url_without_fetching_it() -> N
         (403, YandexDiskPermissionLostError),
         (404, YandexDiskResourceNotFoundError),
         (429, YandexDiskThrottleError),
-        (503, YandexDiskTransientError),
+        (503, YandexDiskProviderUnavailableError),
         (400, YandexDiskContractError),
     ],
 )
@@ -400,6 +480,79 @@ def test_qualification_request_policy_is_fixed_to_approved_ops_budget() -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_shared_request_governor_preserves_budget_across_service_instances() -> None:
+    now = 0.0
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        nonlocal now
+        delays.append(delay)
+        now += delay
+
+    policy = YandexQualificationRequestPolicy()
+    governor = YandexQualificationRequestGovernor(
+        policy=policy,
+        monotonic=lambda: now,
+        sleep=sleep,
+    )
+    first_transport = Transport([_identity(), _listing_response()])
+    second_transport = Transport([_identity(), _listing_response()])
+    first = YandexDiskApiService(
+        binding=_binding(),
+        credential_resolver=CredentialResolver(),
+        transport=first_transport,
+        request_policy=policy,
+        request_governor=governor,
+    )
+    second = YandexDiskApiService(
+        binding=_binding(),
+        credential_resolver=CredentialResolver(),
+        transport=second_transport,
+        request_policy=policy,
+        request_governor=governor,
+    )
+
+    await first.list_resources(_connection(), SCOPE, offset=0, limit=32)
+    await second.list_resources(_connection(), SCOPE, offset=0, limit=32)
+
+    assert delays == [1.0, 1.0]
+
+
+@pytest.mark.asyncio
+async def test_request_governor_fails_closed_when_budget_cannot_replenish() -> None:
+    async def no_progress(_: float) -> None:
+        return None
+
+    governor = YandexQualificationRequestGovernor(
+        policy=YandexQualificationRequestPolicy(),
+        monotonic=lambda: 0.0,
+        sleep=no_progress,
+    )
+    transport = Transport(
+        [
+            YandexDiskApiResponse(status_code=200),
+            YandexDiskApiResponse(status_code=200),
+            YandexDiskApiResponse(status_code=200),
+        ]
+    )
+    request = YandexDiskApiRequest(
+        method="GET",
+        url="https://login.yandex.ru/info",
+        headers={},
+        query={},
+        timeout_seconds=10.0,
+        max_response_bytes=1024,
+    )
+
+    await governor.request(transport, request)
+    await governor.request(transport, request)
+    with pytest.raises(YandexDiskTransientError):
+        await governor.request(transport, request)
+
+    assert len(transport.requests) == 2
+
+
 def test_qualification_composition_pins_reader_to_approved_ops_budget() -> None:
     class Repository:
         pass
@@ -420,4 +573,5 @@ def test_qualification_composition_pins_reader_to_approved_ops_budget() -> None:
     assert composition.read_profile.max_pages == 10
     assert composition.read_profile.max_items == 32
     assert composition.read_profile.max_file_bytes == 256 * 1024
-    assert composition.read_profile.max_attempts == 2
+    assert composition.read_profile.max_attempts == 3
+    assert composition.read_profile.backoff_seconds == (1.0, 2.0)

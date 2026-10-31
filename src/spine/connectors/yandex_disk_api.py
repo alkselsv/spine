@@ -7,7 +7,6 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 import json
-import time
 from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -20,6 +19,7 @@ from spine.application.yandex_disk_scan import (
     YandexDiskContractError,
     YandexDiskFileTooLargeError,
     YandexDiskPermissionLostError,
+    YandexDiskProviderUnavailableError,
     YandexDiskResourceNotFoundError,
     YandexDiskScopeOutOfScopeError,
     YandexDiskThrottleError,
@@ -122,6 +122,11 @@ class YandexQualificationRequestPolicy(DefinitionModel):
     max_file_bytes: Literal[262144] = 256 * 1024
     max_scan_bytes: Literal[2097152] = 2 * 1024 * 1024
     max_retry_after_seconds: StrictFloat = Field(default=30.0, ge=0, le=60)
+    max_request_attempts: Literal[3] = 3
+    max_retry_requests: Literal[20] = 20
+    max_requests_per_attempt: Literal[100] = 100
+    max_requests_per_logical_scan: Literal[200] = 200
+    retry_backoff_ceilings: tuple[Literal[1.0], Literal[2.0]] = (1.0, 2.0)
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -140,6 +145,7 @@ class YandexDiskApiResponse:
     json_body: Mapping[str, Any] | None = None
     content: bytes = b""
     headers: Mapping[str, str] | None = None
+    wire_bytes: int | None = None
 
 
 class YandexDiskApiTransport(Protocol):
@@ -187,6 +193,7 @@ class HttpxYandexDiskApiTransport:
                     json_body=json_body,
                     content=bytes(content),
                     headers=response_headers,
+                    wire_bytes=len(content),
                 )
         except asyncio.CancelledError:
             raise
@@ -196,18 +203,16 @@ class HttpxYandexDiskApiTransport:
             raise YandexDiskTransientError() from None
 
 
-class _RequestGovernor:
+class YandexQualificationRequestGovernor:
     """Single-flight token bucket for the approved 1 rps, burst-2 profile."""
 
     def __init__(
         self,
         *,
-        transport: YandexDiskApiTransport,
         policy: YandexQualificationRequestPolicy,
         monotonic: Callable[[], float],
         sleep: Callable[[float], Awaitable[None]],
     ) -> None:
-        self._transport = transport
         self._rate = policy.requests_per_second
         self._capacity = float(policy.burst)
         self._tokens = self._capacity
@@ -216,7 +221,11 @@ class _RequestGovernor:
         self._sleep = sleep
         self._lock = asyncio.Lock()
 
-    async def request(self, request: YandexDiskApiRequest) -> YandexDiskApiResponse:
+    async def request(
+        self,
+        transport: YandexDiskApiTransport,
+        request: YandexDiskApiRequest,
+    ) -> YandexDiskApiResponse:
         async with self._lock:
             now = self._monotonic()
             self._tokens = min(
@@ -232,8 +241,10 @@ class _RequestGovernor:
                     self._tokens + max(0.0, now - self._updated_at) * self._rate,
                 )
                 self._updated_at = now
+                if self._tokens < 1.0:
+                    raise YandexDiskTransientError()
             self._tokens = max(0.0, self._tokens - 1.0)
-            return await self._transport.request(request)
+            return await transport.request(request)
 
 
 class YandexDiskApiService:
@@ -246,28 +257,26 @@ class YandexDiskApiService:
         credential_resolver: YandexDiskCredentialResolver,
         transport: YandexDiskApiTransport,
         request_policy: YandexQualificationRequestPolicy,
-        monotonic: Callable[[], float] = time.monotonic,
-        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        request_governor: YandexQualificationRequestGovernor,
     ) -> None:
         self._binding = binding
         self._resolver = credential_resolver
+        self._transport = transport
         self._policy = request_policy
-        self._governor = _RequestGovernor(
-            transport=transport,
-            policy=request_policy,
-            monotonic=monotonic,
-            sleep=sleep,
-        )
+        self._governor = request_governor
 
     async def list_resources(
         self,
         connection: ProviderConnection,
         resource_scope_reference: OpaqueProviderReference,
         *,
+        path: str | None = None,
         offset: int,
         limit: int,
     ) -> YandexDiskResourcePage:
         self._require_connection(connection, resource_scope_reference)
+        requested_path = path or _disk_path(self._binding.approved_root)
+        self._require_path(requested_path)
         if (
             type(offset) is not int
             or type(limit) is not int
@@ -282,7 +291,7 @@ class YandexDiskApiService:
             token,
             _DISK_RESOURCES_URL,
             {
-                "path": _disk_path(self._binding.approved_root),
+                "path": requested_path,
                 "offset": str(offset),
                 "limit": str(limit),
             },
@@ -295,7 +304,7 @@ class YandexDiskApiService:
             raise YandexDiskContractError()
         try:
             embedded_path = _required_string(embedded, "path")
-            if embedded_path != _disk_path(self._binding.approved_root):
+            if embedded_path != requested_path:
                 raise YandexDiskContractError()
             items = tuple(
                 _resource(item, approved_root=self._binding.approved_root)
@@ -472,7 +481,7 @@ class YandexDiskApiService:
 
     async def _request(self, request: YandexDiskApiRequest) -> YandexDiskApiResponse:
         try:
-            return await self._governor.request(request)
+            return await self._governor.request(self._transport, request)
         except asyncio.CancelledError:
             raise
         except (
@@ -480,6 +489,7 @@ class YandexDiskApiService:
             YandexDiskContractError,
             YandexDiskFileTooLargeError,
             YandexDiskPermissionLostError,
+            YandexDiskProviderUnavailableError,
             YandexDiskResourceNotFoundError,
             YandexDiskThrottleError,
             YandexDiskTransientError,
@@ -507,7 +517,7 @@ class YandexDiskApiService:
                 )
             )
         if response.status_code >= 500:
-            raise YandexDiskTransientError()
+            raise YandexDiskProviderUnavailableError()
         raise YandexDiskContractError()
 
 
