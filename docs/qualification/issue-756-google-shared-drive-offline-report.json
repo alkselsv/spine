@@ -1,0 +1,15 @@
+{
+  "schema_version": "google-shared-drive-offline-qualification:v1",
+  "issue": 756,
+  "evidence_kind": "offline_fake_conformance",
+  "status": "NOT_EXERCISED",
+  "shared_drive_status": "NOT_EXERCISED",
+  "provider_calls": 0,
+  "credentials_recorded": false,
+  "resource_identifiers_recorded": false,
+  "source_content_recorded": false,
+  "raw_provider_errors_recorded": false,
+  "live_qualification_pass": false,
+  "scenario_matrix": "tests/qualification/test_issue756_shared_drive_conformance.py",
+  "future_live_qualification_issue": 615
+}

@@ -107,7 +107,10 @@ not approved for repository disclosure.
 
 Shared Drive remains `NOT_EXERCISED` unless a separately approved accessible
 synthetic Shared Drive is supplied, exactly allowlisted and
-`shared_drive_approved` is true.
+`shared_drive_approved` is true. That configuration boolean is not owner
+approval: a live Shared Drive run also requires the external approval and
+separate execution authorization described in
+[`r2-google-shared-drive-offline.md`](r2-google-shared-drive-offline.md).
 
 ## Not verified by offline evidence
 

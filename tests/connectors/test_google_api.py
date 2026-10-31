@@ -104,6 +104,7 @@ def _service(
     sheet_profiles: tuple[GoogleSheetsReadProfile, ...] = (),
     sheets_page_size: int = 200,
     retry_observer=None,
+    drive_id: str | None = None,
 ) -> GoogleApiService:
     return GoogleApiService(
         endpoints=GoogleApiEndpoints(
@@ -135,6 +136,8 @@ def _service(
                 allowed_file_ids=("file-1",),
                 allowed_spreadsheet_ids=("sheet-1",),
                 folder_id="folder-1",
+                drive_id=drive_id,
+                supports_all_drives=drive_id is not None,
             ),
         ),
         credential_resolver=resolver,
@@ -294,6 +297,311 @@ async def test_drive_snapshot_and_changes_map_every_provider_page() -> None:
     assert list_request.query["pageSize"] == "100"
     assert change_request.query["pageToken"] == "page-2"
     assert change_request.query["includeRemoved"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_shared_drive_requests_bind_all_pages_to_exact_drive_identity() -> None:
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(status_code=200, json_body={"startPageToken": "s0"}),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={
+                    "incompleteSearch": False,
+                    "files": [
+                        {"id": "file-1", "driveId": "drive-1"},
+                        {"id": "unlisted-file", "driveId": "drive-1"},
+                    ],
+                },
+            ),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={
+                    "newStartPageToken": "s1",
+                    "changes": [
+                        {
+                            "changeId": "c1",
+                            "fileId": "file-1",
+                            "file": {
+                                "id": "file-1",
+                                "driveId": "drive-1",
+                                "version": "3",
+                                "parents": ["folder-1"],
+                            },
+                        }
+                    ],
+                },
+            ),
+        ]
+    )
+    service = _service(RecordingCredentialResolver(), transport, drive_id="drive-1")
+
+    assert await service.get_start_page_token(_connection(), RESOURCE_SCOPE) == "s0"
+    snapshot = await service.list_page(_connection(), RESOURCE_SCOPE, None)
+    changes = await service.list_changes(_connection(), RESOURCE_SCOPE, "s0")
+
+    assert tuple((item.file_id, item.drive_id) for item in snapshot.items) == (
+        ("file-1", "drive-1"),
+    )
+    assert tuple(change.file_id for change in changes.changes) == ("file-1",)
+    assert changes.new_start_page_token == "s1"
+    start_query, list_query, changes_query = [
+        request.query for request in transport.requests[1:]
+    ]
+    assert start_query == {"supportsAllDrives": "true", "driveId": "drive-1"}
+    assert list_query["corpora"] == "drive"
+    assert list_query["driveId"] == "drive-1"
+    assert list_query["supportsAllDrives"] == "true"
+    assert list_query["includeItemsFromAllDrives"] == "true"
+    assert list_query["fields"] == "nextPageToken,incompleteSearch,files(id,driveId)"
+    assert changes_query["driveId"] == "drive-1"
+    assert changes_query["restrictToMyDrive"] == "false"
+    assert changes_query["supportsAllDrives"] == "true"
+    assert changes_query["includeItemsFromAllDrives"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_shared_drive_snapshot_rejects_cross_drive_item() -> None:
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={
+                    "incompleteSearch": False,
+                    "files": [{"id": "foreign-file", "driveId": "drive-2"}],
+                },
+            ),
+        ]
+    )
+    service = _service(RecordingCredentialResolver(), transport, drive_id="drive-1")
+
+    with pytest.raises(GoogleResourceScopeError):
+        await service.list_page(_connection(), RESOURCE_SCOPE, None)
+
+
+@pytest.mark.asyncio
+async def test_shared_drive_metadata_rejects_allowlisted_id_from_another_drive() -> None:
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={
+                    "id": "file-1",
+                    "name": "Synthetic file",
+                    "mimeType": "text/plain",
+                    "version": "1",
+                    "driveId": "drive-2",
+                    "parents": ["folder-1"],
+                },
+            ),
+        ]
+    )
+    service = _service(RecordingCredentialResolver(), transport, drive_id="drive-1")
+
+    with pytest.raises(GoogleResourceScopeError):
+        await service.get_metadata_for_file(_connection(), RESOURCE_SCOPE, "file-1")
+
+
+@pytest.mark.asyncio
+async def test_shared_drive_unlisted_file_fails_before_credentials_or_transport() -> None:
+    resolver = RecordingCredentialResolver()
+    transport = RecordingTransport([])
+    service = _service(resolver, transport, drive_id="drive-1")
+
+    with pytest.raises(GoogleResourceScopeError):
+        await service.get_metadata_for_file(
+            _connection(), RESOURCE_SCOPE, "unlisted-file"
+        )
+
+    assert resolver.calls == []
+    assert transport.requests == []
+
+
+@pytest.mark.asyncio
+async def test_shared_drive_permission_denial_is_typed_and_sanitized() -> None:
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(
+                status_code=403,
+                json_body={
+                    "error": {
+                        "status": "PERMISSION_DENIED",
+                        "message": "private drive and document contents",
+                    }
+                },
+            ),
+        ]
+    )
+    service = _service(RecordingCredentialResolver(), transport, drive_id="drive-1")
+
+    with pytest.raises(GoogleProviderPolicyError) as raised:
+        await service.get_metadata_for_file(_connection(), RESOURCE_SCOPE, "file-1")
+
+    assert "private drive" not in str(raised.value)
+    assert "document contents" not in str(raised.value)
+    assert len(transport.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_shared_drive_changes_with_unknown_or_foreign_identity_are_incomplete() -> None:
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={
+                    "newStartPageToken": "s2",
+                    "changes": [
+                        {
+                            "changeId": "foreign",
+                            "fileId": "unlisted-foreign-file",
+                            "file": {
+                                "id": "unlisted-foreign-file",
+                                "driveId": "drive-2",
+                            },
+                        },
+                        {
+                            "changeId": "unlisted-same-drive",
+                            "fileId": "unlisted-shared-file",
+                            "file": {
+                                "id": "unlisted-shared-file",
+                                "driveId": "drive-1",
+                            },
+                        },
+                        {
+                            "changeId": "allowlisted-wrong-drive",
+                            "fileId": "file-1",
+                            "file": {"id": "file-1", "driveId": "drive-2"},
+                        },
+                        {"changeId": "unknown", "fileId": "file-1", "removed": True},
+                        {
+                            "changeId": "outside-folder",
+                            "fileId": "file-1",
+                            "file": {
+                                "id": "file-1",
+                                "driveId": "drive-1",
+                                "parents": ["another-folder"],
+                            },
+                        },
+                    ],
+                },
+            ),
+        ]
+    )
+    service = _service(RecordingCredentialResolver(), transport, drive_id="drive-1")
+
+    page = await service.list_changes(_connection(), RESOURCE_SCOPE, "s1")
+
+    assert tuple(change.file_id for change in page.changes) == ("file-1",)
+    assert page.new_start_page_token == "s2"
+    assert page.incomplete_search is True
+
+
+@pytest.mark.asyncio
+async def test_shared_drive_change_outside_configured_folder_is_incomplete() -> None:
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={
+                    "newStartPageToken": "s3",
+                    "changes": [
+                        {
+                            "changeId": "moved",
+                            "fileId": "file-1",
+                            "file": {
+                                "id": "file-1",
+                                "driveId": "drive-1",
+                                "parents": ["another-folder"],
+                            },
+                        }
+                    ],
+                },
+            ),
+        ]
+    )
+    service = _service(RecordingCredentialResolver(), transport, drive_id="drive-1")
+
+    page = await service.list_changes(_connection(), RESOURCE_SCOPE, "s2")
+
+    assert page.changes == ()
+    assert page.new_start_page_token == "s3"
+    assert page.incomplete_search is True
+
+
+@pytest.mark.asyncio
+async def test_shared_drive_change_without_identity_is_incomplete() -> None:
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={
+                    "newStartPageToken": "s4",
+                    "changes": [
+                        {
+                            "changeId": "identity-missing",
+                            "fileId": "file-1",
+                            "file": {"id": "file-1", "version": "9"},
+                        }
+                    ],
+                },
+            ),
+        ]
+    )
+    service = _service(RecordingCredentialResolver(), transport, drive_id="drive-1")
+
+    page = await service.list_changes(_connection(), RESOURCE_SCOPE, "s3")
+
+    assert page.changes == ()
+    assert page.new_start_page_token == "s4"
+    assert page.incomplete_search is True
+
+
+@pytest.mark.asyncio
+async def test_shared_drive_scope_does_not_expand_spreadsheet_allowlist() -> None:
+    resolver = RecordingCredentialResolver()
+    transport = RecordingTransport([])
+    service = _service(
+        resolver,
+        transport,
+        drive_id="drive-1",
+        sheet_profiles=(_sheet_profile(),),
+    )
+
+    with pytest.raises(GoogleResourceScopeError):
+        await service.get_spreadsheet(
+            _connection(), RESOURCE_SCOPE, "other-spreadsheet", 123
+        )
+
+    assert resolver.calls == []
+    assert transport.requests == []
 
 
 @pytest.mark.asyncio

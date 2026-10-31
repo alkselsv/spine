@@ -183,6 +183,13 @@ append-only версий подключения; конфигурировани�
 ограничена allowlisted кодами без credentials, provider names и content. См.
 ADR-0050.
 
+Shared Drive live qualification also requires a trusted external preflight before
+provider read admission. The configuration flag is not owner approval: the
+preflight resolves an exact bound decision and separate live execution
+authorization for the workspace, environment, drive/resource scope, connection
+generations and exact file/spreadsheet allowlists. Offline evidence remains
+`NOT_EXERCISED`. See ADR-0044.
+
 Yandex Disk использует только квалифицированные enumeration, metadata, binary
 read и bounded full-reconciliation capabilities. Offset-based pagination
 инкапсулирована в непрозрачные durable checkpoints: checkpoint страницы
