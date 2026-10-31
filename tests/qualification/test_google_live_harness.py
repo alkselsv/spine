@@ -15,6 +15,7 @@ from spine.connectors.google_api import (
     GoogleResourceScope,
 )
 from spine.connectors.google_live_qualification import (
+    GoogleLiveExecutionAuthorization,
     GoogleLiveCredentialEnvironment,
     GoogleLiveFileTarget,
     GoogleLiveQualificationConfig,
@@ -23,6 +24,8 @@ from spine.connectors.google_live_qualification import (
     GoogleLiveQualificationRunner,
     GoogleLiveProbeCounts,
     GoogleLiveSheetTarget,
+    GoogleSharedDriveApproval,
+    GoogleSharedDrivePreflightBinding,
     compose_google_live_qualification_runner,
     write_google_live_report,
 )
@@ -174,14 +177,62 @@ class CurrentConnectionRepository:
 
 
 def _runner(
-    config: GoogleLiveQualificationConfig, admission
+    config: GoogleLiveQualificationConfig, admission, preflight=None
 ) -> GoogleLiveQualificationRunner:
     return GoogleLiveQualificationRunner(
         config=config,
         admission=admission,  # type: ignore[arg-type]
         context=object(),  # type: ignore[arg-type]
         approval_verifier=ApprovedEnvelopeVerifier(),
+        shared_drive_preflight=preflight,
     )
+
+
+def _shared_drive_config() -> GoogleLiveQualificationConfig:
+    config = _config(opt_in=True)
+    scope = config.resource_scope.model_copy(
+        update={"drive_id": "synthetic-drive", "supports_all_drives": True}
+    )
+    return config.model_copy(
+        update={"resource_scope": scope, "shared_drive_approved": True}
+    )
+
+
+class RecordingSharedDrivePreflight:
+    def __init__(self, *, approved: bool, authorized: bool, mismatch: bool = False):
+        self.approved = approved
+        self.authorized = authorized
+        self.mismatch = mismatch
+        self.approval_bindings = []
+        self.authorization_bindings = []
+
+    async def resolve_approval(
+        self, binding: GoogleSharedDrivePreflightBinding
+    ) -> GoogleSharedDriveApproval | None:
+        self.approval_bindings.append(binding)
+        if not self.approved:
+            return None
+        returned_binding = binding
+        if self.mismatch:
+            returned_binding = binding.model_copy(
+                update={"shared_drive_id": "another-drive"}
+            )
+        return GoogleSharedDriveApproval(
+            binding=returned_binding,
+            approved=True,
+            decision_reference="synthetic-decision-v1",
+        )
+
+    async def resolve_execution_authorization(
+        self, binding: GoogleSharedDrivePreflightBinding
+    ) -> GoogleLiveExecutionAuthorization | None:
+        self.authorization_bindings.append(binding)
+        if not self.authorized:
+            return None
+        return GoogleLiveExecutionAuthorization(
+            binding=binding,
+            authorization_reference="synthetic-execution-auth-v1",
+        )
 
 
 @pytest.mark.asyncio
@@ -509,3 +560,56 @@ async def test_live_harness_rejects_mismatched_effective_configuration() -> None
     assert report.status == "failed"
     assert report.failure_code == "provider_contract_rejected"
     assert service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_shared_drive_boolean_does_not_replace_external_preflight() -> None:
+    admission = RecordingAdmission()
+
+    with pytest.raises(GoogleLiveQualificationRefused, match="externally approved"):
+        await _runner(_shared_drive_config(), admission).run(environment_opt_in=True)
+
+    assert admission.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("approved", "authorized", "mismatch"),
+    ((False, True, False), (True, False, False), (True, True, True)),
+)
+async def test_shared_drive_preflight_denies_missing_or_mismatched_binding_before_provider(
+    approved: bool, authorized: bool, mismatch: bool
+) -> None:
+    admission = RecordingAdmission()
+    preflight = RecordingSharedDrivePreflight(
+        approved=approved, authorized=authorized, mismatch=mismatch
+    )
+
+    with pytest.raises(GoogleLiveQualificationRefused):
+        await _runner(_shared_drive_config(), admission, preflight).run(
+            environment_opt_in=True
+        )
+
+    assert admission.calls == []
+    if approved:
+        assert len(preflight.approval_bindings) == 1
+        assert preflight.approval_bindings[0].workspace_id == _connection().workspace_id
+        assert preflight.approval_bindings[0].environment_id == _connection().environment_id
+        assert preflight.approval_bindings[0].shared_drive_id == "synthetic-drive"
+        assert preflight.approval_bindings[0].allowed_file_ids == ("synthetic-file",)
+        assert len(preflight.authorization_bindings) == (0 if mismatch else 1)
+    else:
+        assert preflight.authorization_bindings == []
+
+
+@pytest.mark.asyncio
+async def test_shared_drive_fake_run_keeps_status_not_exercised() -> None:
+    admission = RecordingAdmission()
+    preflight = RecordingSharedDrivePreflight(approved=True, authorized=True)
+
+    report = await _runner(_shared_drive_config(), admission, preflight).run(
+        environment_opt_in=True
+    )
+
+    assert report.status == "passed"
+    assert report.shared_drive_status == "NOT_EXERCISED"

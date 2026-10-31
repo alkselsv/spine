@@ -15,7 +15,8 @@ from pathlib import Path
 import json
 import hashlib
 import time
-from typing import Literal
+from typing import Literal, Protocol
+from uuid import UUID
 
 from pydantic import ConfigDict, Field, StrictBool, StrictStr, model_validator
 
@@ -46,11 +47,58 @@ from spine.connectors.google_execution_envelope import (
     GoogleExecutionLimitExceeded,
 )
 from spine.domain.common import DefinitionModel
-from spine.domain.connections.google import GoogleConnection, GoogleConnectionStatus
+from spine.domain.connections.google import (
+    GoogleConnection,
+    GoogleConnectionStatus,
+    OpaqueGoogleReference,
+)
 
 
 class GoogleLiveQualificationRefused(RuntimeError):
     """Live provider access was not explicitly and completely approved."""
+
+
+class GoogleSharedDrivePreflightBinding(DefinitionModel):
+    """Exact identity that an external approval and execution gate must bind."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    workspace_id: UUID
+    environment_id: UUID
+    resource_scope_reference: OpaqueGoogleReference
+    shared_drive_id: StrictStr = Field(min_length=1, max_length=1024)
+    connection_id: UUID
+    authorization_generation: int = Field(ge=1)
+    configuration_generation: int = Field(ge=1)
+    allowed_file_ids: tuple[StrictStr, ...]
+    allowed_spreadsheet_ids: tuple[StrictStr, ...]
+
+
+class GoogleSharedDriveApproval(DefinitionModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    binding: GoogleSharedDrivePreflightBinding
+    approved: StrictBool
+    decision_reference: StrictStr = Field(min_length=1, max_length=256)
+
+
+class GoogleLiveExecutionAuthorization(DefinitionModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    binding: GoogleSharedDrivePreflightBinding
+    authorization_reference: StrictStr = Field(min_length=1, max_length=256)
+
+
+class GoogleSharedDrivePreflightPort(Protocol):
+    """Trusted external lookup for owner decision and separate run authorization."""
+
+    async def resolve_approval(
+        self, binding: GoogleSharedDrivePreflightBinding
+    ) -> GoogleSharedDriveApproval | None: ...
+
+    async def resolve_execution_authorization(
+        self, binding: GoogleSharedDrivePreflightBinding
+    ) -> GoogleLiveExecutionAuthorization | None: ...
 
 
 class GoogleLiveFileTarget(DefinitionModel):
@@ -365,12 +413,13 @@ class GoogleLiveQualificationRunner:
     wait_for: Callable[
         [Awaitable[GoogleLiveProbeCounts], float], Awaitable[GoogleLiveProbeCounts]
     ] = asyncio.wait_for
+    shared_drive_preflight: GoogleSharedDrivePreflightPort | None = None
 
     async def run(self, *, environment_opt_in: bool) -> GoogleLiveQualificationReport:
         counts = GoogleLiveProbeCounts()
         try:
             run_started = self.monotonic()
-            self.preflight(environment_opt_in=environment_opt_in)
+            await self.preflight(environment_opt_in=environment_opt_in)
             remaining = (
                 run_started
                 + self.config.execution_envelope.max_run_duration_seconds
@@ -431,7 +480,7 @@ class GoogleLiveQualificationRunner:
             )
         return self._report(status="passed", failure_code=None, counts=counts)
 
-    def preflight(self, *, environment_opt_in: bool) -> None:
+    async def preflight(self, *, environment_opt_in: bool) -> None:
         if not self.config.opt_in or not environment_opt_in:
             raise GoogleLiveQualificationRefused(
                 "live Google qualification requires both config and environment opt-in"
@@ -442,6 +491,49 @@ class GoogleLiveQualificationRunner:
         ):
             raise GoogleLiveQualificationRefused(
                 "the effective Google execution envelope is not approved"
+            )
+        scope = self.config.resource_scope
+        if scope.drive_id is None:
+            return
+        preflight = self.shared_drive_preflight
+        if preflight is None:
+            raise GoogleLiveQualificationRefused(
+                "Shared Drive qualification requires an externally approved preflight"
+            )
+        binding = GoogleSharedDrivePreflightBinding(
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            resource_scope_reference=scope.reference,
+            shared_drive_id=scope.drive_id,
+            connection_id=scope.connection_id,
+            authorization_generation=scope.authorization_generation,
+            configuration_generation=scope.configuration_generation,
+            allowed_file_ids=scope.allowed_file_ids,
+            allowed_spreadsheet_ids=scope.allowed_spreadsheet_ids,
+        )
+        try:
+            approval = await preflight.resolve_approval(binding)
+        except Exception:
+            raise GoogleLiveQualificationRefused(
+                "Shared Drive qualification preflight could not be verified"
+            ) from None
+        if (
+            approval is None
+            or not approval.approved
+            or approval.binding != binding
+        ):
+            raise GoogleLiveQualificationRefused(
+                "Shared Drive qualification lacks exact external approval"
+            )
+        try:
+            authorization = await preflight.resolve_execution_authorization(binding)
+        except Exception:
+            raise GoogleLiveQualificationRefused(
+                "Shared Drive execution authorization could not be verified"
+            ) from None
+        if authorization is None or authorization.binding != binding:
+            raise GoogleLiveQualificationRefused(
+                "Shared Drive qualification lacks exact live execution authorization"
             )
 
     def _report(
@@ -456,11 +548,9 @@ class GoogleLiveQualificationRunner:
             configuration_version=self.config.endpoints.configuration_version,
             authorization_generation=self.config.connection.authorization_generation,
             configuration_generation=self.config.connection.configuration_generation,
-            shared_drive_status=(
-                "EXERCISED"
-                if self.config.resource_scope.drive_id is not None
-                else "NOT_EXERCISED"
-            ),
+            # This task prepares offline conformance assets. A live-looking config
+            # or fake-backed run is never evidence that a Shared Drive was exercised.
+            shared_drive_status="NOT_EXERCISED",
             status=status,
             failure_code=failure_code,
             **asdict(counts),
@@ -481,6 +571,7 @@ def compose_google_live_qualification_runner(
     wait_for: Callable[
         [Awaitable[GoogleLiveProbeCounts], float], Awaitable[GoogleLiveProbeCounts]
     ] = asyncio.wait_for,
+    shared_drive_preflight: GoogleSharedDrivePreflightPort | None = None,
 ) -> GoogleLiveQualificationRunner:
     """Wire the manual probe through the same trusted read admission as production."""
 
@@ -499,6 +590,7 @@ def compose_google_live_qualification_runner(
         context=context,
         approval_verifier=approval_verifier,
         monotonic=monotonic,
+        shared_drive_preflight=shared_drive_preflight,
     )
 
 
@@ -516,10 +608,14 @@ __all__ = [
     "GoogleLiveFileTarget",
     "GoogleLiveQualificationConfig",
     "GoogleLiveQualificationProvider",
+    "GoogleLiveExecutionAuthorization",
     "GoogleLiveQualificationRefused",
     "GoogleLiveQualificationReport",
     "GoogleLiveQualificationRunner",
     "GoogleLiveProbeCounts",
+    "GoogleSharedDriveApproval",
+    "GoogleSharedDrivePreflightBinding",
+    "GoogleSharedDrivePreflightPort",
     "GoogleLiveSheetTarget",
     "compose_google_live_qualification_runner",
     "write_google_live_report",

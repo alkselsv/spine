@@ -48,3 +48,14 @@ Both v1 and v2 content observations enter the same existing original upload,
 Lifecycle-only v2 observations cannot enter content ingestion; their later
 handling must remain behind qualified lifecycle policy rather than fabricate an
 empty content revision.
+
+Opt-in Shared Drive qualification adds a preflight before read admission.
+`shared_drive_approved` is configuration intent and is not evidence of owner
+approval. A trusted external preflight authority must resolve both an approved
+decision and a separate live execution authorization, each bound to the exact
+workspace, environment, opaque resource-scope reference, Shared Drive ID,
+connection, authorization/configuration generations and file/spreadsheet
+allowlists. Missing, denied or mismatched evidence refuses the run before
+credential resolution or provider calls. Offline and fake-backed reports retain
+`NOT_EXERCISED`; only the separately owned live qualification may record provider
+exercise evidence.

@@ -118,6 +118,7 @@ class DriveSnapshotItem(DefinitionModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     file_id: StrictStr = Field(min_length=1, max_length=256)
+    drive_id: StrictStr | None = Field(default=None, max_length=1024)
 
 
 class DriveSnapshotPage(DefinitionModel):
@@ -143,6 +144,7 @@ class DriveChange(DefinitionModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     file_id: StrictStr = Field(min_length=1, max_length=256)
+    drive_id: StrictStr | None = Field(default=None, max_length=1024)
     change_id: StrictStr | None = Field(default=None, max_length=256)
     provider_version: StrictStr | None = Field(default=None, max_length=128)
     removed: bool = False

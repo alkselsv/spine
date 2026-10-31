@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
 
@@ -388,6 +389,52 @@ async def test_incomplete_page_reconciles_without_advancing_cursor():
     assert result.committed_cursor == "cursor-7"
     assert result.pages[0].state.value == "incomplete"
     assert reconciliation.commands[0].reason == "incomplete_change_page"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_keeps_change_cursor_and_resume_commits_once():
+    page = DriveChangePage(
+        page_token="cursor-7",
+        new_start_page_token="cursor-8",
+        changes=(DriveChange(file_id="file-1", change_id="change-1"),),
+    )
+
+    class CancelOnceReader:
+        def __init__(self):
+            self.calls = 0
+
+        async def list_changes(self, request, page_token, context):
+            del request, context
+            assert page_token == "cursor-7"
+            self.calls += 1
+            if self.calls == 1:
+                raise asyncio.CancelledError
+            return page
+
+    reader = CancelOnceReader()
+    repo = InMemoryDriveChangeRepository()
+    ingestion = FakeIngestion()
+    service = coordinator(reader, ingestion, repository=repo)
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.run(command())
+
+    sync_run_id = uuid5(
+        NAMESPACE_URL,
+        "spine:drive-change-run:v1:"
+        f"{WORKSPACE}:{ENVIRONMENT}:{CONNECTION}:{SCOPE}:changes-1",
+    )
+    interrupted = await repo.resolve_run(sync_run_id)
+    assert interrupted is not None
+    assert interrupted.last_committed_cursor == "cursor-7"
+    assert interrupted.proposed_cursor is None
+
+    resumed = await service.run(command())
+
+    assert resumed.state is DriveChangeRunState.SUCCEEDED
+    assert resumed.committed_cursor == "cursor-8"
+    assert reader.calls == 2
+    assert ingestion.calls == ["file-1"]
 
 
 @pytest.mark.asyncio

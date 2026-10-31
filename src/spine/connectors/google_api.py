@@ -597,7 +597,7 @@ class GoogleApiService:
                 "Drive enumeration requires an approved folder or Shared Drive."
             )
         query = {
-            "fields": "nextPageToken,incompleteSearch,files(id)",
+            "fields": "nextPageToken,incompleteSearch,files(id,driveId)",
             "pageSize": str(self._policy.drive_page_size),
             "supportsAllDrives": str(scope.supports_all_drives).lower(),
             "includeItemsFromAllDrives": str(scope.supports_all_drives).lower(),
@@ -623,15 +623,29 @@ class GoogleApiService:
         if not isinstance(raw_files, list):
             raise GoogleProviderContractError("Google provider response is invalid.")
         items = tuple(
-            DriveSnapshotItem(file_id=_required_string(item, "id"))
+            DriveSnapshotItem(
+                file_id=_required_string(item, "id"),
+                drive_id=_optional_string(item, "driveId"),
+            )
             for item in raw_files
             if isinstance(item, Mapping)
         )
         if len(items) != len(raw_files):
             raise GoogleProviderContractError("Google provider response is invalid.")
-        self._discovered_files.setdefault(
-            self._scope_key(connection, scope), set()
-        ).update(item.file_id for item in items)
+        if scope.drive_id is not None and any(
+            item.drive_id != scope.drive_id for item in items
+        ):
+            raise GoogleResourceScopeError(
+                "Google request is outside the approved Google resource scope."
+            )
+        if scope.drive_id is not None:
+            items = tuple(
+                item for item in items if item.file_id in scope.allowed_file_ids
+            )
+        else:
+            self._discovered_files.setdefault(
+                self._scope_key(connection, scope), set()
+            ).update(item.file_id for item in items)
         return DriveSnapshotPage(
             page_token=page_token,
             next_page_token=_optional_string(payload, "nextPageToken"),
@@ -656,7 +670,7 @@ class GoogleApiService:
             "includeItemsFromAllDrives": str(scope.supports_all_drives).lower(),
             "fields": (
                 "nextPageToken,newStartPageToken,incompleteSearch,"
-                "changes(changeId,fileId,removed,file(id,version,trashed,parents))"
+                "changes(changeId,fileId,removed,file(id,driveId,version,trashed,parents))"
             ),
         }
         if scope.drive_id is not None:
@@ -694,17 +708,54 @@ class GoogleApiService:
         ambiguous_membership = False
         for raw_change in raw_changes:
             change = _drive_change(raw_change)
-            explicitly_allowed = change.file_id in scope.allowed_file_ids
+            explicitly_allowed = (
+                change.file_id in scope.allowed_file_ids
+                and (
+                    scope.drive_id is None
+                    or change.drive_id == scope.drive_id
+                )
+            )
             in_folder = (
                 scope.folder_id is not None
                 and scope.folder_id in change.parent_ids
                 and not change.removed
                 and not change.trashed
             )
-            in_drive = scope.drive_id is not None and not change.removed
-            currently_in_scope = explicitly_allowed or in_folder or in_drive
+            if scope.drive_id is not None:
+                if (
+                    change.file_id in scope.allowed_file_ids
+                    and change.drive_id is not None
+                    and change.drive_id != scope.drive_id
+                ):
+                    ambiguous_membership = True
+                    continue
+                if (
+                    change.file_id in scope.allowed_file_ids
+                    and change.drive_id is None
+                    and not change.removed
+                ):
+                    ambiguous_membership = True
+                drive_identity_matches = (
+                    change.drive_id == scope.drive_id
+                    or (change.removed and change.drive_id is None)
+                )
+                currently_in_scope = (
+                    change.file_id in scope.allowed_file_ids
+                    and drive_identity_matches
+                    and (scope.folder_id is None or in_folder or change.removed)
+                )
+                if (
+                    change.file_id in scope.allowed_file_ids
+                    and drive_identity_matches
+                    and scope.folder_id is not None
+                    and not in_folder
+                    and not change.removed
+                ):
+                    ambiguous_membership = True
+            else:
+                currently_in_scope = explicitly_allowed or in_folder
             if not currently_in_scope:
-                if scope.folder_id is not None:
+                if scope.folder_id is not None and scope.drive_id is None:
                     ambiguous_membership = True
                 continue
             scoped.append(change.model_copy(update={"in_scope": True}))
@@ -849,11 +900,13 @@ class GoogleApiService:
         scope: GoogleResourceScope,
         file_id: str,
     ) -> None:
-        if (
-            file_id not in scope.allowed_file_ids
-            and file_id
-            not in self._discovered_files.get(self._scope_key(connection, scope), set())
-        ):
+        if scope.drive_id is not None:
+            is_allowed = file_id in scope.allowed_file_ids
+        else:
+            is_allowed = file_id in scope.allowed_file_ids or file_id in (
+                self._discovered_files.get(self._scope_key(connection, scope), set())
+            )
+        if not is_allowed:
             raise GoogleResourceScopeError(
                 "Google request is outside the approved Google resource scope."
             )
@@ -864,7 +917,7 @@ class GoogleApiService:
         scope: GoogleResourceScope,
         file_id: str,
     ) -> None:
-        if file_id in scope.allowed_file_ids:
+        if file_id in scope.allowed_file_ids and scope.drive_id is None:
             return
         payload = self._json_success(
             await self._authorized_request(
@@ -894,15 +947,20 @@ class GoogleApiService:
         file_id: str,
         payload: Mapping[str, Any],
     ) -> None:
-        if file_id in scope.allowed_file_ids:
-            return
         parents = _string_list(payload, "parents")
         in_folder = scope.folder_id is not None and scope.folder_id in parents
         in_drive = (
             scope.drive_id is not None and payload.get("driveId") == scope.drive_id
         )
         trashed = _required_bool(payload, "trashed", default=False)
-        if trashed or not (in_folder or in_drive):
+        if file_id in scope.allowed_file_ids and scope.drive_id is None:
+            return
+        in_scope = (
+            in_drive and (scope.folder_id is None or in_folder)
+            if scope.drive_id is not None
+            else (in_folder or file_id in scope.allowed_file_ids)
+        )
+        if trashed or not in_scope:
             self._discovered_files.setdefault(
                 self._scope_key(connection, scope), set()
             ).discard(file_id)
@@ -1246,6 +1304,7 @@ def _drive_change(value: Any) -> DriveChange:
         raise GoogleProviderContractError("Google provider response is invalid.")
     return DriveChange(
         file_id=file_id,
+        drive_id=_optional_string(raw_file, "driveId"),
         change_id=_optional_string(value, "changeId"),
         provider_version=_optional_string(raw_file, "version"),
         removed=removed,

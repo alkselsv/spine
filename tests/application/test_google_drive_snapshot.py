@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
 
@@ -196,6 +197,54 @@ async def test_incomplete_search_requires_reconciliation_and_keeps_last_cursor()
     assert result.committed_cursor == "previous-token"
     assert result.pages[0].incomplete_search is True
     assert result.pages[0].state.value == "incomplete"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_keeps_snapshot_cursor_and_resume_commits_once():
+    class CancelOnceReader(FakeReader):
+        def __init__(self):
+            super().__init__(
+                {
+                    None: DriveSnapshotPage(
+                        page_token=None,
+                        next_page_token=None,
+                        incomplete_search=False,
+                        items=(item("shared-file"),),
+                    )
+                }
+            )
+            self.cancel_once = True
+
+        async def list_page(self, request, page_token, context):
+            if self.cancel_once:
+                self.cancel_once = False
+                raise asyncio.CancelledError
+            return await super().list_page(request, page_token, context)
+
+    reader = CancelOnceReader()
+    repository = InMemoryDriveSyncRepository()
+    ingestion = FakeIngestion()
+    service = coordinator(reader, ingestion, repository)
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.run(command())
+
+    sync_run_id = uuid5(
+        NAMESPACE_URL,
+        "spine:drive-initial-snapshot:v1:"
+        f"{WORKSPACE}:{ENVIRONMENT}:{CONNECTION}:{SCOPE}:snapshot-1",
+    )
+    interrupted = await repository.resolve_run(sync_run_id)
+    assert interrupted is not None
+    assert interrupted.proposed_start_page_token == "start-token-7"
+    assert interrupted.committed_cursor is None
+    assert await repository.resolve_page(sync_run_id, None) is None
+
+    resumed = await service.run(command())
+
+    assert resumed.state is DriveSnapshotRunState.SUCCEEDED
+    assert resumed.committed_cursor == "start-token-7"
+    assert ingestion.calls == ["shared-file"]
 
 
 @pytest.mark.asyncio
