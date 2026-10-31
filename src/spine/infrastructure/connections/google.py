@@ -52,6 +52,39 @@ class InMemoryGoogleConnectionRepository:
         if len(self._approvals) != len(approvals):
             raise ValueError("Google connection approval identities must be unique")
 
+    async def get_current(
+        self,
+        connection_id: UUID,
+        context: TrustedPersistenceContext,
+    ) -> GoogleConnection:
+        try:
+            trusted = self._context_verifier.verify(context)
+            if (
+                trusted.origin is not ContextOrigin.INTERACTIVE
+                or not isinstance(trusted.scope, EnvironmentScope)
+                or trusted.purpose.value != "google_connector"
+                or trusted.operation.value != "google_connection_register"
+            ):
+                raise GoogleConnectionConflictError()
+            async with self._lock:
+                current_version_id = self._current.get(
+                    (
+                        trusted.scope.workspace_id,
+                        trusted.scope.environment_id,
+                        connection_id,
+                    )
+                )
+                current = self._versions.get(current_version_id)
+                if current is None:
+                    raise GoogleConnectionConflictError()
+                return current
+        except asyncio.CancelledError:
+            raise
+        except GoogleConnectionConflictError:
+            raise
+        except Exception:
+            raise GoogleConnectionConflictError() from None
+
     async def register(
         self,
         command: GoogleConnectionCommand,

@@ -256,6 +256,9 @@ class GoogleManualRevocation:
         *,
         occurred_at: datetime,
     ) -> GoogleManualRevocationResult:
+        canonical = await self._repository.get_current(current.connection_id, context)
+        if canonical != current:
+            raise GoogleConnectionConflictError()
         admitted_connection = current
         replay = False
         if current.status is GoogleConnectionStatus.ACTIVE:

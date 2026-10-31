@@ -403,6 +403,39 @@ async def test_generic_registration_cannot_assert_remote_revocation() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    (GoogleConnectionStatus.SUSPENDED, GoogleConnectionStatus.REVOKED),
+)
+async def test_manual_revocation_rejects_noncanonical_state_before_side_effects(
+    status: GoogleConnectionStatus,
+) -> None:
+    current, context, repository = await _registered_connection_repository()
+    fabricated = current.model_copy(
+        update={
+            "connection_version_id": _id(70),
+            "version": 2,
+            "predecessor_version_id": current.connection_version_id,
+            "status": status,
+        }
+    )
+    credentials = CredentialFake()
+    revocation = RevocationFake()
+    operation = GoogleManualRevocation(
+        repository=repository,
+        grant_lifecycle=GoogleGrantLifecycle(
+            credentials=credentials, revocation=revocation
+        ),
+    )
+
+    with pytest.raises(GoogleConnectionConflictError):
+        await operation.execute(fabricated, context, occurred_at=NOW)
+
+    assert revocation.tokens == []
+    assert credentials.deleted == []
+
+
+@pytest.mark.asyncio
 async def test_unverified_remote_revocation_keeps_connection_suspended_and_secret_files() -> None:
     current, context, repository = await _registered_connection_repository()
     credentials = CredentialFake()
