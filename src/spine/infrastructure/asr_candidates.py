@@ -7,6 +7,8 @@ inventory, dependency lock, and no-egress attestation pass preflight.
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future as ConcurrentFuture
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import importlib
 import importlib.metadata
@@ -511,23 +513,33 @@ class _LocalAdapter(SpeechToTextPort):
         resolved = await self.audio_resolver.resolve(typed_request)
         audio_path = _validate_resolved_audio(resolved, typed_request)
         inference: asyncio.Future[object] | None = None
+        runtime_future: ConcurrentFuture[object] | None = None
+        inference_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix=f"spine-asr-{self.candidate_id}",
+        )
         try:
             async with self._inference_lock:
-                inference = asyncio.get_running_loop().run_in_executor(
-                    None,
+                runtime_future = inference_executor.submit(
                     self.backend.transcribe,
                     self.model,
                     audio_path,
                     self.manifest,
                 )
+                inference = asyncio.wrap_future(runtime_future)
                 raw = await asyncio.shield(inference)
             segments = self._map_segments(raw, resolved.duration_ms)
         except asyncio.CancelledError as error:
             # Runtime calls are synchronous and cannot be interrupted safely. Do not
             # report cancellation while worker-thread inference is still running.
-            if inference is not None:
+            # Poll the concurrent future directly: the asyncio wrapper was shielded
+            # during cancellation, and awaiting it again can strand loop shutdown on
+            # Python's default-executor wakeup path.
+            while runtime_future is not None and not runtime_future.done():
+                await asyncio.sleep(0.01)
+            if runtime_future is not None:
                 try:
-                    await asyncio.shield(inference)
+                    runtime_future.result()
                 except BaseException:
                     pass
             raise SpeechToTextCancelled() from error
@@ -535,6 +547,10 @@ class _LocalAdapter(SpeechToTextPort):
             raise
         except Exception:
             raise SpeechToTextFailed(code=TranscriptionFailureCode.PERMANENT_MODEL_ERROR, retryable=False) from None
+        finally:
+            # Own the synchronous runtime worker and join it before returning. This
+            # keeps cancellation and loop shutdown from inheriting an ambient pool.
+            inference_executor.shutdown(wait=True)
         return SpeechToTextResultV2(
             adapter_reference=self.manifest.adapter_reference,
             model_config_reference=self.manifest.model_config_reference,
