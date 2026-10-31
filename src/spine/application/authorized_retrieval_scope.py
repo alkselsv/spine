@@ -199,6 +199,17 @@ class ProviderScopeSafetyPolicy(Protocol):
     async def can_express(self, scope: AuthorizedRetrievalScope) -> bool: ...
 
 
+class RetrievalDisclosureConstraint(Protocol):
+    """Additional deny-only lifecycle/hold authority for a candidate member."""
+
+    async def allows(
+        self,
+        context: TrustedAuthorizationContext,
+        member: ProjectionSnapshotMember,
+        evaluated_at: datetime,
+    ) -> bool: ...
+
+
 class AuthorizedRetrievalScopeResolver:
     """Resolve an authorized subset without leaking filtered source state."""
 
@@ -207,6 +218,7 @@ class AuthorizedRetrievalScopeResolver:
         *,
         authorization: ContentAuthorizationDecisionService,
         snapshot_members: SnapshotMemberRepository,
+        disclosure_constraint: RetrievalDisclosureConstraint,
         provider_scope_safety: ProviderScopeSafetyPolicy | None = None,
         expected_purpose: str = "answer_question",
         expected_operation: str = "retrieve_context",
@@ -215,6 +227,7 @@ class AuthorizedRetrievalScopeResolver:
         self._authorization = authorization
         self._snapshot_members = snapshot_members
         self._provider_scope_safety = provider_scope_safety
+        self._disclosure_constraint = disclosure_constraint
         self._expected_purpose = expected_purpose
         self._expected_operation = expected_operation
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -250,7 +263,10 @@ class AuthorizedRetrievalScopeResolver:
                 AuthorizedRetrievalScopeOutcome.DENIED,
                 AuthorizedRetrievalScopeReason.INVALID_TRUSTED_CONTEXT,
             )
-        if publication.projection_snapshot.snapshot_state is not ProjectionSnapshotState.FINALIZED:
+        if (
+            publication.projection_snapshot.snapshot_state
+            is not ProjectionSnapshotState.FINALIZED
+        ):
             return self._reject(
                 AuthorizedRetrievalScopeOutcome.UNAVAILABLE,
                 AuthorizedRetrievalScopeReason.PUBLICATION_UNAVAILABLE,
@@ -279,6 +295,17 @@ class AuthorizedRetrievalScopeResolver:
 
         constraints: list[AuthorizedSourceConstraint] = []
         for member in included:
+            try:
+                disclosure_allowed = await self._disclosure_constraint.allows(
+                    context, member, self._now()
+                )
+            except Exception:
+                disclosure_allowed = False
+            if not disclosure_allowed:
+                return self._reject(
+                    AuthorizedRetrievalScopeOutcome.UNAVAILABLE,
+                    AuthorizedRetrievalScopeReason.SOURCE_UNAVAILABLE,
+                )
             decision = await self._decide(context, member.source_object_id)
             if decision is None:
                 return self._reject(
@@ -395,7 +422,10 @@ class AuthorizedRetrievalScopeResolver:
         if observed_at is None:
             return AuthorizedRetrievalScopeReason.SOURCE_STALE
         age = now - observed_at
-        if age.total_seconds() < 0 or age.total_seconds() > profile.freshness_max_age_seconds:
+        if (
+            age.total_seconds() < 0
+            or age.total_seconds() > profile.freshness_max_age_seconds
+        ):
             return AuthorizedRetrievalScopeReason.SOURCE_STALE
         return AuthorizedSourceConstraint(
             projection_snapshot_member_id=member.projection_snapshot_member_id,
@@ -417,7 +447,9 @@ class AuthorizedRetrievalScopeResolver:
     ) -> bool:
         return (
             context.workspace_id == profile.workspace_id == publication.workspace_id
-            and context.environment_id == profile.environment_id == publication.environment_id
+            and context.environment_id
+            == profile.environment_id
+            == publication.environment_id
             and self._publication_is_consistent(publication)
         )
 
@@ -435,10 +467,12 @@ class AuthorizedRetrievalScopeResolver:
                 for item in nested
             )
             and snapshot.projection_snapshot_id == activation.projection_snapshot_id
-            and snapshot.projection_config_version_id == config.projection_config_version_id
+            and snapshot.projection_config_version_id
+            == config.projection_config_version_id
             and snapshot.canonical_boundary_id == publication.canonical_boundary_id
             and activation.activation_generation == publication.activation_generation
-            and publication.as_of.canonical_boundary_id == publication.canonical_boundary_id
+            and publication.as_of.canonical_boundary_id
+            == publication.canonical_boundary_id
             and publication.as_of.accepted_through_generation
             == publication.accepted_through_generation
         )
@@ -495,6 +529,8 @@ class AuthorizedRetrievalScopeResolverPort(Protocol):
     async def resolve(
         self, request: AuthorizedRetrievalScopeRequest
     ) -> AuthorizedRetrievalScopeResolution: ...
+
+
 AuthorizedRetrievalScopeV1 = AuthorizedRetrievalScope
 
 

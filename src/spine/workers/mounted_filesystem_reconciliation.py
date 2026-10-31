@@ -10,6 +10,7 @@ from uuid import UUID
 
 from spine.application.connections.provider import ProviderConnectionRepository
 from spine.application.document_lifecycle import ServerDocumentLifecycleComposer
+from spine.application.lifecycle import CurrentLifecycleEligibilityReader
 from spine.application.mounted_filesystem_reconciliation import (
     AuthorizedMountedFilesystemScanner,
     MountedFilesystemIngestionPort,
@@ -61,6 +62,7 @@ def create_postgresql_mounted_filesystem_reconciliation_worker(
     ingestion: MountedFilesystemIngestionPort,
     document_lifecycle_composer: ServerDocumentLifecycleComposer,
     source_lifecycle: SourceLifecycleCoordinator,
+    lifecycle_reader: CurrentLifecycleEligibilityReader,
     clock: Callable[[], datetime],
     max_read_attempts: int = 2,
 ) -> MountedFilesystemReconciliationWorker:
@@ -75,6 +77,7 @@ def create_postgresql_mounted_filesystem_reconciliation_worker(
         scanner=AuthorizedMountedFilesystemScanner(
             repository=connection_repository,
             provider=MountedFilesystemTreeScanner(roots=roots),
+            lifecycle_reader=lifecycle_reader,
         ),
         ingestion=ingestion,
         sources=PostgreSQLMountedFilesystemLifecycleSourceReader(uow_factory),

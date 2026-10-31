@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 from uuid import UUID
@@ -12,6 +13,10 @@ from spine.application.connections.provider import (
     ProviderReadAdmission,
     ProviderReadCommand,
     ProviderReadDeniedError,
+)
+from spine.application.lifecycle import (
+    LifecycleEligibilityQuery,
+    connector_source_object_id,
 )
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -40,6 +45,12 @@ from spine.domain.connections.provider import (
     ProviderKind,
 )
 from spine.domain.common import ContextOrigin
+from spine.domain.sources.lifecycle import (
+    CurrentLifecycleEligibility,
+    LifecycleEligibilityStatus,
+    SourceExternalIdentity,
+)
+from spine.connectors.yandex_disk_composition import YandexDiskSourceIdentityResolver
 
 
 def _id(value: int) -> UUID:
@@ -135,6 +146,31 @@ class _Provider:
         return self.observation
 
 
+class _LifecycleReader:
+    def __init__(self, *statuses: LifecycleEligibilityStatus) -> None:
+        self.statuses = list(statuses)
+        self.calls = 0
+
+    async def current_eligibility(self, query, context):
+        del context
+        self.calls += 1
+        status = self.statuses[min(self.calls - 1, len(self.statuses) - 1)]
+        return CurrentLifecycleEligibility(
+            workspace_id=query.workspace_id,
+            environment_id=query.environment_id,
+            source_object_id=query.source_object_id,
+            connection_id=query.connection_id,
+            connection_version_id=query.connection_version_id,
+            scope_reference=query.scope_reference,
+            scope_version_id=query.scope_version_id,
+            scope_digest=query.scope_digest,
+            current_decision_id=_id(100),
+            generation=1,
+            status=status,
+            legal_hold_active=False,
+        )
+
+
 def _command(
     *required: ProviderCapabilityKind,
     workspace_id: UUID = _id(4),
@@ -149,7 +185,41 @@ def _command(
         authorization_generation=2,
         configuration_generation=3,
         required_capabilities=required,
+        resource_object_reference="file-1",
     )
+
+
+def _lifecycle_query() -> LifecycleEligibilityQuery:
+    namespace = "google"
+    generation = "google-source-key:v1"
+    external_object_id = "gsk1:" + "a" * 52
+    return LifecycleEligibilityQuery(
+        workspace_id=_id(4),
+        environment_id=_id(5),
+        source_object_id=connector_source_object_id(
+            _id(4), _id(5), _id(2), namespace, generation, external_object_id
+        ),
+        connection_id=_id(2),
+        connection_version_id=_id(1),
+        scope_reference=_id(9),
+        scope_version_id=_id(3),
+        scope_digest="a" * 64,
+        provider_object_reference="file-1",
+        source_external_namespace=namespace,
+        source_external_generation=generation,
+        source_external_object_id=external_object_id,
+    )
+
+
+class _QueryIdentityResolver:
+    def resolve_source_identity(self, connection, command):
+        del connection
+        query = command.lifecycle_query
+        return SourceExternalIdentity(
+            namespace=query.source_external_namespace,
+            generation=query.source_external_generation,
+            object_id=query.source_external_object_id,
+        )
 
 
 @pytest.mark.asyncio
@@ -169,9 +239,121 @@ async def test_active_scoped_connection_allows_qualified_binary_read() -> None:
     result = await admission.read(command, context)
 
     assert result == observation
-    assert provider.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_read_rejects_mismatched_source_identity_before_download() -> None:
+    connection = _connection(
+        _capability(
+            ProviderCapabilityKind.BINARY_READ,
+            ProviderCapabilityStatus.SUPPORTED,
+        )
+    ).model_copy(
+        update={"provider_kind": ProviderKind.YANDEX_DISK}
+    )
+    repository = _Repository(connection)
+    provider = _Provider()
+    admission = ProviderReadAdmission(
+        repository=repository,
+        provider=provider,
+        lifecycle_reader=_LifecycleReader(LifecycleEligibilityStatus.ELIGIBLE),
+        source_identity_resolvers=(YandexDiskSourceIdentityResolver(),),
+    )
+    base = _lifecycle_query()
+    query = replace(
+        base,
+        source_external_namespace="yandex-disk",
+        source_external_generation="yandex-disk-path:v1",
+        source_external_object_id="ydx:" + "0" * 60,
+    )
+    command = replace(
+        _command(ProviderCapabilityKind.BINARY_READ), lifecycle_query=query
+    )
+
+    with pytest.raises(ProviderReadDeniedError):
+        await admission.read(command, _context())
+
+    assert provider.calls == 0
     assert repository.calls[0][0] == command
-    assert repository.calls[0][1] is context
+
+
+@pytest.mark.asyncio
+async def test_withdrawn_source_is_denied_before_provider_read() -> None:
+    connection = _connection(
+        _capability(ProviderCapabilityKind.BINARY_READ, ProviderCapabilityStatus.SUPPORTED)
+    )
+    provider = _Provider(_observation(assurance=ExternalIdentityAssurance.UNPROVEN))
+    lifecycle = _LifecycleReader(LifecycleEligibilityStatus.READ_WITHDRAWN)
+    admission = ProviderReadAdmission(
+        repository=_Repository(connection),
+        provider=provider,
+        lifecycle_reader=lifecycle,
+        source_identity_resolvers=(_QueryIdentityResolver(),),
+    )
+    command = _command(ProviderCapabilityKind.BINARY_READ)
+    command = replace(command, lifecycle_query=_lifecycle_query())
+
+    with pytest.raises(ProviderReadDeniedError):
+        await admission.read(command, _context())
+
+    assert lifecycle.calls == 1
+    assert provider.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_configured_lifecycle_authority_rejects_unbound_provider_read() -> None:
+    connection = _connection(
+        _capability(ProviderCapabilityKind.BINARY_READ, ProviderCapabilityStatus.SUPPORTED)
+    )
+    provider = _Provider(_observation(assurance=ExternalIdentityAssurance.UNPROVEN))
+    lifecycle = _LifecycleReader(LifecycleEligibilityStatus.ELIGIBLE)
+    admission = ProviderReadAdmission(
+        repository=_Repository(connection),
+        provider=provider,
+        lifecycle_reader=lifecycle,
+        source_identity_resolvers=(_QueryIdentityResolver(),),
+    )
+
+    with pytest.raises(ProviderReadDeniedError):
+        await admission.read(_command(ProviderCapabilityKind.BINARY_READ), _context())
+
+    assert provider.calls == 0
+    assert lifecycle.calls == 0
+
+
+def test_lifecycle_query_rejects_different_requested_provider_object() -> None:
+    with pytest.raises(ValueError, match="exact provider read scope"):
+        replace(
+            _command(),
+            resource_object_reference="another-file",
+            lifecycle_query=_lifecycle_query(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_withdrawal_after_download_discards_provider_observation() -> None:
+    connection = _connection(
+        _capability(ProviderCapabilityKind.BINARY_READ, ProviderCapabilityStatus.SUPPORTED)
+    )
+    provider = _Provider(_observation(assurance=ExternalIdentityAssurance.UNPROVEN))
+    lifecycle = _LifecycleReader(
+        LifecycleEligibilityStatus.ELIGIBLE,
+        LifecycleEligibilityStatus.READ_WITHDRAWN,
+    )
+    admission = ProviderReadAdmission(
+        repository=_Repository(connection),
+        provider=provider,
+        lifecycle_reader=lifecycle,
+        source_identity_resolvers=(_QueryIdentityResolver(),),
+    )
+    command = _command(ProviderCapabilityKind.BINARY_READ)
+    command = replace(command, lifecycle_query=_lifecycle_query())
+
+    with pytest.raises(ProviderReadDeniedError):
+        await admission.read(command, _context())
+
+    assert lifecycle.calls == 2
+    assert provider.calls == 1
 
 
 @pytest.mark.asyncio

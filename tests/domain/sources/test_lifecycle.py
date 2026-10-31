@@ -46,6 +46,37 @@ def _observation(**overrides: object) -> LifecycleObservation:
     return LifecycleObservation.model_validate(values)
 
 
+def _decision(**overrides: object) -> LifecycleDecision:
+    values: dict[str, object] = {
+        "decision_id": _id(11),
+        "workspace_id": _id(2),
+        "environment_id": _id(3),
+        "source_object_id": _id(4),
+        "observation_id": _id(1),
+        "connection_id": _id(5),
+        "connection_version_id": _id(6),
+        "scope_reference": _id(7),
+        "scope_version_id": _id(8),
+        "scope_digest": "a" * 64,
+        "effect": LifecycleDecisionEffect.READ_WITHDRAWN,
+        "authority_reference": _id(12),
+        "authority_version_id": _id(13),
+        "authority_digest": "c" * 64,
+        "authority_kind": LifecycleAuthorityKind.SOURCE_GOVERNANCE,
+        "status": LifecycleEligibilityStatus.READ_WITHDRAWN,
+        "legal_hold_active": False,
+        "expected_current_decision_id": None,
+        "expected_current_generation": 0,
+        "generation": 1,
+        "actor_id": _id(14),
+        "audit_event_id": _id(15),
+        "outbox_event_id": _id(16),
+        "decided_at": datetime(2026, 1, 3, tzinfo=timezone.utc),
+    }
+    values.update(overrides)
+    return LifecycleDecision.model_validate(values)
+
+
 def test_lifecycle_observation_binds_tenant_connection_scope_and_evidence() -> None:
     observation = _observation()
 
@@ -134,6 +165,63 @@ def test_lifecycle_decision_requires_exact_expected_authority_generation() -> No
 
     with pytest.raises((ValidationError, TypeError)):
         decision.expected_current_generation = -1  # type: ignore[misc]
+
+
+def test_scope_withdrawal_requires_exact_governed_withdrawal_outcome() -> None:
+    observation = _observation(
+        kind=LifecycleObservationKind.SCOPE_WITHDRAWN,
+        confidence=LifecycleObservationConfidence.QUALIFIED,
+        reason_code=LifecycleReasonCode.SCOPE_WITHDRAWN,
+    )
+    decision = _decision(
+        effect=LifecycleDecisionEffect.DISCLOSURE_REVIEW_REQUIRED,
+        status=LifecycleEligibilityStatus.DISCLOSURE_REVIEW_REQUIRED,
+    )
+
+    with pytest.raises(ValueError, match="scope withdrawal requires read withdrawal"):
+        decision.validate_observation(observation)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        LifecycleObservationKind.PROVIDER_OUTAGE,
+        LifecycleObservationKind.FILTERED_ABSENCE,
+        LifecycleObservationKind.SCOPE_WITHDRAWN,
+        LifecycleObservationKind.MOVE_WITHIN_SCOPE,
+        LifecycleObservationKind.QUALIFIED_DELETION_EVIDENCE,
+    ],
+)
+def test_disclosure_review_requires_exact_positive_move_or_deleted_evidence(
+    kind: LifecycleObservationKind,
+) -> None:
+    observation = _observation(
+        kind=kind,
+        confidence=LifecycleObservationConfidence.QUALIFIED,
+        reason_code=LifecycleReasonCode.PROVIDER_OUTAGE,
+    )
+    decision = _decision(
+        effect=LifecycleDecisionEffect.DISCLOSURE_REVIEW_REQUIRED,
+        status=LifecycleEligibilityStatus.DISCLOSURE_REVIEW_REQUIRED,
+    )
+
+    with pytest.raises(ValueError):
+        decision.validate_observation(observation)
+
+
+@pytest.mark.parametrize("field", ("source_object_id", "scope_reference", "scope_version_id"))
+def test_scope_withdrawal_cannot_be_widened_beyond_exact_source_and_scope(
+    field: str,
+) -> None:
+    observation = _observation(
+        kind=LifecycleObservationKind.SCOPE_WITHDRAWN,
+        confidence=LifecycleObservationConfidence.QUALIFIED,
+        reason_code=LifecycleReasonCode.SCOPE_WITHDRAWN,
+    )
+    decision = _decision(**{field: _id(99)})
+
+    with pytest.raises(ValueError, match="binding is unavailable"):
+        decision.validate_observation(observation)
 
 
 def test_lifecycle_decision_requires_current_pointer_pair() -> None:

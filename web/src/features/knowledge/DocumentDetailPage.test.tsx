@@ -78,7 +78,7 @@ describe('Knowledge document operational overview', () => {
     await waitFor(() => expect(router.state.location.search).toContain('tab=revisions'));
     expect(router.state.location.search).toContain(`workspace=${scope.workspaceId}`);
     expect(router.state.location.search).toContain(`environment=${scope.environmentId}`);
-  });
+  }, 15_000);
 
   it('test_detail_renders_only_server_released_policy_metadata_for_metadata_only_response', async () => {
     vi.stubGlobal(

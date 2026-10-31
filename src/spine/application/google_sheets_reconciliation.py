@@ -16,6 +16,10 @@ from spine.application.persistence.context import (
     PersistenceOperation,
     TrustedPersistenceContext,
 )
+from spine.application.lifecycle import (
+    LifecycleEligibilityQuery,
+    lifecycle_query_for_source,
+)
 from spine.application.connector_ingestion import (
     ConnectorIngestionCommand,
     ConnectorIngestionOrchestrator,
@@ -102,6 +106,7 @@ class GoogleSheetsReconciliationCommand(BaseModel):
     authorization_generation: int = Field(gt=0)
     configuration_generation: int = Field(gt=0)
     access_policy_version_id: UUID
+    lifecycle_query: LifecycleEligibilityQuery | None = None
     command_identity: str = Field(min_length=1, max_length=128)
     idempotency_key: str = Field(min_length=1, max_length=255)
     prior_committed_cursor: str | None = Field(default=None, max_length=4096)
@@ -127,6 +132,18 @@ class GoogleSheetsReconciliationCommand(BaseModel):
                 raise ValueError(f"{name} must be a non-zero UUID")
         if len({scope.identity for scope in self.scopes}) != len(self.scopes):
             raise ValueError("configured Google Sheets ranges must be unique")
+        if self.lifecycle_query is not None and (
+            self.lifecycle_query.workspace_id != self.workspace_id
+            or self.lifecycle_query.environment_id != self.environment_id
+            or self.lifecycle_query.connection_id != self.connection_id
+            or self.lifecycle_query.scope_reference != self.resource_scope_reference
+            or any(
+                scope.spreadsheet_id
+                != self.lifecycle_query.provider_object_reference
+                for scope in self.scopes
+            )
+        ):
+            raise ValueError("lifecycle query must bind the exact Sheets source scope")
         return self
 
 
@@ -182,6 +199,7 @@ class GoogleSheetsAdmittedPageReader:
                 a1_range=scope.a1_range,
                 provider_page_token=page_token,
                 sheet_id=scope.sheet_id,
+                lifecycle_query=command.lifecycle_query,
             ),
             context,
         )
@@ -214,6 +232,7 @@ class GoogleSheetsCanonicalIngestionPort(Protocol):
         *,
         command_identity: str,
         idempotency_key: str,
+        lifecycle_query: LifecycleEligibilityQuery | None,
     ) -> UUID: ...
 
 
@@ -230,11 +249,24 @@ class ConnectorGoogleSheetsCanonicalIngestion:
         *,
         command_identity: str,
         idempotency_key: str,
+        lifecycle_query: LifecycleEligibilityQuery | None,
     ) -> UUID:
+        identity = observation.external_identity
+        source_query = None
+        if lifecycle_query is not None:
+            source_query = lifecycle_query_for_source(
+                lifecycle_query,
+                provider_object_reference=identity.external_object_id,
+                external_namespace=identity.external_namespace,
+                external_generation=identity.external_generation,
+                external_object_id=identity.external_object_id,
+            )
         command = self.base_command.model_copy(
             update={
                 "command_identity": command_identity,
                 "idempotency_key": idempotency_key,
+                "resource_object_reference": identity.external_object_id,
+                "lifecycle_query": source_query,
             }
         )
         result = await self.orchestrator.ingest_observation(command, observation)
@@ -530,6 +562,7 @@ class GoogleSheetsReconciliationCoordinator:
                         command.command_identity, identity
                     ),
                     idempotency_key=key,
+                    lifecycle_query=command.lifecycle_query,
                 )
                 await self.repository.mark_item_succeeded(
                     item.item_id, revision_id=revision_id, now=self._now()

@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from dataclasses import replace
 
 import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, text
 
 from spine.application.lifecycle import (
     LifecycleAuthorityError,
     LifecycleConflictError,
     LifecycleEligibilityQuery,
+    require_current_read_eligibility,
 )
 from spine.application.persistence.canonical import CanonicalAcceptanceCommand
+from spine.application.persistence.errors import CanonicalEligibilityError
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.repositories import SourceObservationCommand
 from spine.domain.sources.lifecycle import (
@@ -53,6 +56,89 @@ from tests.contracts.persistence.test_source_observation_contract import (
 
 
 pytestmark = [pytest.mark.postgresql, pytest.mark.asyncio(loop_scope="session")]
+
+_LIFECYCLE_ID_OFFSET = 1_000_000_000
+
+
+def _lifecycle_id(number: int):
+    return synthetic_uuid(_LIFECYCLE_ID_OFFSET + number)
+
+
+class _LockAttemptObservedUnitOfWork:
+    def __init__(
+        self,
+        unit_of_work,
+        lock_attempted: asyncio.Event,
+        backend_pids: list[int],
+    ) -> None:
+        self._unit_of_work = unit_of_work
+        self._lock_attempted = lock_attempted
+        self._backend_pids = backend_pids
+
+    async def _execute(self, statement: object, parameters: object | None = None):
+        if "pg_advisory_xact_lock" in str(statement):
+            pid_result = await self._unit_of_work._execute(
+                text("SELECT pg_backend_pid()")
+            )
+            self._backend_pids.append(pid_result.scalar_one())
+            self._lock_attempted.set()
+        return await self._unit_of_work._execute(statement, parameters)
+
+    def __getattr__(self, name: str):
+        return getattr(self._unit_of_work, name)
+
+
+def _observe_lock_attempt(
+    uow_factory,
+    lock_attempted: asyncio.Event,
+    backend_pids: list[int],
+):
+    @asynccontextmanager
+    async def observed_uow_factory(context):
+        async with uow_factory(context) as uow:
+            yield _LockAttemptObservedUnitOfWork(
+                uow, lock_attempted, backend_pids
+            )
+
+    return observed_uow_factory
+
+
+async def _wait_for_postgresql_lock_wait(
+    adapter: PersistenceAdapter,
+    context,
+    backend_pid: int,
+    operation: asyncio.Task[object],
+) -> bool:
+    last_observation: list[tuple[bool | None, str | None] | None] = []
+
+    async def observe_blocker() -> bool:
+        while not operation.done():
+            async with adapter.uow_factory(context) as uow:
+                result = await uow.execute_statement(
+                    text(
+                        "SELECT cardinality(pg_blocking_pids(:pid)) > 0, "
+                        "wait_event_type FROM pg_stat_activity WHERE pid = :pid"
+                    ),
+                    {"pid": backend_pid},
+                )
+                row = result.one_or_none()
+                observation = (
+                    (row[0], row[1]) if row is not None else None
+                )
+                last_observation.append(observation)
+                await uow.rollback()
+            if observation is not None and observation[0]:
+                return True
+            await asyncio.sleep(0)
+        return False
+
+    try:
+        return await asyncio.wait_for(observe_blocker(), timeout=10)
+    except asyncio.TimeoutError as error:
+        raise AssertionError(
+            "PostgreSQL backend did not report a blocking lock; "
+            f"last observation: {last_observation[-1:]!r}"
+        ) from error
 
 
 class _AllowAuthority:
@@ -132,20 +218,20 @@ class _DecisionEffects:
 def _observation(case, base: int) -> LifecycleObservation:
     assert case.source.connection_id is not None
     return LifecycleObservation(
-        observation_id=synthetic_uuid(base),
+        observation_id=_lifecycle_id(base),
         workspace_id=case.source.workspace_id,
         environment_id=case.source.environment_id,
         source_object_id=case.source.source_object_id,
         connection_id=case.source.connection_id,
-        connection_version_id=synthetic_uuid(base + 2),
+        connection_version_id=_lifecycle_id(base + 2),
         authorization_generation=1,
         configuration_generation=1,
-        scope_reference=synthetic_uuid(base + 3),
-        scope_version_id=synthetic_uuid(base + 4),
+        scope_reference=_lifecycle_id(base + 3),
+        scope_version_id=_lifecycle_id(base + 4),
         scope_digest="a" * 64,
-        provider_identity_reference=synthetic_uuid(base + 5),
+        provider_identity_reference=_lifecycle_id(base + 5),
         kind=LifecycleObservationKind.SCOPE_WITHDRAWN,
-        evidence_reference=synthetic_uuid(base + 6),
+        evidence_reference=_lifecycle_id(base + 6),
         evidence_digest="b" * 64,
         confidence=LifecycleObservationConfidence.QUALIFIED,
         reason_code=LifecycleReasonCode.SCOPE_WITHDRAWN,
@@ -155,7 +241,7 @@ def _observation(case, base: int) -> LifecycleObservation:
 
 def _decision(case, observation: LifecycleObservation, context, base: int) -> LifecycleDecision:
     return LifecycleDecision(
-        decision_id=synthetic_uuid(base),
+        decision_id=_lifecycle_id(base),
         workspace_id=case.source.workspace_id,
         environment_id=case.source.environment_id,
         source_object_id=case.source.source_object_id,
@@ -166,8 +252,8 @@ def _decision(case, observation: LifecycleObservation, context, base: int) -> Li
         scope_version_id=observation.scope_version_id,
         scope_digest=observation.scope_digest,
         effect=LifecycleDecisionEffect.READ_WITHDRAWN,
-        authority_reference=synthetic_uuid(base + 1),
-        authority_version_id=synthetic_uuid(base + 2),
+        authority_reference=_lifecycle_id(base + 1),
+        authority_version_id=_lifecycle_id(base + 2),
         authority_digest="c" * 64,
         authority_kind=LifecycleAuthorityKind.SOURCE_GOVERNANCE,
         status=LifecycleEligibilityStatus.READ_WITHDRAWN,
@@ -176,8 +262,8 @@ def _decision(case, observation: LifecycleObservation, context, base: int) -> Li
         expected_current_generation=0,
         generation=1,
         actor_id=context.service_principal_id,
-        audit_event_id=synthetic_uuid(base + 3),
-        outbox_event_id=synthetic_uuid(base + 4),
+        audit_event_id=_lifecycle_id(base + 3),
+        outbox_event_id=_lifecycle_id(base + 4),
         decided_at=datetime(2026, 10, 31, 1, tzinfo=timezone.utc),
     )
 
@@ -192,6 +278,34 @@ def _query(case, observation: LifecycleObservation) -> LifecycleEligibilityQuery
         scope_reference=observation.scope_reference,
         scope_version_id=observation.scope_version_id,
         scope_digest=observation.scope_digest,
+        source_external_namespace=case.source.external_namespace,
+        source_external_generation=case.source.external_generation,
+        source_external_object_id=case.source.external_object_id,
+    )
+
+
+def _command_with_lifecycle_query(
+    command: CanonicalAcceptanceCommand,
+    query: LifecycleEligibilityQuery,
+    *,
+    idempotency_key: IdempotencyKey | None = None,
+) -> CanonicalAcceptanceCommand:
+    return CanonicalAcceptanceCommand.create(
+        source=command.source,
+        revision=command.revision,
+        provenance=command.provenance,
+        admission_decision_id=command.admission_decision_id,
+        access_policy_version_id=command.access_policy_version_id,
+        expected_current_revision_id=command.expected_current_revision_id,
+        idempotency_key=idempotency_key or command.idempotency_key,
+        canonical_acceptance_id=command.canonical_acceptance_id,
+        audit_event_id=command.audit_event_id,
+        outbox_event_id=command.outbox_event_id,
+        accepted_at=command.accepted_at,
+        audit_event=command.audit_event,
+        outbox_intent=command.outbox_intent,
+        lifecycle_query=query,
+        operation=command.digest.operation,
     )
 
 
@@ -202,7 +316,65 @@ async def _prepare_lifecycle_case(adapter: PersistenceAdapter, number: int):
     return await prepare_canonical_case(adapter, number, source_object=source)
 
 
-async def _accept_canonical_tombstone(adapter: PersistenceAdapter, case, number: int) -> None:
+async def _prepare_scope_authority(
+    adapter: PersistenceAdapter,
+    child_case,
+    child_observation: LifecycleObservation,
+    repository: PostgreSQLLifecycleAuthorityRepository,
+    context,
+    base: int,
+):
+    root_source = connector_source(
+        child_case.source.workspace_id,
+        child_case.source.environment_id,
+        f"provider{base % 10}",
+    )
+    root_case = await prepare_canonical_case(
+        adapter,
+        base + 1_000_000_001,
+        scope=(child_case.source.workspace_id, child_case.source.environment_id),
+        source_object=root_source,
+        create_scope=False,
+        provenance_event=f"root-authority-{base}",
+    )
+    root_observation = _observation(root_case, base + 1).model_copy(
+        update={
+            "connection_id": child_observation.connection_id,
+            "connection_version_id": child_observation.connection_version_id,
+            "scope_reference": child_observation.scope_reference,
+            "scope_version_id": child_observation.scope_version_id,
+            "scope_digest": child_observation.scope_digest,
+            "kind": LifecycleObservationKind.MOVE_WITHIN_SCOPE,
+            "reason_code": LifecycleReasonCode.MOVE_WITHIN_SCOPE,
+        }
+    )
+    root_decision = _decision(root_case, root_observation, context, base + 2).model_copy(
+        update={
+            "effect": LifecycleDecisionEffect.ELIGIBLE,
+            "status": LifecycleEligibilityStatus.ELIGIBLE,
+        }
+    )
+    await repository.record_observation(root_observation, context)
+    await repository.record_decision(root_decision, context)
+    return root_case, root_decision
+
+
+def _bind_scope_authority(query: LifecycleEligibilityQuery, root_case) -> LifecycleEligibilityQuery:
+    return replace(
+        query,
+        scope_authority_source_object_id=root_case.source.source_object_id,
+        scope_authority_external_namespace=root_case.source.external_namespace,
+        scope_authority_external_generation=root_case.source.external_generation,
+        scope_authority_external_object_id=root_case.source.external_object_id,
+    )
+
+
+async def _accept_canonical_tombstone(
+    adapter: PersistenceAdapter,
+    case,
+    observation: LifecycleObservation,
+    number: int,
+) -> None:
     async with adapter.uow_factory(case.context) as uow:
         await uow.canonical.accept(case.command)
         await uow.commit()
@@ -254,6 +426,7 @@ async def _accept_canonical_tombstone(adapter: PersistenceAdapter, case, number:
         accepted_at=NOW,
         audit_event=audit,
         outbox_intent=outbox,
+        lifecycle_query=_query(case, observation),
         operation=case.context.operation,
     )
     async with adapter.uow_factory(case.context) as uow:
@@ -290,6 +463,19 @@ async def test_postgresql_lifecycle_authority_persists_current_scoped_decision(
     assert current.current_decision_id == decision.decision_id
     assert current.generation == 1
     assert current.status is LifecycleEligibilityStatus.READ_WITHDRAWN
+    # A legacy acceptance command cannot bypass a current withdrawal simply by
+    # omitting the lifecycle binding from its request.
+    from spine.application.persistence.errors import CanonicalEligibilityError
+
+    with pytest.raises(CanonicalEligibilityError):
+        legacy = replace(
+            case.command,
+            idempotency_key=IdempotencyKey("withdrawn-unbound-canonical"),
+        )
+        legacy = replace(legacy, digest=legacy.expected_digest())
+        async with postgresql_adapter.uow_factory(case.context) as uow:
+            await uow.canonical.accept(legacy)
+            await uow.commit()
     async with postgresql_adapter.uow_factory(context) as uow:
         audit_result = await uow._execute(  # type: ignore[attr-defined]
             select(audit_events.c.audit_event_id).where(
@@ -345,6 +531,171 @@ async def test_postgresql_lifecycle_authority_cas_allows_only_one_winner(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_withdrawal_serializes_after_inflight_canonical_acceptance(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await _prepare_lifecycle_case(postgresql_adapter, 73240)
+    context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id, case.source.environment_id, "lifecycle_decision"
+    )
+    observation = _observation(case, 73250)
+    lock_attempted = asyncio.Event()
+    backend_pids: list[int] = []
+    repository = PostgreSQLLifecycleAuthorityRepository(
+        uow_factory=_observe_lock_attempt(
+            postgresql_adapter.uow_factory, lock_attempted, backend_pids
+        ),
+        observation_authority=_AllowObservationAuthority(),
+        decision_authority=_AllowAuthority(),
+        decision_effects=_DecisionEffects(),
+    )
+    await repository.record_observation(observation, context)
+    root_case, root_eligible_decision = await _prepare_scope_authority(
+        postgresql_adapter, case, observation, repository, context, 73270
+    )
+    root_observation = _observation(root_case, 73280).model_copy(
+        update={
+            "connection_id": observation.connection_id,
+            "connection_version_id": observation.connection_version_id,
+            "scope_reference": observation.scope_reference,
+            "scope_version_id": observation.scope_version_id,
+            "scope_digest": observation.scope_digest,
+            "kind": LifecycleObservationKind.SCOPE_WITHDRAWN,
+            "reason_code": LifecycleReasonCode.SCOPE_WITHDRAWN,
+        }
+    )
+    root_decision = _decision(root_case, root_observation, context, 73290).model_copy(
+        update={
+            "expected_current_decision_id": root_eligible_decision.decision_id,
+            "expected_current_generation": root_eligible_decision.generation,
+            "generation": root_eligible_decision.generation + 1,
+        }
+    )
+    await repository.record_observation(root_observation, context)
+    child_query = _bind_scope_authority(_query(case, observation), root_case)
+
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        acceptance_command = _command_with_lifecycle_query(
+            case.command, child_query
+        )
+        acceptance = await uow.canonical.accept(acceptance_command)
+        lock_attempted.clear()
+        backend_pids.clear()
+        withdrawal = asyncio.create_task(
+            repository.record_decision(root_decision, context)
+        )
+        lock_waiter = asyncio.create_task(lock_attempted.wait())
+        completed, _ = await asyncio.wait(
+            {withdrawal, lock_waiter}, return_when=asyncio.FIRST_COMPLETED
+        )
+        assert lock_waiter in completed
+        assert await _wait_for_postgresql_lock_wait(
+            postgresql_adapter,
+            context,
+            backend_pids[0],
+            withdrawal,
+        )
+        assert not withdrawal.done()
+        await uow.commit()
+
+    assert acceptance.advanced is True
+    assert await withdrawal == root_decision
+    current = await repository.current_eligibility(child_query, context)
+    assert current.status is LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE
+    from spine.application.persistence.errors import CanonicalEligibilityError
+
+    unbound_source = connector_source(
+        case.source.workspace_id,
+        case.source.environment_id,
+        "provider2",
+    )
+    unbound_case = await prepare_canonical_case(
+        postgresql_adapter,
+        1_732_400_001,
+        scope=(case.source.workspace_id, case.source.environment_id),
+        source_object=unbound_source,
+        create_scope=False,
+        provenance_event="event-3",
+    )
+    with pytest.raises(CanonicalEligibilityError):
+        async with postgresql_adapter.uow_factory(unbound_case.context) as uow:
+            await uow.canonical.accept(unbound_case.command)
+            await uow.commit()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_new_source_is_eligible_before_its_first_lifecycle_decision(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await _prepare_lifecycle_case(postgresql_adapter, 73500)
+    context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id, case.source.environment_id, "provider_connection_read"
+    )
+    repository = PostgreSQLLifecycleAuthorityRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        observation_authority=_AllowObservationAuthority(),
+        decision_authority=_AllowAuthority(),
+        decision_effects=_DecisionEffects(),
+    )
+    observation = _observation(case, 73510)
+    root_case, root_eligible_decision = await _prepare_scope_authority(
+        postgresql_adapter,
+        case,
+        observation,
+        repository,
+        context,
+        73530,
+    )
+    query = _bind_scope_authority(replace(
+        _query(case, observation),
+        source_object_id=_lifecycle_id(73520),
+        source_external_object_id="provider-object:new-source",
+    ), root_case)
+
+    current = await repository.current_eligibility(query, context)
+    admitted = await require_current_read_eligibility(repository, query, context)
+
+    assert current.current_decision_id is None
+    assert current.generation == 0
+    assert current.status is LifecycleEligibilityStatus.ELIGIBLE
+    assert admitted == current
+    withdrawal_observation = _observation(root_case, 73540).model_copy(
+        update={
+            "connection_id": observation.connection_id,
+            "connection_version_id": observation.connection_version_id,
+            "scope_reference": observation.scope_reference,
+            "scope_version_id": observation.scope_version_id,
+            "scope_digest": observation.scope_digest,
+            "kind": LifecycleObservationKind.SCOPE_WITHDRAWN,
+            "reason_code": LifecycleReasonCode.SCOPE_WITHDRAWN,
+        }
+    )
+    withdrawal_decision = _decision(
+        root_case, withdrawal_observation, context, 73550
+    ).model_copy(
+        update={
+            "expected_current_decision_id": root_eligible_decision.decision_id,
+            "expected_current_generation": root_eligible_decision.generation,
+            "generation": root_eligible_decision.generation + 1,
+        }
+    )
+    await repository.record_observation(withdrawal_observation, context)
+    await repository.record_decision(withdrawal_decision, context)
+    withdrawn = await repository.current_eligibility(query, context)
+    assert withdrawn.status is LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE
+    child_query = _bind_scope_authority(_query(case, observation), root_case)
+    with pytest.raises(CanonicalEligibilityError):
+        async with postgresql_adapter.uow_factory(case.context) as uow:
+            await uow.canonical.accept(
+                _command_with_lifecycle_query(
+                    case.command,
+                    child_query,
+                    idempotency_key=IdempotencyKey("root-withdrawal-first"),
+                )
+            )
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_postgresql_lifecycle_effect_failure_rolls_back_audit_and_authority(
     postgresql_adapter: PersistenceAdapter,
 ) -> None:
@@ -393,9 +744,9 @@ async def test_postgresql_current_eligibility_uses_tombstone_and_exact_decision_
     )
     observation = _observation(case, 73410)
     decision = _decision(case, observation, context, 73420)
+    await _accept_canonical_tombstone(postgresql_adapter, case, observation, 73430)
     await repository.record_observation(observation, context)
     await repository.record_decision(decision, context)
-    await _accept_canonical_tombstone(postgresql_adapter, case, 73430)
 
     current = await repository.current_eligibility(_query(case, observation), context)
     stale_scope = await repository.current_eligibility(
@@ -408,8 +759,16 @@ async def test_postgresql_current_eligibility_uses_tombstone_and_exact_decision_
         ),
         context,
     )
+    stale_source_identity = await repository.current_eligibility(
+        replace(
+            _query(case, observation),
+            source_external_object_id="provider-object:stale",
+        ),
+        context,
+    )
 
     assert current.current_decision_id == decision.decision_id
     assert current.status is LifecycleEligibilityStatus.TOMBSTONED
     assert stale_scope.status is LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE
     assert stale_connection_version.status is LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE
+    assert stale_source_identity.status is LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE

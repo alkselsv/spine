@@ -30,6 +30,7 @@ from spine.domain.ingestion import (
 
 if TYPE_CHECKING:
     from spine.application.persistence.repositories import SourceObservationCommand
+    from spine.application.lifecycle import LifecycleEligibilityQuery
 
 
 INGESTION_RUN_SCHEMA_VERSION = 1
@@ -70,6 +71,7 @@ class IngestionBindingCommand:
     item: IngestionRunSource
     binding: IngestionRunSourceBinding
     observation: SourceObservationCommand
+    lifecycle_query: "LifecycleEligibilityQuery | None"
     idempotency_key: IdempotencyKey
     digest: CommandDigest
 
@@ -81,6 +83,7 @@ class IngestionBindingCommand:
         binding: IngestionRunSourceBinding,
         observation: SourceObservationCommand,
         idempotency_key: IdempotencyKey,
+        lifecycle_query: "LifecycleEligibilityQuery | None" = None,
     ) -> "IngestionBindingCommand":
         digest = digest_command(
             operation=PersistenceOperation("ingestion_binding"),
@@ -92,6 +95,11 @@ class IngestionBindingCommand:
                 "original_receipt_id": binding.original_receipt_id,
                 "original_receipt_digest": binding.original_receipt_digest,
                 "observation_digest": observation.digest.value,
+                **(
+                    {"lifecycle_query": lifecycle_query.digest_payload()}
+                    if lifecycle_query is not None
+                    else {}
+                ),
                 "idempotency_key": idempotency_key.value,
             },
         )
@@ -99,6 +107,7 @@ class IngestionBindingCommand:
             item=item,
             binding=binding.model_copy(update={"binding_command_digest": digest.value}),
             observation=observation,
+            lifecycle_query=lifecycle_query,
             idempotency_key=idempotency_key,
             digest=digest,
         )

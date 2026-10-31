@@ -23,6 +23,7 @@ from spine.application.mounted_filesystem_reconciliation import (
     ServerMountedFilesystemTombstoneComposer,
 )
 from spine.application.connections.provider import ProviderReadDeniedError
+from spine.application.lifecycle import LifecycleEligibilityQuery
 from spine.application.document_lifecycle import TombstoneDocumentCommand
 from spine.application.persistence.command_digest import digest_command
 from spine.application.persistence.context import EnvironmentScope, PersistenceOperation
@@ -43,6 +44,10 @@ from spine.domain.connections.provider import (
     ProviderKind,
 )
 from spine.domain.sources import RevisionKind
+from spine.domain.sources.lifecycle import (
+    CurrentLifecycleEligibility,
+    LifecycleEligibilityStatus,
+)
 
 NOW = datetime(2026, 10, 29, 18, tzinfo=timezone.utc)
 WORKSPACE = UUID("11111111-1111-4111-8111-111111111111")
@@ -101,7 +106,39 @@ def _command(key: str = "scan-1") -> MountedFilesystemReconciliationCommand:
         configuration_generation=4,
         access_policy_version_id=_id("access-policy"),
         idempotency_key=key,
+        lifecycle_query=LifecycleEligibilityQuery(
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+            source_object_id=_id("root-source"),
+            connection_id=CONNECTION,
+            connection_version_id=CONNECTION_VERSION,
+            scope_reference=SCOPE,
+            scope_version_id=_id("approval"),
+            scope_digest="a" * 64,
+            provider_object_reference=str(SCOPE),
+            source_external_namespace="mounted_filesystem",
+            source_external_generation=f"mounted-path:v2:{CONNECTION_VERSION.hex}",
+            source_external_object_id="root",
+        ),
     )
+
+
+class _LifecycleReader:
+    async def current_eligibility(self, query, context):
+        return CurrentLifecycleEligibility(
+            workspace_id=query.workspace_id,
+            environment_id=query.environment_id,
+            source_object_id=query.source_object_id,
+            connection_id=query.connection_id,
+            connection_version_id=query.connection_version_id,
+            scope_reference=query.scope_reference,
+            scope_version_id=query.scope_version_id,
+            scope_digest=query.scope_digest,
+            current_decision_id=_id("eligible-decision"),
+            generation=1,
+            status=LifecycleEligibilityStatus.ELIGIBLE,
+            legal_hold_active=False,
+        )
 
 
 def _policy() -> MountedFilesystemRemovalPolicy:
@@ -230,7 +267,8 @@ def _service(root: Path, *, sources=(), ingestion=None, removals=None, attempts=
         }
     )
     scanner = AuthorizedMountedFilesystemScanner(
-        repository=ConnectionRepository(), provider=provider
+        repository=ConnectionRepository(), provider=provider,
+        lifecycle_reader=_LifecycleReader(),
     )
     return MountedFilesystemReconciliationCoordinator(
         repository=InMemoryMountedFilesystemReconciliationRepository(),

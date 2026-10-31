@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 from uuid import UUID
 
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
@@ -114,6 +114,14 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
             raise LifecycleAuthorityError()
         try:
             async with self._uow_factory(context) as uow:
+                lock_key = (
+                    f"{decision.workspace_id}:{decision.environment_id}:"
+                    f"{decision.source_object_id}"
+                )
+                await uow._execute(  # type: ignore[attr-defined]
+                    text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                    {"key": lock_key},
+                )
                 existing_result = await uow._execute(  # type: ignore[attr-defined]
                     select(lifecycle_decisions).where(
                         lifecycle_decisions.c.decision_id == decision.decision_id,
@@ -164,37 +172,39 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
                 await uow._execute(  # type: ignore[attr-defined]
                     insert(lifecycle_decisions).values(**_decision_columns(decision))
                 )
-                pointer_insert = pg_insert(current_lifecycle_authorities).values(
-                    workspace_id=decision.workspace_id,
-                    environment_id=decision.environment_id,
-                    source_object_id=decision.source_object_id,
-                    current_decision_id=decision.decision_id,
-                    predecessor_decision_id=decision.expected_current_decision_id,
-                    generation=decision.generation,
-                    updated_at=decision.decided_at,
-                )
-                pointer_write = pointer_insert.on_conflict_do_update(
-                    index_elements=[
-                        current_lifecycle_authorities.c.workspace_id,
-                        current_lifecycle_authorities.c.environment_id,
-                        current_lifecycle_authorities.c.source_object_id,
-                    ],
-                    set_={
-                        "current_decision_id": pointer_insert.excluded.current_decision_id,
-                        "predecessor_decision_id": pointer_insert.excluded.predecessor_decision_id,
-                        "generation": pointer_insert.excluded.generation,
-                        "updated_at": pointer_insert.excluded.updated_at,
-                    },
-                    where=(
-                        current_lifecycle_authorities.c.current_decision_id.is_not_distinct_from(
-                            decision.expected_current_decision_id
-                        )
-                        & (
+                if pointer is None:
+                    pointer_write = insert(current_lifecycle_authorities).values(
+                        workspace_id=decision.workspace_id,
+                        environment_id=decision.environment_id,
+                        source_object_id=decision.source_object_id,
+                        current_decision_id=decision.decision_id,
+                        predecessor_decision_id=None,
+                        generation=decision.generation,
+                        updated_at=decision.decided_at,
+                    ).returning(current_lifecycle_authorities.c.current_decision_id)
+                else:
+                    pointer_write = (
+                        update(current_lifecycle_authorities)
+                        .where(
+                            current_lifecycle_authorities.c.workspace_id
+                            == decision.workspace_id,
+                            current_lifecycle_authorities.c.environment_id
+                            == decision.environment_id,
+                            current_lifecycle_authorities.c.source_object_id
+                            == decision.source_object_id,
+                            current_lifecycle_authorities.c.current_decision_id
+                            == decision.expected_current_decision_id,
                             current_lifecycle_authorities.c.generation
-                            == decision.expected_current_generation
+                            == decision.expected_current_generation,
                         )
-                    ),
-                ).returning(current_lifecycle_authorities.c.current_decision_id)
+                        .values(
+                            current_decision_id=decision.decision_id,
+                            predecessor_decision_id=decision.expected_current_decision_id,
+                            generation=decision.generation,
+                            updated_at=decision.decided_at,
+                        )
+                        .returning(current_lifecycle_authorities.c.current_decision_id)
+                    )
                 write_result = await uow._execute(pointer_write)  # type: ignore[attr-defined]
                 if write_result.scalar_one_or_none() != decision.decision_id:
                     raise LifecycleConflictError()
@@ -210,9 +220,15 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
     ) -> CurrentLifecycleEligibility:
         validate_lifecycle_context(context, query.workspace_id, query.environment_id)
         async with self._uow_factory(context) as uow:
+            scope_authority_eligible = await _scope_authority_is_eligible(
+                uow, query
+            )
             result = await uow._execute(  # type: ignore[attr-defined]
                 select(
                     source_objects.c.connection_id.label("canonical_connection_id"),
+                    source_objects.c.external_namespace,
+                    source_objects.c.external_generation,
+                    source_objects.c.external_object_id,
                     current_source_heads.c.current_revision_kind,
                     lifecycle_decisions,
                 )
@@ -256,13 +272,43 @@ class PostgreSQLLifecycleAuthorityRepository(LifecycleAuthorityRepository):
             )
             row = result.mappings().one_or_none()
             await uow.rollback()  # type: ignore[attr-defined]
+            if not scope_authority_eligible:
+                return _unavailable(query)
+            if row is None:
+                if (
+                    query.scope_authority_source_object_id is None
+                    or query.scope_authority_source_object_id == query.source_object_id
+                ):
+                    return _unavailable(query)
+                return _initial_eligibility(query)
             if (
-                row is None
-                or row["canonical_connection_id"] != query.connection_id
+                row["canonical_connection_id"] != query.connection_id
+                or query.source_external_namespace is None
+                or (
+                    row["external_namespace"],
+                    row["external_generation"],
+                    row["external_object_id"],
+                )
+                != (
+                    query.source_external_namespace,
+                    query.source_external_generation,
+                    query.source_external_object_id,
+                )
             ):
                 return _unavailable(query)
             decision = _decision(row) if row["decision_id"] is not None else None
-            if decision is None or not query.matches_decision(decision):
+            if decision is None:
+                if row["current_revision_kind"] == RevisionKind.TOMBSTONE.value:
+                    return _initial_eligibility(
+                        query, status=LifecycleEligibilityStatus.TOMBSTONED
+                    )
+                if (
+                    query.scope_authority_source_object_id is None
+                    or query.scope_authority_source_object_id == query.source_object_id
+                ):
+                    return _unavailable(query)
+                return _initial_eligibility(query)
+            if not query.matches_decision(decision):
                 return _unavailable(query)
             if row["current_revision_kind"] == RevisionKind.TOMBSTONE.value:
                 return CurrentLifecycleEligibility(
@@ -368,6 +414,114 @@ def _record_value(row: object) -> object:
         return row["record"]  # type: ignore[index]
     except (KeyError, TypeError):
         return row._mapping["record"]  # type: ignore[attr-defined]
+
+
+def _initial_eligibility(
+    query: LifecycleEligibilityQuery,
+    *,
+    status: LifecycleEligibilityStatus = LifecycleEligibilityStatus.ELIGIBLE,
+) -> CurrentLifecycleEligibility:
+    """Treat a never-seen source as eligible under its admitted exact scope.
+
+    Provider admission validates the live connection and root approval. This
+    response only means no source-specific lifecycle decision or tombstone exists
+    yet; canonical acceptance rechecks the source identity and lifecycle pointer
+    under the source-keyed transaction lock.
+    """
+
+    return CurrentLifecycleEligibility(
+        workspace_id=query.workspace_id,
+        environment_id=query.environment_id,
+        source_object_id=query.source_object_id,
+        connection_id=query.connection_id,
+        connection_version_id=query.connection_version_id,
+        scope_reference=query.scope_reference,
+        scope_version_id=query.scope_version_id,
+        scope_digest=query.scope_digest,
+        current_decision_id=None,
+        generation=0,
+        status=status,
+        legal_hold_active=False,
+    )
+
+
+async def _scope_authority_is_eligible(
+    uow: object,
+    query: LifecycleEligibilityQuery,
+) -> bool:
+    """Keep child reads fenced by the exact root decision through enumeration."""
+
+    source_id = query.scope_authority_source_object_id
+    if source_id is None or source_id == query.source_object_id:
+        return True
+    result = await uow._execute(  # type: ignore[attr-defined]
+        select(
+            source_objects.c.connection_id.label("canonical_connection_id"),
+            source_objects.c.external_namespace,
+            source_objects.c.external_generation,
+            source_objects.c.external_object_id,
+            current_source_heads.c.current_revision_kind,
+            lifecycle_decisions,
+        )
+        .select_from(
+            source_objects
+            .outerjoin(
+                current_source_heads,
+                (current_source_heads.c.source_object_id
+                 == source_objects.c.source_object_id)
+                & (current_source_heads.c.workspace_id == source_objects.c.workspace_id)
+                & (current_source_heads.c.environment_id == source_objects.c.environment_id),
+            )
+            .outerjoin(
+                current_lifecycle_authorities,
+                (current_lifecycle_authorities.c.workspace_id
+                 == source_objects.c.workspace_id)
+                & (current_lifecycle_authorities.c.environment_id
+                   == source_objects.c.environment_id)
+                & (current_lifecycle_authorities.c.source_object_id
+                   == source_objects.c.source_object_id),
+            )
+            .outerjoin(
+                lifecycle_decisions,
+                (lifecycle_decisions.c.decision_id
+                 == current_lifecycle_authorities.c.current_decision_id)
+                & (lifecycle_decisions.c.workspace_id
+                   == current_lifecycle_authorities.c.workspace_id)
+                & (lifecycle_decisions.c.environment_id
+                   == current_lifecycle_authorities.c.environment_id)
+                & (lifecycle_decisions.c.source_object_id
+                   == current_lifecycle_authorities.c.source_object_id)
+                & (lifecycle_decisions.c.generation
+                   == current_lifecycle_authorities.c.generation),
+            )
+        )
+        .where(
+            source_objects.c.workspace_id == query.workspace_id,
+            source_objects.c.environment_id == query.environment_id,
+            source_objects.c.source_object_id == source_id,
+        )
+    )
+    row = result.mappings().one_or_none()
+    if row is None:
+        return False
+    if row["canonical_connection_id"] != query.connection_id:
+        return False
+    if query.scope_authority_external_namespace is not None and (
+        row["external_namespace"],
+        row["external_generation"],
+        row["external_object_id"],
+    ) != (
+        query.scope_authority_external_namespace,
+        query.scope_authority_external_generation,
+        query.scope_authority_external_object_id,
+    ):
+        return False
+    decision = _decision(row) if row["decision_id"] is not None else None
+    if decision is None:
+        return False
+    return query.matches_scope_decision(decision) and (
+        decision.status is LifecycleEligibilityStatus.ELIGIBLE
+    )
 
 
 def _unavailable(query: LifecycleEligibilityQuery) -> CurrentLifecycleEligibility:

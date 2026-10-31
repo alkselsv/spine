@@ -10,6 +10,9 @@ from spine.application.lifecycle import (
     LifecycleAuthorityError,
     LifecycleConflictError,
     LifecycleEligibilityQuery,
+    ScopeWithdrawalCommand,
+    SourceScopeWithdrawal,
+    require_current_read_eligibility,
 )
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -83,6 +86,7 @@ def _decision(
     expected_generation: int = 0,
     generation: int = 1,
     status: LifecycleEligibilityStatus = LifecycleEligibilityStatus.READ_WITHDRAWN,
+    effect: LifecycleDecisionEffect = LifecycleDecisionEffect.READ_WITHDRAWN,
 ) -> LifecycleDecision:
     return LifecycleDecision(
         decision_id=_id(decision_id),
@@ -95,7 +99,7 @@ def _decision(
         scope_reference=_id(7),
         scope_version_id=_id(8),
         scope_digest="a" * 64,
-        effect=LifecycleDecisionEffect.READ_WITHDRAWN,
+        effect=effect,
         authority_reference=_id(12),
         authority_version_id=_id(13),
         authority_digest="c" * 64,
@@ -178,6 +182,94 @@ async def test_current_eligibility_follows_cas_pointer_not_observation_time() ->
     assert current.current_decision_id == decision.decision_id
     assert current.generation == 1
     assert current.status is LifecycleEligibilityStatus.READ_WITHDRAWN
+
+
+@pytest.mark.asyncio
+async def test_authorized_scope_withdrawal_persists_exact_current_decision() -> None:
+    repository = InMemoryLifecycleAuthorityRepository(
+        _AllowExactObservation(), _AllowExactAuthority()
+    )
+    context = _context()
+    withdrawal = SourceScopeWithdrawal(repository)
+
+    result = await withdrawal.execute(
+        ScopeWithdrawalCommand(observation=_observation(), decision=_decision()),
+        context,
+    )
+    current = await repository.current_eligibility(_query(), context)
+
+    assert result.decision_id == _id(11)
+    assert current.current_decision_id == result.decision_id
+    assert current.generation == 1
+    assert current.status is LifecycleEligibilityStatus.READ_WITHDRAWN
+
+
+@pytest.mark.asyncio
+async def test_scope_withdrawal_requires_current_governance_authority() -> None:
+    repository = InMemoryLifecycleAuthorityRepository(
+        _AllowExactObservation(), _DenyAuthority()
+    )
+
+    with pytest.raises(LifecycleAuthorityError):
+        await SourceScopeWithdrawal(repository).execute(
+            ScopeWithdrawalCommand(observation=_observation(), decision=_decision()),
+            _context(),
+        )
+
+    current = await repository.current_eligibility(_query(), _context())
+    assert current.current_decision_id is None
+    assert current.status is LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_read_fence_allows_only_exact_current_eligible_scope() -> None:
+    repository = InMemoryLifecycleAuthorityRepository(
+        _AllowExactObservation(), _AllowExactAuthority()
+    )
+    context = _context()
+    observation = _observation().model_copy(
+        update={
+            "kind": LifecycleObservationKind.MOVE_WITHIN_SCOPE,
+            "reason_code": LifecycleReasonCode.MOVE_WITHIN_SCOPE,
+        }
+    )
+    decision = _decision(
+        status=LifecycleEligibilityStatus.ELIGIBLE,
+        effect=LifecycleDecisionEffect.ELIGIBLE,
+    )
+    await repository.record_observation(observation, context)
+    await repository.record_decision(decision, context)
+
+    current = await require_current_read_eligibility(repository, _query(), context)
+
+    assert current.current_decision_id == decision.decision_id
+    assert current.status is LifecycleEligibilityStatus.ELIGIBLE
+
+
+@pytest.mark.asyncio
+async def test_read_fence_denies_withdrawn_current_scope() -> None:
+    repository = InMemoryLifecycleAuthorityRepository(
+        _AllowExactObservation(), _AllowExactAuthority()
+    )
+    context = _context()
+    await repository.record_observation(_observation(), context)
+    await repository.record_decision(_decision(), context)
+
+    with pytest.raises(LifecycleAuthorityError):
+        await require_current_read_eligibility(repository, _query(), context)
+
+
+def test_scope_withdrawal_command_rejects_source_widening() -> None:
+    decision = _decision()
+    mismatched_observation = _observation().model_copy(
+        update={"source_object_id": _id(99)}
+    )
+
+    with pytest.raises(LifecycleAuthorityError):
+        ScopeWithdrawalCommand(
+            observation=mismatched_observation,
+            decision=decision,
+        )
 
 
 @pytest.mark.asyncio

@@ -8,12 +8,22 @@ from typing import Protocol
 from uuid import UUID
 
 from spine.application.persistence.context import TrustedPersistenceContext
+from spine.application.lifecycle import (
+    CurrentLifecycleEligibilityReader,
+    LifecycleAuthorityError,
+    LifecycleEligibilityQuery,
+    require_current_read_eligibility,
+)
 from spine.connectors.observations_v2 import NormalizedExternalObservationV2
 from spine.domain.connections.provider import (
     OpaqueProviderReference,
     ProviderCapabilityKind,
     ProviderConnection,
     ProviderConnectionStatus,
+)
+from spine.domain.sources.lifecycle import (
+    SourceExternalIdentity,
+    connector_source_object_id,
 )
 from spine.domain.connections.bitrix24_disk_scope import Bitrix24DiskMembershipEvidence
 
@@ -48,6 +58,7 @@ class ProviderReadCommand:
     external_identity_occurrence: str | None = None
     expected_provider_revision: str | None = None
     membership_evidence: Bitrix24DiskMembershipEvidence | None = None
+    lifecycle_query: LifecycleEligibilityQuery | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -78,6 +89,18 @@ class ProviderReadCommand:
             1 <= len(self.expected_provider_revision) <= 128
         ):
             raise ValueError("expected_provider_revision is invalid")
+        if self.lifecycle_query is not None and (
+            self.lifecycle_query.workspace_id != self.workspace_id
+            or self.lifecycle_query.environment_id != self.environment_id
+            or self.lifecycle_query.connection_id != self.connection_id
+            or self.lifecycle_query.connection_version_id != self.connection_version_id
+            or self.lifecycle_query.scope_reference != self.resource_scope_reference.value
+            or self.resource_object_reference is None
+            or self.lifecycle_query.provider_object_reference
+            != self.resource_object_reference
+            or self.lifecycle_query.source_external_namespace is None
+        ):
+            raise ValueError("lifecycle query must match the exact provider read scope")
 
 
 class ProviderConnectionRepository(Protocol):
@@ -96,6 +119,16 @@ class ProviderObservationReader(Protocol):
     ) -> NormalizedExternalObservationV2: ...
 
 
+class ProviderSourceIdentityResolver(Protocol):
+    """Connector-owned mapping from a requested provider key to source identity."""
+
+    def resolve_source_identity(
+        self,
+        connection: ProviderConnection,
+        command: ProviderReadCommand,
+    ) -> SourceExternalIdentity | None: ...
+
+
 class ProviderReadAdmission:
     """Authorize one exact connection version and validate claimed guarantees."""
 
@@ -104,9 +137,13 @@ class ProviderReadAdmission:
         *,
         repository: ProviderConnectionRepository,
         provider: ProviderObservationReader,
+        lifecycle_reader: CurrentLifecycleEligibilityReader | None = None,
+        source_identity_resolvers: tuple[ProviderSourceIdentityResolver, ...] = (),
     ) -> None:
         self._repository = repository
         self._provider = provider
+        self._lifecycle_reader = lifecycle_reader
+        self._source_identity_resolvers = source_identity_resolvers
 
     async def read(
         self,
@@ -116,10 +153,34 @@ class ProviderReadAdmission:
         async with self._repository.admit_read(command, context) as connection:
             self._validate_connection(command, connection)
             self._require_capabilities(connection, command.required_capabilities)
+            await self._require_lifecycle_eligibility(command, context)
+            self._validate_requested_source_identity(command, connection)
             observation = await self._provider.read(connection, command)
             self._validate_observation(command, connection, observation)
             self._require_capabilities(connection, observation.required_capabilities())
+            await self._require_lifecycle_eligibility(command, context)
             return observation
+
+    async def _require_lifecycle_eligibility(
+        self,
+        command: ProviderReadCommand,
+        context: TrustedPersistenceContext,
+    ) -> None:
+        query = command.lifecycle_query
+        if query is None:
+            if self._lifecycle_reader is not None:
+                raise ProviderReadDeniedError()
+            return
+        if self._lifecycle_reader is None:
+            raise ProviderReadDeniedError()
+        try:
+            await require_current_read_eligibility(
+                self._lifecycle_reader,
+                query,
+                context,
+            )
+        except LifecycleAuthorityError:
+            raise ProviderReadDeniedError() from None
 
     @staticmethod
     def _validate_connection(
@@ -141,6 +202,11 @@ class ProviderReadAdmission:
             command.environment_id,
             command.authorization_generation,
             command.configuration_generation,
+        ):
+            raise ProviderReadDeniedError()
+        if (
+            command.lifecycle_query is not None
+            and command.lifecycle_query.scope_version_id != connection.approval_id
         ):
             raise ProviderReadDeniedError()
         if command.resource_scope_reference not in (
@@ -174,6 +240,68 @@ class ProviderReadAdmission:
             command.configuration_generation,
         ):
             raise ProviderReadDeniedError()
+        query = command.lifecycle_query
+        if query is not None:
+            key = observation.external_identity.provider_key
+            observed_reference = getattr(key, "provider_object_id", None) or getattr(
+                key, "record_id", None
+            )
+            if (
+                observed_reference != query.provider_object_reference
+                or (
+                    observation.external_identity.external_namespace,
+                    observation.external_identity.external_generation,
+                    observation.external_identity.external_object_id,
+                )
+                != (
+                    query.source_external_namespace,
+                    query.source_external_generation,
+                    query.source_external_object_id,
+                )
+            ):
+                raise ProviderReadDeniedError()
+
+    def _validate_requested_source_identity(
+        self,
+        command: ProviderReadCommand,
+        connection: ProviderConnection,
+    ) -> None:
+        """Bind lifecycle identity claims to the requested path before provider I/O."""
+
+        query = command.lifecycle_query
+        if query is None:
+            return
+        reference = command.resource_object_reference
+        if reference is None:
+            raise ProviderReadDeniedError()
+        identities = tuple(
+            identity
+            for resolver in self._source_identity_resolvers
+            if (identity := resolver.resolve_source_identity(connection, command))
+            is not None
+        )
+        if len(identities) != 1:
+            raise ProviderReadDeniedError()
+        expected = identities[0]
+        if (
+            query.provider_object_reference != reference
+            or (
+                query.source_external_namespace,
+                query.source_external_generation,
+                query.source_external_object_id,
+            )
+            != (expected.namespace, expected.generation, expected.object_id)
+            or query.source_object_id
+            != connector_source_object_id(
+                query.workspace_id,
+                query.environment_id,
+                query.connection_id,
+                expected.namespace,
+                expected.generation,
+                expected.object_id,
+            )
+        ):
+            raise ProviderReadDeniedError()
 
     @staticmethod
     def _require_capabilities(
@@ -194,4 +322,5 @@ __all__ = [
     "ProviderReadCommand",
     "ProviderReadDeniedError",
     "ProviderReadError",
+    "ProviderSourceIdentityResolver",
 ]

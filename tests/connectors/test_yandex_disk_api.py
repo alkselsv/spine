@@ -565,6 +565,7 @@ def test_qualification_composition_pins_reader_to_approved_ops_budget() -> None:
         credential_resolver=CredentialResolver(),
         transport=Transport([]),
         connection_repository=Repository(),  # type: ignore[arg-type]
+        lifecycle_reader=object(),  # type: ignore[arg-type]
         clock=lambda: datetime.now(timezone.utc),
         sleep=sleep,
     )

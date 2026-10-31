@@ -36,6 +36,12 @@ from spine.application.persistence.context import (
     PersistenceOperation,
     TrustedPersistenceContext,
 )
+from spine.application.lifecycle import (
+    CurrentLifecycleEligibilityReader,
+    LifecycleAuthorityError,
+    LifecycleEligibilityQuery,
+    require_current_read_eligibility,
+)
 from spine.application.persistence.errors import OptimisticConflictError
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.ingestion import (
@@ -133,6 +139,7 @@ class ConnectorIngestionCommand(BaseModel):
     )
     access_policy_version_id: UUID
     expected_current_revision_id: UUID | None = None
+    lifecycle_query: LifecycleEligibilityQuery | None = None
 
     @model_validator(mode="after")
     def validate_ids(self) -> "ConnectorIngestionCommand":
@@ -150,6 +157,17 @@ class ConnectorIngestionCommand(BaseModel):
             and self.expected_current_revision_id.int == 0
         ):
             raise ValueError("expected_current_revision_id must be non-zero")
+        if self.lifecycle_query is not None and (
+            self.lifecycle_query.workspace_id != self.workspace_id
+            or self.lifecycle_query.environment_id != self.environment_id
+            or self.lifecycle_query.connection_id != self.connection_id
+            or self.lifecycle_query.scope_reference != self.resource_scope_reference
+            or self.resource_object_reference is None
+            or self.lifecycle_query.provider_object_reference
+            != self.resource_object_reference
+            or self.lifecycle_query.source_external_namespace is None
+        ):
+            raise ValueError("lifecycle query must match the exact ingestion scope")
         return self
 
 
@@ -207,6 +225,7 @@ class GoogleAuthorizedObservationReader:
                 authorization_generation=command.authorization_generation,
                 configuration_generation=command.configuration_generation,
                 resource_object_reference=command.resource_object_reference,
+                lifecycle_query=command.lifecycle_query,
             ),
             context,
         )
@@ -239,6 +258,7 @@ class ProviderAuthorizedObservationReader:
                 acting_subject_id=getattr(context, "acting_subject_id", None),
                 external_identity_occurrence=command.external_identity_occurrence,
                 expected_provider_revision=command.expected_provider_revision,
+                lifecycle_query=command.lifecycle_query,
             ),
             context,
         )
@@ -282,6 +302,7 @@ class ConnectorIngestionOrchestrator:
     audit_events: AuditEventRegistry
     read_operation: PersistenceOperation
     admission_reference_type: str
+    lifecycle_reader: CurrentLifecycleEligibilityReader | None = None
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
     service_name: str = "connector-ingestion"
 
@@ -297,7 +318,9 @@ class ConnectorIngestionOrchestrator:
             self.read_operation,
             _id(command, "read"),
         )
+        await self._require_lifecycle_eligibility(command, read_context)
         observation = await self.observation_reader.read(command, read_context)
+        await self._require_lifecycle_eligibility(command, read_context)
         return await self.ingest_observation(command, observation)
 
     async def ingest_observation(
@@ -313,6 +336,22 @@ class ConnectorIngestionOrchestrator:
         """
         self._validate_observation(command, observation)
         if (
+            command.lifecycle_query is not None
+            and command.lifecycle_query.source_object_id
+            != _source_object_id(
+                command,
+                observation.external_identity.external_namespace,
+                observation.external_identity.external_generation,
+                observation.external_identity.external_object_id,
+            )
+        ):
+            raise ValueError("Lifecycle query does not bind the observed source.")
+        read_context = self.read_context_factory(
+            self.read_operation,
+            _id(command, "lifecycle-check"),
+        )
+        await self._require_lifecycle_eligibility(command, read_context)
+        if (
             isinstance(observation, NormalizedExternalObservationV2)
             and isinstance(observation.representation, LifecycleObservationRepresentation)
         ):
@@ -322,6 +361,7 @@ class ConnectorIngestionOrchestrator:
 
         run, item, replay = await self._ensure_run(command, observation)
         upload = await self._upload(command, observation)
+        await self._require_lifecycle_eligibility(command, read_context)
         source, revision, provenance, binding, observation_command = self._build_observation(
             command, observation, run, item, upload
         )
@@ -408,6 +448,10 @@ class ConnectorIngestionOrchestrator:
             context=canonical_context,
             accepted_at=self._now(),
         )
+        if command.lifecycle_query is not None and getattr(
+            canonical_command, "lifecycle_query", None
+        ) != command.lifecycle_query:
+            raise ValueError("Canonical acceptance lifecycle binding is invalid.")
         canonical_result: CanonicalAcceptanceResult | None
         async with self.uow_factory(canonical_context) as uow:
             current = await uow.canonical.resolve_current(source.source_object_id)
@@ -448,6 +492,30 @@ class ConnectorIngestionOrchestrator:
             canonical_acceptance=canonical_result,
             processing_receipt=receipt,
             replay=replay,
+        )
+
+    async def _require_lifecycle_eligibility(
+        self,
+        command: ConnectorIngestionCommand,
+        context: TrustedPersistenceContext,
+    ) -> None:
+        if command.lifecycle_query is None:
+            if self.lifecycle_reader is not None:
+                raise LifecycleAuthorityError()
+            return
+        if (
+            command.resource_object_reference is None
+            or command.lifecycle_query.provider_object_reference
+            != command.resource_object_reference
+            or command.lifecycle_query.source_external_namespace is None
+        ):
+            raise LifecycleAuthorityError()
+        if self.lifecycle_reader is None:
+            raise LifecycleAuthorityError()
+        await require_current_read_eligibility(
+            self.lifecycle_reader,
+            command.lifecycle_query,
+            context,
         )
 
     async def _ensure_run(
@@ -678,6 +746,7 @@ class ConnectorIngestionOrchestrator:
                     binding=binding,
                     observation=observation,
                     idempotency_key=_key(command, "binding"),
+                    lifecycle_query=command.lifecycle_query,
                 )
             )
             await uow.commit()
@@ -901,6 +970,12 @@ class ConnectorIngestionOrchestrator:
             command.configuration_generation,
         ):
             raise ValueError("connector observation is outside the trusted read scope")
+        query = command.lifecycle_query
+        connection_version_id = getattr(observation, "connection_version_id", None)
+        if query is not None and connection_version_id is not None and (
+            query.connection_version_id != connection_version_id
+        ):
+            raise ValueError("connector observation lifecycle version is stale")
 
     def _now(self) -> datetime:
         value = self.clock()
@@ -984,6 +1059,7 @@ def build_connector_canonical_acceptance_command(
         accepted_at=accepted_at,
         audit_event=audit,
         outbox_intent=outbox,
+        lifecycle_query=command.lifecycle_query,
         operation=context.operation,
     )
 

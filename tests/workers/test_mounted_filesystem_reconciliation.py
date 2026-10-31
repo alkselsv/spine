@@ -40,6 +40,7 @@ def test_production_worker_composes_postgresql_and_authorized_adapters(
         ingestion=object(),
         document_lifecycle_composer=object(),
         source_lifecycle=object(),
+        lifecycle_reader=object(),
         clock=lambda: datetime(2026, 10, 30, tzinfo=timezone.utc),
     )
 

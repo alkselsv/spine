@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
 import re
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -42,6 +42,9 @@ from spine.domain.sources import (
     SourceRevision,
     SourceRevisionProvenance,
 )
+
+if TYPE_CHECKING:
+    from spine.application.lifecycle import LifecycleEligibilityQuery
 
 CANONICAL_ACCEPTANCE_SCHEMA_VERSION = 1
 ALLOWED_CANONICAL_ADMISSION_PROFILES = frozenset({"admission:r1"})
@@ -240,6 +243,7 @@ class CanonicalAcceptanceCommand:
     accepted_at: datetime
     audit_event: AuditEvent | None
     outbox_intent: OutboxIntent | None
+    lifecycle_query: "LifecycleEligibilityQuery | None"
     digest: CommandDigest
 
     def expected_digest(self) -> CommandDigest:
@@ -257,6 +261,7 @@ class CanonicalAcceptanceCommand:
             accepted_at=self.accepted_at,
             audit_event=self.audit_event,
             outbox_intent=self.outbox_intent,
+            lifecycle_query=self.lifecycle_query,
             operation=self.digest.operation,
         ).digest
 
@@ -277,6 +282,7 @@ class CanonicalAcceptanceCommand:
         accepted_at: datetime,
         audit_event: AuditEvent | None = None,
         outbox_intent: OutboxIntent | None = None,
+        lifecycle_query: "LifecycleEligibilityQuery | None" = None,
         operation: PersistenceOperation = PersistenceOperation("canonical_acceptance"),
     ) -> "CanonicalAcceptanceCommand":
         payload = {
@@ -303,6 +309,11 @@ class CanonicalAcceptanceCommand:
                 else None
             ),
             "idempotency_key": idempotency_key.value,
+            **(
+                {"lifecycle_query": lifecycle_query.digest_payload()}
+                if lifecycle_query is not None
+                else {}
+            ),
         }
         digest = digest_command(
             operation=operation,
@@ -323,6 +334,7 @@ class CanonicalAcceptanceCommand:
             accepted_at=accepted_at,
             audit_event=audit_event,
             outbox_intent=outbox_intent,
+            lifecycle_query=lifecycle_query,
             digest=digest,
         )
 

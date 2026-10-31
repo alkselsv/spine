@@ -42,6 +42,11 @@ class DenyingRepository:
         yield  # pragma: no cover
 
 
+class LifecycleReader:
+    async def current_eligibility(self, query, context):
+        raise AssertionError("a missing lifecycle query must fail before lookup")
+
+
 class RecordingResolver:
     def __init__(self) -> None:
         self.calls = []
@@ -107,6 +112,7 @@ async def test_production_composition_denies_before_credentials_and_transport() 
         transport=transport,
         retry_observer=RecordingRetryObserver(),
         connection_repository=DenyingRepository(),  # type: ignore[arg-type]
+        lifecycle_reader=LifecycleReader(),
         diagnostic_sink=RecordingDiagnosticSink(registry),
         diagnostic_registry=registry,
         clock=lambda: datetime(2026, 10, 29, tzinfo=timezone.utc),

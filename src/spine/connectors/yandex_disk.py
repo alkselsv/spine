@@ -49,6 +49,7 @@ from spine.domain.connections.provider import (
     ProviderConnection,
     ProviderKind,
 )
+from spine.domain.sources.lifecycle import yandex_disk_source_identity
 
 
 _ResultT = TypeVar("_ResultT")
@@ -532,12 +533,11 @@ class YandexDiskProviderAdapter:
         observed_at = self._clock()
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("Yandex Disk reader clock must be timezone-aware")
-        identity_material = f"{connection.connection_id}|{metadata.path}"
-        if command.external_identity_occurrence is not None:
-            identity_material = (
-                f"{identity_material}|occurrence:{command.external_identity_occurrence}"
-            )
-        identity_digest = hashlib.sha256(identity_material.encode()).hexdigest()
+        identity = yandex_disk_source_identity(
+            connection.connection_id,
+            metadata.path,
+            command.external_identity_occurrence,
+        )
         event_digest = hashlib.sha256(
             json.dumps(
                 revision_evidence.model_dump(mode="json"),
@@ -556,9 +556,9 @@ class YandexDiskProviderAdapter:
             configuration_generation=command.configuration_generation,
             source_kind="document",
             external_identity=ProviderExternalIdentity(
-                external_namespace=YANDEX_DISK_EXTERNAL_NAMESPACE,
-                external_generation=YANDEX_DISK_EXTERNAL_GENERATION,
-                external_object_id=f"ydx:{identity_digest[:60]}",
+                external_namespace=identity.namespace,
+                external_generation=identity.generation,
+                external_object_id=identity.object_id,
                 provider_key=ProviderFileKey(
                     connection_id=connection.connection_id,
                     provider_object_id=metadata.path,
