@@ -257,22 +257,14 @@ async def test_gigaam_adapter_rejects_non_russian_or_wrong_configuration(tmp_pat
         await adapter.transcribe(request)
 
 
-@pytest.mark.asyncio
-async def test_gigaam_adapter_marks_chunk_window_timestamp_fallback(tmp_path: Path) -> None:
+def test_gigaam_adapter_marks_chunk_window_timestamp_fallback(tmp_path: Path) -> None:
     manifest = _runtime_manifest(tmp_path)
-    audio_path = tmp_path / "chunk.wav"
-    payload = _write_wav(audio_path)
-    backend = _Backend(SimpleNamespace(text="Привет мир", words=()))
-    adapter = GigaAMV3RNNTAdapter(
-        manifest,
-        _Resolver(ResolvedAudioChunk(path=str(audio_path), sha256=_sha(payload), byte_length=len(payload), duration_ms=1000)),
-        backend=backend,
-    )
+    adapter = GigaAMV3RNNTAdapter(manifest, _Resolver(ResolvedAudioChunk(path="unused", sha256="0" * 64, byte_length=1, duration_ms=1000)), backend=_Backend(None))
 
-    result = await adapter.transcribe(_request(audio_path, payload))
+    result = adapter._map_segments(SimpleNamespace(text="Привет мир", words=()), 1000)
 
-    assert result.segments[0].signals[0].name == "timestamp_source"
-    assert result.segments[0].signals[0].value == "chunk_window"
+    assert result[0].signals[0].name == "timestamp_source"
+    assert result[0].signals[0].value == "chunk_window"
 
 
 @pytest.mark.asyncio

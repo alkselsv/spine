@@ -16,7 +16,6 @@ import os
 import platform
 from pathlib import Path, PurePosixPath
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
 import re
 from typing import Literal, Protocol, cast
 
@@ -40,7 +39,6 @@ from spine.domain.common import DefinitionModel, VersionIdentifier
 
 _SHA256 = r"^[0-9a-f]{64}$"
 _GIT_REVISION = r"^[0-9a-f]{40}$"
-_INFERENCE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="spine-asr")
 
 
 class AssetDigest(DefinitionModel):
@@ -516,7 +514,7 @@ class _LocalAdapter(SpeechToTextPort):
         try:
             async with self._inference_lock:
                 inference = asyncio.get_running_loop().run_in_executor(
-                    _INFERENCE_EXECUTOR,
+                    None,
                     self.backend.transcribe,
                     self.model,
                     audio_path,

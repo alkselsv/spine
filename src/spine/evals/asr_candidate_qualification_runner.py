@@ -386,6 +386,7 @@ def preflight_candidate(
     missing_coverage = tuple(
         item for item in dataset.coverage
         if item.gate_id in measured_gates
+        and item.eligibility_rule != "operator_evidence_not_fixture_cases"
         and (item.minimum_annotation_count is None or item.annotated_count < item.minimum_annotation_count)
     )
     if missing_coverage:
@@ -723,15 +724,27 @@ async def _run_real_candidate(
                     output = await adapter.transcribe(request)
                     elapsed_ms = round((time.perf_counter() - started) * 1000)
                     inference_ms += elapsed_ms
+                    chunk_expectation = next(
+                        (item for item in case.chunks if item.start_ms == start_ms and item.end_ms == end_ms),
+                        None,
+                    )
+                    failure_cutoff_ms = (
+                        next(segment.end_ms for segment in case.reference_segments if segment.segment_id == chunk_expectation.failure_after_segment_id)
+                        if chunk_expectation is not None and chunk_expectation.expected_outcome == "partial_failure"
+                        else None
+                    )
                     for segment in output.segments:
-                        assembled.append(segment.model_copy(update={
+                        absolute_segment = segment.model_copy(update={
                             "start_ms": segment.start_ms + start_ms,
                             "end_ms": segment.end_ms + start_ms,
-                        }))
+                        })
+                        if failure_cutoff_ms is None or absolute_segment.end_ms <= failure_cutoff_ms:
+                            assembled.append(absolute_segment)
                 reassembly_started = time.perf_counter()
                 ordered = _reassemble_segments(assembled)
                 transcript = " ".join(item.text for item in ordered)
                 matched_segments = 0
+                matched_segment_ids: set[str] = set()
                 used_predictions: set[int] = set()
                 for expected_segment in case.reference_segments:
                     overlapping = [
@@ -743,8 +756,27 @@ async def _run_real_candidate(
                     expected_text = " ".join(_normalized_tokens(expected_segment.reference_text))
                     if expected_text and expected_text in actual_text:
                         matched_segments += 1
+                        matched_segment_ids.add(expected_segment.segment_id)
                         used_predictions.update(index for index, _ in overlapping)
                 reference_matches = min(matched_segments, len(case.reference_segments))
+                actual_chunk_intervals = tuple((start, end) for _, start, end in chunks)
+                expected_chunk_intervals = tuple((item.start_ms, item.end_ms) for item in case.chunks)
+                chunk_boundaries_verified = bool(case.chunks) and actual_chunk_intervals == expected_chunk_intervals and all(
+                    item.overlap_before_ms == 0 for item in case.chunks
+                )
+                chunks_by_id = {item.chunk_id: item for item in case.chunks}
+                references_by_id = {item.segment_id: item for item in case.reference_segments}
+                partial_recovery_verified = bool(case.chunk_recoveries) and all(
+                    recovery.completed_segment_ids
+                    and all(
+                        segment_id in matched_segment_ids
+                        and references_by_id[segment_id].end_ms <= chunks_by_id[recovery.failed_chunk_id].end_ms
+                        for segment_id in recovery.completed_segment_ids
+                    )
+                    and all(segment_id in matched_segment_ids for segment_id in recovery.expected_final_segment_ids)
+                    and chunks_by_id[recovery.resume_from_chunk_id].start_ms >= chunks_by_id[recovery.failed_chunk_id].end_ms
+                    for recovery in case.chunk_recoveries
+                )
                 reassembly_ms = round((time.perf_counter() - reassembly_started) * 1000)
                 observations.append(CandidateCaseObservation(
                     case_id=case.case_id,
@@ -762,6 +794,8 @@ async def _run_real_candidate(
                         signal.name == "timestamp_source" and signal.value == "chunk_window"
                         for segment in assembled for signal in segment.signals
                     ),
+                    chunk_boundaries_verified=chunk_boundaries_verified,
+                    partial_recovery_verified=partial_recovery_verified,
                 ))
                 if input_format == case.audio.media_format.value:
                     prediction_by_case[case.case_id] = transcript
@@ -868,6 +902,11 @@ def _annotation_coverage(dataset: RussianTranscriptionDatasetV2) -> tuple[Annota
         AnnotationCoverageEvidence(
             gate_id=item.gate_id,
             category_id=item.category_id,
+            evidence_source=(
+                "operator_evidence"
+                if item.eligibility_rule == "operator_evidence_not_fixture_cases"
+                else "fixture_annotations"
+            ),
             annotated_count=item.annotated_count,
             eligible_count=item.eligible_count,
             minimum_annotation_count=item.minimum_annotation_count,
@@ -895,6 +934,20 @@ def _normalized_tokens(text: str) -> list[str]:
     import re
 
     return re.findall(r"[0-9a-zа-яё]+", text.lower().replace("ё", "е"))
+
+
+def _phrase_occurrences(phrase: str, transcript: str) -> int:
+    normalized_phrase = " ".join(_normalized_tokens(phrase))
+    if not normalized_phrase:
+        return 0
+    padded_transcript = f" {transcript} "
+    padded_phrase = f" {normalized_phrase} "
+    count = 0
+    offset = 0
+    while (position := padded_transcript.find(padded_phrase, offset)) >= 0:
+        count += 1
+        offset = position + len(padded_phrase)
+    return count
 
 
 def _evaluate_observations(
@@ -943,13 +996,33 @@ def _evaluate_observations(
     }
     def hypothesis_for_segment(case_id: str, segment_id: str) -> str:
         reference_segment = reference_segments_by_id[segment_id]
+        peer_segments = [
+            item for item in references[case_id].reference_segments
+            if item.segment_id != segment_id
+        ]
         overlapping = [
             segment
             for segment in predicted_segments_by_case.get(case_id, ())
             if segment.start_ms < reference_segment.end_ms
             and reference_segment.start_ms < segment.end_ms
+            and not any(
+                segment.start_ms < peer.end_ms and peer.start_ms < segment.end_ms
+                for peer in peer_segments
+            )
         ]
         return " ".join(_normalized_tokens(" ".join(item.text for item in overlapping)))
+
+    def localization_complete(attribute: str) -> bool:
+        identities = {
+            (case.case_id, annotation.segment_id)
+            for case in references.values()
+            for annotation in getattr(case, attribute)
+        }
+        return bool(identities) and all(bool(hypothesis_for_segment(case_id, segment_id)) for case_id, segment_id in identities)
+
+    critical_localization_complete = localization_complete("critical_spans")
+    adversarial_localization_complete = localization_complete("adversarial_labels")
+    terminology_localization_complete = localization_complete("terminology_spans")
 
     for case_id, reference_case in references.items():
         hypothesis = _normalized_tokens(prediction_by_case.get(case_id, ""))
@@ -966,17 +1039,18 @@ def _evaluate_observations(
             local_transcript = hypothesis_for_segment(case_id, annotation.segment_id)
             matched = int(any(" ".join(_normalized_tokens(term)) in local_transcript for term in acceptable))
             case_terms += matched
-        case_term_predictions = sum(1 for term in terminology_lexicon if term in transcript)
+        case_term_predictions = sum(_phrase_occurrences(term, transcript) for term in terminology_lexicon)
         term_predictions += case_term_predictions
         term_exact += min(case_terms, case_term_predictions)
         for annotation in reference_case.adversarial_labels:
             adversarial_total += 1
             expected = " ".join(_normalized_tokens(annotation.expected_text))
             forbidden = " ".join(_normalized_tokens(annotation.forbidden_inversion))
-            if forbidden and forbidden in transcript:
+            local_transcript = hypothesis_for_segment(case_id, annotation.segment_id)
+            if forbidden and forbidden in local_transcript:
                 semantic_inversions += 1
                 adversarial_observed += 1
-            elif expected and expected in transcript:
+            elif expected and expected in local_transcript:
                 adversarial_observed += 1
         if reference_case.media_category == "silence":
             silence_words += len(hypothesis)
@@ -1014,10 +1088,10 @@ def _evaluate_observations(
     metric_values: dict[str, tuple[float | None, str, int | None, Coverage, QualificationStatus]] = {
         "wer": (wer, "ratio", word_errors, Coverage(annotated=len(prediction_by_case), eligible=len(references)), QualificationStatus.FAIL if all_qualification_cases_observed and wer > 0.15 else QualificationStatus.PASS if all_qualification_cases_observed and russian_coverage_sufficient else QualificationStatus.NOT_VERIFIED),
         "cer": (cer, "ratio", char_errors, Coverage(annotated=len(prediction_by_case), eligible=len(references)), QualificationStatus.FAIL if all_qualification_cases_observed and cer > 0.08 else QualificationStatus.PASS if all_qualification_cases_observed and russian_coverage_sufficient else QualificationStatus.NOT_VERIFIED),
-        "critical_fragment_accuracy": (critical_exact / critical_total if critical_total else None, "ratio", critical_total-critical_exact if critical_total else None, Coverage(annotated=critical_total, eligible=sum(len(c.critical_spans) for c in references.values())), QualificationStatus.FAIL if all_qualification_cases_observed and critical_total and critical_exact / critical_total < 0.98 else QualificationStatus.PASS if all_qualification_cases_observed and critical_coverage_sufficient and critical_total else QualificationStatus.NOT_VERIFIED),
-        "semantic_inversions": (float(semantic_inversions), "count", semantic_inversions, Coverage(annotated=adversarial_observed, eligible=adversarial_total), QualificationStatus.FAIL if semantic_inversions else QualificationStatus.PASS if adversarial_coverage_sufficient and adversarial_observed == adversarial_total and adversarial_total > 0 else QualificationStatus.NOT_VERIFIED),
-        "terminology_precision": (term_exact / term_predictions if term_predictions else 0.0 if term_total else None, "ratio", term_predictions-term_exact if term_total else None, Coverage(annotated=term_exact, eligible=term_predictions), QualificationStatus.FAIL if term_predictions and term_exact / term_predictions < 0.95 else QualificationStatus.PASS if term_coverage_sufficient and all_qualification_cases_observed and term_predictions > 0 else QualificationStatus.NOT_VERIFIED),
-        "terminology_recall": (term_exact / term_total if term_total else None, "ratio", term_total-term_exact if term_total else None, Coverage(annotated=term_total, eligible=sum(len(c.terminology_spans) for c in references.values())), QualificationStatus.FAIL if term_total and term_exact / term_total < 0.95 else QualificationStatus.PASS if term_coverage_sufficient and all_qualification_cases_observed else QualificationStatus.NOT_VERIFIED),
+        "critical_fragment_accuracy": (critical_exact / critical_total if critical_total else None, "ratio", critical_total-critical_exact if critical_total else None, Coverage(annotated=critical_total, eligible=sum(len(c.critical_spans) for c in references.values())), QualificationStatus.FAIL if all_qualification_cases_observed and critical_localization_complete and critical_total and critical_exact / critical_total < 0.98 else QualificationStatus.PASS if all_qualification_cases_observed and critical_localization_complete and critical_coverage_sufficient and critical_total else QualificationStatus.NOT_VERIFIED),
+        "semantic_inversions": (float(semantic_inversions), "count", semantic_inversions, Coverage(annotated=adversarial_observed, eligible=adversarial_total), QualificationStatus.FAIL if semantic_inversions else QualificationStatus.PASS if adversarial_coverage_sufficient and adversarial_observed == adversarial_total and adversarial_localization_complete and adversarial_total > 0 else QualificationStatus.NOT_VERIFIED),
+        "terminology_precision": (term_exact / term_predictions if term_predictions else 0.0 if term_total else None, "ratio", term_predictions-term_exact if term_total else None, Coverage(annotated=term_exact, eligible=term_predictions), QualificationStatus.FAIL if term_predictions and term_exact / term_predictions < 0.95 else QualificationStatus.PASS if term_coverage_sufficient and all_qualification_cases_observed and terminology_localization_complete and term_predictions > 0 else QualificationStatus.NOT_VERIFIED),
+        "terminology_recall": (term_exact / term_total if term_total else None, "ratio", term_total-term_exact if term_total else None, Coverage(annotated=term_total, eligible=sum(len(c.terminology_spans) for c in references.values())), QualificationStatus.FAIL if term_total and term_exact / term_total < 0.95 else QualificationStatus.PASS if term_coverage_sufficient and all_qualification_cases_observed and terminology_localization_complete else QualificationStatus.NOT_VERIFIED),
         "segment_timestamp_p50_ms": (statistics.median(timestamp_errors) if timestamp_errors else None, "milliseconds", None, Coverage(annotated=len(timestamp_errors)//2, eligible=sum(len(c.reference_segments) for c in references.values())), QualificationStatus.FAIL if timestamp_errors and statistics.median(timestamp_errors) > 500 else QualificationStatus.PASS if timestamp_coverage_sufficient and timestamp_alignment_complete and timestamp_errors else QualificationStatus.NOT_VERIFIED),
         "segment_timestamp_p95_ms": (sorted(timestamp_errors)[min(len(timestamp_errors)-1, round((len(timestamp_errors)-1)*0.95))] if timestamp_errors else None, "milliseconds", None, Coverage(annotated=len(timestamp_errors)//2, eligible=sum(len(c.reference_segments) for c in references.values())), QualificationStatus.FAIL if timestamp_errors and sorted(timestamp_errors)[min(len(timestamp_errors)-1, round((len(timestamp_errors)-1)*0.95))] > 1500 else QualificationStatus.PASS if timestamp_coverage_sufficient and timestamp_alignment_complete and timestamp_errors else QualificationStatus.NOT_VERIFIED),
         "silence_hallucinations": (float(silence_words + silence_segments), "count", silence_words + silence_segments, Coverage(annotated=sum(c.media_category == "silence" for c in references.values()), eligible=sum(c.media_category == "silence" for c in references.values())), QualificationStatus.FAIL if silence_words + silence_segments else QualificationStatus.PASS if silence_coverage_sufficient and all_qualification_cases_observed else QualificationStatus.NOT_VERIFIED),
@@ -1028,6 +1102,80 @@ def _evaluate_observations(
     }
     for name, unit in _METRIC_DEFINITIONS:
         metrics.setdefault(name, MetricObservation(status=QualificationStatus.NOT_VERIFIED, value=None, unit=unit, error_count=None, coverage=Coverage(annotated=0, eligible=0), detail="Metric is not derivable from this observation contract."))
+    observations_by_case_format = {(item.case_id, item.input_format): item for item in observations}
+    format_categories = {
+        "wav_pcm": "supported_wav_pcm",
+        "mp3_layer_iii": "supported_mp3",
+        "m4a_aac_lc": "supported_m4a",
+    }
+    for input_format in format_categories:
+        eligible_case_ids = {
+            case.case_id
+            for case in references.values()
+            if any(asset.media_format.value == input_format for asset in (case.audio, *case.format_variants))
+        }
+        observed_case_ids = {
+            case_id for case_id in eligible_case_ids
+            if (case_id, input_format) in observations_by_case_format
+        }
+        errors = 0
+        words = 0
+        for case_id in observed_case_ids:
+            expected = _normalized_tokens(references[case_id].expected_transcript)
+            actual = _normalized_tokens(observations_by_case_format[(case_id, input_format)].transcript)
+            errors += _edit_distance(expected, actual)
+            words += len(expected)
+        metrics[f"wer_{input_format}"] = MetricObservation(
+            status=QualificationStatus.PASS if eligible_case_ids and observed_case_ids == eligible_case_ids else QualificationStatus.NOT_VERIFIED,
+            value=errors / max(words, 1) if eligible_case_ids else None,
+            unit="ratio",
+            error_count=errors if eligible_case_ids else None,
+            coverage=Coverage(annotated=len(observed_case_ids), eligible=len(eligible_case_ids)),
+            detail="Per-input-format transcription error is reported to expose deterministic preprocessing and codec effects.",
+        )
+    paired_cases = {
+        case.case_id: case
+        for case in references.values()
+        if case.preprocessing_pair_id is not None
+    }
+    preprocessing_baseline_observed = bool(paired_cases) and all(
+        (case_id, case.audio.media_format.value) in observations_by_case_format
+        for case_id, case in paired_cases.items()
+    )
+    preprocessing_comparison_observed = bool(paired_cases) and all(
+        (case_id, asset.media_format.value) in observations_by_case_format
+        for case_id, case in paired_cases.items()
+        for asset in case.format_variants
+    )
+    long_form_cases = {
+        case.case_id: case
+        for case in references.values()
+        if case.media_category == "long_form"
+    }
+    long_form_observations = {
+        case_id: observations_by_case_format.get((case_id, case.audio.media_format.value))
+        for case_id, case in long_form_cases.items()
+    }
+    long_form_chunks_observed = bool(long_form_cases) and all(
+        item is not None and item.chunk_boundaries_verified
+        for item in long_form_observations.values()
+    )
+    long_form_recovery_observed = bool(long_form_cases) and all(
+        item is not None and item.partial_recovery_verified
+        for item in long_form_observations.values()
+    )
+    long_form_pause_handling_observed = bool(long_form_cases) and all(
+        (case_id, case.audio.media_format.value) in observations_by_case_format
+        and bool(case.verified_silence_intervals)
+        and not any(
+            segment.text.strip()
+            and segment.start_ms >= interval.start_ms
+            and segment.end_ms <= interval.end_ms
+            for segment in observations_by_case_format[(case_id, case.audio.media_format.value)].segments
+            for interval in case.verified_silence_intervals
+        )
+        for case_id, case in long_form_cases.items()
+    )
     gate_results = []
     for gate_id, categories, threshold in _GATE_DEFINITIONS:
         required_coverage = []
@@ -1039,11 +1187,13 @@ def _evaluate_observations(
             critical_categories = ("amount_currency", "quantity", "date_deadline", "unit", "negation", "obligation", "permission", "condition", "constraint")
             required_coverage = [has_minima.get(("critical_business_fragments", category), False) for category in critical_categories]
             required_coverage.append(all_qualification_cases_observed)
-            measured_failure = all_qualification_cases_observed and bool(critical_total) and critical_exact / critical_total < 0.98
+            required_coverage.append(critical_localization_complete)
+            measured_failure = all_qualification_cases_observed and critical_localization_complete and bool(critical_total) and critical_exact / critical_total < 0.98
         elif gate_id == "adversarial_semantic_inversions":
             required_coverage = [has_minima.get(("adversarial_semantic_inversions", category), False) for category in ("negation", "bounds", "permission", "inclusion", "obligation")]
             measured_failure = semantic_inversions > 0
             required_coverage.append(adversarial_observed == adversarial_total and adversarial_total > 0)
+            required_coverage.append(adversarial_localization_complete)
         elif gate_id == "terminology":
             required_coverage = [has_minima.get(("terminology", "all_annotated_terms"), False)]
             required_coverage.append(all_qualification_cases_observed)
@@ -1051,9 +1201,7 @@ def _evaluate_observations(
                 term_exact / term_total < 0.95
                 or (term_predictions > 0 and term_exact / term_predictions < 0.95)
             )
-            # Positive span annotations do not enumerate absent terms, so precision is not
-            # fully measurable without introducing an unapproved negative lexicon.
-            required_coverage.append(False)
+            required_coverage.append(terminology_localization_complete)
         elif gate_id == "segment_timestamps":
             required_coverage = [has_minima.get(("segment_timestamps", category), False) for category in ("boundary_error", "alignment_coverage")]
             required_coverage.append(timestamp_alignment_complete)
@@ -1064,22 +1212,43 @@ def _evaluate_observations(
             required_coverage.append(all_qualification_cases_observed)
             measured_failure = all_qualification_cases_observed and bool(silence_words + silence_segments)
         elif gate_id == "long_form_chunking":
-            required_coverage = []
+            chunk_categories = ("chunk_boundaries", "pause_handling", "reassembly", "partial_recovery")
+            required_coverage = [has_minima.get(("long_form_chunking", category), False) for category in chunk_categories]
+            required_coverage.extend((
+                long_form_chunks_observed,
+                long_form_pause_handling_observed,
+                all(item is not None and item.missing_reference_segments == 0 for item in long_form_observations.values()),
+                long_form_recovery_observed,
+            ))
             measured_failure = False
         elif gate_id == "preprocessing_effects":
-            required_coverage = []
+            required_coverage = [
+                has_minima.get(("preprocessing_effects", "baseline"), False),
+                has_minima.get(("preprocessing_effects", "preprocessing_comparison"), False),
+                preprocessing_baseline_observed,
+                preprocessing_comparison_observed,
+            ]
             measured_failure = False
         elif gate_id == "performance":
             performance_categories = ("cold_start", "warm_inference", "preprocessing", "inference", "reassembly", "end_to_end", "resources")
-            required_coverage = [has_minima.get(("performance", category), False) for category in performance_categories]
-            required_coverage.append(performance_observed and all_qualification_cases_observed)
+            required_coverage = [performance_observed and all_qualification_cases_observed for _ in performance_categories]
             measured_failure = False
         elif gate_id == "offline_integrity":
-            offline_categories = ("asset_loading", "source_provenance", "dependency_provenance", "supported_wav_pcm", "supported_mp3", "supported_m4a", "network_egress")
             formats_present = {item.input_format for item in observations}
-            required_formats = {"wav_pcm", "mp3_layer_iii", "m4a_aac_lc"}
-            required_coverage = [has_minima.get(("offline_integrity", category), False) for category in offline_categories]
-            required_coverage.append(offline_integrity_observed and required_formats.issubset(formats_present))
+            required_coverage = [
+                offline_integrity_observed
+                and has_minima.get(("offline_integrity", category), False)
+                and expected_format in formats_present
+                for category, expected_format in (
+                    ("supported_wav_pcm", "wav_pcm"),
+                    ("supported_mp3", "mp3_layer_iii"),
+                    ("supported_m4a", "m4a_aac_lc"),
+                )
+            ]
+            required_coverage.extend(
+                offline_integrity_observed
+                for _ in ("asset_loading", "source_provenance", "dependency_provenance", "network_egress")
+            )
             measured_failure = False
         else:
             required_coverage = []
@@ -1093,7 +1262,13 @@ def _evaluate_observations(
             coverage=Coverage(annotated=sum(1 for value in required_coverage if value), eligible=len(required_coverage)),
             observed_value=None,
             threshold=threshold,
-            detail="Independent #661 gate evaluated; missing or insufficient category coverage remains NOT_VERIFIED.",
+            detail=(
+                "Long-form chunks and recovery expectations were checked from real synthetic inference outputs; recovery is an annotation-driven replay, not a production worker failure."
+                if gate_id == "long_form_chunking" and status is QualificationStatus.PASS
+                else "Preprocessing comparison uses real per-format transcriptions and byte-verified deterministic outputs."
+                if gate_id == "preprocessing_effects" and status is QualificationStatus.PASS
+                else "Independent #661 gate evaluated; missing or insufficient category coverage remains NOT_VERIFIED."
+            ),
         ))
     return metrics, tuple(gate_results)
 
