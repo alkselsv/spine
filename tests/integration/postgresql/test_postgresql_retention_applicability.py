@@ -5,8 +5,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import insert, select, update
-from sqlalchemy.exc import DBAPIError
 
+from spine.application.persistence.errors import UnexpectedPersistenceError
 from spine.application.retention import (
     RetentionApplicabilityConflictError,
     RetentionApplicabilityError,
@@ -188,7 +188,7 @@ async def test_postgresql_retention_applicability_persists_immutable_current_bin
             select(current_retention_applicabilities.c.current_applicability_id)
         )
         assert pointer.scalar_one() == applicability.applicability_id
-        with pytest.raises(DBAPIError):
+        with pytest.raises(UnexpectedPersistenceError):
             await uow.execute_statement(
                 update(retention_applicabilities)
                 .where(
@@ -197,7 +197,6 @@ async def test_postgresql_retention_applicability_persists_immutable_current_bin
                 )
                 .values(retention_policy_digest="d" * 64)
             )
-        await uow.rollback()
 
 
 async def test_postgresql_retention_reader_enforces_revision_lineage_and_tenant_rls(
