@@ -154,6 +154,45 @@ class MetricObservation(DefinitionModel):
     detail: str = Field(min_length=1)
 
 
+class AssetEvidence(DefinitionModel):
+    """One staged model asset, identified without publishing a host path."""
+
+    relative_path: str = Field(
+        min_length=1,
+        max_length=512,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.\-/]{0,511}$",
+    )
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    byte_length: StrictInt = Field(gt=0)
+
+
+class SegmentObservation(DefinitionModel):
+    start_ms: StrictInt = Field(ge=0)
+    end_ms: StrictInt = Field(gt=0)
+    text: str = Field(min_length=1)
+
+
+class CandidateCaseObservation(DefinitionModel):
+    case_id: VersionIdentifier
+    input_format: VersionIdentifier = "wav_pcm"
+    input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    transcript: str
+    segments: tuple[SegmentObservation, ...]
+    preprocessing_ms: StrictInt = Field(ge=0)
+    inference_ms: StrictInt = Field(ge=0)
+    reassembly_ms: StrictInt = Field(ge=0)
+    matched_reference_segments: StrictInt = Field(default=0, ge=0)
+    missing_reference_segments: StrictInt = Field(default=0, ge=0)
+    unmatched_prediction_segments: StrictInt = Field(default=0, ge=0)
+    timestamps_supported: StrictBool = True
+
+    @model_validator(mode="after")
+    def validate_segment_times(self) -> "CandidateCaseObservation":
+        if any(segment.end_ms <= segment.start_ms for segment in self.segments):
+            raise ValueError("candidate segment end must follow start")
+        return self
+
+
 _GATE_DEFINITIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     (
         "russian_transcription",
@@ -169,6 +208,8 @@ _GATE_DEFINITIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
             "units",
             "negations",
             "obligations",
+            "permissions",
+            "conditions",
             "constraints",
         ),
         "exact match >= 98% for every annotated critical-fragment category",
@@ -268,6 +309,9 @@ class CandidateQualificationReport(DefinitionModel):
     prerequisites: tuple[PrerequisiteCheck, ...] = Field(min_length=1)
     gates: tuple[GateResult, ...] = Field(min_length=1)
     metrics: dict[str, MetricObservation]
+    asset_inventory: tuple[AssetEvidence, ...] = ()
+    no_egress_evidence_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    case_observations: tuple[CandidateCaseObservation, ...] = ()
     unsupported_capabilities: tuple[VersionIdentifier, ...]
     overall_status: QualificationStatus
     downstream_boundary: str = Field(min_length=1)
@@ -295,6 +339,10 @@ class CandidateQualificationReport(DefinitionModel):
                 raise ValueError("a PASS requires complete candidate provenance")
             if any(gate.status is not QualificationStatus.PASS for gate in self.gates):
                 raise ValueError("a PASS requires every independent gate to pass")
+            if any(item.status is not QualificationStatus.PASS for item in self.prerequisites):
+                raise ValueError("a PASS requires every qualification prerequisite")
+            if not self.asset_inventory or self.no_egress_evidence_sha256 is None:
+                raise ValueError("a PASS requires verified asset and no-egress evidence")
         return self
 
 
@@ -484,6 +532,8 @@ def main() -> None:
 
 __all__ = [
     "ASR_CANDIDATE_QUALIFICATION_SCHEMA",
+    "AssetEvidence",
+    "CandidateCaseObservation",
     "CandidateConfiguration",
     "CandidateProfile",
     "CandidateQualificationReport",
@@ -493,6 +543,7 @@ __all__ = [
     "MetricObservation",
     "PrerequisiteCheck",
     "QualificationStatus",
+    "SegmentObservation",
     "candidate_profiles",
     "main",
     "run_offline_candidate_qualification",
