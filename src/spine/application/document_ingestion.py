@@ -1086,6 +1086,8 @@ class DocumentIngestionOrchestrator:
             producer_reference="document-upload",
             event_identity=_child_identifier("upload-event", request.idempotency_key),
             event_digest=_sha256(f"{request.command_identity}:{revision.revision_digest}"),
+            source_contract_id="original_upload",
+            source_contract_version="v1",
             upload_command_reference=_child_identifier("upload-command", request.idempotency_key),
             observer_service=self.service_name,
             received_at=now, observed_at=now,

@@ -122,15 +122,7 @@ def _authority_applies(
     selector: TrustedCanonicalAcceptanceSelector,
     source: TrustedSourceSelectorContext,
 ) -> bool:
-    return all(
-        getattr(selector, name) == getattr(source, name)
-        for name in (
-            "workspace_id", "environment_id", "source_kind", "source_contract_id",
-            "source_contract_version", "authority_kind", "approved_scope_reference",
-            "provider_kind", "provider_connection_id", "provider_connection_version_id",
-            "provider_approval_id", "resource_scope_reference", "upload_authority_reference",
-        )
-    )
+    return selector.authority_identity == source.authority_identity
 
 
 __all__ = [

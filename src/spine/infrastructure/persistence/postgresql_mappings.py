@@ -437,6 +437,9 @@ source_revision_provenance = Table(
     Column("event_identity", Text, nullable=False),
     Column("event_digest", Text, nullable=False),
     Column("connection_id", PostgreSQLUUID(as_uuid=True)),
+    Column("source_contract_id", Text),
+    Column("source_contract_version", Text),
+    Column("resource_scope_reference", PostgreSQLUUID(as_uuid=True)),
     Column("upload_command_reference", Text),
     Column("origin_locator_kind", Text),
     Column("origin_locator_value", Text),
@@ -2204,6 +2207,13 @@ trusted_canonical_acceptance_selector_versions = Table(
     UniqueConstraint("workspace_id", "environment_id", "selector_series_id", "selector_id", name="uq_trusted_canonical_acceptance_selector_series_id"),
     UniqueConstraint("workspace_id", "environment_id", "idempotency_identity", name="uq_trusted_canonical_acceptance_selector_idempotency"),
     UniqueConstraint("predecessor_selector_id", name="uq_trusted_canonical_acceptance_selector_predecessor"),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "audit_reference"],
+        ["spine.audit_events.workspace_id", "spine.audit_events.environment_id", "spine.audit_events.audit_event_id"],
+        name="fk_trusted_canonical_acceptance_selector_audit",
+        deferrable=True,
+        initially="DEFERRED",
+    ),
 )
 
 current_trusted_canonical_acceptance_selectors = Table(

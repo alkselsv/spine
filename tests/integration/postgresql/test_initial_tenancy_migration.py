@@ -1341,6 +1341,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "current_lifecycle_authorities",
         "retention_applicabilities",
         "current_retention_applicabilities",
+        "trusted_canonical_acceptance_selector_versions",
+        "current_trusted_canonical_acceptance_selectors",
     }
     tables = set(
         (
@@ -1371,7 +1373,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                     "'bitrix24_grant_bindings','bitrix24_grant_authorities',"
                     "'bitrix24_oauth_attempts','bitrix24_oauth_callback_receipts',"
                     "'lifecycle_observations','lifecycle_decisions','current_lifecycle_authorities',"
-                    "'retention_applicabilities','current_retention_applicabilities'))"
+                    "'retention_applicabilities','current_retention_applicabilities','trusted_canonical_acceptance_selector_versions','current_trusted_canonical_acceptance_selectors'))"
                 )
             )
         ).scalars()
@@ -1391,7 +1393,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                      "'bitrix24_grant_bindings','bitrix24_grant_authorities',"
                      "'bitrix24_oauth_attempts','bitrix24_oauth_callback_receipts',"
                      "'lifecycle_observations','lifecycle_decisions','current_lifecycle_authorities',"
-                     "'retention_applicabilities','current_retention_applicabilities')")
+                     "'retention_applicabilities','current_retention_applicabilities','trusted_canonical_acceptance_selector_versions','current_trusted_canonical_acceptance_selectors')")
             )
         ).scalars()
     )
@@ -2989,7 +2991,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
-                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'retention_applicabilities', 'current_retention_applicabilities', 'backup_fence_leases', "
+                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'retention_applicabilities', 'current_retention_applicabilities','trusted_canonical_acceptance_selector_versions','current_trusted_canonical_acceptance_selectors', 'backup_fence_leases', "
                             "'fence_operation_tickets', 'recovery_quiescence_evidence', "
                             "'storage_recovery_manifests', 'recovery_evidence_invalidations', "
                             "'parsed_documents', 'parsed_document_segments', 'ontology_versions', "
@@ -3029,7 +3031,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
-                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'retention_applicabilities', 'current_retention_applicabilities', 'backup_fence_leases', 'fence_operation_tickets', "
+                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'retention_applicabilities', 'current_retention_applicabilities','trusted_canonical_acceptance_selector_versions','current_trusted_canonical_acceptance_selectors', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
@@ -3063,7 +3065,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
-                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'retention_applicabilities', 'current_retention_applicabilities', 'backup_fence_leases', 'fence_operation_tickets', "
+                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'retention_applicabilities', 'current_retention_applicabilities','trusted_canonical_acceptance_selector_versions','current_trusted_canonical_acceptance_selectors', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
@@ -3096,7 +3098,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
-                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'retention_applicabilities', 'current_retention_applicabilities', 'backup_fence_leases', 'fence_operation_tickets', "
+                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'retention_applicabilities', 'current_retention_applicabilities','trusted_canonical_acceptance_selector_versions','current_trusted_canonical_acceptance_selectors', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
@@ -3128,7 +3130,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
-                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'retention_applicabilities', 'current_retention_applicabilities', 'backup_fence_leases', 'fence_operation_tickets', "
+                            "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'retention_applicabilities', 'current_retention_applicabilities','trusted_canonical_acceptance_selector_versions','current_trusted_canonical_acceptance_selectors', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
@@ -3822,7 +3824,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'recovery_evidence_invalidations', "
                         "'canonical_generation_counters', 'canonical_acceptances', 'current_source_heads', "
                         "'canonical_boundaries', 'canonical_boundary_members', "
-                        "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'retention_applicabilities', 'current_retention_applicabilities', "
+                        "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', 'retention_applicabilities', 'current_retention_applicabilities','trusted_canonical_acceptance_selector_versions','current_trusted_canonical_acceptance_selectors', "
                         "'parsed_documents', 'parsed_document_segments', 'ontology_versions', "
                         "'projection_config_versions', 'projection_runs', 'projection_run_transitions', "
                         "'projection_partitions', 'projection_receipts', 'source_projection_references', "
@@ -3942,6 +3944,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "current_lifecycle_authorities": (True, True),
         "retention_applicabilities": (True, True),
         "current_retention_applicabilities": (True, True),
+        "trusted_canonical_acceptance_selector_versions": (True, True),
+        "current_trusted_canonical_acceptance_selectors": (True, True),
             "parsed_documents": (True, True),
             "parsed_document_segments": (True, True),
             "canonical_boundaries": (True, True),
@@ -5379,6 +5383,14 @@ async def test_transactional_migration_failure_preserves_prior_schema(
     assert revision == HEAD_REVISION
     assert workspaces_after == workspaces_before
     assert failure_table is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_final_migration_catalog_includes_tenant_safe_selector_storage(
+    migrated_database: MigratedDatabase,
+) -> None:
+    async with _connection(migrated_database.migration.url) as connection:
+        await _assert_final_catalog_after_upgrade(connection)
 
 
 @pytest.mark.asyncio(loop_scope="session")

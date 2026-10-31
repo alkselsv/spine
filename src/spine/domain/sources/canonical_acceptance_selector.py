@@ -47,7 +47,7 @@ class TrustedCanonicalAcceptanceSelector(DefinitionModel):
     content_policy_id: UUID | None = None
     content_policy_version: VersionIdentifier | None = None
     content_policy_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    required_canonical_acceptance_schema_version: int = Field(ge=1)
+    required_canonical_acceptance_schema_version: int = Field(ge=1, le=2)
     approval_reference: UUID
     predecessor_selector_id: UUID | None = None
     audit_reference: UUID
@@ -91,11 +91,35 @@ class TrustedCanonicalAcceptanceSelector(DefinitionModel):
                 self.provider_approval_id, self.resource_scope_reference,
             )):
                 raise ValueError("provider authority identifiers must be non-zero")
+            if self.approval_reference != self.provider_approval_id:
+                raise ValueError("provider approval reference must match exact connection approval")
+            if self.approved_scope_reference != self.resource_scope_reference:
+                raise ValueError("approved scope must match exact provider resource scope")
+            if self.required_canonical_acceptance_schema_version == 2 and (
+                self.provider_kind != "bitrix24"
+                or self.source_contract_version != "v2"
+                or self.root_policy_id is None
+            ):
+                raise ValueError("acceptance schema v2 is reserved for qualified Bitrix24 S2 authority")
+            if (self.provider_kind == "bitrix24"
+                    and self.source_contract_version == "v2"
+                    and self.required_canonical_acceptance_schema_version != 2):
+                raise ValueError("Bitrix24 S2 selectors cannot downgrade to canonical acceptance v1")
+            if self.provider_kind != "bitrix24" and self.required_canonical_acceptance_schema_version != 1:
+                raise ValueError("provider compatibility selectors must use canonical acceptance v1")
+            if self.provider_kind != "bitrix24" and self.root_policy_id is not None:
+                raise ValueError("root/content selector references are reserved for Bitrix24 scope policies")
         else:
             if self.upload_authority_reference is None or self.provider_connection_id is not None:
                 raise ValueError("upload selector requires exact upload authority")
+            if self.root_policy_id is not None:
+                raise ValueError("upload selectors cannot bind provider root/content policies")
             if self.upload_authority_reference.int == 0:
                 raise ValueError("upload authority identifier must be non-zero")
+            if self.approval_reference != self.upload_authority_reference:
+                raise ValueError("upload approval reference must match exact upload authority")
+            if self.required_canonical_acceptance_schema_version != 1:
+                raise ValueError("upload compatibility selectors must use canonical acceptance v1")
         return self
 
     @property
@@ -114,6 +138,16 @@ class TrustedCanonicalAcceptanceSelector(DefinitionModel):
             self.provider_connection_id,
             self.resource_scope_reference,
             self.upload_authority_reference,
+        )
+
+    @property
+    def authority_identity(self) -> tuple[object, ...]:
+        """Exact connection/upload approval selected for this immutable record."""
+
+        return (
+            *self.series_identity,
+            self.provider_connection_version_id,
+            self.provider_approval_id,
         )
 
 
@@ -166,9 +200,44 @@ class TrustedSourceSelectorContext(DefinitionModel):
 
     @model_validator(mode="after")
     def validate_context(self) -> "TrustedSourceSelectorContext":
-        if self.source_object_id.int == 0:
-            raise ValueError("source_object_id must be non-zero")
+        if any(value.int == 0 for value in (
+            self.workspace_id, self.environment_id, self.source_object_id,
+            self.approved_scope_reference,
+        )):
+            raise ValueError("trusted source context identifiers must be non-zero")
+        if (self.root_policy_id, self.root_policy_version, self.root_policy_digest,
+            self.content_policy_id, self.content_policy_version, self.content_policy_digest).count(None) not in (0, 6):
+            raise ValueError("trusted source context policy references must be complete")
+        if self.authority_kind is CanonicalAcceptanceAuthorityKind.PROVIDER_CONNECTION:
+            if any(value is None for value in (
+                self.provider_kind, self.provider_connection_id,
+                self.provider_connection_version_id, self.provider_approval_id,
+                self.resource_scope_reference,
+            )) or self.upload_authority_reference is not None:
+                raise ValueError("provider source context requires exact connection authority")
+            if self.approved_scope_reference != self.resource_scope_reference:
+                raise ValueError("provider source context scope reference does not match approved scope")
+        elif self.upload_authority_reference is None or self.provider_connection_id is not None:
+            raise ValueError("upload source context requires exact upload authority")
         return self
+
+    @property
+    def authority_identity(self) -> tuple[object, ...]:
+        return (
+            self.workspace_id,
+            self.environment_id,
+            self.source_kind,
+            self.source_contract_id,
+            self.source_contract_version,
+            self.authority_kind,
+            self.approved_scope_reference,
+            self.provider_kind,
+            self.provider_connection_id,
+            self.resource_scope_reference,
+            self.upload_authority_reference,
+            self.provider_connection_version_id,
+            self.provider_approval_id,
+        )
 
 
 def selector_applies(
@@ -178,14 +247,12 @@ def selector_applies(
     """Return whether all persisted source and authority facts match exactly."""
 
     names = (
-        "workspace_id", "environment_id", "source_kind", "source_contract_id",
-        "source_contract_version", "authority_kind", "approved_scope_reference",
-        "provider_kind", "provider_connection_id", "provider_connection_version_id",
-        "provider_approval_id", "resource_scope_reference", "upload_authority_reference",
         "root_policy_id", "root_policy_version", "root_policy_digest",
         "content_policy_id", "content_policy_version", "content_policy_digest",
     )
-    return all(getattr(selector, name) == getattr(source, name) for name in names)
+    return selector.authority_identity == source.authority_identity and all(
+        getattr(selector, name) == getattr(source, name) for name in names
+    )
 
 
 __all__ = [

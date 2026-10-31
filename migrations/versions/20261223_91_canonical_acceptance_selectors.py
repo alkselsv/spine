@@ -45,6 +45,21 @@ def _tenant_policy(name: str, *, mutable: bool) -> None:
 
 def upgrade() -> None:
     uuid = postgresql.UUID(as_uuid=True)
+    op.create_unique_constraint(
+        "uq_provider_connection_version_approval_binding",
+        "provider_connection_versions",
+        ["workspace_id", "environment_id", "connection_id", "connection_version_id", "approval_id"],
+        schema=SCHEMA,
+    )
+    op.add_column("source_revision_provenance", sa.Column("source_contract_id", sa.Text()), schema=SCHEMA)
+    op.add_column("source_revision_provenance", sa.Column("source_contract_version", sa.Text()), schema=SCHEMA)
+    op.add_column("source_revision_provenance", sa.Column("resource_scope_reference", uuid), schema=SCHEMA)
+    op.create_check_constraint(
+        "ck_source_revision_provenance_selector_contract_pair",
+        "source_revision_provenance",
+        "(source_contract_id IS NULL) = (source_contract_version IS NULL)",
+        schema=SCHEMA,
+    )
     op.create_table(
         "trusted_canonical_acceptance_selector_versions",
         sa.Column("selector_id", uuid, nullable=False),
@@ -82,6 +97,8 @@ def upgrade() -> None:
         sa.UniqueConstraint("workspace_id", "environment_id", "idempotency_identity", name="uq_trusted_canonical_acceptance_selector_idempotency"),
         sa.UniqueConstraint("predecessor_selector_id", name="uq_trusted_canonical_acceptance_selector_predecessor"),
         sa.ForeignKeyConstraint(["workspace_id", "environment_id"], [f"{SCHEMA}.environments.workspace_id", f"{SCHEMA}.environments.id"], name="fk_trusted_canonical_acceptance_selector_environment"),
+        sa.ForeignKeyConstraint(["workspace_id", "environment_id", "provider_connection_id", "provider_connection_version_id", "provider_approval_id"], [f"{SCHEMA}.provider_connection_versions.workspace_id", f"{SCHEMA}.provider_connection_versions.environment_id", f"{SCHEMA}.provider_connection_versions.connection_id", f"{SCHEMA}.provider_connection_versions.connection_version_id", f"{SCHEMA}.provider_connection_versions.approval_id"], name="fk_trusted_canonical_acceptance_selector_connection_approval"),
+        sa.ForeignKeyConstraint(["workspace_id", "environment_id", "audit_reference"], [f"{SCHEMA}.audit_events.workspace_id", f"{SCHEMA}.audit_events.environment_id", f"{SCHEMA}.audit_events.audit_event_id"], name="fk_trusted_canonical_acceptance_selector_audit", deferrable=True, initially="DEFERRED"),
         sa.ForeignKeyConstraint(["workspace_id", "environment_id", "provider_connection_id", "provider_connection_version_id"], [f"{SCHEMA}.provider_connection_versions.workspace_id", f"{SCHEMA}.provider_connection_versions.environment_id", f"{SCHEMA}.provider_connection_versions.connection_id", f"{SCHEMA}.provider_connection_versions.connection_version_id"], name="fk_trusted_canonical_acceptance_selector_connection"),
         sa.ForeignKeyConstraint(["workspace_id", "environment_id", "root_policy_id", "root_policy_version", "root_policy_digest"], [f"{SCHEMA}.bitrix24_disk_root_policy_versions.workspace_id", f"{SCHEMA}.bitrix24_disk_root_policy_versions.environment_id", f"{SCHEMA}.bitrix24_disk_root_policy_versions.policy_id", f"{SCHEMA}.bitrix24_disk_root_policy_versions.version", f"{SCHEMA}.bitrix24_disk_root_policy_versions.digest"], name="fk_trusted_canonical_acceptance_selector_root_policy"),
         sa.ForeignKeyConstraint(["workspace_id", "environment_id", "content_policy_id", "content_policy_version", "content_policy_digest"], [f"{SCHEMA}.bitrix24_disk_content_policy_versions.workspace_id", f"{SCHEMA}.bitrix24_disk_content_policy_versions.environment_id", f"{SCHEMA}.bitrix24_disk_content_policy_versions.policy_id", f"{SCHEMA}.bitrix24_disk_content_policy_versions.version", f"{SCHEMA}.bitrix24_disk_content_policy_versions.digest"], name="fk_trusted_canonical_acceptance_selector_content_policy"),
@@ -110,6 +127,23 @@ def upgrade() -> None:
     _tenant_policy("trusted_canonical_acceptance_selector_versions", mutable=False)
     _tenant_policy("current_trusted_canonical_acceptance_selectors", mutable=True)
     op.execute(
+        f"CREATE FUNCTION {SCHEMA}.guard_canonical_acceptance_selector_issuer() "
+        "RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, spine "
+        "AS $fn$ BEGIN "
+        "IF COALESCE(current_setting('spine.acting_subject_id', true), '') = '' "
+        "OR current_setting('spine.purpose', true) IS DISTINCT FROM 'canonical_acceptance_selector' "
+        "OR current_setting('spine.operation', true) IS DISTINCT FROM 'canonical_acceptance_selector.publish' "
+        "OR current_setting('spine.workspace_id', true) IS DISTINCT FROM NEW.workspace_id::text "
+        "OR current_setting('spine.environment_id', true) IS DISTINCT FROM NEW.environment_id::text THEN "
+        "RAISE EXCEPTION 'Canonical acceptance selector publication requires an authorized interactive context.' "
+        "USING ERRCODE = '42501'; END IF; RETURN NEW; END; $fn$"
+    )
+    op.execute(
+        f"CREATE TRIGGER trg_trusted_canonical_acceptance_selector_issuer "
+        f"BEFORE INSERT ON {SCHEMA}.trusted_canonical_acceptance_selector_versions "
+        f"FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.guard_canonical_acceptance_selector_issuer()"
+    )
+    op.execute(
         f"CREATE FUNCTION {SCHEMA}.reject_trusted_canonical_acceptance_selector_mutation() "
         "RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, spine "
         "AS $fn$ BEGIN RAISE EXCEPTION 'Canonical acceptance selectors are immutable.' "
@@ -124,7 +158,14 @@ def upgrade() -> None:
         f"CREATE FUNCTION {SCHEMA}.guard_current_trusted_canonical_acceptance_selector_step() "
         "RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, spine "
         "AS $fn$ DECLARE selected_version integer; selected_predecessor uuid; "
-        "selected_series uuid; BEGIN SELECT selector_version, predecessor_selector_id, selector_series_id "
+        "selected_series uuid; BEGIN IF COALESCE(current_setting('spine.acting_subject_id', true), '') = '' "
+        "OR current_setting('spine.purpose', true) IS DISTINCT FROM 'canonical_acceptance_selector' "
+        "OR current_setting('spine.operation', true) IS DISTINCT FROM 'canonical_acceptance_selector.publish' "
+        "OR current_setting('spine.workspace_id', true) IS DISTINCT FROM NEW.workspace_id::text "
+        "OR current_setting('spine.environment_id', true) IS DISTINCT FROM NEW.environment_id::text THEN "
+        "RAISE EXCEPTION 'Canonical acceptance selector publication requires an authorized interactive context.' "
+        "USING ERRCODE = '42501'; END IF; "
+        "SELECT selector_version, predecessor_selector_id, selector_series_id "
         f"INTO selected_version, selected_predecessor, selected_series FROM {SCHEMA}.trusted_canonical_acceptance_selector_versions "
         "WHERE workspace_id = NEW.workspace_id AND environment_id = NEW.environment_id "
         "AND selector_id = NEW.current_selector_id; "
@@ -132,7 +173,10 @@ def upgrade() -> None:
         "RAISE EXCEPTION 'Selector current head has no matching immutable record.' USING ERRCODE = '23514'; END IF; "
         "IF TG_OP = 'INSERT' THEN IF NEW.cas_version <> 1 OR selected_version <> 1 OR selected_predecessor IS NOT NULL THEN "
         "RAISE EXCEPTION 'Selector baseline is invalid.' USING ERRCODE = '23514'; END IF; "
-        "ELSIF NEW.cas_version <> OLD.cas_version + 1 OR selected_version <> NEW.cas_version "
+        "ELSIF NEW.workspace_id IS DISTINCT FROM OLD.workspace_id "
+        "OR NEW.environment_id IS DISTINCT FROM OLD.environment_id "
+        "OR NEW.selector_series_id IS DISTINCT FROM OLD.selector_series_id "
+        "OR NEW.cas_version <> OLD.cas_version + 1 OR selected_version <> NEW.cas_version "
         "OR selected_predecessor IS DISTINCT FROM OLD.current_selector_id THEN "
         "RAISE EXCEPTION 'Selector current-head CAS failed.' USING ERRCODE = '23514'; "
         "END IF; RETURN NEW; END; $fn$"
@@ -143,11 +187,28 @@ def upgrade() -> None:
         f"FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.guard_current_trusted_canonical_acceptance_selector_step()"
     )
     op.execute(f"REVOKE ALL ON FUNCTION {SCHEMA}.reject_trusted_canonical_acceptance_selector_mutation() FROM PUBLIC")
+    op.execute(f"REVOKE ALL ON FUNCTION {SCHEMA}.guard_canonical_acceptance_selector_issuer() FROM PUBLIC")
     op.execute(f"REVOKE ALL ON FUNCTION {SCHEMA}.guard_current_trusted_canonical_acceptance_selector_step() FROM PUBLIC")
 
 
 def downgrade() -> None:
     op.drop_table("current_trusted_canonical_acceptance_selectors", schema=SCHEMA)
     op.drop_table("trusted_canonical_acceptance_selector_versions", schema=SCHEMA)
+    op.execute(f"DROP FUNCTION {SCHEMA}.guard_canonical_acceptance_selector_issuer()")
     op.execute(f"DROP FUNCTION {SCHEMA}.guard_current_trusted_canonical_acceptance_selector_step()")
     op.execute(f"DROP FUNCTION {SCHEMA}.reject_trusted_canonical_acceptance_selector_mutation()")
+    op.drop_constraint(
+        "uq_provider_connection_version_approval_binding",
+        "provider_connection_versions",
+        schema=SCHEMA,
+        type_="unique",
+    )
+    op.drop_constraint(
+        "ck_source_revision_provenance_selector_contract_pair",
+        "source_revision_provenance",
+        schema=SCHEMA,
+        type_="check",
+    )
+    op.drop_column("source_revision_provenance", "resource_scope_reference", schema=SCHEMA)
+    op.drop_column("source_revision_provenance", "source_contract_version", schema=SCHEMA)
+    op.drop_column("source_revision_provenance", "source_contract_id", schema=SCHEMA)

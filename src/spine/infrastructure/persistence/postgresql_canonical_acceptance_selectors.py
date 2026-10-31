@@ -3,21 +3,43 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import insert, select, text, update
 from sqlalchemy.exc import IntegrityError
+from spine.domain.audit import AuditEvent
 
-from spine.application.canonical_acceptance_selectors import CanonicalAcceptanceSelectorError
+from spine.application.canonical_acceptance_selectors import (
+    CanonicalAcceptanceSelectorError,
+)
+from spine.application.persistence.context import PersistenceOperation, PersistencePurpose
+from spine.domain.common import ContextOrigin
 from spine.domain.sources.canonical_acceptance_selector import (
     CanonicalAcceptanceSelectorHead,
     TrustedCanonicalAcceptanceSelector,
 )
+from spine.infrastructure.connections.postgresql_provider_management import (
+    provider_connection_approvals,
+    provider_connection_versions,
+)
 from spine.infrastructure.persistence.postgresql_mappings import (
     current_trusted_canonical_acceptance_selectors,
     trusted_canonical_acceptance_selector_versions,
+    original_upload_records,
+    bitrix24_disk_root_policy_versions,
+    bitrix24_disk_content_policy_versions,
+    current_bitrix24_disk_root_policies,
+    current_bitrix24_disk_content_policies,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class SelectorPublicationResult:
+    selector: TrustedCanonicalAcceptanceSelector
+    committed_cas_version: int
+    replayed: bool
 
 
 class PostgreSQLCanonicalAcceptanceSelectorRepository:
@@ -73,14 +95,70 @@ class PostgreSQLCanonicalAcceptanceSelectorRepository:
         expected_current_selector_id: UUID | None,
         expected_cas_version: int | None,
         recorded_at: datetime,
-    ) -> CanonicalAcceptanceSelectorHead:
+        audit_event: AuditEvent,
+    ) -> SelectorPublicationResult:
         if (expected_current_selector_id is None) != (expected_cas_version is None):
             raise ValueError("expected selector ID and CAS version must be supplied together")
-        context = self._context_factory("canonical_acceptance_selector.write", selector.workspace_id, selector.environment_id)
+        context = self._context_factory(
+            "canonical_acceptance_selector.publish",
+            selector.workspace_id,
+            selector.environment_id,
+        )
+        if (
+            context.origin is not ContextOrigin.INTERACTIVE
+            or context.acting_subject_id is None
+            or context.purpose != PersistencePurpose("canonical_acceptance_selector")
+            or context.operation != PersistenceOperation("canonical_acceptance_selector.publish")
+        ):
+            raise CanonicalAcceptanceSelectorError(
+                "Only an authorized interactive context may publish canonical acceptance selectors."
+            )
         heads = current_trusted_canonical_acceptance_selectors
         versions = trusted_canonical_acceptance_selector_versions
         try:
             async with self._uow_factory(context) as uow:
+                replay_result = await uow._execute(  # type: ignore[attr-defined]
+                    select(versions.c.record).where(
+                        versions.c.workspace_id == selector.workspace_id,
+                        versions.c.environment_id == selector.environment_id,
+                        versions.c.idempotency_identity == selector.idempotency_identity,
+                    )
+                )
+                replay_row = replay_result.one_or_none()
+                if replay_row is not None:
+                    existing = TrustedCanonicalAcceptanceSelector.model_validate(replay_row.record)
+                    if existing != selector:
+                        raise CanonicalAcceptanceSelectorError(
+                            "Selector idempotency identity conflicts with prior command."
+                        )
+                    await uow.rollback()  # type: ignore[attr-defined]
+                    return SelectorPublicationResult(existing, existing.selector_version, True)
+                if selector.provider_connection_id is not None:
+                    # Provider version publication takes the exclusive form of
+                    # this same lock. Hold a shared lock through our commit so
+                    # the authority cannot be superseded after validation.
+                    await uow._execute(  # type: ignore[attr-defined]
+                        text(
+                            "SELECT pg_advisory_xact_lock_shared("
+                            "hashtextextended(:connection_lock, 0))"
+                        ),
+                        {"connection_lock": str(selector.provider_connection_id)},
+                    )
+                await self._validate_approved_authority(uow, selector)
+                if (
+                    audit_event.audit_event_id != selector.audit_reference
+                    or audit_event.workspace_id != selector.workspace_id
+                    or audit_event.environment_id != selector.environment_id
+                    or audit_event.event_type != "command.outcome"
+                    or audit_event.outcome.value != "accepted"
+                    or audit_event.origin is not context.origin
+                    or audit_event.acting_subject_id != context.acting_subject_id
+                    or audit_event.service_principal_id != context.service_principal_id
+                ):
+                    raise CanonicalAcceptanceSelectorError(
+                        "Selector Audit Event is invalid for this command."
+                    )
+                await uow.audit.append(audit_event)  # type: ignore[attr-defined]
                 head_result = await uow._execute(  # type: ignore[attr-defined]
                     select(heads).where(
                         heads.c.workspace_id == selector.workspace_id,
@@ -171,15 +249,120 @@ class PostgreSQLCanonicalAcceptanceSelectorRepository:
                     if result.rowcount != 1:
                         raise CanonicalAcceptanceSelectorError("Canonical acceptance selector head changed.")
                 await uow.commit()  # type: ignore[attr-defined]
-                return CanonicalAcceptanceSelectorHead(
-                    workspace_id=selector.workspace_id,
-                    environment_id=selector.environment_id,
-                    selector_series_id=selector.selector_series_id,
-                    current_selector_id=selector.selector_id,
-                    cas_version=version,
-                )
+                return SelectorPublicationResult(selector, version, False)
         except IntegrityError as error:
             raise CanonicalAcceptanceSelectorError("Canonical acceptance selector conflicts with immutable history.") from error
 
+    @staticmethod
+    async def _validate_approved_authority(
+        uow: object, selector: TrustedCanonicalAcceptanceSelector
+    ) -> None:
+        if selector.provider_connection_id is None:
+            upload = (await uow._execute(  # type: ignore[attr-defined]
+                select(original_upload_records.c.upload_id).where(
+                    original_upload_records.c.workspace_id == selector.workspace_id,
+                    original_upload_records.c.environment_id == selector.environment_id,
+                    original_upload_records.c.upload_id == selector.upload_authority_reference,
+                )
+            )).scalar_one_or_none()
+            if upload is None:
+                raise CanonicalAcceptanceSelectorError("Approved upload authority is unavailable.")
+            return
 
-__all__ = ["PostgreSQLCanonicalAcceptanceSelectorRepository"]
+        connection = (await uow._execute(  # type: ignore[attr-defined]
+            select(provider_connection_versions).where(
+                provider_connection_versions.c.workspace_id == selector.workspace_id,
+                provider_connection_versions.c.environment_id == selector.environment_id,
+                provider_connection_versions.c.connection_id == selector.provider_connection_id,
+                provider_connection_versions.c.connection_version_id == selector.provider_connection_version_id,
+            )
+        )).mappings().one_or_none()
+        latest_id = (await uow._execute(  # type: ignore[attr-defined]
+            select(provider_connection_versions.c.connection_version_id)
+            .where(
+                provider_connection_versions.c.workspace_id == selector.workspace_id,
+                provider_connection_versions.c.environment_id == selector.environment_id,
+                provider_connection_versions.c.connection_id == selector.provider_connection_id,
+            )
+            .order_by(provider_connection_versions.c.version.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+        if (
+            connection is None
+            or latest_id != selector.provider_connection_version_id
+            or connection.status != "active"
+            or connection.provider_kind != selector.provider_kind
+            or connection.approval_id != selector.provider_approval_id
+            or selector.resource_scope_reference not in connection.approved_resource_scope_references
+        ):
+            raise CanonicalAcceptanceSelectorError("Current provider connection authority does not match selector.")
+        approval = (await uow._execute(  # type: ignore[attr-defined]
+            select(provider_connection_approvals).where(
+                provider_connection_approvals.c.workspace_id == selector.workspace_id,
+                provider_connection_approvals.c.environment_id == selector.environment_id,
+                provider_connection_approvals.c.approval_id == selector.provider_approval_id,
+                provider_connection_approvals.c.provider_kind == selector.provider_kind,
+                provider_connection_approvals.c.status == "active",
+            )
+        )).mappings().one_or_none()
+        if (approval is None
+                or selector.resource_scope_reference not in approval.approved_resource_scope_references
+                or approval.authorization_generation != connection.authorization_generation
+                or approval.configuration_generation != connection.configuration_generation):
+            raise CanonicalAcceptanceSelectorError("Current provider approval is unavailable.")
+        if selector.root_policy_id is None:
+            if selector.provider_kind == "bitrix24":
+                raise CanonicalAcceptanceSelectorError("Bitrix24 selectors require root and content policies.")
+            return
+        root_head = (await uow._execute(  # type: ignore[attr-defined]
+            select(current_bitrix24_disk_root_policies).where(
+                current_bitrix24_disk_root_policies.c.workspace_id == selector.workspace_id,
+                current_bitrix24_disk_root_policies.c.environment_id == selector.environment_id,
+                current_bitrix24_disk_root_policies.c.policy_id == selector.root_policy_id,
+                current_bitrix24_disk_root_policies.c.current_version == selector.root_policy_version,
+                current_bitrix24_disk_root_policies.c.current_digest == selector.root_policy_digest,
+            ).with_for_update()
+        )).mappings().one_or_none()
+        content_head = (await uow._execute(  # type: ignore[attr-defined]
+            select(current_bitrix24_disk_content_policies).where(
+                current_bitrix24_disk_content_policies.c.workspace_id == selector.workspace_id,
+                current_bitrix24_disk_content_policies.c.environment_id == selector.environment_id,
+                current_bitrix24_disk_content_policies.c.policy_id == selector.content_policy_id,
+                current_bitrix24_disk_content_policies.c.current_version == selector.content_policy_version,
+                current_bitrix24_disk_content_policies.c.current_digest == selector.content_policy_digest,
+            ).with_for_update()
+        )).mappings().one_or_none()
+        root = (await uow._execute(  # type: ignore[attr-defined]
+            select(bitrix24_disk_root_policy_versions).where(
+                bitrix24_disk_root_policy_versions.c.workspace_id == selector.workspace_id,
+                bitrix24_disk_root_policy_versions.c.environment_id == selector.environment_id,
+                bitrix24_disk_root_policy_versions.c.policy_id == selector.root_policy_id,
+                bitrix24_disk_root_policy_versions.c.version == selector.root_policy_version,
+                bitrix24_disk_root_policy_versions.c.digest == selector.root_policy_digest,
+            )
+        )).mappings().one_or_none()
+        content = (await uow._execute(  # type: ignore[attr-defined]
+            select(bitrix24_disk_content_policy_versions).where(
+                bitrix24_disk_content_policy_versions.c.workspace_id == selector.workspace_id,
+                bitrix24_disk_content_policy_versions.c.environment_id == selector.environment_id,
+                bitrix24_disk_content_policy_versions.c.policy_id == selector.content_policy_id,
+                bitrix24_disk_content_policy_versions.c.version == selector.content_policy_version,
+                bitrix24_disk_content_policy_versions.c.digest == selector.content_policy_digest,
+            )
+        )).mappings().one_or_none()
+        if (
+            root_head is None or content_head is None or root is None or content is None
+            or root.connection_id != selector.provider_connection_id
+            or root.connection_version_id != selector.provider_connection_version_id
+            or root.resource_scope_reference != selector.resource_scope_reference
+            or root.content_policy_id != content.policy_id
+            or root.content_policy_version != content.version
+            or root.content_policy_digest != content.digest
+            or content.connection_id != selector.provider_connection_id
+            or content.connection_version_id != selector.provider_connection_version_id
+            or content.resource_scope_reference != selector.resource_scope_reference
+        ):
+            raise CanonicalAcceptanceSelectorError("Exact current root/content policy authority does not match selector.")
+
+
+__all__ = ["PostgreSQLCanonicalAcceptanceSelectorRepository", "SelectorPublicationResult"]
