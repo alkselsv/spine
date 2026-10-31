@@ -185,6 +185,7 @@ class MountedFilesystemObservationReader:
             relative_path,
             command.external_identity_occurrence,
         )
+        identity_digest = identity.object_id
         content_digest = hashlib.sha256(content).hexdigest()
         provider_payload: dict[str, str | None] = {
             "resource_scope_reference": str(command.resource_scope_reference.value),

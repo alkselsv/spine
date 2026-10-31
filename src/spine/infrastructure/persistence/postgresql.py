@@ -2756,13 +2756,14 @@ class _PostgreSQLCanonicalAcceptanceRepository:
         if isinstance(claim, IdempotencyReplay):
             return await self._replay(command, claim)
 
-        await _lock_and_validate_lifecycle_eligibility(
-            self._uow,
-            workspace_id=scope.workspace_id,
-            environment_id=scope.environment_id,
-            source_object_id=command.source.source_object_id,
-            query=command.lifecycle_query,
-        )
+        if command.revision.kind is RevisionKind.CONTENT:
+            await _lock_and_validate_lifecycle_eligibility(
+                self._uow,
+                workspace_id=scope.workspace_id,
+                environment_id=scope.environment_id,
+                source_object_id=command.source.source_object_id,
+                query=command.lifecycle_query,
+            )
 
         revision_row = (
             (

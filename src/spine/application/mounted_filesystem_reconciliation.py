@@ -968,12 +968,12 @@ def _item_command(
     item: MountedFilesystemScanItem,
     occurrence: str | None,
 ) -> ConnectorIngestionCommand:
-    identity = hashlib.sha256(
+    identity_digest = hashlib.sha256(
         f"{item.provider_object_reference}\0{item.read_token}\0{occurrence}".encode()
     ).hexdigest()
     lifecycle_query = None
     if command.lifecycle_query is not None:
-        identity = mounted_filesystem_source_identity(
+        source_identity = mounted_filesystem_source_identity(
             command.connection_version_id,
             command.resource_scope_reference,
             item.provider_object_reference,
@@ -982,15 +982,16 @@ def _item_command(
         lifecycle_query = lifecycle_query_for_source(
             command.lifecycle_query,
             provider_object_reference=item.provider_object_reference,
-            external_namespace=identity.namespace,
-            external_generation=identity.generation,
-            external_object_id=identity.object_id,
+            external_namespace=source_identity.namespace,
+            external_generation=source_identity.generation,
+            external_object_id=source_identity.object_id,
         )
+        identity_digest = source_identity.object_id
     return ConnectorIngestionCommand(
         workspace_id=command.workspace_id,
         environment_id=command.environment_id,
-        command_identity=f"mfs.reconcile.{identity[:48]}",
-        idempotency_key=f"mounted-reconciliation:item:{identity}",
+        command_identity=f"mfs.reconcile.{identity_digest[:48]}",
+        idempotency_key=f"mounted-reconciliation:item:{identity_digest}",
         connection_id=command.connection_id,
         resource_scope_reference=command.resource_scope_reference,
         authorization_generation=command.authorization_generation,

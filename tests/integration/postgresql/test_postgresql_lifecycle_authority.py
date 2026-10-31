@@ -222,7 +222,7 @@ async def _prepare_scope_authority(
     )
     root_case = await prepare_canonical_case(
         adapter,
-        base,
+        base + 1,
         scope=(child_case.source.workspace_id, child_case.source.environment_id),
         source_object=root_source,
         create_scope=False,
