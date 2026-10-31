@@ -20,6 +20,7 @@ from spine.application.private_asr_corpus import (
     AdmittedSourceRevision,
     AggregateMeasurement,
     CorpusAdmissionDenied,
+    CorpusRecheckUnavailable,
     CorpusVerificationError,
     MetadataInventoryEntry,
     PrivacySanitizationError,
@@ -456,6 +457,61 @@ async def test_access_policy_change_during_read_discards_partial_staging() -> No
     with pytest.raises(CorpusAdmissionDenied, match="policy changed"):
         await subject.verify_content(admitted, context=context())
     assert len(staging.discarded) == 1
+
+
+@pytest.mark.asyncio
+async def test_recheck_current_rejects_changed_authority_revision_and_policy() -> None:
+    request, subject, authority, _, revisions, _, _, _ = service(
+        policy_id=(_id(601), _id(999))
+    )
+    admitted = await subject.admit(request, context=context())
+
+    assert await subject.recheck_current(admitted, context=context()) is False
+
+    request, subject, authority, _, revisions, _, _, _ = service(exact=(False,))
+    admitted = await subject.admit(request, context=context())
+    assert await subject.recheck_current(admitted, context=context()) is False
+
+    request, subject, authority, _, _, _, _, _ = service()
+    admitted = await subject.admit(request, context=context())
+    authority.allow = False
+    assert await subject.recheck_current(admitted, context=context()) is False
+
+
+@pytest.mark.asyncio
+async def test_recheck_current_requires_exact_trusted_actor_and_scope() -> None:
+    request, subject, authority, _, _, _, _, _ = service()
+    admitted = await subject.admit(request, context=context())
+
+    assert await subject.recheck_current(
+        admitted, context=context(actor_id=_id(999))
+    ) is False
+    assert await subject.recheck_current(
+        admitted, context=context(environment_id=_id(999))
+    ) is False
+    assert authority.recheck_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_recheck_current_fails_closed_on_adapter_error_and_wrong_policy_scope() -> None:
+    request, subject, authority, policies, _, _, _, _ = service()
+    admitted = await subject.admit(request, context=context())
+
+    async def broken_recheck(admitted_source, *, evaluated_at):
+        raise RuntimeError("private storage locator")
+
+    authority.recheck = broken_recheck
+    with pytest.raises(CorpusRecheckUnavailable, match="could not be rechecked"):
+        await subject.recheck_current(admitted, context=context())
+
+    request, subject, _, policies, _, _, _, _ = service()
+    admitted = await subject.admit(request, context=context())
+
+    async def wrong_scope(source, *, context):
+        return policy(source).model_copy(update={"workspace_id": _id(999)})
+
+    policies.current_for = wrong_scope
+    assert await subject.recheck_current(admitted, context=context()) is False
 
 
 @pytest.mark.asyncio
