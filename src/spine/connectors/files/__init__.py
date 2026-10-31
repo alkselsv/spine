@@ -4,6 +4,7 @@ from spine.connectors.files.mounted_filesystem import (
     MountedFilesystemObservationReader,
     MountedFilesystemReadError,
     MountedFilesystemRoot,
+    MountedFilesystemSourceIdentityResolver,
     MountedFilesystemTreeScanner,
 )
 
@@ -11,5 +12,6 @@ __all__ = [
     "MountedFilesystemObservationReader",
     "MountedFilesystemReadError",
     "MountedFilesystemRoot",
+    "MountedFilesystemSourceIdentityResolver",
     "MountedFilesystemTreeScanner",
 ]

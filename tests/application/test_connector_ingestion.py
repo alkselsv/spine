@@ -95,6 +95,7 @@ from spine.connectors.yandex_disk import (
     YandexDiskTransientError,
     yandex_disk_capabilities,
 )
+from spine.connectors.yandex_disk_composition import YandexDiskSourceIdentityResolver
 from spine.connectors.bitrix24_disk import (
     Bitrix24DiskFile,
     Bitrix24DiskFileContent,
@@ -1353,6 +1354,7 @@ async def test_yandex_reconciliation_recovers_through_canonical_ingestion_and_ou
                 repository=Repository(),
                 provider=provider,
                 lifecycle_reader=lifecycle_reader,
+                source_identity_resolvers=(YandexDiskSourceIdentityResolver(),),
             ),
             connection_version_id=connection_version,
             required_capabilities=(

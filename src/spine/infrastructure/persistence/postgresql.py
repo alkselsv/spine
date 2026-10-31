@@ -433,11 +433,18 @@ async def _lock_and_validate_lifecycle_eligibility(
 ) -> None:
     """Serialize a source write with withdrawal and require its exact current scope."""
 
-    lock_key = f"{workspace_id}:{environment_id}:{source_object_id}"
-    await uow._execute(
-        text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:key, 0))"),
-        {"key": lock_key},
+    scope_source_object_id = (
+        query.scope_authority_source_object_id if query is not None else None
     )
+    lock_ids = {source_object_id}
+    if scope_source_object_id is not None:
+        lock_ids.add(scope_source_object_id)
+    for locked_source_id in sorted(lock_ids, key=str):
+        lock_key = f"{workspace_id}:{environment_id}:{locked_source_id}"
+        await uow._execute(
+            text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:key, 0))"),
+            {"key": lock_key},
+        )
     result = await uow._execute(
         select(
             _CURRENT_LIFECYCLE_AUTHORITIES.c.current_decision_id,
@@ -452,53 +459,186 @@ async def _lock_and_validate_lifecycle_eligibility(
             _SOURCE_OBJECTS.c.external_object_id,
         )
         .select_from(
-            _CURRENT_LIFECYCLE_AUTHORITIES.join(
+            _SOURCE_OBJECTS.outerjoin(
+                _CURRENT_LIFECYCLE_AUTHORITIES,
+                (_CURRENT_LIFECYCLE_AUTHORITIES.c.workspace_id
+                 == _SOURCE_OBJECTS.c.workspace_id)
+                & (_CURRENT_LIFECYCLE_AUTHORITIES.c.environment_id
+                   == _SOURCE_OBJECTS.c.environment_id)
+                & (_CURRENT_LIFECYCLE_AUTHORITIES.c.source_object_id
+                   == _SOURCE_OBJECTS.c.source_object_id),
+            ).outerjoin(
                 _LIFECYCLE_DECISIONS,
-                _LIFECYCLE_DECISIONS.c.decision_id
-                == _CURRENT_LIFECYCLE_AUTHORITIES.c.current_decision_id,
-            ).join(
-                _SOURCE_OBJECTS,
-                (_SOURCE_OBJECTS.c.source_object_id
-                 == _CURRENT_LIFECYCLE_AUTHORITIES.c.source_object_id)
-                & (_SOURCE_OBJECTS.c.workspace_id
+                (_LIFECYCLE_DECISIONS.c.decision_id
+                 == _CURRENT_LIFECYCLE_AUTHORITIES.c.current_decision_id)
+                & (_LIFECYCLE_DECISIONS.c.workspace_id
                    == _CURRENT_LIFECYCLE_AUTHORITIES.c.workspace_id)
-                & (_SOURCE_OBJECTS.c.environment_id
-                   == _CURRENT_LIFECYCLE_AUTHORITIES.c.environment_id),
+                & (_LIFECYCLE_DECISIONS.c.environment_id
+                   == _CURRENT_LIFECYCLE_AUTHORITIES.c.environment_id)
+                & (_LIFECYCLE_DECISIONS.c.source_object_id
+                   == _CURRENT_LIFECYCLE_AUTHORITIES.c.source_object_id)
+                & (_LIFECYCLE_DECISIONS.c.generation
+                   == _CURRENT_LIFECYCLE_AUTHORITIES.c.generation),
             )
         )
         .where(
-            _CURRENT_LIFECYCLE_AUTHORITIES.c.workspace_id == workspace_id,
-            _CURRENT_LIFECYCLE_AUTHORITIES.c.environment_id == environment_id,
-            _CURRENT_LIFECYCLE_AUTHORITIES.c.source_object_id == source_object_id,
+            _SOURCE_OBJECTS.c.workspace_id == workspace_id,
+            _SOURCE_OBJECTS.c.environment_id == environment_id,
+            _SOURCE_OBJECTS.c.source_object_id == source_object_id,
         )
     )
     row = result.mappings().one_or_none()
-    if (row is None) != (query is None):
+    if query is None:
+        if row is not None and row["current_decision_id"] is not None:
+            await uow._fail(
+                CanonicalEligibilityError("Current lifecycle eligibility is unavailable.")
+            )
+        return
+    if row is None:
         await uow._fail(
             CanonicalEligibilityError("Current lifecycle eligibility is unavailable.")
         )
-    if row is not None and (
-        query is None
-        or query.workspace_id != workspace_id
+    if (
+        query.workspace_id != workspace_id
         or query.environment_id != environment_id
         or query.source_object_id != source_object_id
-            or query.source_external_namespace is None
-            or (
+        or query.source_external_namespace is None
+        or (
+            row["external_namespace"],
+            row["external_generation"],
+            row["external_object_id"],
+        )
+        != (
+            query.source_external_namespace,
+            query.source_external_generation,
+            query.source_external_object_id,
+        )
+        or row["canonical_connection_id"] != query.connection_id
+    ):
+        await uow._fail(
+            CanonicalEligibilityError("Current lifecycle eligibility is unavailable.")
+        )
+    if row["current_decision_id"] is None:
+        if scope_source_object_id is None or scope_source_object_id == source_object_id:
+            await uow._fail(
+                CanonicalEligibilityError("Current lifecycle eligibility is unavailable.")
+            )
+        await _validate_scope_authority_for_canonical_acceptance(
+            uow,
+            query=query,
+            source_object_id=scope_source_object_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+        )
+        return
+    if (
+        row["connection_id"],
+        row["connection_version_id"],
+        row["scope_reference"],
+        row["scope_version_id"],
+        row["scope_digest"],
+        row["status"],
+    ) != (
+        query.connection_id,
+        query.connection_version_id,
+        query.scope_reference,
+        query.scope_version_id,
+        query.scope_digest,
+        "eligible",
+    ):
+        await uow._fail(
+            CanonicalEligibilityError("Current lifecycle eligibility is unavailable.")
+        )
+    if scope_source_object_id is not None and scope_source_object_id != source_object_id:
+        await _validate_scope_authority_for_canonical_acceptance(
+            uow,
+            query=query,
+            source_object_id=scope_source_object_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+        )
+
+
+async def _validate_scope_authority_for_canonical_acceptance(
+    uow: Any,
+    *,
+    query: Any,
+    source_object_id: UUID,
+    workspace_id: UUID,
+    environment_id: UUID,
+) -> None:
+    """Require the exact active root decision through the canonical commit."""
+
+    result = await uow._execute(
+        select(
+            _SOURCE_OBJECTS.c.connection_id.label("canonical_connection_id"),
+            _SOURCE_OBJECTS.c.external_namespace,
+            _SOURCE_OBJECTS.c.external_generation,
+            _SOURCE_OBJECTS.c.external_object_id,
+            _CURRENT_LIFECYCLE_AUTHORITIES.c.current_decision_id,
+            _LIFECYCLE_DECISIONS.c.connection_id,
+            _LIFECYCLE_DECISIONS.c.connection_version_id,
+            _LIFECYCLE_DECISIONS.c.scope_reference,
+            _LIFECYCLE_DECISIONS.c.scope_version_id,
+            _LIFECYCLE_DECISIONS.c.scope_digest,
+            _LIFECYCLE_DECISIONS.c.status,
+        )
+        .select_from(
+            _SOURCE_OBJECTS.outerjoin(
+                _CURRENT_LIFECYCLE_AUTHORITIES,
+                (_CURRENT_LIFECYCLE_AUTHORITIES.c.workspace_id
+                 == _SOURCE_OBJECTS.c.workspace_id)
+                & (_CURRENT_LIFECYCLE_AUTHORITIES.c.environment_id
+                   == _SOURCE_OBJECTS.c.environment_id)
+                & (_CURRENT_LIFECYCLE_AUTHORITIES.c.source_object_id
+                   == _SOURCE_OBJECTS.c.source_object_id),
+            ).outerjoin(
+                _LIFECYCLE_DECISIONS,
+                (_LIFECYCLE_DECISIONS.c.decision_id
+                 == _CURRENT_LIFECYCLE_AUTHORITIES.c.current_decision_id)
+                & (_LIFECYCLE_DECISIONS.c.workspace_id
+                   == _CURRENT_LIFECYCLE_AUTHORITIES.c.workspace_id)
+                & (_LIFECYCLE_DECISIONS.c.environment_id
+                   == _CURRENT_LIFECYCLE_AUTHORITIES.c.environment_id)
+                & (_LIFECYCLE_DECISIONS.c.source_object_id
+                   == _CURRENT_LIFECYCLE_AUTHORITIES.c.source_object_id)
+                & (_LIFECYCLE_DECISIONS.c.generation
+                   == _CURRENT_LIFECYCLE_AUTHORITIES.c.generation),
+            )
+        )
+        .where(
+            _SOURCE_OBJECTS.c.workspace_id == workspace_id,
+            _SOURCE_OBJECTS.c.environment_id == environment_id,
+            _SOURCE_OBJECTS.c.source_object_id == source_object_id,
+        )
+    )
+    row = result.mappings().one_or_none()
+    if row is None or row["current_decision_id"] is None:
+        await uow._fail(
+            CanonicalEligibilityError("Current scope authority is unavailable.")
+        )
+    if (
+        row["canonical_connection_id"] != query.connection_id
+        or (
+            query.scope_authority_external_namespace is not None
+            and (
                 row["external_namespace"],
                 row["external_generation"],
                 row["external_object_id"],
             )
             != (
-                query.source_external_namespace,
-                query.source_external_generation,
-                query.source_external_object_id,
+                query.scope_authority_external_namespace,
+                query.scope_authority_external_generation,
+                query.scope_authority_external_object_id,
             )
+        )
         or (
             row["connection_id"],
             row["connection_version_id"],
             row["scope_reference"],
             row["scope_version_id"],
             row["scope_digest"],
+            row["status"],
         )
         != (
             query.connection_id,
@@ -506,11 +646,11 @@ async def _lock_and_validate_lifecycle_eligibility(
             query.scope_reference,
             query.scope_version_id,
             query.scope_digest,
+            "eligible",
         )
-        or row["status"] != "eligible"
     ):
         await uow._fail(
-            CanonicalEligibilityError("Current lifecycle eligibility is unavailable.")
+            CanonicalEligibilityError("Current scope authority is unavailable.")
         )
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Protocol
@@ -21,7 +20,10 @@ from spine.domain.connections.provider import (
     ProviderCapabilityKind,
     ProviderConnection,
     ProviderConnectionStatus,
-    ProviderKind,
+)
+from spine.domain.sources.lifecycle import (
+    SourceExternalIdentity,
+    connector_source_object_id,
 )
 from spine.domain.connections.bitrix24_disk_scope import Bitrix24DiskMembershipEvidence
 
@@ -117,6 +119,16 @@ class ProviderObservationReader(Protocol):
     ) -> NormalizedExternalObservationV2: ...
 
 
+class ProviderSourceIdentityResolver(Protocol):
+    """Connector-owned mapping from a requested provider key to source identity."""
+
+    def resolve_source_identity(
+        self,
+        connection: ProviderConnection,
+        command: ProviderReadCommand,
+    ) -> SourceExternalIdentity | None: ...
+
+
 class ProviderReadAdmission:
     """Authorize one exact connection version and validate claimed guarantees."""
 
@@ -126,10 +138,12 @@ class ProviderReadAdmission:
         repository: ProviderConnectionRepository,
         provider: ProviderObservationReader,
         lifecycle_reader: CurrentLifecycleEligibilityReader | None = None,
+        source_identity_resolvers: tuple[ProviderSourceIdentityResolver, ...] = (),
     ) -> None:
         self._repository = repository
         self._provider = provider
         self._lifecycle_reader = lifecycle_reader
+        self._source_identity_resolvers = source_identity_resolvers
 
     async def read(
         self,
@@ -247,8 +261,8 @@ class ProviderReadAdmission:
             ):
                 raise ProviderReadDeniedError()
 
-    @staticmethod
     def _validate_requested_source_identity(
+        self,
         command: ProviderReadCommand,
         connection: ProviderConnection,
     ) -> None:
@@ -260,37 +274,15 @@ class ProviderReadAdmission:
         reference = command.resource_object_reference
         if reference is None:
             raise ProviderReadDeniedError()
-        if connection.provider_kind is ProviderKind.YANDEX_DISK:
-            external_object_id = "ydx:" + hashlib.sha256(
-                f"{connection.connection_id}|{reference}".encode()
-            ).hexdigest()[:60]
-            expected = (
-                "yandex-disk",
-                "yandex-disk-path:v1",
-                external_object_id,
-            )
-        elif connection.provider_kind is ProviderKind.MOUNTED_FILESYSTEM:
-            external_object_id = hashlib.sha256(
-                f"{command.resource_scope_reference.value}:{reference}".encode(
-                    "utf-8"
-                )
-            ).hexdigest()
-            if command.external_identity_occurrence is not None:
-                external_object_id = hashlib.sha256(
-                    (
-                        f"{command.resource_scope_reference.value}:{reference}"
-                        f"|occurrence:{command.external_identity_occurrence}"
-                    ).encode("utf-8")
-                ).hexdigest()
-            expected = (
-                "mounted_filesystem",
-                f"mounted-path:v2:{connection.connection_version_id.hex}",
-                external_object_id,
-            )
-        else:
-            # Provider adapters with structured IDs validate their exact mapping
-            # at their own boundary before issuing the read.
-            return
+        identities = tuple(
+            identity
+            for resolver in self._source_identity_resolvers
+            if (identity := resolver.resolve_source_identity(connection, command))
+            is not None
+        )
+        if len(identities) != 1:
+            raise ProviderReadDeniedError()
+        expected = identities[0]
         if (
             query.provider_object_reference != reference
             or (
@@ -298,7 +290,16 @@ class ProviderReadAdmission:
                 query.source_external_generation,
                 query.source_external_object_id,
             )
-            != expected
+            != (expected.namespace, expected.generation, expected.object_id)
+            or query.source_object_id
+            != connector_source_object_id(
+                query.workspace_id,
+                query.environment_id,
+                query.connection_id,
+                expected.namespace,
+                expected.generation,
+                expected.object_id,
+            )
         ):
             raise ProviderReadDeniedError()
 
@@ -321,4 +322,5 @@ __all__ = [
     "ProviderReadCommand",
     "ProviderReadDeniedError",
     "ProviderReadError",
+    "ProviderSourceIdentityResolver",
 ]

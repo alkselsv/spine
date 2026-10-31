@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Annotated, Literal
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import Field, model_validator
 
@@ -15,6 +17,73 @@ from spine.domain.common import DefinitionModel, VersionIdentifier
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 LifecycleDigest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
+@dataclass(frozen=True, slots=True)
+class SourceExternalIdentity:
+    """Stable provider identity fields used by the canonical SourceObject."""
+
+    namespace: str
+    generation: str
+    object_id: str
+
+
+def connector_source_object_id(
+    workspace_id: UUID,
+    environment_id: UUID,
+    connection_id: UUID,
+    external_namespace: str,
+    external_generation: str,
+    external_object_id: str,
+) -> UUID:
+    """Derive the canonical SourceObject ID from its stable connector identity."""
+
+    values = (
+        workspace_id,
+        environment_id,
+        connection_id,
+        external_namespace,
+        external_generation,
+        external_object_id,
+    )
+    return uuid5(
+        NAMESPACE_URL,
+        ":".join(
+            ("spine:connector-ingestion:source:v1", *(str(value) for value in values))
+        ),
+    )
+
+
+def yandex_disk_source_identity(
+    connection_id: UUID,
+    provider_path: str,
+    occurrence: str | None = None,
+) -> SourceExternalIdentity:
+    material = f"{connection_id}|{provider_path}"
+    if occurrence is not None:
+        material += f"|occurrence:{occurrence}"
+    digest = hashlib.sha256(material.encode()).hexdigest()
+    return SourceExternalIdentity(
+        namespace="yandex-disk",
+        generation="yandex-disk-path:v1",
+        object_id=f"ydx:{digest[:60]}",
+    )
+
+
+def mounted_filesystem_source_identity(
+    connection_version_id: UUID,
+    scope_reference: UUID,
+    relative_path: str,
+    occurrence: str | None = None,
+) -> SourceExternalIdentity:
+    material = f"{scope_reference}:{relative_path}"
+    if occurrence is not None:
+        material += f"|occurrence:{occurrence}"
+    return SourceExternalIdentity(
+        namespace="mounted_filesystem",
+        generation=f"mounted-path:v2:{connection_version_id.hex}",
+        object_id=hashlib.sha256(material.encode("utf-8")).hexdigest(),
+    )
 
 
 def _nonzero(*values: UUID) -> None:

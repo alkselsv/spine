@@ -55,6 +55,7 @@ from spine.domain.connections.provider import (
     ProviderKind,
 )
 from spine.domain.sources import RevisionKind
+from spine.domain.sources.lifecycle import mounted_filesystem_source_identity
 
 
 class MountedFilesystemUnavailableError(RuntimeError):
@@ -388,6 +389,7 @@ class AuthorizedMountedFilesystemScanner:
                 )
                 or request.resource_scope_reference
                 not in connection.approved_resource_scope_references
+                or query.scope_version_id != connection.approval_id
             ):
                 raise ProviderReadDeniedError()
             for capability in required:
@@ -971,19 +973,18 @@ def _item_command(
     ).hexdigest()
     lifecycle_query = None
     if command.lifecycle_query is not None:
-        generation = f"mounted-path:v2:{command.connection_version_id.hex}"
-        identity_material = (
-            f"{command.resource_scope_reference}:{item.provider_object_reference}"
+        identity = mounted_filesystem_source_identity(
+            command.connection_version_id,
+            command.resource_scope_reference,
+            item.provider_object_reference,
+            occurrence,
         )
-        if occurrence is not None:
-            identity_material += f"|occurrence:{occurrence}"
-        external_object_id = hashlib.sha256(identity_material.encode("utf-8")).hexdigest()
         lifecycle_query = lifecycle_query_for_source(
             command.lifecycle_query,
             provider_object_reference=item.provider_object_reference,
-            external_namespace="mounted_filesystem",
-            external_generation=generation,
-            external_object_id=external_object_id,
+            external_namespace=identity.namespace,
+            external_generation=identity.generation,
+            external_object_id=identity.object_id,
         )
     return ConnectorIngestionCommand(
         workspace_id=command.workspace_id,

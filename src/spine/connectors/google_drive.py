@@ -24,7 +24,6 @@ from spine.application.connections.google import (
     GoogleReadCommand,
 )
 from spine.application.persistence.context import TrustedPersistenceContext
-from spine.application.lifecycle import connector_source_object_id
 from spine.connectors.observations import (
     ConnectorCoverage,
     NormalizedConnectorObservation,
@@ -39,6 +38,7 @@ from spine.domain.sources.google import (
     GoogleDriveLifecycleSignal,
     google_source_identity,
 )
+from spine.domain.sources.lifecycle import connector_source_object_id
 
 
 GOOGLE_DRIVE_FILE_LOCATOR = "locator:google-drive-file:v1"

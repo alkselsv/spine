@@ -41,6 +41,10 @@ from spine.domain.connections.provider import (
     ProviderConnection,
     ProviderKind,
 )
+from spine.domain.sources.lifecycle import (
+    SourceExternalIdentity,
+    mounted_filesystem_source_identity,
+)
 
 DEFAULT_MAX_FILE_BYTES = 32 * 1024 * 1024
 MAX_CONFIGURED_FILE_BYTES = 256 * 1024 * 1024
@@ -50,6 +54,26 @@ MAX_CONCURRENT_FILE_READS = 4
 _READ_SLOTS = BoundedSemaphore(MAX_CONCURRENT_FILE_READS)
 _EXTRACTION_PROFILE = "mounted-file-bytes:v1"
 _LOCATOR_CONTRACT = "mounted-file-path:v1"
+
+
+@dataclass(frozen=True, slots=True)
+class MountedFilesystemSourceIdentityResolver:
+    """Resolve an approved relative path before reading its mounted bytes."""
+
+    def resolve_source_identity(
+        self, connection: ProviderConnection, command: ProviderReadCommand
+    ) -> SourceExternalIdentity | None:
+        if (
+            connection.provider_kind is not ProviderKind.MOUNTED_FILESYSTEM
+            or command.resource_object_reference is None
+        ):
+            return None
+        return mounted_filesystem_source_identity(
+            connection.connection_version_id,
+            command.resource_scope_reference.value,
+            command.resource_object_reference,
+            command.external_identity_occurrence,
+        )
 
 
 class MountedFilesystemReadError(ProviderReadError):
@@ -155,18 +179,12 @@ class MountedFilesystemObservationReader:
             raise ValueError("mounted filesystem clock must return an aware datetime")
         observed_at = stable_read.modified_at
         path_digest = hashlib.sha256(relative_path.encode("utf-8")).hexdigest()
-        external_generation = (
-            f"mounted-path:v2:{command.connection_version_id.hex}"
+        identity = mounted_filesystem_source_identity(
+            command.connection_version_id,
+            command.resource_scope_reference.value,
+            relative_path,
+            command.external_identity_occurrence,
         )
-        identity_material = (
-            f"{command.resource_scope_reference.value}:{relative_path}"
-        )
-        if command.external_identity_occurrence is not None:
-            identity_material = (
-                f"{identity_material}|occurrence:"
-                f"{command.external_identity_occurrence}"
-            )
-        identity_digest = hashlib.sha256(identity_material.encode("utf-8")).hexdigest()
         content_digest = hashlib.sha256(content).hexdigest()
         provider_payload: dict[str, str | None] = {
             "resource_scope_reference": str(command.resource_scope_reference.value),
@@ -196,9 +214,9 @@ class MountedFilesystemObservationReader:
             configuration_generation=command.configuration_generation,
             source_kind="document",
             external_identity=ProviderExternalIdentity(
-                external_namespace="mounted_filesystem",
-                external_generation=external_generation,
-                external_object_id=identity_digest,
+                external_namespace=identity.namespace,
+                external_generation=identity.generation,
+                external_object_id=identity.object_id,
                 provider_key=ProviderFileKey(
                     connection_id=command.connection_id,
                     provider_object_id=relative_path,
@@ -511,5 +529,6 @@ __all__ = [
     "MountedFilesystemObservationReader",
     "MountedFilesystemReadError",
     "MountedFilesystemRoot",
+    "MountedFilesystemSourceIdentityResolver",
     "MountedFilesystemTreeScanner",
 ]

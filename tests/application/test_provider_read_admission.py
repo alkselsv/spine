@@ -14,7 +14,10 @@ from spine.application.connections.provider import (
     ProviderReadCommand,
     ProviderReadDeniedError,
 )
-from spine.application.lifecycle import LifecycleEligibilityQuery
+from spine.application.lifecycle import (
+    LifecycleEligibilityQuery,
+    connector_source_object_id,
+)
 from spine.application.persistence.context import (
     EnvironmentScope,
     PersistenceOperation,
@@ -45,7 +48,9 @@ from spine.domain.common import ContextOrigin
 from spine.domain.sources.lifecycle import (
     CurrentLifecycleEligibility,
     LifecycleEligibilityStatus,
+    SourceExternalIdentity,
 )
+from spine.connectors.yandex_disk_composition import YandexDiskSourceIdentityResolver
 
 
 def _id(value: int) -> UUID:
@@ -185,20 +190,36 @@ def _command(
 
 
 def _lifecycle_query() -> LifecycleEligibilityQuery:
+    namespace = "google"
+    generation = "google-source-key:v1"
+    external_object_id = "gsk1:" + "a" * 52
     return LifecycleEligibilityQuery(
         workspace_id=_id(4),
         environment_id=_id(5),
-        source_object_id=_id(30),
+        source_object_id=connector_source_object_id(
+            _id(4), _id(5), _id(2), namespace, generation, external_object_id
+        ),
         connection_id=_id(2),
         connection_version_id=_id(1),
         scope_reference=_id(9),
         scope_version_id=_id(3),
         scope_digest="a" * 64,
         provider_object_reference="file-1",
-        source_external_namespace="google",
-        source_external_generation="google-source-key:v1",
-        source_external_object_id="gsk1:" + "a" * 52,
+        source_external_namespace=namespace,
+        source_external_generation=generation,
+        source_external_object_id=external_object_id,
     )
+
+
+class _QueryIdentityResolver:
+    def resolve_source_identity(self, connection, command):
+        del connection
+        query = command.lifecycle_query
+        return SourceExternalIdentity(
+            namespace=query.source_external_namespace,
+            generation=query.source_external_generation,
+            object_id=query.source_external_object_id,
+        )
 
 
 @pytest.mark.asyncio
@@ -236,6 +257,7 @@ async def test_provider_read_rejects_mismatched_source_identity_before_download(
         repository=repository,
         provider=provider,
         lifecycle_reader=_LifecycleReader(LifecycleEligibilityStatus.ELIGIBLE),
+        source_identity_resolvers=(YandexDiskSourceIdentityResolver(),),
     )
     base = _lifecycle_query()
     query = replace(
@@ -266,6 +288,7 @@ async def test_withdrawn_source_is_denied_before_provider_read() -> None:
         repository=_Repository(connection),
         provider=provider,
         lifecycle_reader=lifecycle,
+        source_identity_resolvers=(_QueryIdentityResolver(),),
     )
     command = _command(ProviderCapabilityKind.BINARY_READ)
     command = replace(command, lifecycle_query=_lifecycle_query())
@@ -288,6 +311,7 @@ async def test_configured_lifecycle_authority_rejects_unbound_provider_read() ->
         repository=_Repository(connection),
         provider=provider,
         lifecycle_reader=lifecycle,
+        source_identity_resolvers=(_QueryIdentityResolver(),),
     )
 
     with pytest.raises(ProviderReadDeniedError):
@@ -320,6 +344,7 @@ async def test_withdrawal_after_download_discards_provider_observation() -> None
         repository=_Repository(connection),
         provider=provider,
         lifecycle_reader=lifecycle,
+        source_identity_resolvers=(_QueryIdentityResolver(),),
     )
     command = _command(ProviderCapabilityKind.BINARY_READ)
     command = replace(command, lifecycle_query=_lifecycle_query())

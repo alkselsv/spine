@@ -16,7 +16,10 @@ from spine.application.persistence.context import (
     PersistenceOperation,
     TrustedPersistenceContext,
 )
-from spine.application.lifecycle import LifecycleEligibilityQuery
+from spine.application.lifecycle import (
+    LifecycleEligibilityQuery,
+    lifecycle_query_for_source,
+)
 from spine.application.connector_ingestion import (
     ConnectorIngestionCommand,
     ConnectorIngestionOrchestrator,
@@ -229,6 +232,7 @@ class GoogleSheetsCanonicalIngestionPort(Protocol):
         *,
         command_identity: str,
         idempotency_key: str,
+        lifecycle_query: LifecycleEligibilityQuery | None,
     ) -> UUID: ...
 
 
@@ -245,11 +249,24 @@ class ConnectorGoogleSheetsCanonicalIngestion:
         *,
         command_identity: str,
         idempotency_key: str,
+        lifecycle_query: LifecycleEligibilityQuery | None,
     ) -> UUID:
+        identity = observation.external_identity
+        source_query = None
+        if lifecycle_query is not None:
+            source_query = lifecycle_query_for_source(
+                lifecycle_query,
+                provider_object_reference=identity.external_object_id,
+                external_namespace=identity.external_namespace,
+                external_generation=identity.external_generation,
+                external_object_id=identity.external_object_id,
+            )
         command = self.base_command.model_copy(
             update={
                 "command_identity": command_identity,
                 "idempotency_key": idempotency_key,
+                "resource_object_reference": identity.external_object_id,
+                "lifecycle_query": source_query,
             }
         )
         result = await self.orchestrator.ingest_observation(command, observation)
@@ -545,6 +562,7 @@ class GoogleSheetsReconciliationCoordinator:
                         command.command_identity, identity
                     ),
                     idempotency_key=key,
+                    lifecycle_query=command.lifecycle_query,
                 )
                 await self.repository.mark_item_succeeded(
                     item.item_id, revision_id=revision_id, now=self._now()

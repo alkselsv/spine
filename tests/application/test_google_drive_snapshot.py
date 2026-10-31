@@ -347,3 +347,5 @@ async def test_snapshot_derives_each_file_fence_from_the_exact_root_authority():
     assert query.provider_object_reference == "drive-file-1"
     assert query.source_external_object_id == identity.external_object_id
     assert query.scope_digest == root_query.scope_digest
+    assert query.scope_authority_source_object_id == root_query.source_object_id
+    assert query.scope_authority_external_object_id == root_query.source_external_object_id

@@ -18,6 +18,10 @@ from spine.application.google_sheets_reconciliation import (
     GoogleSheetsReconciliationFenceError,
 )
 from spine.application.connector_ingestion import ConnectorIngestionCommand
+from spine.application.lifecycle import (
+    LifecycleEligibilityQuery,
+    connector_source_object_id,
+)
 from spine.application.persistence.google_sheets_sync import (
     GoogleSheetsIdentityDisposition,
     GoogleSheetsIdentityDispositionCommand,
@@ -166,9 +170,16 @@ class FakeCanonicalIngestion:
         self.revisions = {}
         self.fail_once_for = fail_once_for
 
-    async def ingest(self, observation, *, command_identity, idempotency_key):
+    async def ingest(
+        self,
+        observation,
+        *,
+        command_identity,
+        idempotency_key,
+        lifecycle_query,
+    ):
         identity = observation.external_identity.external_object_id
-        self.calls.append((identity, command_identity, idempotency_key))
+        self.calls.append((identity, command_identity, idempotency_key, lifecycle_query))
         if self.fail_once_for == identity:
             self.fail_once_for = None
             raise RuntimeError("canonical persistence is unavailable")
@@ -992,3 +1003,61 @@ async def test_retry_skips_durable_row_outcome_after_later_canonical_failure():
         rows[1].external_identity.external_object_id,
         rows[1].external_identity.external_object_id,
     ]
+
+
+@pytest.mark.asyncio
+async def test_google_sheets_row_ingestion_derives_child_lifecycle_query():
+    row = observation("EST-1")
+    root_source_id = UUID("77777777-7777-4777-8777-777777777777")
+    root_query = LifecycleEligibilityQuery(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        source_object_id=root_source_id,
+        connection_id=CONNECTION,
+        connection_version_id=UUID("88888888-8888-4888-8888-888888888888"),
+        scope_reference=SCOPE_ID,
+        scope_version_id=UUID("99999999-9999-4999-8999-999999999999"),
+        scope_digest="a" * 64,
+        provider_object_reference="estimates",
+    )
+
+    class Orchestrator:
+        async def ingest_observation(self, request, observation):
+            self.request = request
+            return SimpleNamespace(revision=SimpleNamespace(revision_id=UUID(int=91)))
+
+    orchestrator = Orchestrator()
+    ingestion = ConnectorGoogleSheetsCanonicalIngestion(
+        orchestrator=orchestrator,
+        base_command=ConnectorIngestionCommand(
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+            command_identity="sheets.row",
+            idempotency_key="sheets-row-1",
+            connection_id=CONNECTION,
+            resource_scope_reference=SCOPE_ID,
+            authorization_generation=3,
+            configuration_generation=4,
+            access_policy_version_id=POLICY,
+        ),
+    )
+
+    await ingestion.ingest(
+        row,
+        command_identity="sheets.row.1",
+        idempotency_key="sheets-row-1",
+        lifecycle_query=root_query,
+    )
+
+    query = orchestrator.request.lifecycle_query
+    identity = row.external_identity
+    assert query.source_object_id == connector_source_object_id(
+        WORKSPACE,
+        ENVIRONMENT,
+        CONNECTION,
+        identity.external_namespace,
+        identity.external_generation,
+        identity.external_object_id,
+    )
+    assert query.scope_authority_source_object_id == root_source_id
+    assert query.provider_object_reference == identity.external_object_id

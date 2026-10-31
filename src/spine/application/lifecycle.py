@@ -17,6 +17,7 @@ from spine.domain.sources.lifecycle import (
     LifecycleDecision,
     LifecycleEligibilityStatus,
     LifecycleObservation,
+    connector_source_object_id,
 )
 
 
@@ -25,32 +26,6 @@ class LifecycleAuthorityError(RuntimeError):
 
     def __init__(self) -> None:
         super().__init__("Lifecycle authority is unavailable.")
-
-
-def connector_source_object_id(
-    workspace_id: UUID,
-    environment_id: UUID,
-    connection_id: UUID,
-    external_namespace: str,
-    external_generation: str,
-    external_object_id: str,
-) -> UUID:
-    """Derive the canonical connector source ID from its exact stable identity."""
-
-    parts = (
-        workspace_id,
-        environment_id,
-        connection_id,
-        external_namespace,
-        external_generation,
-        external_object_id,
-    )
-    return uuid5(
-        NAMESPACE_URL,
-        ":".join(
-            ("spine:connector-ingestion:source:v1", *(str(part) for part in parts))
-        ),
-    )
 
 
 class LifecycleConflictError(LifecycleAuthorityError):
@@ -159,8 +134,8 @@ async def require_current_read_eligibility(
         query.scope_version_id,
         query.scope_digest,
     ) or (
-        current.current_decision_id is None
-        or current.status is not LifecycleEligibilityStatus.ELIGIBLE
+        current.status is not LifecycleEligibilityStatus.ELIGIBLE
+        or (current.current_decision_id is None and current.generation != 0)
     ):
         raise LifecycleAuthorityError()
     return current
@@ -222,6 +197,10 @@ class LifecycleEligibilityQuery:
     source_external_namespace: str | None = None
     source_external_generation: str | None = None
     source_external_object_id: str | None = None
+    scope_authority_source_object_id: UUID | None = None
+    scope_authority_external_namespace: str | None = None
+    scope_authority_external_generation: str | None = None
+    scope_authority_external_object_id: str | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -237,6 +216,11 @@ class LifecycleEligibilityQuery:
             )
         ) or re.fullmatch(r"[0-9a-f]{64}", self.scope_digest) is None:
             raise LifecycleAuthorityError()
+        if (
+            self.scope_authority_source_object_id is not None
+            and self.scope_authority_source_object_id.int == 0
+        ):
+            raise LifecycleAuthorityError()
         if self.provider_object_reference is not None and not (
             1 <= len(self.provider_object_reference) <= 1024
         ):
@@ -248,6 +232,15 @@ class LifecycleEligibilityQuery:
         )
         if any(value is not None for value in external_identity) and any(
             value is None or not value for value in external_identity
+        ):
+            raise LifecycleAuthorityError()
+        scope_identity = (
+            self.scope_authority_external_namespace,
+            self.scope_authority_external_generation,
+            self.scope_authority_external_object_id,
+        )
+        if any(value is not None for value in scope_identity) and any(
+            value is None or not value for value in scope_identity
         ):
             raise LifecycleAuthorityError()
 
@@ -270,6 +263,20 @@ class LifecycleEligibilityQuery:
             payload["source_external_namespace"] = self.source_external_namespace
             payload["source_external_generation"] = self.source_external_generation
             payload["source_external_object_id"] = self.source_external_object_id
+        if self.scope_authority_source_object_id is not None:
+            payload["scope_authority_source_object_id"] = (
+                self.scope_authority_source_object_id
+            )
+        if self.scope_authority_external_namespace is not None:
+            payload["scope_authority_external_namespace"] = (
+                self.scope_authority_external_namespace
+            )
+            payload["scope_authority_external_generation"] = (
+                self.scope_authority_external_generation
+            )
+            payload["scope_authority_external_object_id"] = (
+                self.scope_authority_external_object_id
+            )
         return payload
 
     def matches_decision(self, decision: LifecycleDecision) -> bool:
@@ -291,6 +298,19 @@ class LifecycleEligibilityQuery:
             decision.scope_reference,
             decision.scope_version_id,
             decision.scope_digest,
+        )
+
+    def matches_scope_decision(self, decision: LifecycleDecision) -> bool:
+        return (
+            decision.workspace_id == self.workspace_id
+            and decision.environment_id == self.environment_id
+            and decision.source_object_id
+            == (self.scope_authority_source_object_id or self.source_object_id)
+            and decision.connection_id == self.connection_id
+            and decision.connection_version_id == self.connection_version_id
+            and decision.scope_reference == self.scope_reference
+            and decision.scope_version_id == self.scope_version_id
+            and decision.scope_digest == self.scope_digest
         )
 
 
@@ -325,6 +345,21 @@ def lifecycle_query_for_source(
         source_external_namespace=external_namespace,
         source_external_generation=external_generation,
         source_external_object_id=external_object_id,
+        scope_authority_source_object_id=(
+            template.scope_authority_source_object_id or template.source_object_id
+        ),
+        scope_authority_external_namespace=(
+            template.scope_authority_external_namespace
+            or template.source_external_namespace
+        ),
+        scope_authority_external_generation=(
+            template.scope_authority_external_generation
+            or template.source_external_generation
+        ),
+        scope_authority_external_object_id=(
+            template.scope_authority_external_object_id
+            or template.source_external_object_id
+        ),
     )
 
 
@@ -407,24 +442,26 @@ class InMemoryLifecycleAuthorityRepository(LifecycleAuthorityRepository):
         context: TrustedPersistenceContext,
     ) -> CurrentLifecycleEligibility:
         validate_lifecycle_context(context, query.workspace_id, query.environment_id)
+        scope_authority_id = query.scope_authority_source_object_id
+        if scope_authority_id is not None and scope_authority_id != query.source_object_id:
+            scope_decision = self.current.get(
+                (query.workspace_id, query.environment_id, scope_authority_id)
+            )
+            if (
+                scope_decision is None
+                or not query.matches_scope_decision(scope_decision)
+                or scope_decision.status is not LifecycleEligibilityStatus.ELIGIBLE
+            ):
+                return _unavailable_eligibility(query)
         decision = self.current.get(
             (query.workspace_id, query.environment_id, query.source_object_id)
         )
-        if decision is None or not query.matches_decision(decision):
-            return CurrentLifecycleEligibility(
-                workspace_id=query.workspace_id,
-                environment_id=query.environment_id,
-                source_object_id=query.source_object_id,
-                connection_id=query.connection_id,
-                connection_version_id=query.connection_version_id,
-                scope_reference=query.scope_reference,
-                scope_version_id=query.scope_version_id,
-                scope_digest=query.scope_digest,
-                current_decision_id=None,
-                generation=0,
-                status=LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE,
-                legal_hold_active=False,
+        if decision is None and scope_authority_id not in (None, query.source_object_id):
+            return _unavailable_eligibility(
+                query, status=LifecycleEligibilityStatus.ELIGIBLE
             )
+        if decision is None or not query.matches_decision(decision):
+            return _unavailable_eligibility(query)
         if (query.workspace_id, query.environment_id, query.source_object_id) in self.canonical_tombstones:
             status = LifecycleEligibilityStatus.TOMBSTONED
         else:
@@ -443,6 +480,27 @@ class InMemoryLifecycleAuthorityRepository(LifecycleAuthorityRepository):
             status=status,
             legal_hold_active=decision.legal_hold_active,
         )
+
+
+def _unavailable_eligibility(
+    query: LifecycleEligibilityQuery,
+    *,
+    status: LifecycleEligibilityStatus = LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE,
+) -> CurrentLifecycleEligibility:
+    return CurrentLifecycleEligibility(
+        workspace_id=query.workspace_id,
+        environment_id=query.environment_id,
+        source_object_id=query.source_object_id,
+        connection_id=query.connection_id,
+        connection_version_id=query.connection_version_id,
+        scope_reference=query.scope_reference,
+        scope_version_id=query.scope_version_id,
+        scope_digest=query.scope_digest,
+        current_decision_id=None,
+        generation=0,
+        status=status,
+        legal_hold_active=False,
+    )
 
 
 def validate_lifecycle_context(

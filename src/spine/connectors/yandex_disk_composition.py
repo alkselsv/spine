@@ -10,6 +10,7 @@ import time
 from spine.application.connections.provider import (
     ProviderConnectionRepository,
     ProviderReadAdmission,
+    ProviderReadCommand,
 )
 from spine.application.lifecycle import CurrentLifecycleEligibilityReader
 from spine.application.yandex_disk_reconciliation import AuthorizedYandexDiskScanner
@@ -25,6 +26,30 @@ from spine.connectors.yandex_disk_api import (
     YandexQualificationRequestGovernor,
     YandexQualificationRequestPolicy,
 )
+from spine.domain.connections.provider import ProviderConnection, ProviderKind
+from spine.domain.sources.lifecycle import (
+    SourceExternalIdentity,
+    yandex_disk_source_identity,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class YandexDiskSourceIdentityResolver:
+    """Resolve a Yandex path identity before content is downloaded."""
+
+    def resolve_source_identity(
+        self, connection: ProviderConnection, command: ProviderReadCommand
+    ) -> SourceExternalIdentity | None:
+        if (
+            connection.provider_kind is not ProviderKind.YANDEX_DISK
+            or command.resource_object_reference is None
+        ):
+            return None
+        return yandex_disk_source_identity(
+            connection.connection_id,
+            command.resource_object_reference,
+            command.external_identity_occurrence,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +119,7 @@ def compose_yandex_qualification_reader(
             repository=connection_repository,
             provider=provider,
             lifecycle_reader=lifecycle_reader,
+            source_identity_resolvers=(YandexDiskSourceIdentityResolver(),),
         ),
         reconciliation_scanner=AuthorizedYandexDiskScanner(
             repository=connection_repository,
@@ -108,6 +134,7 @@ def compose_yandex_qualification_reader(
 
 
 __all__ = [
+    "YandexDiskSourceIdentityResolver",
     "YandexQualificationReaderComposition",
     "compose_yandex_qualification_reader",
 ]

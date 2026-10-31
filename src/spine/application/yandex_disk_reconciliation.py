@@ -58,6 +58,7 @@ from spine.domain.connections.provider import (
     ProviderKind,
 )
 from spine.domain.sources import RevisionKind
+from spine.domain.sources.lifecycle import yandex_disk_source_identity
 
 
 class YandexDiskIncompleteScanError(RuntimeError):
@@ -934,6 +935,10 @@ def _validate_scan_connection(
         )
         or command.resource_scope_reference
         not in connection.approved_resource_scope_references
+        or (
+            command.lifecycle_query is not None
+            and command.lifecycle_query.scope_version_id != connection.approval_id
+        )
     ):
         raise ProviderReadDeniedError()
 
@@ -950,15 +955,22 @@ def _item_command(
     ).hexdigest()
     lifecycle_query = None
     if command.lifecycle_query is not None:
-        external_object_id = "ydx:" + hashlib.sha256(
-            f"{command.connection_id}|{item.provider_object_reference}".encode()
-        ).hexdigest()[:60]
+        identity = yandex_disk_source_identity(
+            command.connection_id,
+            item.provider_object_reference,
+            (
+                run_id.hex
+                if prior_source is not None
+                and prior_source.current_revision_kind is RevisionKind.TOMBSTONE
+                else None
+            ),
+        )
         lifecycle_query = lifecycle_query_for_source(
             command.lifecycle_query,
             provider_object_reference=item.provider_object_reference,
-            external_namespace="yandex-disk",
-            external_generation="yandex-disk-path:v1",
-            external_object_id=external_object_id,
+            external_namespace=identity.namespace,
+            external_generation=identity.generation,
+            external_object_id=identity.object_id,
         )
     return ConnectorIngestionCommand(
         workspace_id=command.workspace_id,

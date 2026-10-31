@@ -11,8 +11,10 @@ from spine.application.lifecycle import (
     LifecycleAuthorityError,
     LifecycleConflictError,
     LifecycleEligibilityQuery,
+    require_current_read_eligibility,
 )
 from spine.application.persistence.canonical import CanonicalAcceptanceCommand
+from spine.application.persistence.errors import CanonicalEligibilityError
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.repositories import SourceObservationCommand
 from spine.domain.sources.lifecycle import (
@@ -205,6 +207,58 @@ async def _prepare_lifecycle_case(adapter: PersistenceAdapter, number: int):
     return await prepare_canonical_case(adapter, number, source_object=source)
 
 
+async def _prepare_scope_authority(
+    adapter: PersistenceAdapter,
+    child_case,
+    child_observation: LifecycleObservation,
+    repository: PostgreSQLLifecycleAuthorityRepository,
+    context,
+    base: int,
+):
+    root_source = connector_source(
+        child_case.source.workspace_id,
+        child_case.source.environment_id,
+        f"provider{base % 10}",
+    )
+    root_case = await prepare_canonical_case(
+        adapter,
+        base,
+        scope=(child_case.source.workspace_id, child_case.source.environment_id),
+        source_object=root_source,
+        create_scope=False,
+    )
+    root_observation = _observation(root_case, base + 1).model_copy(
+        update={
+            "connection_id": child_observation.connection_id,
+            "connection_version_id": child_observation.connection_version_id,
+            "scope_reference": child_observation.scope_reference,
+            "scope_version_id": child_observation.scope_version_id,
+            "scope_digest": child_observation.scope_digest,
+            "kind": LifecycleObservationKind.MOVE_WITHIN_SCOPE,
+            "reason_code": LifecycleReasonCode.MOVE_WITHIN_SCOPE,
+        }
+    )
+    root_decision = _decision(root_case, root_observation, context, base + 2).model_copy(
+        update={
+            "effect": LifecycleDecisionEffect.ELIGIBLE,
+            "status": LifecycleEligibilityStatus.ELIGIBLE,
+        }
+    )
+    await repository.record_observation(root_observation, context)
+    await repository.record_decision(root_decision, context)
+    return root_case, root_decision
+
+
+def _bind_scope_authority(query: LifecycleEligibilityQuery, root_case) -> LifecycleEligibilityQuery:
+    return replace(
+        query,
+        scope_authority_source_object_id=root_case.source.source_object_id,
+        scope_authority_external_namespace=root_case.source.external_namespace,
+        scope_authority_external_generation=root_case.source.external_generation,
+        scope_authority_external_object_id=root_case.source.external_object_id,
+    )
+
+
 async def _accept_canonical_tombstone(adapter: PersistenceAdapter, case, number: int) -> None:
     async with adapter.uow_factory(case.context) as uow:
         await uow.canonical.accept(case.command)
@@ -364,7 +418,6 @@ async def test_postgresql_withdrawal_serializes_after_inflight_canonical_accepta
         case.source.workspace_id, case.source.environment_id, "lifecycle_decision"
     )
     observation = _observation(case, 73250)
-    decision = _decision(case, observation, context, 73260)
     repository = PostgreSQLLifecycleAuthorityRepository(
         uow_factory=postgresql_adapter.uow_factory,
         observation_authority=_AllowObservationAuthority(),
@@ -372,18 +425,115 @@ async def test_postgresql_withdrawal_serializes_after_inflight_canonical_accepta
         decision_effects=_DecisionEffects(),
     )
     await repository.record_observation(observation, context)
+    root_case, root_eligible_decision = await _prepare_scope_authority(
+        postgresql_adapter, case, observation, repository, context, 73270
+    )
+    root_observation = _observation(root_case, 73280).model_copy(
+        update={
+            "connection_id": observation.connection_id,
+            "connection_version_id": observation.connection_version_id,
+            "scope_reference": observation.scope_reference,
+            "scope_version_id": observation.scope_version_id,
+            "scope_digest": observation.scope_digest,
+            "kind": LifecycleObservationKind.SCOPE_WITHDRAWN,
+            "reason_code": LifecycleReasonCode.SCOPE_WITHDRAWN,
+        }
+    )
+    root_decision = _decision(root_case, root_observation, context, 73290).model_copy(
+        update={
+            "expected_current_decision_id": root_eligible_decision.decision_id,
+            "expected_current_generation": root_eligible_decision.generation,
+            "generation": root_eligible_decision.generation + 1,
+        }
+    )
+    await repository.record_observation(root_observation, context)
+    child_query = _bind_scope_authority(_query(case, observation), root_case)
 
     async with postgresql_adapter.uow_factory(case.context) as uow:
-        acceptance = await uow.canonical.accept(case.command)
-        withdrawal = asyncio.create_task(repository.record_decision(decision, context))
+        acceptance = await uow.canonical.accept(
+            replace(case.command, lifecycle_query=child_query)
+        )
+        withdrawal = asyncio.create_task(repository.record_decision(root_decision, context))
         await asyncio.sleep(0.05)
         assert not withdrawal.done()
         await uow.commit()
 
     assert acceptance.advanced is True
-    assert await withdrawal == decision
-    current = await repository.current_eligibility(_query(case, observation), context)
-    assert current.status is LifecycleEligibilityStatus.READ_WITHDRAWN
+    assert await withdrawal == root_decision
+    current = await repository.current_eligibility(child_query, context)
+    assert current.status is LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_new_source_is_eligible_before_its_first_lifecycle_decision(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await _prepare_lifecycle_case(postgresql_adapter, 73500)
+    context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id, case.source.environment_id, "provider_connection_read"
+    )
+    repository = PostgreSQLLifecycleAuthorityRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        observation_authority=_AllowObservationAuthority(),
+        decision_authority=_AllowAuthority(),
+        decision_effects=_DecisionEffects(),
+    )
+    observation = _observation(case, 73510)
+    root_case, root_eligible_decision = await _prepare_scope_authority(
+        postgresql_adapter,
+        case,
+        observation,
+        repository,
+        context,
+        73530,
+    )
+    query = _bind_scope_authority(replace(
+        _query(case, observation),
+        source_object_id=synthetic_uuid(73520),
+        source_external_object_id="provider-object:new-source",
+    ), root_case)
+
+    current = await repository.current_eligibility(query, context)
+    admitted = await require_current_read_eligibility(repository, query, context)
+
+    assert current.current_decision_id is None
+    assert current.generation == 0
+    assert current.status is LifecycleEligibilityStatus.ELIGIBLE
+    assert admitted == current
+    withdrawal_observation = _observation(root_case, 73540).model_copy(
+        update={
+            "connection_id": observation.connection_id,
+            "connection_version_id": observation.connection_version_id,
+            "scope_reference": observation.scope_reference,
+            "scope_version_id": observation.scope_version_id,
+            "scope_digest": observation.scope_digest,
+            "kind": LifecycleObservationKind.SCOPE_WITHDRAWN,
+            "reason_code": LifecycleReasonCode.SCOPE_WITHDRAWN,
+        }
+    )
+    withdrawal_decision = _decision(
+        root_case, withdrawal_observation, context, 73550
+    ).model_copy(
+        update={
+            "expected_current_decision_id": root_eligible_decision.decision_id,
+            "expected_current_generation": root_eligible_decision.generation,
+            "generation": root_eligible_decision.generation + 1,
+        }
+    )
+    await repository.record_observation(withdrawal_observation, context)
+    await repository.record_decision(withdrawal_decision, context)
+    withdrawn = await repository.current_eligibility(query, context)
+    assert withdrawn.status is LifecycleEligibilityStatus.AUTHORITY_UNAVAILABLE
+    child_query = _bind_scope_authority(_query(case, observation), root_case)
+    with pytest.raises(CanonicalEligibilityError):
+        async with postgresql_adapter.uow_factory(case.context) as uow:
+            await uow.canonical.accept(
+                replace(
+                    case.command,
+                    idempotency_key=IdempotencyKey("root-withdrawal-first"),
+                    lifecycle_query=child_query,
+                )
+            )
 
 
 @pytest.mark.asyncio(loop_scope="session")
