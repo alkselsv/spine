@@ -1273,6 +1273,51 @@ current_lifecycle_authorities = Table(
     ),
 )
 
+retention_applicabilities = Table(
+    "retention_applicabilities",
+    metadata,
+    Column("applicability_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("target_kind", Text, nullable=False),
+    Column("target_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True)),
+    Column("source_class", Text),
+    Column("source_class_reference", PostgreSQLUUID(as_uuid=True)),
+    Column("source_class_version_id", PostgreSQLUUID(as_uuid=True)),
+    Column("source_class_digest", String(64)),
+    Column("retention_policy_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("retention_policy_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("retention_policy_digest", String(64), nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("audit_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("outbox_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("approved_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "target_kind", "target_reference",
+        "applicability_id", "generation",
+        name="uq_retention_applicabilities_target_generation",
+    ),
+)
+
+current_retention_applicabilities = Table(
+    "current_retention_applicabilities",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("target_kind", Text, nullable=False),
+    Column("target_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("current_applicability_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("predecessor_applicability_id", PostgreSQLUUID(as_uuid=True)),
+    Column("generation", Integer, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "target_kind", "target_reference",
+        name="pk_current_retention_applicabilities",
+    ),
+)
+
 ingestion_warnings = Table(
     "ingestion_warnings", metadata,
     Column("ingestion_warning_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("ingestion_run_source_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("attempt", Integer, nullable=False), Column("stage", Text, nullable=False), Column("code", Text, nullable=False), Column("retryable", Boolean, nullable=False), Column("safe_detail_schema", Text, nullable=False), Column("safe_detail", JSONB, nullable=False), Column("safe_detail_digest", String(64), nullable=False), Column("opaque_detail_ref", PostgreSQLUUID(as_uuid=True)), Column("occurred_at", DateTime(timezone=True), nullable=False),

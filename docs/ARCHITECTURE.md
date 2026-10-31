@@ -241,6 +241,19 @@ canonical deletion при incomplete migration.
 
 Состояние одного бизнес-объекта не должно одновременно независимо редактироваться в Postgres и Cognee. Сначала фиксируется каноническое изменение, затем outbox запускает обновление проекции.
 
+Применимость retention-политики хранится отдельно от AccessPolicy и canonical
+head как неизменяемый `RetentionApplicability:v1` с tenant-scoped current
+pointer. Binding ссылается на уже утверждённые policy ID/version/digest,
+applicability evidence и approving authority и охватывает явные классы
+source-bearing артефактов; он не задаёт duration и не авторизует cleanup или
+tombstone. Reader разрешает оригинал или производный артефакт только по точной
+`SourceRevision` lineage и единственному текущему effective binding для каждого
+источника. Missing, ambiguous, conflicting или expired authority запрещает
+операцию; mixed artifact подавляется или перестраивается без недопустимого
+источника. Legal hold остаётся отдельной authority и ограничивает только
+физическое удаление. Миграция и rollback описаны в
+[`runbooks/retention-applicability.md`](runbooks/retention-applicability.md).
+
 Обработка принятого аудио фиксируется отдельным tenant-scoped
 `TranscriptionJob` после отдельной текущей проверки processing authority; job
 pin-ит решение, точную `SourceRevision`, processing profile, STT adapter и model
