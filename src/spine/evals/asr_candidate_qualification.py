@@ -171,6 +171,7 @@ class AnnotationCoverageEvidence(DefinitionModel):
 
     gate_id: VersionIdentifier
     category_id: VersionIdentifier
+    evidence_source: Literal["fixture_annotations", "operator_evidence"]
     annotated_count: StrictInt = Field(ge=0)
     eligible_count: StrictInt = Field(ge=0)
     minimum_annotation_count: StrictInt | None = Field(default=None, gt=0)
@@ -196,6 +197,8 @@ class CandidateCaseObservation(DefinitionModel):
     missing_reference_segments: StrictInt = Field(default=0, ge=0)
     unmatched_prediction_segments: StrictInt = Field(default=0, ge=0)
     timestamps_supported: StrictBool = True
+    chunk_boundaries_verified: StrictBool = False
+    partial_recovery_verified: StrictBool = False
 
     @model_validator(mode="after")
     def validate_segment_times(self) -> "CandidateCaseObservation":
@@ -355,6 +358,12 @@ class CandidateQualificationReport(DefinitionModel):
                 raise ValueError("a PASS requires every qualification prerequisite")
             if not self.asset_inventory or self.no_egress_evidence_sha256 is None:
                 raise ValueError("a PASS requires verified asset and no-egress evidence")
+            if not self.annotation_coverage or any(
+                item.status is not QualificationStatus.PASS
+                for item in self.annotation_coverage
+                if item.evidence_source == "fixture_annotations"
+            ):
+                raise ValueError("a PASS requires complete, sufficient dataset category coverage")
         return self
 
 
