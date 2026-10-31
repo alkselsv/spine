@@ -1,0 +1,39 @@
+{
+  "attempted_on": "2026-10-31",
+  "backend": "NOT_VERIFIED",
+  "backend_file_id_claim": "NOT_CLAIMED",
+  "identity_conclusion": "path_scoped",
+  "prerequisites": {
+    "approved_qualification_root": "NOT_VERIFIED",
+    "cleanup_ownership": "NOT_VERIFIED",
+    "platform_operations_outage_control": "NOT_VERIFIED",
+    "read_only_mount_options": "NOT_VERIFIED",
+    "spine_source_reader_identity": "NOT_VERIFIED",
+    "synthetic_fixture_approval": "NOT_VERIFIED"
+  },
+  "reason_code": "approved_target_unavailable",
+  "safety": {
+    "credentials_recorded": false,
+    "mount_operation_performed": false,
+    "raw_errors_recorded": false,
+    "share_address_recorded": false,
+    "source_content_recorded": false,
+    "source_names_recorded": false,
+    "source_write_operation_performed": false
+  },
+  "scenarios": {
+    "backend_file_identity": "NOT_VERIFIED",
+    "canonical_source_retention": "NOT_VERIFIED",
+    "cleanup": "NOT_VERIFIED",
+    "deployment_scope_and_identity": "NOT_VERIFIED",
+    "mount_interruption": "NOT_VERIFIED",
+    "path_scoped_rename": "NOT_VERIFIED",
+    "recovery_reconciliation": "NOT_VERIFIED",
+    "streaming_limits": "NOT_VERIFIED",
+    "traversal_and_symlink_containment": "NOT_VERIFIED",
+    "unstable_read": "NOT_VERIFIED"
+  },
+  "schema_version": "issue-680-mounted-filesystem:v1",
+  "status": "NOT_VERIFIED",
+  "ticket": 680
+}
