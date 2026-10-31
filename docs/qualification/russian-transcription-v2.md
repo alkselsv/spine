@@ -1,7 +1,7 @@
 # Synthetic Russian transcription qualification dataset v2
 
-Dataset: `russian-meeting-transcription-synthetic@2.0.0`  
-Schema: `russian-transcription-qualification:v2`  
+Dataset: `russian-meeting-transcription-synthetic@2.0.0`<br>
+Schema: `russian-transcription-qualification:v2`<br>
 Canonical SHA-256: `cb3c36145df14a2cbe4880dd2e5f64424cb4d45cddb504e44833a03dd6931d83`
 
 This version adds a typed split, annotation, preprocessing and gate-coverage

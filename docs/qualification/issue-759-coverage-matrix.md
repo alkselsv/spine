@@ -1,7 +1,7 @@
 # Issue #759 — v2.0.0 coverage audit
 
-Dataset: `russian-meeting-transcription-synthetic@2.0.0`  
-Canonical SHA-256: `cb3c36145df14a2cbe4880dd2e5f64424cb4d45cddb504e44833a03dd6931d83`  
+Dataset: `russian-meeting-transcription-synthetic@2.0.0`<br>
+Canonical SHA-256: `cb3c36145df14a2cbe4880dd2e5f64424cb4d45cddb504e44833a03dd6931d83`<br>
 Coverage schema: `russian-transcription-gate-coverage:v2`
 
 This matrix is computed from the checked-in manifest's 43 typed coverage rows.
