@@ -40,6 +40,15 @@ HTTP/provider payloads, signed URLs and authorization headers are absent from
 object representations and raised errors. Statuses map only to the existing
 content-free Yandex port errors.
 
+This qualification probe is intentionally exempt from the connector-ingestion
+rule that retains raw provider payloads. It does not create a `SourceRevision`
+or canonical source observation, and the approved #700 evidence profile forbids
+raw provider responses and protected names/paths in reports, diagnostics and
+alerts. The private identity and manifest candidates retain only the minimum
+typed values required for local owner approval; `provider_payloads_recorded`
+therefore remains `false`. A later ingestion run must preserve its own raw
+payload and provenance through the normal observation contract.
+
 ## Offline verification
 
 ```bash
@@ -95,13 +104,21 @@ is recorded, no `cloud-api.yandex.net` request is permitted and #678 remains
 After the acting identity is approved, the recursive inventory runner is the
 first Disk phase. It requires a strict configuration opt-in and a current
 tenant-scoped `ProviderConnectionRepository.admit_read` result before resolving
-the credential or calling Yandex. No standalone CLI is exposed until a canonical
-connection repository composition exists. The runner performs two complete
+the credential or calling Yandex. It also requires an injected cross-process
+execution lease for the exact connection/scope/generations and an injected
+request governor shared by all service instances in the local worker. Missing
+or contended coordination fails closed before a provider request. No standalone
+CLI is exposed until a canonical connection repository composition exists. The
+runner performs two complete
 recursive metadata traversals of the exact root. Every folder page is path-confined, every
 listed item must be a direct child of that page, and the two ordered inventories
-must be identical. The run stops as `NOT_VERIFIED` if it reaches a page/resource
-bound, observes a changing inventory, or does not match the approved aggregate
-baseline of five files, four child directories and 1,416 bytes.
+must be identical. The two passes share the approved ten-page, 32-resource and
+retry budgets. Each pass has a five-minute deadline and the logical run has a
+ten-minute deadline; authority is re-admitted before every retry. Cancellation
+produces terminal `NOT_VERIFIED` evidence. The run also stops as `NOT_VERIFIED`
+if it observes a changing inventory, does not match the approved aggregate
+baseline of five files, four child directories and 1,416 bytes, or differs from
+the exact owner-approved opaque manifest digest.
 
 This phase does not request download links or file bytes. On success it writes a
 mode-`0600` manifest candidate containing the protected exact paths and provider
@@ -111,6 +128,10 @@ status fields. The manifest candidate must never be committed or attached to
 GitHub. No content import is permitted until the Fixture Owner has inspected and
 explicitly approved that candidate as the exact
 `spine-yandex-qualification-fixtures-v1` manifest.
+
+Both the identity report and inventory report carry the exact `workspace_id`
+and `environment_id`. The private inventory candidate carries the same tenant,
+connection/version and generation binding as the safe report.
 
 Any metadata probe made before canonical Provider Connection admission is
 preliminary operator evidence only. It cannot qualify the adapter, authorize a

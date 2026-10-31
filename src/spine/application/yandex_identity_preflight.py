@@ -1,4 +1,4 @@
-"""Identity-only bootstrap for the isolated Yandex Disk qualification.
+"""Application use case for the isolated Yandex identity qualification.
 
 This module cannot issue Disk API requests.  It verifies the OAuth token against
 Yandex ID, records only sanitized evidence, and writes the discovered user ID to
@@ -12,27 +12,37 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 
 from pydantic import Field, StrictBool, StrictStr, model_validator
 
+from spine.application.private_qualification_artifacts import (
+    PrivateQualificationArtifactWriter,
+)
 from spine.connectors.yandex_disk import YandexDiskCredentialResolver
 from spine.connectors.yandex_disk_api import (
     YandexDiskApiRequest,
     YandexDiskApiTransport,
 )
 from spine.domain.common import DefinitionModel
-from spine.infrastructure.yandex_qualification_credentials import (
+from spine.application.yandex_qualification_credentials import (
     YANDEX_QUALIFICATION_CLIENT_ID,
     YandexQualificationCredentialBinding,
-)
-from spine.infrastructure.private_qualification_artifacts import (
-    create_private_qualification_file,
 )
 
 
 _IDENTITY_URL = "https://login.yandex.ru/info"
 _MAXIMUM_IDENTITY_RESPONSE_BYTES = 64 * 1024
 _EXPECTED_USER_ID_KEY = "SPINE_YANDEX_QUALIFICATION_EXPECTED_USER_ID"
+
+IdentityFailureCode = Literal[
+    "authorization_denied",
+    "client_mismatch",
+    "credential_denied",
+    "provider_contract_rejected",
+    "provider_unavailable",
+    "candidate_write_denied",
+]
 
 
 class YandexIdentityPreflightRefused(RuntimeError):
@@ -57,23 +67,15 @@ class YandexIdentityPreflightReport(DefinitionModel):
     )
     status: Literal["ready_for_human_approval", "not_verified"]
     provider: Literal["yandex"] = "yandex"
+    workspace_id: UUID
+    environment_id: UUID
     client_id: Literal[YANDEX_QUALIFICATION_CLIENT_ID]
     identity_fingerprint: StrictStr | None = Field(
         default=None, min_length=64, max_length=64
     )
     identity_requests: Literal[0, 1]
     disk_requests: Literal[0] = 0
-    failure_code: (
-        Literal[
-            "authorization_denied",
-            "client_mismatch",
-            "credential_denied",
-            "provider_contract_rejected",
-            "provider_unavailable",
-            "candidate_write_denied",
-        ]
-        | None
-    ) = None
+    failure_code: IdentityFailureCode | None = None
     credentials_recorded: Literal[False] = False
     provider_payloads_recorded: Literal[False] = False
     identity_candidate_written: StrictBool
@@ -103,10 +105,12 @@ class YandexIdentityPreflightRunner:
         config: YandexIdentityPreflightConfig,
         credential_resolver: YandexDiskCredentialResolver,
         transport: YandexDiskApiTransport,
+        artifact_writer: PrivateQualificationArtifactWriter,
     ) -> None:
         self.config = config
         self._resolver = credential_resolver
         self._transport = transport
+        self._artifact_writer = artifact_writer
 
     async def run(
         self,
@@ -175,12 +179,18 @@ class YandexIdentityPreflightRunner:
             return self._failed("client_mismatch", identity_requests=1)
 
         try:
-            _write_identity_candidate(candidate_path, user_id)
+            _write_identity_candidate(
+                candidate_path,
+                user_id,
+                artifact_writer=self._artifact_writer,
+            )
         except OSError:
             return self._failed("candidate_write_denied", identity_requests=1)
 
         return YandexIdentityPreflightReport(
             status="ready_for_human_approval",
+            workspace_id=binding.workspace_id,
+            environment_id=binding.environment_id,
             client_id=binding.client_id,
             identity_fingerprint=hashlib.sha256(user_id.encode("utf-8")).hexdigest(),
             identity_requests=1,
@@ -188,11 +198,13 @@ class YandexIdentityPreflightRunner:
         )
 
     def _failed(
-        self, failure_code: str, *, identity_requests: Literal[0, 1]
+        self, failure_code: IdentityFailureCode, *, identity_requests: Literal[0, 1]
     ) -> YandexIdentityPreflightReport:
         return YandexIdentityPreflightReport.model_validate(
             {
                 "status": "not_verified",
+                "workspace_id": self.config.credential_binding.workspace_id,
+                "environment_id": self.config.credential_binding.environment_id,
                 "client_id": self.config.credential_binding.client_id,
                 "failure_code": failure_code,
                 "identity_requests": identity_requests,
@@ -201,22 +213,30 @@ class YandexIdentityPreflightRunner:
         )
 
 
-def _write_identity_candidate(path: Path, user_id: str) -> None:
-    create_private_qualification_file(
+def _write_identity_candidate(
+    path: Path,
+    user_id: str,
+    *,
+    artifact_writer: PrivateQualificationArtifactWriter,
+) -> None:
+    artifact_writer.create(
         path,
         f"{_EXPECTED_USER_ID_KEY}={user_id}\n".encode("utf-8"),
     )
 
 
 def write_yandex_identity_preflight_report(
-    path: Path, report: YandexIdentityPreflightReport
+    path: Path,
+    report: YandexIdentityPreflightReport,
+    *,
+    artifact_writer: PrivateQualificationArtifactWriter,
 ) -> None:
     """Create a private metadata-only report without replacing operator files."""
 
     content = (
         json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
-    create_private_qualification_file(path, content)
+    artifact_writer.create(path, content)
 
 
 __all__ = [

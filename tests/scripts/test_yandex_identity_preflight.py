@@ -7,7 +7,7 @@ from uuid import UUID
 import pytest
 
 from spine.auth import ExternalSecretReference
-from spine.connectors.yandex_identity_preflight import (
+from spine.application.yandex_identity_preflight import (
     YandexIdentityPreflightConfig,
     YandexIdentityPreflightReport,
 )
@@ -91,6 +91,8 @@ def test_report_failure_removes_new_candidate_without_replacing_report(
     report_path.write_text("operator owned\n", encoding="utf-8")
     report = YandexIdentityPreflightReport(
         status="ready_for_human_approval",
+        workspace_id=UUID("00000000-0000-4000-8000-000000000001"),
+        environment_id=UUID("00000000-0000-4000-8000-000000000002"),
         client_id=YANDEX_QUALIFICATION_CLIENT_ID,
         identity_fingerprint="a" * 64,
         identity_requests=1,

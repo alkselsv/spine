@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 from uuid import UUID
 
@@ -10,8 +12,12 @@ from pydantic import SecretStr
 
 from spine.auth import ExternalSecretReference
 from spine.connectors.yandex_disk import YandexDiskResource, YandexDiskResourcePage
-from spine.connectors.yandex_disk_api import YandexDiskApiResponse
-from spine.connectors.yandex_disk_qualification import (
+from spine.connectors.yandex_disk_api import (
+    YandexDiskApiResponse,
+    YandexQualificationRequestGovernor,
+    YandexQualificationRequestPolicy,
+)
+from spine.application.yandex_disk_qualification import (
     YandexQualificationInventoryConfig,
     YandexQualificationInventoryError,
     YandexQualificationInventoryReader,
@@ -25,6 +31,9 @@ from spine.infrastructure.yandex_qualification_credentials import (
     YANDEX_QUALIFICATION_ROOT,
     YANDEX_QUALIFICATION_SECRET_REFERENCE,
     YandexQualificationCredentialBinding,
+)
+from spine.infrastructure.private_qualification_artifacts import (
+    FilePrivateQualificationArtifactWriter,
 )
 from tests.connectors.test_yandex_disk_api import SCOPE, _connection
 
@@ -215,6 +224,37 @@ async def test_recursive_inventory_honors_bounded_provider_retry_after() -> None
 
 
 @pytest.mark.asyncio
+async def test_recursive_inventory_rejects_retry_after_beyond_attempt_deadline() -> None:
+    class Throttled:
+        async def list_resources(self, *args, **kwargs):
+            del args, kwargs
+            from spine.application.yandex_disk_scan import YandexDiskThrottleError
+
+            raise YandexDiskThrottleError(retry_after_seconds=0.75)
+
+    delays: list[float] = []
+
+    async def record_delay(delay: float) -> None:
+        delays.append(delay)
+
+    reader = YandexQualificationInventoryReader(
+        service=Throttled(),
+        approved_root="/Spine-Qualification-678-v1",
+        attempt_timeout_seconds=0.5,
+        logical_timeout_seconds=1.0,
+        monotonic=lambda: 0.0,
+        sleep=record_delay,
+        jitter=lambda _: 0.0,
+    )
+
+    with pytest.raises(YandexQualificationInventoryError) as raised:
+        await reader.read(_connection(), SCOPE)
+
+    assert raised.value.code == "deadline_exceeded"
+    assert delays == []
+
+
+@pytest.mark.asyncio
 async def test_recursive_inventory_rejects_change_between_confirmation_passes() -> None:
     root = "disk:/Spine-Qualification-678-v1"
     first = {root: (_file(f"{root}/one.txt"),)}
@@ -264,6 +304,21 @@ async def test_recursive_inventory_reports_the_exact_exhausted_bound(
     assert raised.value.code == expected_code
 
 
+@pytest.mark.asyncio
+async def test_recursive_inventory_applies_page_limit_across_confirmation_passes() -> None:
+    root = "disk:/Spine-Qualification-678-v1"
+    inventory = {root: (_file(f"{root}/one.txt"),)}
+
+    with pytest.raises(YandexQualificationInventoryError) as raised:
+        await YandexQualificationInventoryReader(
+            service=Service([inventory, inventory]),
+            approved_root="/Spine-Qualification-678-v1",
+            max_pages=1,
+        ).read(_connection(), SCOPE)
+
+    assert raised.value.code == "page_limit_reached"
+
+
 class Resolver:
     async def resolve(self, reference, *, workspace_id, environment_id):
         del reference, workspace_id, environment_id
@@ -278,6 +333,27 @@ class Transport:
     async def request(self, request):
         self.requests.append(request)
         return self.responses.pop(0)
+
+
+class CancelledTransport:
+    async def request(self, request):
+        del request
+        raise asyncio.CancelledError()
+
+
+def _request_governor() -> YandexQualificationRequestGovernor:
+    policy = YandexQualificationRequestPolicy()
+    now = 0.0
+
+    async def advance(delay: float) -> None:
+        nonlocal now
+        now += delay
+
+    return YandexQualificationRequestGovernor(
+        policy=policy,
+        monotonic=lambda: now,
+        sleep=advance,
+    )
 
 
 def _config() -> YandexQualificationInventoryConfig:
@@ -307,6 +383,9 @@ def _config() -> YandexQualificationInventoryConfig:
         data_approval_reference="issue-702-comment-6539550684",
         fixture_manifest_version="spine-yandex-qualification-fixtures-v1",
         scope_version="spine-yandex-qualification-scope:v1",
+        approved_manifest_digest=(
+            "a3a1d452f069302a59ecc6f1e440b4080222a188b309995eb586ac185f63a11a"
+        ),
     )
 
 
@@ -327,6 +406,37 @@ class Repository:
         del context
         self.commands.append(command)
         yield self.connection
+
+
+class RevokedOnRevalidationRepository(Repository):
+    @asynccontextmanager
+    async def admit_read(self, command, context):
+        from spine.application.connections.provider import ProviderReadDeniedError
+
+        del context
+        self.commands.append(command)
+        if len(self.commands) > 1:
+            raise ProviderReadDeniedError()
+        yield self.connection
+
+
+class DeniedExecutionLease:
+    @asynccontextmanager
+    async def hold(self, scope):
+        del scope
+        from spine.application.yandex_qualification_execution import (
+            YandexQualificationExecutionDeniedError,
+        )
+
+        raise YandexQualificationExecutionDeniedError()
+        yield  # pragma: no cover
+
+
+class AllowedExecutionLease:
+    @asynccontextmanager
+    async def hold(self, scope):
+        del scope
+        yield
 
 
 def _page(path: str, items: tuple[YandexDiskResource, ...]) -> YandexDiskApiResponse:
@@ -371,6 +481,21 @@ def _baseline_responses() -> list[YandexDiskApiResponse]:
     return responses
 
 
+def _same_aggregate_different_manifest_responses() -> list[YandexDiskApiResponse]:
+    root = "disk:/Spine-Qualification-678-v1"
+    directories = tuple(_directory(f"{root}/dir-{index}") for index in range(4))
+    pages = {root: directories + (_file(f"{root}/renamed.txt", size=16),)}
+    for index, directory in enumerate(directories):
+        pages[directory.path] = (
+            _file(f"{directory.path}/file-{index}.txt", size=350),
+        )
+    responses: list[YandexDiskApiResponse] = []
+    for _ in range(2):
+        for path, items in pages.items():
+            responses.extend((_identity_response(), _page(path, items)))
+    return responses
+
+
 @pytest.mark.asyncio
 async def test_inventory_runner_writes_private_candidate_and_safe_aggregate_report(
     tmp_path: Path,
@@ -383,15 +508,23 @@ async def test_inventory_runner_writes_private_candidate_and_safe_aggregate_repo
         expected_user_id=SecretStr("123456789"),
         credential_resolver=Resolver(),
         transport=transport,
+        request_governor=_request_governor(),
         connection_repository=Repository(),
+        execution_lease=AllowedExecutionLease(),
+        artifact_writer=FilePrivateQualificationArtifactWriter(),
         context=object(),  # type: ignore[arg-type]
         sleep=lambda _: _no_sleep(),
     ).run(environment_opt_in=True, candidate_path=candidate)
 
     assert report.status == "ready_for_manifest_approval"
+    assert report.workspace_id == _config().credential_binding.workspace_id
+    assert report.environment_id == _config().credential_binding.environment_id
     assert (report.file_count, report.directory_count, report.file_bytes) == (5, 4, 1416)
     assert report.identity_requests == report.disk_requests == 10
     assert candidate.stat().st_mode & 0o777 == 0o600
+    candidate_payload = json.loads(candidate.read_text(encoding="utf-8"))
+    assert candidate_payload["workspace_id"] == str(report.workspace_id)
+    assert candidate_payload["environment_id"] == str(report.environment_id)
     serialized_report = report.model_dump_json()
     assert "root.txt" not in serialized_report
     assert "/Spine-Qualification" not in serialized_report
@@ -410,7 +543,10 @@ async def test_inventory_runner_refuses_without_double_opt_in_before_admission(
         expected_user_id=SecretStr("123456789"),
         credential_resolver=Resolver(),
         transport=transport,
+        request_governor=_request_governor(),
         connection_repository=repository,
+        execution_lease=AllowedExecutionLease(),
+        artifact_writer=FilePrivateQualificationArtifactWriter(),
         context=object(),  # type: ignore[arg-type]
     ).run(
         environment_opt_in=True,
@@ -420,6 +556,32 @@ async def test_inventory_runner_refuses_without_double_opt_in_before_admission(
     assert report.status == "not_verified"
     assert report.failure_code == "prerequisite_denied"
     assert repository.commands == []
+    assert transport.requests == []
+
+
+@pytest.mark.asyncio
+async def test_inventory_runner_denies_missing_execution_lease_before_network(
+    tmp_path: Path,
+) -> None:
+    transport = Transport([])
+
+    report = await YandexQualificationInventoryRunner(
+        config=_config(),
+        expected_user_id=SecretStr("123456789"),
+        credential_resolver=Resolver(),
+        transport=transport,
+        request_governor=_request_governor(),
+        connection_repository=Repository(),
+        execution_lease=DeniedExecutionLease(),
+        artifact_writer=FilePrivateQualificationArtifactWriter(),
+        context=object(),  # type: ignore[arg-type]
+    ).run(
+        environment_opt_in=True,
+        candidate_path=(tmp_path / "candidate.json").resolve(),
+    )
+
+    assert report.status == "not_verified"
+    assert report.failure_code == "prerequisite_denied"
     assert transport.requests == []
 
 
@@ -445,7 +607,10 @@ async def test_inventory_runner_denies_foreign_or_inactive_admission_before_netw
         expected_user_id=SecretStr("123456789"),
         credential_resolver=Resolver(),
         transport=transport,
+        request_governor=_request_governor(),
         connection_repository=Repository(foreign_connection),
+        execution_lease=AllowedExecutionLease(),
+        artifact_writer=FilePrivateQualificationArtifactWriter(),
         context=object(),  # type: ignore[arg-type]
     ).run(
         environment_opt_in=True,
@@ -528,7 +693,10 @@ async def test_inventory_runner_records_provider_failures_as_distinct_states(
         expected_user_id=SecretStr("123456789"),
         credential_resolver=Resolver(),
         transport=transport,
+        request_governor=_request_governor(),
         connection_repository=Repository(),
+        execution_lease=AllowedExecutionLease(),
+        artifact_writer=FilePrivateQualificationArtifactWriter(),
         context=object(),  # type: ignore[arg-type]
         sleep=lambda _: _no_sleep(),
         jitter=lambda _: 0.0,
@@ -541,6 +709,60 @@ async def test_inventory_runner_records_provider_failures_as_distinct_states(
     assert report.failure_code == failure_code
     assert report.identity_requests == identity_requests
     assert report.disk_requests == disk_requests
+
+
+@pytest.mark.asyncio
+async def test_inventory_runner_revalidates_authority_before_retry(
+    tmp_path: Path,
+) -> None:
+    repository = RevokedOnRevalidationRepository()
+    transport = Transport([YandexDiskApiResponse(status_code=429, wire_bytes=0)])
+
+    report = await YandexQualificationInventoryRunner(
+        config=_config(),
+        expected_user_id=SecretStr("123456789"),
+        credential_resolver=Resolver(),
+        transport=transport,
+        request_governor=_request_governor(),
+        connection_repository=repository,
+        execution_lease=AllowedExecutionLease(),
+        artifact_writer=FilePrivateQualificationArtifactWriter(),
+        context=object(),  # type: ignore[arg-type]
+        sleep=lambda _: _no_sleep(),
+        jitter=lambda _: 0.0,
+    ).run(
+        environment_opt_in=True,
+        candidate_path=(tmp_path / "candidate.json").resolve(),
+    )
+
+    assert report.status == "not_verified"
+    assert report.failure_code == "prerequisite_denied"
+    assert len(repository.commands) == 2
+    assert len(transport.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_inventory_runner_records_cancellation_as_terminal_evidence(
+    tmp_path: Path,
+) -> None:
+    report = await YandexQualificationInventoryRunner(
+        config=_config(),
+        expected_user_id=SecretStr("123456789"),
+        credential_resolver=Resolver(),
+        transport=CancelledTransport(),
+        request_governor=_request_governor(),
+        connection_repository=Repository(),
+        execution_lease=AllowedExecutionLease(),
+        artifact_writer=FilePrivateQualificationArtifactWriter(),
+        context=object(),  # type: ignore[arg-type]
+    ).run(
+        environment_opt_in=True,
+        candidate_path=(tmp_path / "candidate.json").resolve(),
+    )
+
+    assert report.status == "not_verified"
+    assert report.failure_code == "cancelled"
+    assert report.manifest_candidate_written is False
 
 
 @pytest.mark.asyncio
@@ -563,7 +785,10 @@ async def test_inventory_runner_rejects_unaccounted_or_excess_wire_bytes(
             expected_user_id=SecretStr("123456789"),
             credential_resolver=Resolver(),
             transport=Transport([response]),
+            request_governor=_request_governor(),
             connection_repository=Repository(),
+            execution_lease=AllowedExecutionLease(),
+            artifact_writer=FilePrivateQualificationArtifactWriter(),
             context=object(),  # type: ignore[arg-type]
         ).run(
             environment_opt_in=True,
@@ -588,12 +813,40 @@ async def test_inventory_runner_reports_manifest_mismatch_without_candidate(
         expected_user_id=SecretStr("123456789"),
         credential_resolver=Resolver(),
         transport=Transport(responses),
+        request_governor=_request_governor(),
         connection_repository=Repository(),
+        execution_lease=AllowedExecutionLease(),
+        artifact_writer=FilePrivateQualificationArtifactWriter(),
         context=object(),  # type: ignore[arg-type]
         sleep=lambda _: _no_sleep(),
         jitter=lambda _: 0.0,
     ).run(environment_opt_in=True, candidate_path=candidate)
 
+    assert report.failure_code == "manifest_mismatch"
+    assert not candidate.exists()
+
+
+@pytest.mark.asyncio
+async def test_inventory_runner_rejects_different_manifest_with_same_aggregates(
+    tmp_path: Path,
+) -> None:
+    candidate = (tmp_path / "candidate.json").resolve()
+
+    report = await YandexQualificationInventoryRunner(
+        config=_config(),
+        expected_user_id=SecretStr("123456789"),
+        credential_resolver=Resolver(),
+        transport=Transport(_same_aggregate_different_manifest_responses()),
+        request_governor=_request_governor(),
+        connection_repository=Repository(),
+        execution_lease=AllowedExecutionLease(),
+        artifact_writer=FilePrivateQualificationArtifactWriter(),
+        context=object(),  # type: ignore[arg-type]
+        sleep=lambda _: _no_sleep(),
+        jitter=lambda _: 0.0,
+    ).run(environment_opt_in=True, candidate_path=candidate)
+
+    assert report.status == "not_verified"
     assert report.failure_code == "manifest_mismatch"
     assert not candidate.exists()
 
@@ -610,7 +863,10 @@ async def test_inventory_runner_does_not_replace_existing_manifest_candidate(
         expected_user_id=SecretStr("123456789"),
         credential_resolver=Resolver(),
         transport=Transport(_baseline_responses()),
+        request_governor=_request_governor(),
         connection_repository=Repository(),
+        execution_lease=AllowedExecutionLease(),
+        artifact_writer=FilePrivateQualificationArtifactWriter(),
         context=object(),  # type: ignore[arg-type]
         sleep=lambda _: _no_sleep(),
         jitter=lambda _: 0.0,

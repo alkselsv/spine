@@ -11,7 +11,7 @@ import sys
 import httpx
 
 from spine.connectors.yandex_disk_api import HttpxYandexDiskApiTransport
-from spine.connectors.yandex_identity_preflight import (
+from spine.application.yandex_identity_preflight import (
     YandexIdentityPreflightConfig,
     YandexIdentityPreflightRefused,
     YandexIdentityPreflightReport,
@@ -20,6 +20,9 @@ from spine.connectors.yandex_identity_preflight import (
 )
 from spine.infrastructure.yandex_qualification_credentials import (
     LocalYandexQualificationCredentialResolver,
+)
+from spine.infrastructure.private_qualification_artifacts import (
+    FilePrivateQualificationArtifactWriter,
 )
 
 
@@ -40,6 +43,7 @@ async def _run(
             config=config,
             credential_resolver=resolver,
             transport=HttpxYandexDiskApiTransport(client=client),
+            artifact_writer=FilePrivateQualificationArtifactWriter(),
         ).run(
             environment_opt_in=environment_opt_in,
             candidate_path=candidate_path,
@@ -59,7 +63,11 @@ def _write_report_with_candidate_rollback(
     report: YandexIdentityPreflightReport,
 ) -> None:
     try:
-        write_yandex_identity_preflight_report(report_path, report)
+        write_yandex_identity_preflight_report(
+            report_path,
+            report,
+            artifact_writer=FilePrivateQualificationArtifactWriter(),
+        )
     except OSError:
         if report.identity_candidate_written:
             try:

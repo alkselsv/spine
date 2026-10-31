@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
+import time
 
 from spine.application.connections.provider import (
     ProviderConnectionRepository,
@@ -19,6 +20,7 @@ from spine.connectors.yandex_disk_api import (
     YandexDiskApiService,
     YandexDiskApiTransport,
     YandexQualificationApiBinding,
+    YandexQualificationRequestGovernor,
     YandexQualificationRequestPolicy,
 )
 
@@ -31,6 +33,7 @@ class YandexQualificationReaderComposition:
     provider: YandexDiskProviderAdapter
     service: YandexDiskApiService
     read_profile: YandexDiskReadProfile
+    request_governor: YandexQualificationRequestGovernor
 
 
 def compose_yandex_qualification_reader(
@@ -41,11 +44,17 @@ def compose_yandex_qualification_reader(
     connection_repository: ProviderConnectionRepository,
     clock: Callable[[], datetime],
     sleep: Callable[[float], Awaitable[None]],
+    monotonic: Callable[[], float] = time.monotonic,
     jitter: Callable[[float], float] | None = None,
 ) -> YandexQualificationReaderComposition:
     """Wire the concrete API only through the admitted provider adapter."""
 
     request_policy = YandexQualificationRequestPolicy()
+    request_governor = YandexQualificationRequestGovernor(
+        policy=request_policy,
+        monotonic=monotonic,
+        sleep=sleep,
+    )
     read_profile = YandexDiskReadProfile(
         page_size=request_policy.max_items,
         max_attempts=request_policy.max_request_attempts,
@@ -59,7 +68,7 @@ def compose_yandex_qualification_reader(
         credential_resolver=credential_resolver,
         transport=transport,
         request_policy=request_policy,
-        sleep=sleep,
+        request_governor=request_governor,
     )
     if jitter is None:
         provider = YandexDiskProviderAdapter(
@@ -84,6 +93,7 @@ def compose_yandex_qualification_reader(
         provider=provider,
         service=service,
         read_profile=read_profile,
+        request_governor=request_governor,
     )
 
 

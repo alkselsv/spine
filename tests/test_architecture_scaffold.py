@@ -91,6 +91,21 @@ class ArchitectureScaffoldTests(unittest.TestCase):
                 f"outer-layer import in {path}",
             )
 
+    def test_connector_layer_has_no_infrastructure_imports(self) -> None:
+        connectors_root = Path(__file__).parents[1] / "src" / "spine" / "connectors"
+        for path in connectors_root.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            imports = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imports.extend(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imports.append(node.module)
+            self.assertFalse(
+                any(name.startswith("spine.infrastructure") for name in imports),
+                f"infrastructure import in {path}",
+            )
+
     def test_application_persistence_contracts_have_no_framework_imports(self) -> None:
         contracts_root = (
             Path(__file__).parents[1] / "src" / "spine" / "application" / "persistence"

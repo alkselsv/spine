@@ -1,9 +1,8 @@
-"""Metadata-only recursive inventory for the isolated Yandex qualification."""
+"""Metadata-only application use case for isolated Yandex qualification."""
 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
@@ -31,11 +30,22 @@ from spine.application.connections.provider import (
     ProviderReadDeniedError,
 )
 from spine.application.persistence.context import TrustedPersistenceContext
+from spine.application.private_qualification_artifacts import (
+    PrivateQualificationArtifactWriter,
+)
+from spine.application.yandex_qualification_execution import (
+    YandexQualificationExecutionDeniedError,
+    YandexQualificationExecutionLease,
+    YandexQualificationExecutionScope,
+)
 from spine.connectors.yandex_disk import (
     YandexDiskCredentialResolver,
-    YandexDiskResource,
-    YandexDiskResourcePage,
-    YandexDiskService,
+)
+from spine.connectors.yandex_disk_inventory import (
+    InventoryFailureCode,
+    YandexQualificationInventory,
+    YandexQualificationInventoryError,
+    YandexQualificationInventoryReader,
 )
 from spine.connectors.yandex_disk_api import (
     YandexDiskApiRequest,
@@ -43,6 +53,7 @@ from spine.connectors.yandex_disk_api import (
     YandexDiskApiService,
     YandexDiskApiTransport,
     YandexQualificationApiBinding,
+    YandexQualificationRequestGovernor,
     YandexQualificationRequestPolicy,
 )
 from spine.domain.common import DefinitionModel
@@ -53,54 +64,11 @@ from spine.domain.connections.provider import (
     ProviderKind,
     ProviderConnectionStatus,
 )
-from spine.infrastructure.yandex_qualification_credentials import (
+from spine.application.yandex_qualification_credentials import (
     YANDEX_QUALIFICATION_CLIENT_ID,
     YANDEX_QUALIFICATION_ROOT,
     YandexQualificationCredentialBinding,
 )
-from spine.infrastructure.private_qualification_artifacts import (
-    create_private_qualification_file,
-)
-
-
-InventoryFailureCode = Literal[
-    "candidate_write_denied",
-    "contract_rejected",
-    "inventory_changed",
-    "manifest_mismatch",
-    "page_limit_reached",
-    "permission_lost",
-    "prerequisite_denied",
-    "provider_unavailable",
-    "resource_limit_reached",
-    "resource_not_found",
-    "response_byte_limit_reached",
-    "retry_budget_exhausted",
-    "scope_denied",
-    "throttled",
-    "authorization_revoked",
-]
-
-
-class YandexQualificationInventoryError(RuntimeError):
-    """A content-free refusal to claim a complete recursive inventory."""
-
-    def __init__(self, code: InventoryFailureCode) -> None:
-        self.code = code
-        super().__init__("Yandex qualification inventory is incomplete")
-
-
-class YandexQualificationInventory(DefinitionModel):
-    """Private exact inventory; callers must not serialize it to public evidence."""
-
-    schema_version: Literal["yandex-qualification-inventory:v1"] = (
-        "yandex-qualification-inventory:v1"
-    )
-    resources: tuple[YandexDiskResource, ...]
-    file_count: StrictInt = Field(ge=0)
-    directory_count: StrictInt = Field(ge=0)
-    file_bytes: StrictInt = Field(ge=0)
-    provider_pages: StrictInt = Field(ge=1)
 
 
 class YandexQualificationInventoryConfig(DefinitionModel):
@@ -118,6 +86,7 @@ class YandexQualificationInventoryConfig(DefinitionModel):
     data_approval_reference: Literal["issue-702-comment-6539550684"]
     fixture_manifest_version: Literal["spine-yandex-qualification-fixtures-v1"]
     scope_version: Literal["spine-yandex-qualification-scope:v1"]
+    approved_manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     expected_file_count: Literal[5] = 5
     expected_directory_count: Literal[4] = 4
     expected_file_bytes: Literal[1416] = 1416
@@ -140,6 +109,8 @@ class YandexQualificationInventoryReport(DefinitionModel):
     request_policy_version: Literal["spine-yandex-disk-qualification-ops:v1"] = (
         "spine-yandex-disk-qualification-ops:v1"
     )
+    workspace_id: UUID
+    environment_id: UUID
     connection_id: UUID
     connection_version_id: UUID
     authorization_generation: StrictInt = Field(ge=1)
@@ -176,148 +147,6 @@ class YandexQualificationInventoryReport(DefinitionModel):
         return self
 
 
-@dataclass(frozen=True, slots=True)
-class YandexQualificationInventoryReader:
-    """Traverse the approved root and prove a stable recursive metadata snapshot."""
-
-    service: YandexDiskService
-    approved_root: str
-    page_size: int = 32
-    max_pages: int = 10
-    max_resources: int = 32
-    max_retry_requests: int = 20
-    max_attempts: int = 3
-    backoff_ceilings: tuple[float, ...] = (1.0, 2.0)
-    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
-    jitter: Callable[[float], float] = lambda ceiling: random.SystemRandom().uniform(
-        0.0, ceiling
-    )
-
-    def __post_init__(self) -> None:
-        if (
-            self.max_attempts < 1
-            or len(self.backoff_ceilings) != self.max_attempts - 1
-            or any(value < 0 for value in self.backoff_ceilings)
-        ):
-            raise ValueError("inventory retry profile is invalid")
-
-    async def read(
-        self,
-        connection: ProviderConnection,
-        resource_scope_reference: OpaqueProviderReference,
-    ) -> YandexQualificationInventory:
-        retry_budget = _RetryBudget(max_requests=self.max_retry_requests)
-        first = await self._read_once(
-            connection, resource_scope_reference, retry_budget=retry_budget
-        )
-        confirmation = await self._read_once(
-            connection, resource_scope_reference, retry_budget=retry_budget
-        )
-        if first.resources != confirmation.resources:
-            raise YandexQualificationInventoryError("inventory_changed")
-        return first
-
-    async def _read_once(
-        self,
-        connection: ProviderConnection,
-        resource_scope_reference: OpaqueProviderReference,
-        *,
-        retry_budget: "_RetryBudget",
-    ) -> YandexQualificationInventory:
-        root = f"disk:{self.approved_root}"
-        pending = [root]
-        seen_directories = {root}
-        resources: dict[str, YandexDiskResource] = {}
-        page_count = 0
-        while pending:
-            directory = pending.pop(0)
-            offset = 0
-            while True:
-                page_count += 1
-                if page_count > self.max_pages:
-                    raise YandexQualificationInventoryError("page_limit_reached")
-                page = await self._list_resources(
-                    connection,
-                    resource_scope_reference,
-                    path=directory,
-                    offset=offset,
-                    limit=self.page_size,
-                    retry_budget=retry_budget,
-                )
-                embedded = page.embedded
-                if (
-                    embedded.path != directory
-                    or embedded.offset != offset
-                    or embedded.limit != self.page_size
-                ):
-                    raise YandexQualificationInventoryError("contract_rejected")
-                for resource in embedded.items:
-                    if resource.path.rsplit("/", 1)[0] != directory:
-                        raise YandexQualificationInventoryError("contract_rejected")
-                    previous = resources.get(resource.path)
-                    if previous is not None and previous != resource:
-                        raise YandexQualificationInventoryError("contract_rejected")
-                    resources[resource.path] = resource
-                    if len(resources) > self.max_resources:
-                        raise YandexQualificationInventoryError("resource_limit_reached")
-                    if resource.type == "dir" and resource.path not in seen_directories:
-                        seen_directories.add(resource.path)
-                        pending.append(resource.path)
-                next_offset = offset + len(embedded.items)
-                if next_offset >= embedded.total:
-                    if next_offset != embedded.total:
-                        raise YandexQualificationInventoryError("contract_rejected")
-                    break
-                if next_offset <= offset:
-                    raise YandexQualificationInventoryError("contract_rejected")
-                offset = next_offset
-
-        ordered = tuple(resources[path] for path in sorted(resources))
-        files = tuple(item for item in ordered if item.type == "file")
-        return YandexQualificationInventory(
-            resources=ordered,
-            file_count=len(files),
-            directory_count=len(ordered) - len(files),
-            file_bytes=sum(item.size or 0 for item in files),
-            provider_pages=page_count,
-        )
-
-    async def _list_resources(
-        self,
-        connection: ProviderConnection,
-        resource_scope_reference: OpaqueProviderReference,
-        *,
-        path: str,
-        offset: int,
-        limit: int,
-        retry_budget: "_RetryBudget",
-    ) -> YandexDiskResourcePage:
-        for attempt in range(1, self.max_attempts + 1):
-            try:
-                return await self.service.list_resources(
-                    connection,
-                    resource_scope_reference,
-                    path=path,
-                    offset=offset,
-                    limit=limit,
-                )
-            except (YandexDiskThrottleError, YandexDiskTransientError) as exc:
-                if attempt == self.max_attempts:
-                    raise
-                retry_budget.reserve(2)
-                ceiling = self.backoff_ceilings[attempt - 1]
-                delay = self.jitter(ceiling)
-                if delay < 0 or delay > ceiling:
-                    raise ValueError("inventory retry jitter exceeds its ceiling")
-                provider_delay = (
-                    exc.retry_after_seconds
-                    if isinstance(exc, YandexDiskThrottleError)
-                    else 0.0
-                )
-                await self.sleep(max(provider_delay, delay))
-        raise AssertionError("bounded inventory retry loop did not terminate")
-
-
 class YandexQualificationInventoryRunner:
     """Run the metadata-only phase and emit a private manifest candidate."""
 
@@ -328,7 +157,10 @@ class YandexQualificationInventoryRunner:
         expected_user_id: SecretStr,
         credential_resolver: YandexDiskCredentialResolver,
         transport: YandexDiskApiTransport,
+        request_governor: YandexQualificationRequestGovernor,
         connection_repository: ProviderConnectionRepository,
+        execution_lease: YandexQualificationExecutionLease,
+        artifact_writer: PrivateQualificationArtifactWriter,
         context: TrustedPersistenceContext,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         jitter: Callable[[float], float] = lambda ceiling: random.SystemRandom().uniform(
@@ -339,7 +171,10 @@ class YandexQualificationInventoryRunner:
         self._expected_user_id = expected_user_id
         self._credential_resolver = credential_resolver
         self._transport = transport
+        self._request_governor = request_governor
         self._connection_repository = connection_repository
+        self._execution_lease = execution_lease
+        self._artifact_writer = artifact_writer
         self._context = context
         self._sleep = sleep
         self._jitter = jitter
@@ -368,14 +203,38 @@ class YandexQualificationInventoryRunner:
                 command, self._context
             ) as connection:
                 _validate_admitted_connection(command, connection)
-                return await self._run_admitted(connection, candidate_path)
+                scope = YandexQualificationExecutionScope(
+                    workspace_id=command.workspace_id,
+                    environment_id=command.environment_id,
+                    connection_id=command.connection_id,
+                    connection_version_id=command.connection_version_id,
+                    resource_scope_reference=command.resource_scope_reference,
+                    authorization_generation=command.authorization_generation,
+                    configuration_generation=command.configuration_generation,
+                )
+                async with self._execution_lease.hold(scope):
+                    async def revalidate() -> None:
+                        async with self._connection_repository.admit_read(
+                            command, self._context
+                        ) as current_connection:
+                            _validate_admitted_connection(command, current_connection)
+
+                    return await self._run_admitted(
+                        connection,
+                        candidate_path,
+                        revalidate=revalidate,
+                    )
         except asyncio.CancelledError:
-            raise
-        except ProviderReadDeniedError:
+            return self._failed("cancelled")
+        except (ProviderReadDeniedError, YandexQualificationExecutionDeniedError):
             return self._failed("prerequisite_denied")
 
     async def _run_admitted(
-        self, connection: ProviderConnection, candidate_path: Path
+        self,
+        connection: ProviderConnection,
+        candidate_path: Path,
+        *,
+        revalidate: Callable[[], Awaitable[None]],
     ) -> YandexQualificationInventoryReport:
         binding = _qualification_binding(
             self.config.credential_binding,
@@ -394,7 +253,7 @@ class YandexQualificationInventoryRunner:
             credential_resolver=self._credential_resolver,
             transport=counting_transport,
             request_policy=policy,
-            sleep=self._sleep,
+            request_governor=self._request_governor,
         )
         try:
             inventory = await YandexQualificationInventoryReader(
@@ -408,11 +267,14 @@ class YandexQualificationInventoryRunner:
                 backoff_ceilings=policy.retry_backoff_ceilings,
                 sleep=self._sleep,
                 jitter=self._jitter,
+                revalidate=revalidate,
             ).read(connection, binding.resource_scope_reference)
         except asyncio.CancelledError:
-            raise
+            return self._failed("cancelled", counts=counting_transport)
         except YandexQualificationInventoryError as exc:
             return self._failed(exc.code, counts=counting_transport)
+        except ProviderReadDeniedError:
+            raise
         except Exception as exc:
             return self._failed(
                 _provider_failure_code(exc), counts=counting_transport
@@ -434,8 +296,20 @@ class YandexQualificationInventoryRunner:
                 inventory=inventory,
                 counts=counting_transport,
             )
+        manifest_digest = _inventory_digest(inventory)
+        if manifest_digest != self.config.approved_manifest_digest:
+            return self._failed(
+                "manifest_mismatch",
+                inventory=inventory,
+                counts=counting_transport,
+            )
         try:
-            _write_inventory_candidate(candidate_path, self.config, inventory)
+            _write_inventory_candidate(
+                candidate_path,
+                self.config,
+                inventory,
+                artifact_writer=self._artifact_writer,
+            )
         except OSError:
             return self._failed(
                 "candidate_write_denied",
@@ -446,6 +320,8 @@ class YandexQualificationInventoryRunner:
             status="ready_for_manifest_approval",
             fixture_manifest_version=self.config.fixture_manifest_version,
             scope_version=self.config.scope_version,
+            workspace_id=self.config.credential_binding.workspace_id,
+            environment_id=self.config.credential_binding.environment_id,
             connection_id=self.config.connection_id,
             connection_version_id=self.config.connection_version_id,
             authorization_generation=self.config.authorization_generation,
@@ -453,7 +329,7 @@ class YandexQualificationInventoryRunner:
             acting_identity_fingerprint=hashlib.sha256(
                 self._expected_user_id.get_secret_value().encode("utf-8")
             ).hexdigest(),
-            manifest_digest=_inventory_digest(inventory),
+            manifest_digest=manifest_digest,
             file_count=inventory.file_count,
             directory_count=inventory.directory_count,
             file_bytes=inventory.file_bytes,
@@ -476,6 +352,8 @@ class YandexQualificationInventoryRunner:
                 "status": "not_verified",
                 "fixture_manifest_version": self.config.fixture_manifest_version,
                 "scope_version": self.config.scope_version,
+                "workspace_id": self.config.credential_binding.workspace_id,
+                "environment_id": self.config.credential_binding.environment_id,
                 "connection_id": self.config.connection_id,
                 "connection_version_id": self.config.connection_version_id,
                 "authorization_generation": self.config.authorization_generation,
@@ -524,17 +402,6 @@ class _CountingTransport:
         if self._response_bytes > self._max_response_bytes:
             raise YandexDiskFileTooLargeError()
         return response
-
-
-@dataclass(slots=True)
-class _RetryBudget:
-    max_requests: int
-    used_requests: int = 0
-
-    def reserve(self, requests: int) -> None:
-        if requests < 1 or self.used_requests + requests > self.max_requests:
-            raise YandexQualificationInventoryError("retry_budget_exhausted")
-        self.used_requests += requests
 
 
 def _provider_failure_code(exc: Exception) -> InventoryFailureCode:
@@ -616,20 +483,25 @@ def _write_inventory_candidate(
     path: Path,
     config: YandexQualificationInventoryConfig,
     inventory: YandexQualificationInventory,
+    *,
+    artifact_writer: PrivateQualificationArtifactWriter,
 ) -> None:
     payload = {
         "schema_version": "yandex-qualification-manifest-candidate:v1",
         "fixture_manifest_version": config.fixture_manifest_version,
         "scope_version": config.scope_version,
+        "workspace_id": str(config.credential_binding.workspace_id),
+        "environment_id": str(config.credential_binding.environment_id),
         "connection_id": str(config.connection_id),
         "connection_version_id": str(config.connection_version_id),
         "authorization_generation": config.authorization_generation,
         "configuration_generation": config.configuration_generation,
         "request_policy_version": "spine-yandex-disk-qualification-ops:v1",
+        "approved_manifest_digest": config.approved_manifest_digest,
         "manifest_digest": _inventory_digest(inventory),
         "resources": [item.model_dump(mode="json") for item in inventory.resources],
     }
-    create_private_qualification_file(
+    artifact_writer.create(
         path,
         (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
     )
@@ -645,9 +517,12 @@ def _inventory_digest(inventory: YandexQualificationInventory) -> str:
 
 
 def write_yandex_inventory_report(
-    path: Path, report: YandexQualificationInventoryReport
+    path: Path,
+    report: YandexQualificationInventoryReport,
+    *,
+    artifact_writer: PrivateQualificationArtifactWriter,
 ) -> None:
-    create_private_qualification_file(
+    artifact_writer.create(
         path,
         (json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode("utf-8"),
     )
@@ -663,6 +538,8 @@ def yandex_inventory_not_verified_report(
         status="not_verified",
         fixture_manifest_version=config.fixture_manifest_version,
         scope_version=config.scope_version,
+        workspace_id=config.credential_binding.workspace_id,
+        environment_id=config.credential_binding.environment_id,
         connection_id=config.connection_id,
         connection_version_id=config.connection_version_id,
         authorization_generation=config.authorization_generation,

@@ -14,7 +14,7 @@ from spine.connectors.yandex_disk_api import (
     YandexDiskApiRequest,
     YandexDiskApiResponse,
 )
-from spine.connectors.yandex_identity_preflight import (
+from spine.application.yandex_identity_preflight import (
     YandexIdentityPreflightConfig,
     YandexIdentityPreflightRefused,
     YandexIdentityPreflightRunner,
@@ -27,6 +27,9 @@ from spine.infrastructure.yandex_qualification_credentials import (
     YANDEX_QUALIFICATION_ROOT,
     YANDEX_QUALIFICATION_SECRET_REFERENCE,
     YandexQualificationCredentialBinding,
+)
+from spine.infrastructure.private_qualification_artifacts import (
+    FilePrivateQualificationArtifactWriter,
 )
 
 
@@ -83,6 +86,7 @@ def _runner(*, opt_in: bool, response: YandexDiskApiResponse):
         ),
         credential_resolver=resolver,
         transport=transport,
+        artifact_writer=FilePrivateQualificationArtifactWriter(),
     )
     return runner, resolver, transport
 
@@ -141,6 +145,8 @@ async def test_preflight_calls_only_fixed_identity_endpoint_and_writes_private_c
     assert request.query == {"format": "json"}
     assert request.headers == {"Authorization": "OAuth private-oauth-token"}
     assert report.status == "ready_for_human_approval"
+    assert report.workspace_id == _binding().workspace_id
+    assert report.environment_id == _binding().environment_id
     assert report.client_id == YANDEX_QUALIFICATION_CLIENT_ID
     assert report.identity_fingerprint == hashlib.sha256(user_id.encode()).hexdigest()
     assert report.identity_requests == 1
@@ -248,7 +254,11 @@ async def test_preflight_report_is_private_and_contains_no_raw_identity(
     )
     report_path = (tmp_path / "report.json").resolve()
 
-    write_yandex_identity_preflight_report(report_path, report)
+    write_yandex_identity_preflight_report(
+        report_path,
+        report,
+        artifact_writer=FilePrivateQualificationArtifactWriter(),
+    )
 
     serialized = report_path.read_text(encoding="utf-8")
     assert stat.S_IMODE(report_path.stat().st_mode) == 0o600

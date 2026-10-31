@@ -7,7 +7,6 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 import json
-import time
 from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -204,18 +203,16 @@ class HttpxYandexDiskApiTransport:
             raise YandexDiskTransientError() from None
 
 
-class _RequestGovernor:
+class YandexQualificationRequestGovernor:
     """Single-flight token bucket for the approved 1 rps, burst-2 profile."""
 
     def __init__(
         self,
         *,
-        transport: YandexDiskApiTransport,
         policy: YandexQualificationRequestPolicy,
         monotonic: Callable[[], float],
         sleep: Callable[[float], Awaitable[None]],
     ) -> None:
-        self._transport = transport
         self._rate = policy.requests_per_second
         self._capacity = float(policy.burst)
         self._tokens = self._capacity
@@ -224,7 +221,11 @@ class _RequestGovernor:
         self._sleep = sleep
         self._lock = asyncio.Lock()
 
-    async def request(self, request: YandexDiskApiRequest) -> YandexDiskApiResponse:
+    async def request(
+        self,
+        transport: YandexDiskApiTransport,
+        request: YandexDiskApiRequest,
+    ) -> YandexDiskApiResponse:
         async with self._lock:
             now = self._monotonic()
             self._tokens = min(
@@ -240,8 +241,10 @@ class _RequestGovernor:
                     self._tokens + max(0.0, now - self._updated_at) * self._rate,
                 )
                 self._updated_at = now
+                if self._tokens < 1.0:
+                    raise YandexDiskTransientError()
             self._tokens = max(0.0, self._tokens - 1.0)
-            return await self._transport.request(request)
+            return await transport.request(request)
 
 
 class YandexDiskApiService:
@@ -254,18 +257,13 @@ class YandexDiskApiService:
         credential_resolver: YandexDiskCredentialResolver,
         transport: YandexDiskApiTransport,
         request_policy: YandexQualificationRequestPolicy,
-        monotonic: Callable[[], float] = time.monotonic,
-        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        request_governor: YandexQualificationRequestGovernor,
     ) -> None:
         self._binding = binding
         self._resolver = credential_resolver
+        self._transport = transport
         self._policy = request_policy
-        self._governor = _RequestGovernor(
-            transport=transport,
-            policy=request_policy,
-            monotonic=monotonic,
-            sleep=sleep,
-        )
+        self._governor = request_governor
 
     async def list_resources(
         self,
@@ -483,7 +481,7 @@ class YandexDiskApiService:
 
     async def _request(self, request: YandexDiskApiRequest) -> YandexDiskApiResponse:
         try:
-            return await self._governor.request(request)
+            return await self._governor.request(self._transport, request)
         except asyncio.CancelledError:
             raise
         except (

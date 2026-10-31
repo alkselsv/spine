@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -40,4 +41,15 @@ def create_private_qualification_file(path: Path, content: bytes) -> None:
             os.close(descriptor)
 
 
-__all__ = ["create_private_qualification_file"]
+@dataclass(frozen=True, slots=True)
+class FilePrivateQualificationArtifactWriter:
+    """Create owner-private artifacts on the local qualification filesystem."""
+
+    def create(self, path: Path, content: bytes) -> None:
+        create_private_qualification_file(path, content)
+
+
+__all__ = [
+    "FilePrivateQualificationArtifactWriter",
+    "create_private_qualification_file",
+]
