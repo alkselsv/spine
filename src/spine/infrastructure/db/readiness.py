@@ -552,6 +552,9 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "requirements_artifact_versions": ExpectedTablePrivileges(
             True, True, True, False, False
         ),
+        "requirements_acceptance_decisions": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
         "transcription_jobs": ExpectedTablePrivileges(
             True, True, True, False, False
         ),

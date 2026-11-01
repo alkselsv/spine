@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from spine.application.persistence.command_digest import CommandDigest, digest_command
 from spine.application.persistence.context import (
     EnvironmentScope,
     PersistenceOperation,
@@ -34,6 +35,7 @@ WORKFLOW_SIGNAL_EVENT_SCHEMA_VERSION = 1
 CLARIFICATION_REQUESTED_EVENT_TYPE = "workflow.clarification-requested"
 CLARIFICATION_ANSWERED_EVENT_TYPE = "workflow.clarification-answered"
 WORKFLOW_CANCELLED_EVENT_TYPE = "workflow.run-cancelled"
+REQUIREMENTS_ACCEPTED_EVENT_TYPE = "workflow.requirements-accepted"
 
 
 class StartWorkflowDispatchPayload(BaseModel):
@@ -120,6 +122,26 @@ class WorkflowCancelledDispatchPayload(BaseModel):
         return value
 
 
+class RequirementsAcceptedDispatchPayload(BaseModel):
+    """Content-free terminal signal for one exact accepted artifact."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    command_id: UUID
+    run_id: UUID
+    artifact_id: UUID
+    artifact_version: int = Field(ge=1, strict=True)
+    artifact_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    workflow_version_id: UUID
+
+    @field_validator("command_id", "run_id", "artifact_id", "workflow_version_id")
+    @classmethod
+    def reject_zero_identity(cls, value: UUID) -> UUID:
+        if value.int == 0:
+            raise ValueError("requirements acceptance signal identities must be non-zero")
+        return value
+
+
 class WorkflowRunAdmissionRepository(Protocol):
     async def admit(self, command: StartWorkflowCommand) -> WorkflowCommandReceipt: ...
 
@@ -142,6 +164,29 @@ class WorkflowRunAdmissionRepository(Protocol):
         self, *, workspace_id: UUID, environment_id: UUID, run_id: UUID,
         after_sequence: int | None, limit: int,
     ) -> WorkflowEventPage: ...
+
+
+def workflow_command_digest(command: WorkflowCommand) -> CommandDigest:
+    """Return the canonical digest shared by replay and persistence."""
+
+    return digest_command(
+        operation=COMMAND_WORKFLOW_OPERATION,
+        operation_schema_version=COMMAND_WORKFLOW_SCHEMA_VERSION,
+        payload={
+            "command_id": command.command_id,
+            "run_id": command.run_id,
+            "workspace_id": command.workspace_id,
+            "environment_id": command.environment_id,
+            "actor": command.actor.model_dump(mode="json"),
+            "command_type": command.command_type,
+            "command_schema_version": command.command_schema_version,
+            "expected_run_version": command.expected_run_version,
+            "payload": command.payload.model_dump(mode="json"),
+            "artifact_refs": [item.model_dump(mode="json") for item in command.artifact_refs],
+            "correlation_id": command.correlation_id,
+            "causation_id": command.causation_id,
+        },
+    )
 
 
 def validate_workflow_run_context(
@@ -202,6 +247,11 @@ def register_workflow_run_outbox_event(registry: object) -> None:
         schema_version=WORKFLOW_SIGNAL_EVENT_SCHEMA_VERSION,
         payload_type=WorkflowCancelledDispatchPayload,
     )
+    register(
+        event_type=REQUIREMENTS_ACCEPTED_EVENT_TYPE,
+        schema_version=WORKFLOW_SIGNAL_EVENT_SCHEMA_VERSION,
+        payload_type=RequirementsAcceptedDispatchPayload,
+    )
 
 
 __all__ = [
@@ -210,6 +260,7 @@ __all__ = [
     "COMMAND_WORKFLOW_SCHEMA_VERSION",
     "CLARIFICATION_ANSWERED_EVENT_TYPE",
     "CLARIFICATION_REQUESTED_EVENT_TYPE",
+    "REQUIREMENTS_ACCEPTED_EVENT_TYPE",
     "START_WORKFLOW_EVENT_SCHEMA_VERSION",
     "START_WORKFLOW_EVENT_TYPE",
     "START_WORKFLOW_OPERATION",
@@ -221,8 +272,10 @@ __all__ = [
     "WORKFLOW_CANCELLED_EVENT_TYPE",
     "WORKFLOW_SIGNAL_EVENT_SCHEMA_VERSION",
     "WorkflowCancelledDispatchPayload",
+    "RequirementsAcceptedDispatchPayload",
     "WorkflowRunAdmissionRepository",
     "register_workflow_run_outbox_event",
     "validate_workflow_run_context",
     "validate_workflow_command_context",
+    "workflow_command_digest",
 ]

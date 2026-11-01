@@ -29,6 +29,13 @@ from spine.application.requirements_review import (
     RequirementsReviewService,
     RequirementsReviewUnavailableError,
 )
+from spine.application.requirements_acceptance import (
+    REQUIREMENTS_ACCEPTANCE_POLICY_VERSION,
+    RequirementsAcceptanceAuthority,
+    RequirementsAcceptanceDeniedError,
+    RequirementsAcceptanceReceipt,
+    RequirementsAcceptanceService,
+)
 from spine.application.requirements_artifacts import PersistedRequirementsArtifactService
 from spine.application.persistence.errors import ConstraintConflictError, OptimisticConflictError
 from spine.application.persistence.context import (
@@ -39,7 +46,9 @@ from spine.application.persistence.context import (
 )
 from spine.application.workflow_runs import (
     AddContextCommandV1,
+    AcceptRequirementsCommandV1,
     EditRequirementCommandV1,
+    ReclassifyRequirementCommandV1,
     RequestRequirementsReworkCommandV1,
     SaveRequirementsReviewCommandV1,
     AnswerClarificationCommandV1,
@@ -110,8 +119,10 @@ class WorkflowRunResponse(BaseModel):
         Literal[
             "add_context",
             "edit_requirement",
+            "reclassify_requirement",
             "save_review",
             "request_rework",
+            "accept_requirements",
             "answer_clarification",
             "cancel",
         ],
@@ -152,11 +163,36 @@ class EditRequirementPayloadRequestV1(BaseModel):
     reason: str = Field(min_length=1, max_length=2_000)
 
 
+class ReclassifyRequirementPayloadRequestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    requirement_id: UUID
+    statement: str = Field(min_length=1, max_length=8_192)
+    acceptance_basis: Literal["manager_assertion", "explicit_assumption"]
+    rationale: str = Field(min_length=1, max_length=2_000)
+    independence_attestation: Literal[
+        "authored_from_independent_knowledge_without_protected_text"
+    ]
+    false_consequence: str | None = Field(default=None, max_length=2_000)
+    conflict_resolution_rationale: str | None = Field(default=None, max_length=2_000)
+
+
 class RequirementsReviewPayloadRequestV1(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_version: Literal[1] = 1
     reason: str = Field(min_length=1, max_length=2_000)
+
+
+class AcceptRequirementsPayloadRequestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    artifact_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    policy_version: Literal["requirements-artifact-acceptance:v1"]
+    acknowledged_assertion_count: int = Field(ge=0, strict=True)
+    acknowledged_assumption_count: int = Field(ge=0, strict=True)
 
 
 class EditRequirementWorkflowCommandRequestV1(BaseModel):
@@ -169,6 +205,20 @@ class EditRequirementWorkflowCommandRequestV1(BaseModel):
     command_schema_version: Literal[1]
     expected_run_version: int = Field(ge=1, strict=True)
     payload: EditRequirementPayloadRequestV1
+    artifact_refs: tuple[WorkflowArtifactRefRequestV1, ...]
+    correlation_id: UUID
+    causation_id: UUID
+
+
+class ReclassifyRequirementWorkflowCommandRequestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    command_id: UUID
+    command_type: Literal["reclassify_requirement"]
+    command_schema_version: Literal[1]
+    expected_run_version: int = Field(ge=1, strict=True)
+    payload: ReclassifyRequirementPayloadRequestV1
     artifact_refs: tuple[WorkflowArtifactRefRequestV1, ...]
     correlation_id: UUID
     causation_id: UUID
@@ -212,6 +262,20 @@ class SaveRequirementsReviewWorkflowCommandRequestV1(BaseModel):
     causation_id: UUID
 
 
+class AcceptRequirementsWorkflowCommandRequestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    command_id: UUID
+    command_type: Literal["accept_requirements"]
+    command_schema_version: Literal[1]
+    expected_run_version: int = Field(ge=1, strict=True)
+    payload: AcceptRequirementsPayloadRequestV1
+    artifact_refs: tuple[WorkflowArtifactRefRequestV1, ...]
+    correlation_id: UUID
+    causation_id: UUID
+
+
 class CancelWorkflowCommandRequestV1(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -243,8 +307,10 @@ class RequestRequirementsReworkWorkflowCommandRequestV1(BaseModel):
 WorkflowCommandRequestV1 = Annotated[
     AddContextWorkflowCommandRequestV1
     | EditRequirementWorkflowCommandRequestV1
+    | ReclassifyRequirementWorkflowCommandRequestV1
     | SaveRequirementsReviewWorkflowCommandRequestV1
     | RequestRequirementsReworkWorkflowCommandRequestV1
+    | AcceptRequirementsWorkflowCommandRequestV1
     | AnswerClarificationWorkflowCommandRequestV1
     | CancelWorkflowCommandRequestV1,
     Field(discriminator="command_type"),
@@ -262,12 +328,38 @@ class RequirementsReviewReceiptResponse(BaseModel):
     state: str
     run_version: int = Field(ge=1)
     admission: Literal["accepted", "replayed"]
-    action: Literal["edit_requirement", "save_review", "request_rework"]
+    action: Literal[
+        "edit_requirement", "reclassify_requirement", "save_review", "request_rework"
+    ]
     actor: ActorRef
     reason: str
     changed_requirement_id: UUID | None = None
     base_artifact_ref: WorkflowArtifactRef
     resulting_artifact_ref: WorkflowArtifactRef
+
+
+class RequirementsAcceptanceReceiptResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    command_id: UUID
+    work_item_id: UUID
+    run_id: UUID
+    workflow_version_id: UUID
+    state: str
+    run_version: int = Field(ge=1)
+    admission: Literal["accepted", "replayed"]
+    accepted_artifact_ref: WorkflowArtifactRef
+    accepted_artifact_digest: str
+    actor: ActorRef
+    policy_version: str
+    authentication_configuration_version: str
+    authorization_generation: int
+    evidence_validation_references: tuple[UUID, ...]
+    correlation_id: UUID
+    causation_id: UUID
+    assertion_count: int
+    assumption_count: int
 
 
 class WorkflowEventResponse(BaseModel):
@@ -303,6 +395,7 @@ def install_workflow_run_routes(
     command_id_source=uuid4,
     requirements_artifact_service: PersistedRequirementsArtifactService | None = None,
     requirements_review_service: RequirementsReviewService | None = None,
+    requirements_acceptance_service: RequirementsAcceptanceService | None = None,
 ) -> None:
     """Register shared run admission and authorized read routes."""
 
@@ -519,6 +612,29 @@ def install_workflow_run_routes(
                     command=command,
                     clarification_successor=clarification_successor,
                 )
+            elif command.command_type == "accept_requirements":
+                if requirements_acceptance_service is None:
+                    return JSONResponse(
+                        status_code=503,
+                        content={"code": "requirements.acceptance_unavailable"},
+                    )
+                acceptance_receipt = await requirements_acceptance_service.dispatch(
+                    context=persistence_context,
+                    command=command,
+                    authority=_acceptance_authority(request_context),
+                    requester=ParsedContentInspectionRequester(
+                        subject_id=request_context.acting_subject_id,
+                        authorization_generation=request_context.authorization_generation,
+                    ),
+                )
+                if acceptance_receipt is None:
+                    return JSONResponse(
+                        status_code=404, content={"code": "workflow.run_not_found"}
+                    )
+                return JSONResponse(
+                    status_code=202,
+                    content=_acceptance_response(acceptance_receipt).model_dump(mode="json"),
+                )
             elif requirements_review_service is None:
                 return JSONResponse(
                     status_code=503,
@@ -547,6 +663,10 @@ def install_workflow_run_routes(
             )
         except RequirementsReviewUnavailableError:
             return JSONResponse(status_code=404, content={"code": "artifact.not_found"})
+        except RequirementsAcceptanceDeniedError:
+            return JSONResponse(
+                status_code=403, content={"code": "requirements.acceptance_denied"}
+            )
         except OptimisticConflictError:
             current = await service.get_run(context=persistence_context, run_id=run_id)
             if current is None:
@@ -561,8 +681,10 @@ def install_workflow_run_routes(
         except ConstraintConflictError:
             if command.command_type in {
                 "edit_requirement",
+                "reclassify_requirement",
                 "save_review",
                 "request_rework",
+                "accept_requirements",
             }:
                 return JSONResponse(
                     status_code=409, content={"code": "workflow.run_terminal"}
@@ -674,7 +796,11 @@ def install_workflow_run_routes(
         route_id="workflow.runs.commands.create",
         policy=command_policy,
         methods=["POST"],
-        response_model=WorkflowRunReceiptResponse | RequirementsReviewReceiptResponse,
+        response_model=(
+            WorkflowRunReceiptResponse
+            | RequirementsReviewReceiptResponse
+            | RequirementsAcceptanceReceiptResponse
+        ),
         status_code=202,
         openapi_extra={
             "parameters": [
@@ -738,16 +864,67 @@ def _review_response(receipt: RequirementsReviewReceipt) -> RequirementsReviewRe
     )
 
 
+def _acceptance_response(
+    receipt: RequirementsAcceptanceReceipt,
+) -> RequirementsAcceptanceReceiptResponse:
+    command = receipt.command_receipt
+    return RequirementsAcceptanceReceiptResponse(
+        command_id=command.command_id,
+        work_item_id=command.work_item_id,
+        run_id=command.run_id,
+        workflow_version_id=command.workflow_version_id,
+        state=command.state.value,
+        run_version=command.run_version,
+        admission=command.admission,
+        accepted_artifact_ref=receipt.accepted_artifact_ref,
+        accepted_artifact_digest=receipt.accepted_artifact_digest,
+        actor=receipt.actor,
+        policy_version=receipt.policy_version,
+        authentication_configuration_version=(
+            receipt.authentication_configuration_version
+        ),
+        authorization_generation=receipt.authorization_generation,
+        evidence_validation_references=receipt.evidence_validation_references,
+        correlation_id=receipt.correlation_id,
+        causation_id=receipt.causation_id,
+        assertion_count=receipt.assertion_count,
+        assumption_count=receipt.assumption_count,
+    )
+
+
+def _acceptance_authority(
+    context: AuthorizedRequestContext[object],
+) -> RequirementsAcceptanceAuthority:
+    return RequirementsAcceptanceAuthority(
+        actor_id=context.acting_subject_id,
+        workspace_id=context.scope.workspace_id,
+        environment_id=context.scope.environment_id,
+        permission="requirements_artifact.accept",
+        policy_version=REQUIREMENTS_ACCEPTANCE_POLICY_VERSION,
+        authentication_configuration_version=(
+            context.authentication_configuration_version
+        ),
+        authorization_generation=context.authorization_generation,
+        # R1 has one human administrative role. Policy v1 maps that current,
+        # database-resolved role to the narrower acceptance permission here.
+        allowed=AuthorizationRole.ADMINISTRATOR in context.roles,
+    )
+
+
 def _application_payload(body: WorkflowCommandRequestV1):
     data = body.payload.model_dump()
     if body.command_type == "add_context":
         return AddContextCommandV1.model_validate(data)
     if body.command_type == "edit_requirement":
         return EditRequirementCommandV1.model_validate(data)
+    if body.command_type == "reclassify_requirement":
+        return ReclassifyRequirementCommandV1.model_validate(data)
     if body.command_type == "save_review":
         return SaveRequirementsReviewCommandV1.model_validate(data)
     if body.command_type == "request_rework":
         return RequestRequirementsReworkCommandV1.model_validate(data)
+    if body.command_type == "accept_requirements":
+        return AcceptRequirementsCommandV1.model_validate(data)
     if body.command_type == "answer_clarification":
         return AnswerClarificationCommandV1.model_validate(data)
     return CancelWorkflowCommandV1.model_validate(data)
@@ -756,9 +933,12 @@ def _application_payload(body: WorkflowCommandRequestV1):
 __all__ = [
     "StartWorkflowRequestV1",
     "AddContextWorkflowCommandRequestV1",
+    "AcceptRequirementsWorkflowCommandRequestV1",
     "EditRequirementWorkflowCommandRequestV1",
+    "ReclassifyRequirementWorkflowCommandRequestV1",
     "RequestRequirementsReworkWorkflowCommandRequestV1",
     "RequirementsReviewReceiptResponse",
+    "RequirementsAcceptanceReceiptResponse",
     "SaveRequirementsReviewWorkflowCommandRequestV1",
     "AnswerClarificationWorkflowCommandRequestV1",
     "CancelWorkflowCommandRequestV1",

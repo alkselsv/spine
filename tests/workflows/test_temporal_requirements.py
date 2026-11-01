@@ -8,6 +8,7 @@ from spine.application.persistence.workflow_runs import (
     ClarificationAnsweredDispatchPayload,
     ClarificationRequestedDispatchPayload,
     WorkflowCancelledDispatchPayload,
+    RequirementsAcceptedDispatchPayload,
 )
 from spine.application.workflows.run_start_dispatch import WorkflowRunStartInput
 from spine.workflows.temporal.requirements import RequirementsWorkflowDefinition
@@ -33,6 +34,85 @@ def workflow_input() -> WorkflowRunStartInput:
         workflow_version="1.0.0",
         trace_id=UUID(int=5),
     )
+
+
+def test_accepted_terminal_state_ignores_reordered_earlier_signals() -> None:
+    workflow = RequirementsWorkflowDefinition()
+    workflow._input = workflow_input()
+    workflow.requirements_accepted(
+        RequirementsAcceptedDispatchPayload(
+            command_id=COMMAND_ID,
+            run_id=RUN_ID,
+            artifact_id=ARTIFACT_ID,
+            artifact_version=3,
+            artifact_digest="a" * 64,
+            workflow_version_id=VERSION_ID,
+        ).model_dump(mode="json")
+    )
+
+    workflow.clarification_requested(
+        ClarificationRequestedDispatchPayload(
+            run_id=RUN_ID,
+            clarification_id=CLARIFICATION_ID,
+            artifact_id=ARTIFACT_ID,
+            artifact_version=1,
+            workflow_version_id=VERSION_ID,
+        ).model_dump(mode="json")
+    )
+    workflow.clarification_answered(
+        ClarificationAnsweredDispatchPayload(
+            command_id=UUID(int=7),
+            run_id=RUN_ID,
+            clarification_id=CLARIFICATION_ID,
+            artifact_id=ARTIFACT_ID,
+            artifact_version=2,
+            workflow_version_id=VERSION_ID,
+        ).model_dump(mode="json")
+    )
+    workflow.run_cancelled(
+        WorkflowCancelledDispatchPayload(
+            command_id=UUID(int=8),
+            run_id=RUN_ID,
+            workflow_version_id=VERSION_ID,
+        ).model_dump(mode="json")
+    )
+
+    status = workflow.status()
+    assert status["state"] == "accepted"
+    assert status["last_command_id"] == str(COMMAND_ID)
+
+
+@pytest.mark.asyncio
+async def test_temporal_acceptance_completes_the_same_pinned_run() -> None:
+    async with await WorkflowEnvironment.start_time_skipping() as environment:
+        async with Worker(
+            environment.client,
+            task_queue="requirements-accept-645",
+            workflows=[RequirementsWorkflowDefinition],
+        ):
+            handle = await environment.client.start_workflow(
+                RequirementsWorkflowDefinition.run,
+                workflow_input().model_dump(mode="json"),
+                id=f"{RUN_ID}-accept",
+                task_queue="requirements-accept-645",
+            )
+            await handle.signal(
+                RequirementsWorkflowDefinition.requirements_accepted,
+                RequirementsAcceptedDispatchPayload(
+                    command_id=COMMAND_ID,
+                    run_id=RUN_ID,
+                    artifact_id=ARTIFACT_ID,
+                    artifact_version=3,
+                    artifact_digest="a" * 64,
+                    workflow_version_id=VERSION_ID,
+                ).model_dump(mode="json"),
+            )
+
+            result = await handle.result()
+            assert result["state"] == "accepted"
+            assert result["artifact_id"] == str(ARTIFACT_ID)
+            assert result["artifact_version"] == 3
+            assert result["last_command_id"] == str(COMMAND_ID)
 
 
 @pytest.mark.asyncio

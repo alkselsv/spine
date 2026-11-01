@@ -11,6 +11,7 @@ from spine.application.persistence.workflow_runs import (
     ClarificationAnsweredDispatchPayload,
     ClarificationRequestedDispatchPayload,
     WorkflowCancelledDispatchPayload,
+    RequirementsAcceptedDispatchPayload,
 )
 from spine.application.workflows.run_start_dispatch import (
     WORKFLOW_RUN_START_TYPE,
@@ -22,6 +23,7 @@ class RequirementsWorkflowExecutionState(str, Enum):
     RUNNING = "running"
     WAITING = "waiting"
     CANCELLED = "cancelled"
+    ACCEPTED = "accepted"
 
 
 @workflow.defn(name=WORKFLOW_RUN_START_TYPE)
@@ -40,7 +42,11 @@ class RequirementsWorkflowDefinition:
     async def run(self, raw_input: dict[str, Any]) -> dict[str, Any]:
         self._input = WorkflowRunStartInput.model_validate(raw_input, strict=False)
         await workflow.wait_condition(
-            lambda: self._state is RequirementsWorkflowExecutionState.CANCELLED
+            lambda: self._state
+            in {
+                RequirementsWorkflowExecutionState.CANCELLED,
+                RequirementsWorkflowExecutionState.ACCEPTED,
+            }
         )
         return self.status()
 
@@ -50,7 +56,10 @@ class RequirementsWorkflowDefinition:
             raw_payload, strict=False
         )
         self._validate_identity(payload.run_id, payload.workflow_version_id)
-        if self._state is RequirementsWorkflowExecutionState.CANCELLED:
+        if self._state in {
+            RequirementsWorkflowExecutionState.CANCELLED,
+            RequirementsWorkflowExecutionState.ACCEPTED,
+        }:
             return
         if self._state is RequirementsWorkflowExecutionState.WAITING:
             if (
@@ -71,7 +80,10 @@ class RequirementsWorkflowDefinition:
             raw_payload, strict=False
         )
         self._validate_identity(payload.run_id, payload.workflow_version_id)
-        if self._state is RequirementsWorkflowExecutionState.CANCELLED:
+        if self._state in {
+            RequirementsWorkflowExecutionState.CANCELLED,
+            RequirementsWorkflowExecutionState.ACCEPTED,
+        }:
             return
         if self._last_command_id == str(payload.command_id):
             return
@@ -102,8 +114,28 @@ class RequirementsWorkflowDefinition:
             raw_payload, strict=False
         )
         self._validate_identity(payload.run_id, payload.workflow_version_id)
+        if self._state is RequirementsWorkflowExecutionState.ACCEPTED:
+            return
         self._last_command_id = str(payload.command_id)
         self._state = RequirementsWorkflowExecutionState.CANCELLED
+
+    @workflow.signal(name="requirements_accepted")
+    def requirements_accepted(self, raw_payload: dict[str, Any]) -> None:
+        payload = RequirementsAcceptedDispatchPayload.model_validate(
+            raw_payload, strict=False
+        )
+        self._validate_identity(payload.run_id, payload.workflow_version_id)
+        if self._last_command_id == str(payload.command_id):
+            return
+        if self._state in {
+            RequirementsWorkflowExecutionState.CANCELLED,
+            RequirementsWorkflowExecutionState.ACCEPTED,
+        }:
+            raise ValueError("requirements workflow already has a terminal outcome")
+        self._artifact_id = str(payload.artifact_id)
+        self._artifact_version = payload.artifact_version
+        self._last_command_id = str(payload.command_id)
+        self._state = RequirementsWorkflowExecutionState.ACCEPTED
 
     @workflow.query(name="status")
     def status(self) -> dict[str, Any]:

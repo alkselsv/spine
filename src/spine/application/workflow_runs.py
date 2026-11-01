@@ -96,6 +96,51 @@ class EditRequirementCommandV1(SpineModel):
         return value
 
 
+class ReclassifyRequirementCommandV1(SpineModel):
+    """Explicitly replace source-derived text with a human-owned basis."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal[1] = 1
+    requirement_id: UUID
+    statement: str = Field(min_length=1, max_length=8_192)
+    acceptance_basis: Literal["manager_assertion", "explicit_assumption"]
+    rationale: str = Field(min_length=1, max_length=2_000)
+    independence_attestation: Literal[
+        "authored_from_independent_knowledge_without_protected_text"
+    ]
+    false_consequence: str | None = Field(default=None, max_length=2_000)
+    conflict_resolution_rationale: str | None = Field(default=None, max_length=2_000)
+
+    @field_validator("requirement_id")
+    @classmethod
+    def reject_zero_reclassified_requirement_identity(cls, value: UUID) -> UUID:
+        if value.int == 0:
+            raise ValueError("requirement identity must be non-zero")
+        return value
+
+    @field_validator("statement", "rationale")
+    @classmethod
+    def reject_blank_reclassification_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("requirement reclassification text must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def validate_reclassification_basis(self) -> "ReclassifyRequirementCommandV1":
+        if self.acceptance_basis == "explicit_assumption":
+            if self.false_consequence is None or not self.false_consequence.strip():
+                raise ValueError("explicit assumptions require a false consequence")
+        elif self.false_consequence is not None:
+            raise ValueError("manager assertions cannot carry a false consequence")
+        if (
+            self.conflict_resolution_rationale is not None
+            and not self.conflict_resolution_rationale.strip()
+        ):
+            raise ValueError("conflict resolution rationale must not be blank")
+        return self
+
+
 class AnswerClarificationCommandV1(SpineModel):
     """A manager answer linked to one persisted clarification."""
 
@@ -160,6 +205,21 @@ class RequestRequirementsReworkCommandV1(SpineModel):
             raise ValueError("requirements rework reason must not be blank")
         return value
 
+
+class AcceptRequirementsCommandV1(SpineModel):
+    """Accept one exact human-reviewed requirements artifact version."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal[1] = 1
+    artifact_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    policy_version: Literal["requirements-artifact-acceptance:v1"] = (
+        "requirements-artifact-acceptance:v1"
+    )
+    acknowledged_assertion_count: int = Field(ge=0, strict=True)
+    acknowledged_assumption_count: int = Field(ge=0, strict=True)
+
+
 class WorkflowArtifactRef(SpineModel):
     """An exact immutable artifact version consumed by a command."""
 
@@ -193,8 +253,10 @@ class WorkflowCommand(SpineModel):
     command_type: Literal[
         "add_context",
         "edit_requirement",
+        "reclassify_requirement",
         "save_review",
         "request_rework",
+        "accept_requirements",
         "answer_clarification",
         "cancel",
     ]
@@ -203,8 +265,10 @@ class WorkflowCommand(SpineModel):
     payload: (
         AddContextCommandV1
         | EditRequirementCommandV1
+        | ReclassifyRequirementCommandV1
         | SaveRequirementsReviewCommandV1
         | RequestRequirementsReworkCommandV1
+        | AcceptRequirementsCommandV1
         | AnswerClarificationCommandV1
         | CancelWorkflowCommandV1
     )
@@ -235,8 +299,10 @@ class WorkflowCommand(SpineModel):
         expected = {
             "add_context": AddContextCommandV1,
             "edit_requirement": EditRequirementCommandV1,
+            "reclassify_requirement": ReclassifyRequirementCommandV1,
             "save_review": SaveRequirementsReviewCommandV1,
             "request_rework": RequestRequirementsReworkCommandV1,
+            "accept_requirements": AcceptRequirementsCommandV1,
             "answer_clarification": AnswerClarificationCommandV1,
             "cancel": CancelWorkflowCommandV1,
         }[self.command_type]
@@ -246,15 +312,17 @@ class WorkflowCommand(SpineModel):
             if self.artifact_refs:
                 raise ValueError("cancel requires its typed content-free payload")
             return self
-        if self.command_type == "answer_clarification":
+        if self.command_type in {
+            "answer_clarification", "accept_requirements", "reclassify_requirement"
+        }:
             if len(self.artifact_refs) != 1:
-                raise ValueError("answer_clarification requires one exact requirements artifact")
+                raise ValueError(f"{self.command_type} requires one exact requirements artifact")
             artifact = self.artifact_refs[0]
             if (
                 artifact.schema_name != "requirements"
-                or artifact.schema_version != "requirements:v1"
+                or not artifact.schema_version.startswith("requirements:v")
             ):
-                raise ValueError("answer_clarification requires one exact requirements artifact")
+                raise ValueError(f"{self.command_type} requires one exact requirements artifact")
         return self
 
 class PinnedWorkflowVersion(SpineModel):
@@ -360,8 +428,10 @@ def workflow_run_snapshot(run: WorkflowRun) -> WorkflowRunSnapshot:
         Literal[
             "add_context",
             "edit_requirement",
+            "reclassify_requirement",
             "save_review",
             "request_rework",
+            "accept_requirements",
             "answer_clarification",
             "cancel",
         ],
@@ -372,8 +442,10 @@ def workflow_run_snapshot(run: WorkflowRun) -> WorkflowRunSnapshot:
         if run.workflow_key == "commercial.requirements":
             allowed_commands += (
                 "edit_requirement",
+                "reclassify_requirement",
                 "save_review",
                 "request_rework",
+                "accept_requirements",
             )
             if run.state.value == "waiting":
                 allowed_commands += ("answer_clarification", "cancel")
@@ -394,7 +466,9 @@ def workflow_run_snapshot(run: WorkflowRun) -> WorkflowRunSnapshot:
 
 __all__ = [
     "AddContextCommandV1",
+    "AcceptRequirementsCommandV1",
     "EditRequirementCommandV1",
+    "ReclassifyRequirementCommandV1",
     "RequestRequirementsReworkCommandV1",
     "SaveRequirementsReviewCommandV1",
     "AnswerClarificationCommandV1",

@@ -6,6 +6,7 @@ from uuid import UUID
 import pytest
 
 from spine.application.workflow_runs import (
+    AcceptRequirementsCommandV1,
     AddContextCommandV1,
     AnswerClarificationCommandV1,
     ConfiguredWorkflowVersionResolver,
@@ -247,8 +248,10 @@ def test_requirements_review_commands_are_only_advertised_for_requirements_runs(
     assert workflow_run_snapshot(requirements).allowed_commands == (
         "add_context",
         "edit_requirement",
+        "reclassify_requirement",
         "save_review",
         "request_rework",
+        "accept_requirements",
         "answer_clarification",
         "cancel",
     )
@@ -282,3 +285,36 @@ async def test_configured_resolver_fails_closed_for_unpublished_workflow() -> No
             environment_id=UUID("60000000-0000-4000-8000-000000000003"),
             workflow_key="commercial.requirements",
         )
+def test_accept_requirements_command_binds_exact_artifact_and_policy_acknowledgement() -> None:
+    command = WorkflowCommand(
+        command_id=UUID(int=50),
+        idempotency_key="accept-50",
+        run_id=UUID(int=3),
+        workspace_id=UUID(int=1),
+        environment_id=UUID(int=2),
+        actor=ActorRef(kind=ActorKind.HUMAN, id=UUID(int=21)),
+        command_type="accept_requirements",
+        command_schema_version=1,
+        expected_run_version=1,
+        payload=AcceptRequirementsCommandV1(
+            artifact_digest="a" * 64,
+            policy_version="requirements-artifact-acceptance:v1",
+            acknowledged_assertion_count=1,
+            acknowledged_assumption_count=2,
+        ),
+        artifact_refs=(
+            WorkflowArtifactRef(
+                artifact_id=UUID(int=40),
+                schema_name="requirements",
+                schema_version="requirements:v1",
+                artifact_version=3,
+            ),
+        ),
+        trace_id=UUID(int=30),
+        correlation_id=UUID(int=51),
+        causation_id=UUID(int=52),
+    )
+
+    assert command.expected_run_version == 1
+    assert command.artifact_refs[0].artifact_version == 3
+    assert command.payload.artifact_digest == "a" * 64

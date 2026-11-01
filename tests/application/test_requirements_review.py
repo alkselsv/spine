@@ -1,7 +1,7 @@
 from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from uuid import UUID
+from uuid import UUID, uuid5
 
 import pytest
 
@@ -19,6 +19,7 @@ from spine.application.requirements_review import (
 )
 from spine.application.workflow_runs import (
     EditRequirementCommandV1,
+    ReclassifyRequirementCommandV1,
     RequestRequirementsReworkCommandV1,
     SaveRequirementsReviewCommandV1,
     WorkflowArtifactRef,
@@ -32,6 +33,7 @@ from spine.domain.workflows import (
     RequirementEvidenceRef,
     RequirementEvidenceStatus,
     RequirementEvidenceValidation,
+    RequirementAcceptanceBasis,
     RequirementReviewState,
     RequirementsArtifact,
     WorkflowCommandReceipt,
@@ -295,6 +297,146 @@ async def test_edit_invalidates_prior_evidence_validation_for_the_new_statement(
     assert edited.evidence_refs[0].segment_id == UUID(int=84)
     assert edited.evidence_refs[0].validation is None
     assert edited.evidence_status is RequirementEvidenceStatus.UNVERIFIED
+
+
+def _source_backed_uow() -> _Uow:
+    uow = _Uow()
+    source_ref = AcceptedSourceRevisionRef(
+        source_object_id=UUID(int=80),
+        source_revision_id=UUID(int=81),
+        provenance_id=UUID(int=82),
+    )
+    base = uow.requirements_artifacts.items[0]
+    uow.requirements_artifacts.items[0] = base.model_copy(
+        update={
+            "requirements": (
+                base.requirements[0].model_copy(update={"source_refs": (source_ref,)}),
+                base.requirements[1],
+            )
+        }
+    )
+    return uow
+
+
+@pytest.mark.asyncio
+async def test_explicit_manager_reclassification_creates_source_free_v3_successor() -> None:
+    uow = _source_backed_uow()
+    command = _review_command(
+        command_type="reclassify_requirement",
+        payload=ReclassifyRequirementCommandV1(
+            requirement_id=UUID(int=41),
+            statement="The account owner commits completion before the weekend.",
+            acceptance_basis="manager_assertion",
+            rationale="I own the delivery commitment.",
+            independence_attestation="authored_from_independent_knowledge_without_protected_text",
+        ),
+    )
+
+    receipt = await RequirementsReviewService(lambda _: _Context(uow)).dispatch(
+        context=_context(), command=command
+    )
+
+    assert receipt is not None
+    assert receipt.action == "reclassify_requirement"
+    successor = uow.requirements_artifacts.items[-1]
+    assert successor.schema_version == "requirements:v3"
+    assert successor.predecessor_version == 1
+    reclassified = successor.requirements[0]
+    expected_requirement_id = uuid5(
+        command.command_id,
+        f"spine.requirement-reclassification:v1:{UUID(int=41)}",
+    )
+    assert receipt.changed_requirement_id == expected_requirement_id
+    assert reclassified.requirement_id == expected_requirement_id
+    assert reclassified.acceptance_basis is RequirementAcceptanceBasis.MANAGER_ASSERTION
+    assert reclassified.source_refs == ()
+    assert reclassified.evidence_refs == ()
+    assert reclassified.attributed_by == command.actor
+    assert reclassified.assertion_audit_reference == command.command_id
+    assert reclassified.upstream_artifact_ids == (UUID(int=40),)
+    assert uow.requirements_artifacts.items[0].requirements[0].source_refs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "candidate",
+    ["  DELIVER   on Friday!!! ", "Please deliver on Friday at noon."],
+)
+async def test_reclassification_rejects_protected_source_text_variants(
+    candidate: str,
+) -> None:
+    uow = _source_backed_uow()
+    command = _review_command(
+        command_type="reclassify_requirement",
+        payload=ReclassifyRequirementCommandV1(
+            requirement_id=UUID(int=41),
+            statement=candidate,
+            acceptance_basis="manager_assertion",
+            rationale="Treat as my assertion.",
+            independence_attestation="authored_from_independent_knowledge_without_protected_text",
+        ),
+    )
+
+    with pytest.raises(
+        RequirementsReviewUnavailableError,
+        match="independently supplied text",
+    ):
+        await RequirementsReviewService(lambda _: _Context(uow)).dispatch(
+            context=_context(), command=command
+        )
+
+    assert len(uow.requirements_artifacts.items) == 1
+
+
+@pytest.mark.asyncio
+async def test_reclassification_requires_explicit_resolution_for_conflicting_evidence() -> None:
+    uow = _source_backed_uow()
+    base = uow.requirements_artifacts.items[0]
+    source_ref = base.requirements[0].source_refs[0]
+    conflicting = RequirementEvidenceRef(
+        source_ref=source_ref,
+        parsed_artifact_ref=ArtifactRef(
+            id=UUID(int=83),
+            schema_name="parsed-document",
+            schema_version="parsed-document:v1",
+        ),
+        segment_id=UUID(int=84),
+        segment_digest="c" * 64,
+        locator=PhysicalLineLocator(
+            kind="physical_line", line_number=1, start_codepoint=0, end_codepoint=6
+        ),
+        relationship="contradicts",
+    )
+    uow.requirements_artifacts.items[0] = base.model_copy(
+        update={
+            "requirements": (
+                base.requirements[0].model_copy(
+                    update={"evidence_refs": (conflicting,)}
+                ),
+                base.requirements[1],
+            )
+        }
+    )
+    command = _review_command(
+        command_type="reclassify_requirement",
+        payload=ReclassifyRequirementCommandV1(
+            requirement_id=UUID(int=41),
+            statement="Our independently owned commitment is Friday noon.",
+            acceptance_basis="manager_assertion",
+            rationale="I own the commitment.",
+            independence_attestation="authored_from_independent_knowledge_without_protected_text",
+        ),
+    )
+
+    with pytest.raises(
+        RequirementsReviewUnavailableError,
+        match="explicit resolution",
+    ):
+        await RequirementsReviewService(lambda _: _Context(uow)).dispatch(
+            context=_context(), command=command
+        )
+
+    assert len(uow.requirements_artifacts.items) == 1
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ from spine.application.requirements_review import (
     RequirementsArtifactStaleError,
     RequirementsReviewReceipt,
 )
+from spine.application.requirements_acceptance import RequirementsAcceptanceReceipt
 from spine.application.workflow_runs import PinnedWorkflowVersion, WorkflowArtifactRef
 from spine.domain.common import ActorKind, ActorRef
 from spine.domain.workflows import (
@@ -181,7 +182,8 @@ class FakeWorkflowVersionResolver:
 
 
 def _app(service: FakeWorkflowRunService, *, authorize_other_workspace: bool = False,
-         requirements_artifact_service=None, requirements_review_service=None):
+         requirements_artifact_service=None, requirements_review_service=None,
+         requirements_acceptance_service=None):
     directory = None
     if authorize_other_workspace:
         other_entry = authorization_entry().model_copy(
@@ -203,6 +205,7 @@ def _app(service: FakeWorkflowRunService, *, authorize_other_workspace: bool = F
         cursor_secret=b"workflow-run-api-cursor-secret-639",
         requirements_artifact_service=requirements_artifact_service,
         requirements_review_service=requirements_review_service,
+        requirements_acceptance_service=requirements_acceptance_service,
     )
     return application
 
@@ -235,10 +238,51 @@ class FakeRequirementsReviewService:
             ),
             action=command.command_type,
             actor=command.actor,
-            reason=command.payload.reason,
+            reason=(
+                command.payload.reason
+                if hasattr(command.payload, "reason")
+                else command.payload.rationale
+            ),
             changed_requirement_id=getattr(command.payload, "requirement_id", None),
             base_artifact_ref=base,
             resulting_artifact_ref=current,
+        )
+
+
+class FakeRequirementsAcceptanceService:
+    def __init__(self) -> None:
+        self.command = None
+        self.authority = None
+
+    async def dispatch(self, *, context, command, authority, requester):
+        self.command = command
+        self.authority = authority
+        assert requester.subject_id == authorization_entry().canonical_human_identity_id
+        return RequirementsAcceptanceReceipt(
+            command_receipt=WorkflowCommandReceipt(
+                command_id=command.command_id,
+                work_item_id=WORK_ITEM_ID,
+                run_id=RUN_ID,
+                workflow_version_id=VERSION_ID,
+                state=WorkflowRunState.COMPLETED,
+                run_version=2,
+                admission="accepted",
+            ),
+            accepted_artifact_ref=command.artifact_refs[0],
+            accepted_artifact_digest=command.payload.artifact_digest,
+            actor=command.actor,
+            policy_version=command.payload.policy_version,
+            authentication_configuration_version=(
+                authority.authentication_configuration_version
+            ),
+            authorization_generation=authority.authorization_generation,
+            idempotency_key=command.idempotency_key,
+            command_digest="d" * 64,
+            evidence_validation_references=(UUID(int=70),),
+            correlation_id=command.correlation_id,
+            causation_id=command.causation_id,
+            assertion_count=command.payload.acknowledged_assertion_count,
+            assumption_count=command.payload.acknowledged_assumption_count,
         )
 
 
@@ -733,6 +777,96 @@ async def test_exact_requirement_edit_returns_human_review_receipt() -> None:
     assert response.json()["resulting_artifact_ref"]["artifact_version"] == 2
     assert review.command.expected_run_version == 1
     assert review.command.artifact_refs[0].artifact_id == artifact_id
+
+
+async def test_explicit_reclassification_is_reachable_through_the_api() -> None:
+    service = FakeWorkflowRunService()
+    review = FakeRequirementsReviewService()
+    transport = httpx.ASGITransport(
+        app=_app(service, requirements_review_service=review)
+    )
+    artifact_id = UUID("64400000-0000-4000-8000-000000000011")
+    requirement_id = UUID("64400000-0000-4000-8000-000000000012")
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/v1/runs/{RUN_ID}/commands",
+            headers={**_headers(), "Idempotency-Key": "reclassify-645"},
+            json={
+                "schema_version": 1,
+                "command_id": "64400000-0000-4000-8000-000000000013",
+                "command_type": "reclassify_requirement",
+                "command_schema_version": 1,
+                "expected_run_version": 1,
+                "payload": {
+                    "schema_version": 1,
+                    "requirement_id": str(requirement_id),
+                    "statement": "Our internal commitment is Friday noon.",
+                    "acceptance_basis": "explicit_assumption",
+                    "rationale": "The source cannot currently be disclosed.",
+                    "independence_attestation": "authored_from_independent_knowledge_without_protected_text",
+                    "false_consequence": "Delivery planning must be revised.",
+                    "conflict_resolution_rationale": "Use the current manager decision.",
+                },
+                "artifact_refs": [{
+                    "artifact_id": str(artifact_id),
+                    "schema_name": "requirements",
+                    "schema_version": "requirements:v2",
+                    "artifact_version": 1,
+                }],
+                "correlation_id": str(COMMAND_ID),
+                "causation_id": str(COMMAND_ID),
+            },
+        )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["action"] == "reclassify_requirement"
+    assert review.command.payload.acceptance_basis == "explicit_assumption"
+    assert review.command.payload.false_consequence == "Delivery planning must be revised."
+
+
+async def test_accept_requirements_uses_server_resolved_authority_and_returns_terminal_receipt() -> None:
+    service = FakeWorkflowRunService()
+    acceptance = FakeRequirementsAcceptanceService()
+    transport = httpx.ASGITransport(
+        app=_app(service, requirements_acceptance_service=acceptance)
+    )
+    artifact_id = UUID("64500000-0000-4000-8000-000000000001")
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/v1/runs/{RUN_ID}/commands",
+            headers={**_headers(), "Idempotency-Key": "accept-645"},
+            json={
+                "schema_version": 1,
+                "command_id": "64500000-0000-4000-8000-000000000002",
+                "command_type": "accept_requirements",
+                "command_schema_version": 1,
+                "expected_run_version": 1,
+                "payload": {
+                    "schema_version": 1,
+                    "artifact_digest": "a" * 64,
+                    "policy_version": "requirements-artifact-acceptance:v1",
+                    "acknowledged_assertion_count": 0,
+                    "acknowledged_assumption_count": 0,
+                },
+                "artifact_refs": [{
+                    "artifact_id": str(artifact_id),
+                    "schema_name": "requirements",
+                    "schema_version": "requirements:v1",
+                    "artifact_version": 1,
+                }],
+                "correlation_id": str(COMMAND_ID),
+                "causation_id": str(COMMAND_ID),
+            },
+        )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["state"] == "completed"
+    assert response.json()["accepted_artifact_ref"]["artifact_id"] == str(artifact_id)
+    assert acceptance.authority.allowed is True
+    assert acceptance.authority.actor_id == authorization_entry().canonical_human_identity_id
+    assert acceptance.command.expected_run_version == 1
 
 
 async def test_stale_requirement_edit_returns_current_ref_without_protected_content() -> None:

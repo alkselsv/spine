@@ -36,12 +36,15 @@ from spine.application.persistence.workflow_runs import (
     START_WORKFLOW_RESULT_TYPE,
     START_WORKFLOW_SCHEMA_VERSION,
     WORKFLOW_CANCELLED_EVENT_TYPE,
+    REQUIREMENTS_ACCEPTED_EVENT_TYPE,
     WORKFLOW_SIGNAL_EVENT_SCHEMA_VERSION,
     WorkflowCancelledDispatchPayload,
+    RequirementsAcceptedDispatchPayload,
     StartWorkflowDispatchPayload,
     WorkflowRunAdmissionRepository,
     validate_workflow_command_context,
     validate_workflow_run_context,
+    workflow_command_digest,
 )
 from spine.application.workflow_runs import StartWorkflowCommand, WorkflowCommand
 from spine.domain.work_items import WorkItem, WorkItemStatus
@@ -259,24 +262,7 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
             validate_workflow_command_context(context, command)
         except ValueError as error:
             await self._uow._fail(InvalidPersistenceContextError(str(error)))
-        digest = digest_command(
-            operation=COMMAND_WORKFLOW_OPERATION,
-            operation_schema_version=COMMAND_WORKFLOW_SCHEMA_VERSION,
-            payload={
-                "command_id": command.command_id,
-                "run_id": command.run_id,
-                "workspace_id": command.workspace_id,
-                "environment_id": command.environment_id,
-                "actor": command.actor.model_dump(mode="json"),
-                "command_type": command.command_type,
-                "command_schema_version": command.command_schema_version,
-                "expected_run_version": command.expected_run_version,
-                "payload": command.payload.model_dump(mode="json"),
-                "artifact_refs": [item.model_dump(mode="json") for item in command.artifact_refs],
-                "correlation_id": command.correlation_id,
-                "causation_id": command.causation_id,
-            },
-        )
+        digest = workflow_command_digest(command)
         claim = await self._uow.idempotency.claim(
             operation_schema_version=COMMAND_WORKFLOW_SCHEMA_VERSION,
             key=IdempotencyKey(command.idempotency_key),
@@ -315,6 +301,7 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
             await self._uow._fail(ConstraintConflictError("Workflow transition is invalid."))
         is_clarification_answer = command.command_type == "answer_clarification"
         is_cancellation = command.command_type == "cancel"
+        is_requirements_acceptance = command.command_type == "accept_requirements"
         next_clarification = None
         if is_clarification_answer:
             if run.state is not WorkflowRunState.WAITING or clarification_successor is None:
@@ -349,6 +336,8 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
         resulting_state = (
             WorkflowRunState.CANCELLED
             if is_cancellation
+            else WorkflowRunState.COMPLETED
+            if is_requirements_acceptance
             else (
                 WorkflowRunState.WAITING
                 if next_clarification is not None
@@ -428,6 +417,10 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
                 "workflow.requirement-edited",
                 "A requirement was edited by a human reviewer.",
             ),
+            "reclassify_requirement": (
+                "workflow.requirement-reclassified",
+                "A requirement was explicitly reclassified by a human reviewer.",
+            ),
             "save_review": (
                 "workflow.requirements-reviewed",
                 "Requirements review was saved.",
@@ -435,6 +428,10 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
             "request_rework": (
                 "workflow.requirements-rework-requested",
                 "Requirements rework was requested.",
+            ),
+            "accept_requirements": (
+                "workflow.requirements-accepted",
+                "Requirements were accepted by an authorized human.",
             ),
             "answer_clarification": (
                 "workflow.clarification-answered",
@@ -500,6 +497,17 @@ class PostgreSQLWorkflowRunAdmissionRepository(WorkflowRunAdmissionRepository):
                 workflow_version_id=run.workflow_version_id,
             )
             signal_event_type = WORKFLOW_CANCELLED_EVENT_TYPE
+        elif is_requirements_acceptance:
+            artifact_ref = command.artifact_refs[0]
+            signal_payload = RequirementsAcceptedDispatchPayload(
+                command_id=command.command_id,
+                run_id=command.run_id,
+                artifact_id=artifact_ref.artifact_id,
+                artifact_version=artifact_ref.artifact_version,
+                artifact_digest=command.payload.artifact_digest,
+                workflow_version_id=run.workflow_version_id,
+            )
+            signal_event_type = REQUIREMENTS_ACCEPTED_EVENT_TYPE
         else:
             signal_payload = None
             signal_event_type = None

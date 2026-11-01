@@ -36,9 +36,16 @@ export function RequirementsArtifactCard({
   scope?: Scope;
 }) {
   const [editingRequirementId, setEditingRequirementId] = useState<string | null>(null);
+  const [reclassifyingRequirementId, setReclassifyingRequirementId] = useState<string | null>(null);
   const [statement, setStatement] = useState('');
+  const [reclassificationBasis, setReclassificationBasis] = useState<'manager_assertion' | 'explicit_assumption'>('manager_assertion');
+  const [reclassificationRationale, setReclassificationRationale] = useState('');
+  const [falseConsequence, setFalseConsequence] = useState('');
+  const [conflictResolutionRationale, setConflictResolutionRationale] = useState('');
+  const [independentAuthorshipConfirmed, setIndependentAuthorshipConfirmed] = useState(false);
   const [editReason, setEditReason] = useState('');
   const [reviewReason, setReviewReason] = useState('');
+  const [acknowledgedAcceptanceKey, setAcknowledgedAcceptanceKey] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
   const commandRef = useRef<{ action: string; commandId: string; idempotencyKey: string } | null>(null);
@@ -61,15 +68,31 @@ export function RequirementsArtifactCard({
   if (!query.data) return <StatusPanel state="empty" />;
   const artifact = query.data;
   const canEdit = runVersion !== undefined && allowedCommands.includes('edit_requirement');
+  const canReclassify = runVersion !== undefined && allowedCommands.includes('reclassify_requirement');
   const canSaveReview = runVersion !== undefined && allowedCommands.includes('save_review');
   const canRequestRework = runVersion !== undefined && allowedCommands.includes('request_rework');
+  const canAccept = runVersion !== undefined && allowedCommands.includes('accept_requirements');
+  const assertionCount = artifact.requirements.filter(
+    (item) => acceptanceBasis(item) === 'manager_assertion',
+  ).length;
+  const assumptionCount = artifact.requirements.filter(
+    (item) => acceptanceBasis(item) === 'explicit_assumption',
+  ).length;
+  const acceptanceKey = [
+    artifact.artifact_id,
+    artifact.artifact_version,
+    artifact.production_digest,
+    assertionCount,
+    assumptionCount,
+  ].join(':');
+  const requiresExplicitAcknowledgement = assertionCount + assumptionCount > 0;
 
   async function refreshCard() {
     await Promise.all([query.refetch(), onRefresh?.() ?? Promise.resolve()]);
   }
 
   async function submitReview(
-    action: 'edit_requirement' | 'save_review' | 'request_rework',
+    action: 'edit_requirement' | 'reclassify_requirement' | 'save_review' | 'request_rework' | 'accept_requirements',
     payload: Record<string, unknown>,
   ) {
     if (submitting || runVersion === undefined) return;
@@ -104,12 +127,17 @@ export function RequirementsArtifactCard({
     setSubmitting(false);
     if (error || !data) {
       const errorCode = (error as { code?: string } | undefined)?.code;
-      const stale = errorCode === 'requirements.artifact_stale';
-      const denied = errorCode === 'spine.authorization.denied';
+      const stale = errorCode === 'requirements.artifact_stale'
+        || errorCode === 'workflow.run_stale'
+        || errorCode === 'workflow.run_terminal';
+      const denied = errorCode === 'spine.authorization.denied'
+        || errorCode === 'requirements.acceptance_denied';
       if (stale) commandRef.current = null;
       setReviewError(
         stale
-          ? 'Версия требований устарела. Обновите карточку перед повторной проверкой.'
+          ? action === 'accept_requirements'
+            ? 'Требования или состояние запуска изменились. Обновите карточку перед принятием.'
+            : 'Версия требований устарела. Обновите карточку перед повторной проверкой.'
           : denied
             ? 'Недостаточно прав для изменения требований.'
             : 'Не удалось сохранить проверку. Команду можно безопасно повторить.',
@@ -118,7 +146,12 @@ export function RequirementsArtifactCard({
     }
     commandRef.current = null;
     setEditingRequirementId(null);
+    setReclassifyingRequirementId(null);
     setEditReason('');
+    setReclassificationRationale('');
+    setFalseConsequence('');
+    setConflictResolutionRationale('');
+    setIndependentAuthorshipConfirmed(false);
     setReviewReason('');
     await refreshCard();
   }
@@ -218,6 +251,91 @@ export function RequirementsArtifactCard({
                 <button type="button" onClick={() => setEditingRequirementId(null)}>Отмена</button>
               </form>
             ) : null}
+            {canReclassify && reclassifyingRequirementId !== requirement.requirement_id ? (
+              <button type="button" onClick={() => {
+                setReclassifyingRequirementId(requirement.requirement_id);
+                setEditingRequirementId(null);
+                setStatement('');
+                setReclassificationBasis('manager_assertion');
+                setReclassificationRationale('');
+                setFalseConsequence('');
+                setConflictResolutionRationale('');
+                setIndependentAuthorshipConfirmed(false);
+                commandRef.current = null;
+              }}>Переклассифицировать требование</button>
+            ) : null}
+            {canReclassify && reclassifyingRequirementId === requirement.requirement_id ? (
+              <form aria-label="Переклассификация требования" onSubmit={(event: FormEvent) => {
+                event.preventDefault();
+                void submitReview('reclassify_requirement', {
+                  requirement_id: requirement.requirement_id,
+                  statement: statement.trim(),
+                  acceptance_basis: reclassificationBasis,
+                  rationale: reclassificationRationale.trim(),
+                  independence_attestation: 'authored_from_independent_knowledge_without_protected_text',
+                  false_consequence: reclassificationBasis === 'explicit_assumption'
+                    ? falseConsequence.trim() : null,
+                  conflict_resolution_rationale: conflictResolutionRationale.trim() || null,
+                });
+              }}>
+                <p>Введите новую формулировку из собственных знаний — защищённый текст источника переносить нельзя.</p>
+                <label>
+                  Основание
+                  <select value={reclassificationBasis} onChange={(event) => {
+                    setReclassificationBasis(event.target.value as 'manager_assertion' | 'explicit_assumption');
+                    commandRef.current = null;
+                  }}>
+                    <option value="manager_assertion">Утверждение менеджера</option>
+                    <option value="explicit_assumption">Явное допущение</option>
+                  </select>
+                </label>
+                <label>
+                  Новая независимая формулировка
+                  <textarea value={statement} onChange={(event) => {
+                    setStatement(event.target.value);
+                    commandRef.current = null;
+                  }} />
+                </label>
+                <label>
+                  Обоснование
+                  <textarea value={reclassificationRationale} onChange={(event) => {
+                    setReclassificationRationale(event.target.value);
+                    commandRef.current = null;
+                  }} />
+                </label>
+                {reclassificationBasis === 'explicit_assumption' ? (
+                  <label>
+                    Последствие, если допущение неверно
+                    <textarea value={falseConsequence} onChange={(event) => {
+                      setFalseConsequence(event.target.value);
+                      commandRef.current = null;
+                    }} />
+                  </label>
+                ) : null}
+                <label>
+                  Решение конфликта (если применимо)
+                  <textarea value={conflictResolutionRationale} onChange={(event) => {
+                    setConflictResolutionRationale(event.target.value);
+                    commandRef.current = null;
+                  }} />
+                </label>
+                <label>
+                  <input checked={independentAuthorshipConfirmed} onChange={(event) => {
+                    setIndependentAuthorshipConfirmed(event.target.checked);
+                    commandRef.current = null;
+                  }} type="checkbox" />
+                  Подтверждаю, что написал новую формулировку из собственных знаний без использования защищённого текста
+                </label>
+                <button disabled={
+                  submitting
+                  || !statement.trim()
+                  || !reclassificationRationale.trim()
+                  || !independentAuthorshipConfirmed
+                  || (reclassificationBasis === 'explicit_assumption' && !falseConsequence.trim())
+                } type="submit">{submitting ? 'Сохраняем…' : 'Создать новую версию'}</button>
+                <button type="button" onClick={() => setReclassifyingRequirementId(null)}>Отмена</button>
+              </form>
+            ) : null}
           </li>
         ))}
       </ul>
@@ -240,6 +358,37 @@ export function RequirementsArtifactCard({
               'request_rework', { reason: reviewReason.trim() },
             )}>Вернуть на доработку</button>
           ) : null}
+        </div>
+      ) : null}
+      {canAccept ? (
+        <div aria-label="Принятие требований">
+          <p>Будет принята только показанная версия {artifact.artifact_version}.</p>
+          <p>Digest версии: <code>{artifact.production_digest}</code></p>
+          <p>Утверждения менеджера: {assertionCount}. Явные допущения: {assumptionCount}.</p>
+          {requiresExplicitAcknowledgement ? (
+            <label>
+              <input
+                checked={acknowledgedAcceptanceKey === acceptanceKey}
+                onChange={(event) => {
+                  setAcknowledgedAcceptanceKey(event.target.checked ? acceptanceKey : null);
+                  commandRef.current = null;
+                }}
+                type="checkbox"
+              />
+              Подтверждаю эти количества, версию и digest, включая последствия указанных допущений
+            </label>
+          ) : null}
+          <button disabled={
+            submitting
+            || (requiresExplicitAcknowledgement && acknowledgedAcceptanceKey !== acceptanceKey)
+          } type="button" onClick={() => void submitReview(
+            'accept_requirements', {
+              artifact_digest: artifact.production_digest,
+              policy_version: 'requirements-artifact-acceptance:v1',
+              acknowledged_assertion_count: assertionCount,
+              acknowledged_assumption_count: assumptionCount,
+            },
+          )}>{submitting ? 'Принимаем…' : 'Принять требования'}</button>
         </div>
       ) : null}
       {reviewError ? (
@@ -418,4 +567,12 @@ function evidenceStatusLabel(status: RequirementsArtifact['requirements'][number
     case 'unsupported': return 'не подтверждено';
     case 'unverified': return 'не проверено';
   }
+}
+
+function acceptanceBasis(
+  requirement: RequirementsArtifact['requirements'][number],
+): 'source_validated' | 'manager_assertion' | 'explicit_assumption' {
+  return 'acceptance_basis' in requirement
+    ? requirement.acceptance_basis
+    : 'source_validated';
 }

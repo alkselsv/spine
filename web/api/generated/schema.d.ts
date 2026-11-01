@@ -929,6 +929,65 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AcceptRequirementsPayloadRequestV1 */
+        AcceptRequirementsPayloadRequestV1: {
+            /** Acknowledged Assertion Count */
+            acknowledged_assertion_count: number;
+            /** Acknowledged Assumption Count */
+            acknowledged_assumption_count: number;
+            /** Artifact Digest */
+            artifact_digest: string;
+            /**
+             * Policy Version
+             * @constant
+             */
+            policy_version: "requirements-artifact-acceptance:v1";
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /** AcceptRequirementsWorkflowCommandRequestV1 */
+        AcceptRequirementsWorkflowCommandRequestV1: {
+            /** Artifact Refs */
+            artifact_refs: components["schemas"]["WorkflowArtifactRefRequestV1"][];
+            /**
+             * Causation Id
+             * Format: uuid
+             */
+            causation_id: string;
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /**
+             * Command Schema Version
+             * @constant
+             */
+            command_schema_version: 1;
+            /**
+             * Command Type
+             * @constant
+             */
+            command_type: "accept_requirements";
+            /**
+             * Correlation Id
+             * Format: uuid
+             */
+            correlation_id: string;
+            /** Expected Run Version */
+            expected_run_version: number;
+            payload: components["schemas"]["AcceptRequirementsPayloadRequestV1"];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
         /**
          * AcceptedAnswerClaimPresentation
          * @description An authoritative claim identity, kind and code-point span.
@@ -5108,6 +5167,77 @@ export interface components {
              */
             status: "ready" | "not_ready";
         };
+        /** ReclassifyRequirementPayloadRequestV1 */
+        ReclassifyRequirementPayloadRequestV1: {
+            /**
+             * Acceptance Basis
+             * @enum {string}
+             */
+            acceptance_basis: "manager_assertion" | "explicit_assumption";
+            /** Conflict Resolution Rationale */
+            conflict_resolution_rationale?: string | null;
+            /** False Consequence */
+            false_consequence?: string | null;
+            /**
+             * Independence Attestation
+             * @constant
+             */
+            independence_attestation: "authored_from_independent_knowledge_without_protected_text";
+            /** Rationale */
+            rationale: string;
+            /**
+             * Requirement Id
+             * Format: uuid
+             */
+            requirement_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Statement */
+            statement: string;
+        };
+        /** ReclassifyRequirementWorkflowCommandRequestV1 */
+        ReclassifyRequirementWorkflowCommandRequestV1: {
+            /** Artifact Refs */
+            artifact_refs: components["schemas"]["WorkflowArtifactRefRequestV1"][];
+            /**
+             * Causation Id
+             * Format: uuid
+             */
+            causation_id: string;
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /**
+             * Command Schema Version
+             * @constant
+             */
+            command_schema_version: 1;
+            /**
+             * Command Type
+             * @constant
+             */
+            command_type: "reclassify_requirement";
+            /**
+             * Correlation Id
+             * Format: uuid
+             */
+            correlation_id: string;
+            /** Expected Run Version */
+            expected_run_version: number;
+            payload: components["schemas"]["ReclassifyRequirementPayloadRequestV1"];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+        };
         /** ReplaceDocumentRequest */
         ReplaceDocumentRequest: {
             /**
@@ -5237,6 +5367,11 @@ export interface components {
              */
             upstream_artifact_ids: string[];
         };
+        /**
+         * RequirementAcceptanceBasis
+         * @enum {string}
+         */
+        RequirementAcceptanceBasis: "source_validated" | "manager_assertion" | "explicit_assumption";
         /**
          * RequirementCategory
          * @enum {string}
@@ -5384,6 +5519,145 @@ export interface components {
             upstream_artifact_ids: string[];
         };
         /**
+         * RequirementV3
+         * @description Acceptance-aware requirement contract with explicit human bases.
+         */
+        RequirementV3: {
+            /** @default source_validated */
+            acceptance_basis: components["schemas"]["RequirementAcceptanceBasis"];
+            /** Acceptance Rationale */
+            acceptance_rationale?: string | null;
+            /**
+             * Ambiguous Markers
+             * @default []
+             */
+            ambiguous_markers: string[];
+            /** Assertion Audit Reference */
+            assertion_audit_reference?: string | null;
+            attributed_by?: components["schemas"]["ActorRef"] | null;
+            category: components["schemas"]["RequirementCategory"];
+            /** Confidence */
+            confidence?: number | null;
+            /** Conflict Resolution Rationale */
+            conflict_resolution_rationale?: string | null;
+            /**
+             * Constraints
+             * @default []
+             */
+            constraints: string[];
+            /**
+             * Evidence Refs
+             * @default []
+             */
+            evidence_refs: components["schemas"]["RequirementEvidenceRef"][];
+            /** @default unverified */
+            evidence_status: components["schemas"]["RequirementEvidenceStatus"];
+            /** False Consequence */
+            false_consequence?: string | null;
+            /**
+             * Independent Human Assertion
+             * @default false
+             */
+            independent_human_assertion: boolean;
+            /**
+             * Missing Markers
+             * @default []
+             */
+            missing_markers: string[];
+            /**
+             * Requirement Id
+             * Format: uuid
+             */
+            requirement_id: string;
+            /** @default needs_review */
+            review_state: components["schemas"]["RequirementReviewState"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            schema_version: "requirement:v3";
+            /**
+             * Source Refs
+             * @default []
+             */
+            source_refs: components["schemas"]["AcceptedSourceRevisionRef"][];
+            /** @default candidate */
+            state: components["schemas"]["RequirementState"];
+            /** Statement */
+            statement: string;
+            /** Uncertainty */
+            uncertainty?: string | null;
+            /**
+             * Upstream Artifact Ids
+             * @default []
+             */
+            upstream_artifact_ids: string[];
+        };
+        /** RequirementsAcceptanceReceiptResponse */
+        RequirementsAcceptanceReceiptResponse: {
+            /** Accepted Artifact Digest */
+            accepted_artifact_digest: string;
+            accepted_artifact_ref: components["schemas"]["WorkflowArtifactRef"];
+            actor: components["schemas"]["ActorRef"];
+            /**
+             * Admission
+             * @enum {string}
+             */
+            admission: "accepted" | "replayed";
+            /** Assertion Count */
+            assertion_count: number;
+            /** Assumption Count */
+            assumption_count: number;
+            /** Authentication Configuration Version */
+            authentication_configuration_version: string;
+            /** Authorization Generation */
+            authorization_generation: number;
+            /**
+             * Causation Id
+             * Format: uuid
+             */
+            causation_id: string;
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /**
+             * Correlation Id
+             * Format: uuid
+             */
+            correlation_id: string;
+            /** Evidence Validation References */
+            evidence_validation_references: string[];
+            /** Policy Version */
+            policy_version: string;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Run Version */
+            run_version: number;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** State */
+            state: string;
+            /**
+             * Work Item Id
+             * Format: uuid
+             */
+            work_item_id: string;
+            /**
+             * Workflow Version Id
+             * Format: uuid
+             */
+            workflow_version_id: string;
+        };
+        /**
          * RequirementsArtifact
          * @description Immutable, explicitly versioned requirements candidate for one run.
          */
@@ -5412,7 +5686,7 @@ export interface components {
             /** Production Identity */
             production_identity: string;
             /** Requirements */
-            requirements: (components["schemas"]["Requirement"] | components["schemas"]["RequirementV2"])[];
+            requirements: (components["schemas"]["Requirement"] | components["schemas"]["RequirementV2"] | components["schemas"]["RequirementV3"])[];
             /**
              * Run Id
              * Format: uuid
@@ -5527,7 +5801,7 @@ export interface components {
              * Action
              * @enum {string}
              */
-            action: "edit_requirement" | "save_review" | "request_rework";
+            action: "edit_requirement" | "reclassify_requirement" | "save_review" | "request_rework";
             actor: components["schemas"]["ActorRef"];
             /**
              * Admission
@@ -6454,7 +6728,7 @@ export interface components {
         /** WorkflowRunResponse */
         WorkflowRunResponse: {
             /** Allowed Commands */
-            allowed_commands: ("add_context" | "edit_requirement" | "save_review" | "request_rework" | "answer_clarification" | "cancel")[];
+            allowed_commands: ("add_context" | "edit_requirement" | "reclassify_requirement" | "save_review" | "request_rework" | "accept_requirements" | "answer_clarification" | "cancel")[];
             /**
              * Created At
              * Format: date-time
@@ -11303,7 +11577,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["AddContextWorkflowCommandRequestV1"] | components["schemas"]["EditRequirementWorkflowCommandRequestV1"] | components["schemas"]["SaveRequirementsReviewWorkflowCommandRequestV1"] | components["schemas"]["RequestRequirementsReworkWorkflowCommandRequestV1"] | components["schemas"]["AnswerClarificationWorkflowCommandRequestV1"] | components["schemas"]["CancelWorkflowCommandRequestV1"];
+                "application/json": components["schemas"]["AddContextWorkflowCommandRequestV1"] | components["schemas"]["EditRequirementWorkflowCommandRequestV1"] | components["schemas"]["ReclassifyRequirementWorkflowCommandRequestV1"] | components["schemas"]["SaveRequirementsReviewWorkflowCommandRequestV1"] | components["schemas"]["RequestRequirementsReworkWorkflowCommandRequestV1"] | components["schemas"]["AcceptRequirementsWorkflowCommandRequestV1"] | components["schemas"]["AnswerClarificationWorkflowCommandRequestV1"] | components["schemas"]["CancelWorkflowCommandRequestV1"];
             };
         };
         responses: {
@@ -11313,7 +11587,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkflowRunReceiptResponse"] | components["schemas"]["RequirementsReviewReceiptResponse"];
+                    "application/json": components["schemas"]["WorkflowRunReceiptResponse"] | components["schemas"]["RequirementsReviewReceiptResponse"] | components["schemas"]["RequirementsAcceptanceReceiptResponse"];
                 };
             };
             /** @description Safe request error. */

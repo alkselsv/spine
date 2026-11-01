@@ -151,6 +151,25 @@ class TranscriptAuthorizationSnapshot(DefinitionModel):
         return self
 
 
+class TranscriptAuthorizationSnapshotV2(TranscriptAuthorizationSnapshot):
+    """Current authorization facts with persisted decision and audit lineage."""
+
+    schema_version: Literal["transcript-authorization-snapshot:v2"] = (
+        "transcript-authorization-snapshot:v2"
+    )
+    authorization_decision_reference: UUID
+    audit_reference: UUID
+
+    @model_validator(mode="after")
+    def validate_lineage(self) -> "TranscriptAuthorizationSnapshotV2":
+        if (
+            self.authorization_decision_reference.int == 0
+            or self.audit_reference.int == 0
+        ):
+            raise ValueError("transcript authorization lineage must be non-zero")
+        return self
+
+
 class TranscriptPublicationDecision(DefinitionModel):
     schema_version: Literal["transcript-publication-decision:v1"] = (
         "transcript-publication-decision:v1"
@@ -756,6 +775,7 @@ __all__ = [
     "TranscriptArtifactRepository",
     "TranscriptAuthorizationPort",
     "TranscriptAuthorizationSnapshot",
+    "TranscriptAuthorizationSnapshotV2",
     "TranscriptContextBroker",
     "TranscriptContextOutcome",
     "TranscriptContextRequest",

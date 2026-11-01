@@ -373,6 +373,12 @@ Item and Workflow Run, retaining exact evidence, human decisions and predecessor
 lineage.
 _Avoid_: Mutable requirements document, chat summary, current requirements row
 
+**Requirements Acceptance Decision**:
+An immutable authorized human decision that binds one exact reviewed Requirements
+Artifact version to its current evidence validations, policy and accepting authority,
+and establishes the Workflow Run's terminal accepted outcome.
+_Avoid_: Approval flag, latest requirements acceptance, UI confirmation
+
 **Clarification**:
 A durable human question linked to one Workflow Run, Requirement and originating
 Requirements Artifact version; its typed answer identifies one immutable

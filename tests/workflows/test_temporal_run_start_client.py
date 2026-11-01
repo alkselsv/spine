@@ -12,6 +12,7 @@ from spine.application.persistence.workflow_runs import (
     ClarificationAnsweredDispatchPayload,
     ClarificationRequestedDispatchPayload,
     WorkflowCancelledDispatchPayload,
+    RequirementsAcceptedDispatchPayload,
 )
 from spine.workflows.temporal.run_start_client import TemporalSdkWorkflowRunClient
 
@@ -125,11 +126,22 @@ async def test_temporal_client_signals_wait_resume_and_cancel_on_the_same_run() 
             workflow_version_id=workflow_input.workflow_version_id,
         )
     )
+    await client.signal_requirements_accepted(
+        RequirementsAcceptedDispatchPayload(
+            command_id=UUID("64300000-0000-4000-8000-000000000005"),
+            run_id=workflow_input.run_id,
+            artifact_id=artifact_id,
+            artifact_version=2,
+            artifact_digest="a" * 64,
+            workflow_version_id=workflow_input.workflow_version_id,
+        )
+    )
 
     handle = sdk.handles[str(workflow_input.run_id)]
     assert [item[0] for item in handle.signals] == [
         "clarification_requested",
         "clarification_answered",
         "run_cancelled",
+        "requirements_accepted",
     ]
     assert all("answer" not in str(payload) for _, payload in handle.signals)

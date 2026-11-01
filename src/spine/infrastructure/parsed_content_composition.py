@@ -20,7 +20,10 @@ from spine.application.parsed_content_inspection import (
     ParsedContentDecisionAudit,
     ParsedContentInspectionRequester,
 )
-from spine.application.transcript_publication import TranscriptAuthorizationSnapshot
+from spine.application.transcript_publication import (
+    TranscriptAuthorizationSnapshot,
+    TranscriptAuthorizationSnapshotV2,
+)
 from spine.application.persistence.context import (
     EnvironmentScope,
     TrustedPersistenceContext,
@@ -212,7 +215,7 @@ class ProductionTranscriptEvidenceAuthorization:
             source_object_id=source_object_id,
             source_revision_id=source_revision_id,
         )
-        await self.decision_audit.record_decision(
+        audit_reference = await self.decision_audit.record_decision(
             context=context,
             decision=decision,
             requested_source_revision_id=source_revision_id,
@@ -238,7 +241,7 @@ class ProductionTranscriptEvidenceAuthorization:
             and current_revision_id is not None
             and current_revision_digest is not None
         )
-        return TranscriptAuthorizationSnapshot(
+        return TranscriptAuthorizationSnapshotV2(
             allowed=allowed,
             workspace_id=workspace_id,
             environment_id=environment_id,
@@ -247,6 +250,8 @@ class ProductionTranscriptEvidenceAuthorization:
             current_revision_digest=current_revision_digest,
             authorization_generation=requester.authorization_generation,
             reason_code="allowed" if allowed else "authorization_denied",
+            authorization_decision_reference=decision.decision_reference,
+            audit_reference=audit_reference,
         )
 
 
