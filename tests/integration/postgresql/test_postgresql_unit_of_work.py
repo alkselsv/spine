@@ -238,6 +238,7 @@ from tests.contracts.persistence.test_projection_contract import (
     test_projection_recovery_result_bridge_persists_and_replays_canonical_evidence as contract_projection_recovery_result_bridge,
 )
 from tests.contracts.persistence.test_source_observation_contract import (
+    connector_source as source_contract_connector_source,
     prepare as prepare_source_scope,
     provenance as source_contract_provenance,
     revision as source_contract_revision,
@@ -9863,7 +9864,7 @@ async def test_selector_migration_rollback_preserves_existing_v1_acceptance(
     config = Config(str(config_path))
     config.set_main_option("script_location", str(script_location))
     config.attributes["migration_settings"] = migration_settings
-    await asyncio.to_thread(command.downgrade, config, "20261222_90")
+    await asyncio.to_thread(command.downgrade, config, "20261224_92")
 
     migration_engine = create_async_engine(
         postgresql_contract_database.migration_url.get_secret_value(),

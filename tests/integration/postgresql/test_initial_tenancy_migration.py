@@ -2625,6 +2625,12 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_corrected_transcript_artifacts",
         "uq_corrected_transcript_artifacts_review",
     } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES | CANONICAL_BOUNDARY_INDEXES | {
+        "pk_trusted_canonical_acceptance_selectors",
+        "pk_current_trusted_canonical_acceptance_selector",
+        "uq_trusted_canonical_acceptance_selector_version",
+        "uq_trusted_canonical_acceptance_selector_idempotency",
+        "uq_trusted_canonical_acceptance_selector_series_id",
+        "uq_trusted_canonical_acceptance_selector_predecessor",
         "uq_audit_events_tenant_event",
         "uq_outbox_intents_tenant_event",
         "uq_source_objects_lifecycle_connection",
