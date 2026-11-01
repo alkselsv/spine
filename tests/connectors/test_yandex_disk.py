@@ -253,6 +253,68 @@ async def test_path_scoped_reappearance_occurrence_never_claims_identity_continu
 
 
 @pytest.mark.asyncio
+async def test_reader_resolves_exact_admitted_file_below_non_recursive_root() -> None:
+    nested = _resource(path="disk:/approved/subdirectory/nested.pdf")
+
+    class NestedService(OfficialShapeService):
+        async def get_resource(self, connection, scope, *, path):
+            self.calls.append(("metadata", (scope, path)))
+            return nested
+
+    service = NestedService()
+    adapter = YandexDiskProviderAdapter(
+        service=service,
+        profile=YandexDiskReadProfile(page_size=2, max_attempts=1),
+        clock=lambda: NOW,
+        sleep=lambda _: _return_none(),
+    )
+
+    observation = await adapter.read(
+        _connection(),
+        replace(
+            _command(),
+            resource_object_reference="disk:/approved/subdirectory/nested.pdf",
+        ),
+    )
+
+    assert observation.representation.revision_evidence.resource_path == nested.path
+    assert [name for name, _ in service.calls] == [
+        "list",
+        "list",
+        "metadata",
+        "download",
+        "metadata",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_nested_lookup_rejects_different_in_root_resource_before_download() -> None:
+    class MisdirectedService(OfficialShapeService):
+        async def get_resource(self, connection, scope, *, path):
+            self.calls.append(("metadata", (scope, path)))
+            return _resource(path="disk:/approved/unrelated.pdf")
+
+    service = MisdirectedService()
+    adapter = YandexDiskProviderAdapter(
+        service=service,
+        profile=YandexDiskReadProfile(page_size=2, max_attempts=1),
+        clock=lambda: NOW,
+        sleep=lambda _: _return_none(),
+    )
+
+    with pytest.raises(YandexDiskContractError):
+        await adapter.read(
+            _connection(),
+            replace(
+                _command(),
+                resource_object_reference="disk:/approved/subdirectory/nested.pdf",
+            ),
+        )
+
+    assert all(name != "download" for name, _ in service.calls)
+
+
+@pytest.mark.asyncio
 async def test_wrong_scope_and_workspace_are_denied_before_provider_content_read() -> None:
     service = OfficialShapeService()
     provider = YandexDiskProviderAdapter(
