@@ -36,6 +36,7 @@ from spine.application.private_asr_corpus import (
 )
 from spine.application.transcription import AudioPreparationResult, SpeechToTextPort
 from spine.domain.artifacts.transcription import (
+    AudioChunkBoundary,
     AudioChunkHandle,
     AudioRecordingHandle,
     SpeechToTextRequestV2,
@@ -602,30 +603,13 @@ class PrivateRealASREvaluationRunner:
                         valid = False
                         break
                     boundary = chunk.boundary
-                    chunk_duration = boundary.end_ms - boundary.start_ms
-                    previous_start = -1
-                    overlap_end = boundary.start_ms + boundary.overlap_before_ms
-                    for segment in result.segments:
-                        if (
-                            segment.start_ms < previous_start
-                            or segment.end_ms > chunk_duration
-                            or segment.end_ms <= segment.start_ms
-                        ):
-                            valid = False
-                            break
-                        previous_start = segment.start_ms
-                        absolute_start = boundary.start_ms + segment.start_ms
-                        absolute_end = boundary.start_ms + segment.end_ms
-                        if boundary.ordinal > 1 and absolute_end <= overlap_end:
-                            continue
-                        if segments and absolute_start < segments[-1].start_ms:
-                            valid = False
-                            break
-                        segments.append(segment.model_copy(update={
-                            "start_ms": absolute_start, "end_ms": absolute_end,
-                        }))
-                    if not valid:
+                    translated = reassemble_private_asr_chunk_segments(
+                        boundary, result.segments, prior_segments=segments,
+                    )
+                    if translated is None:
+                        valid = False
                         break
+                    segments.extend(translated)
                 if not valid:
                     outcomes.append(PrivateCaseOutcome(
                         record_ref=_record_ref(record), split=record.split,
@@ -1050,6 +1034,45 @@ class PrivateRealASREvaluationRunner:
 
 def _record_ref(record: PrivateCorpusRecord) -> PrivateReference:
     return PrivateReference(reference_id=record.record_id, reference_kind="private_asr_record")
+
+
+def reassemble_private_asr_chunk_segments(
+    boundary: AudioChunkBoundary,
+    chunk_segments: tuple[SpeechToTextSegment, ...],
+    *,
+    prior_segments: list[SpeechToTextSegment],
+) -> tuple[SpeechToTextSegment, ...] | None:
+    """Translate valid chunk-local segments and apply the pinned overlap rule.
+
+    A segment wholly inside a later chunk's preceding overlap is omitted. A
+    segment crossing the overlap end is retained as returned; it is neither
+    clipped nor otherwise rewritten.
+    """
+
+    chunk_duration = boundary.end_ms - boundary.start_ms
+    overlap_end = boundary.start_ms + boundary.overlap_before_ms
+    previous_local_start = -1
+    translated: list[SpeechToTextSegment] = []
+    prior_start = prior_segments[-1].start_ms if prior_segments else -1
+    for segment in chunk_segments:
+        if (
+            segment.start_ms < previous_local_start
+            or segment.end_ms > chunk_duration
+            or segment.end_ms <= segment.start_ms
+        ):
+            return None
+        previous_local_start = segment.start_ms
+        absolute_start = boundary.start_ms + segment.start_ms
+        absolute_end = boundary.start_ms + segment.end_ms
+        if boundary.ordinal > 1 and absolute_end <= overlap_end:
+            continue
+        if absolute_start < prior_start:
+            return None
+        translated.append(segment.model_copy(update={
+            "start_ms": absolute_start, "end_ms": absolute_end,
+        }))
+        prior_start = absolute_start
+    return tuple(translated)
 
 
 def _normalize_text(value: str) -> str:

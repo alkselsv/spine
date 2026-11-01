@@ -48,11 +48,13 @@ Only typed chunk-local V2 results with exact candidate identities are consumed.
 Segment timestamps must be monotonic and inside the chunk duration. Valid
 segments are translated by the chunk's original-timeline start offset; segments
 ending wholly inside a later chunk's declared preceding overlap are omitted by
-the existing deterministic rule. Invalid bounds, ordering, or identity make
-that case unavailable; results are not silently clipped, reordered, or
-language-filled from the request hint. The current bridge has no independent
-detection-evidence field, and the pinned GigaAM/Whisper configurations do not
-perform detection, so a non-null `detected_language` is refused. It does not
+the existing deterministic rule. A segment crossing the overlap end is retained
+with its translated bounds; partial overlaps are not clipped or deduplicated.
+Invalid bounds, ordering, or identity make that case unavailable; results are
+not silently reordered or language-filled from the request hint. The current
+bridge has no independent detection-evidence field, and the pinned
+GigaAM/Whisper configurations do not perform detection, so a non-null
+`detected_language` is refused. It does not
 become an observation merely because it equals `language_hint="ru"`.
 `detected_language=None` remains absence of detection evidence. Result
 validation and reassembly happen before any transcript-derived measurement is
