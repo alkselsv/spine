@@ -23,7 +23,7 @@ from spine.application.private_asr_qualification import (
     PrivateRealASREvaluationRunner, SpeechToTextCandidateRuntime,
     reassemble_private_asr_chunk_segments,
 )
-from spine.application.transcription import AudioPreparationResult
+from spine.application.transcription import AudioPreparationResult, AudioPreparedChunk
 from spine.domain.artifacts.transcription import (
     AudioChunkBoundary, AudioMediaInspection, AudioRecordingHandle, SpeechToTextRequestV2,
     SpeechToTextResult, SpeechToTextResultV2, SpeechToTextSegment,
@@ -264,14 +264,31 @@ class FakeAudioPreparation:
             digest_algorithm="sha256", digest_hex=sha256(b"synthetic decoded audio").hexdigest(),
             byte_length=23,
         )
+        inspection = AudioMediaInspection(
+            inspected_media_type="audio/wav", container="wav", codec="pcm_s16le",
+            byte_length=len(RAW), duration_ms=recording.recording_duration_ms,
+            audio_stream_count=1, silent=False,
+        )
+        chunks = []
+        for boundary in profile.plan_chunks(inspection):
+            fake_chunk = f"synthetic pcm chunk {boundary.ordinal}".encode()
+            fake_chunk += b"\x00" * 64
+            chunks.append(AudioPreparedChunk(
+                boundary=boundary,
+                decoded_reference=ObjectReference(
+                    schema_version=1, object_id=_id(200 + boundary.ordinal),
+                    storage_generation=_id(300 + boundary.ordinal), digest_algorithm="sha256",
+                    digest_hex=sha256(fake_chunk).hexdigest(), byte_length=len(fake_chunk),
+                ),
+            ))
         return AudioPreparationResult(
-            inspection=AudioMediaInspection(
-                inspected_media_type="audio/wav", container="wav", codec="pcm_s16le",
-                byte_length=len(RAW), duration_ms=recording.recording_duration_ms,
-                audio_stream_count=1, silent=False,
-            ), decoder_reference=profile.decoder_reference,
+            inspection=inspection, decoder_reference=profile.decoder_reference,
+            decoder_build_version="synthetic ffmpeg build",
+            decoder_build_sha256="a" * 64,
+            original_sha256=recording.original_sha256,
             decoded_reference=decoded, decoded_sha256=decoded.digest_hex,
             decoded_byte_length=decoded.byte_length, peak_memory_bytes=128, peak_working_bytes=256,
+            chunks=tuple(chunks),
         )
 
     async def release(self, prepared, *, context):
@@ -676,7 +693,9 @@ async def test_private_bridge_reassembles_three_overlapping_chunks_on_recording_
     assert len({item.chunk.chunk_id for item in requests}) == 3
     assert [item.chunk.chunk_id for item in requests] == [
         audio_chunk_id(
-            decoded_sha256=sha256(b"synthetic decoded audio").hexdigest(),
+            decoded_sha256=sha256(
+                f"synthetic pcm chunk {item.chunk.boundary.ordinal}".encode() + b"\x00" * 64
+            ).hexdigest(),
             decoder_reference=profile.decoder_reference,
             boundary=item.chunk.boundary,
         )
@@ -699,10 +718,7 @@ async def test_private_bridge_reassembles_three_overlapping_chunks_on_recording_
         item.chunk.decoded_sha256 == item.chunk.decoded_reference.digest_hex
         for item in requests
     )
-    assert all(
-        item.chunk.decoded_sha256 == sha256(b"synthetic decoded audio").hexdigest()
-        for item in requests
-    )
+    assert len({item.chunk.decoded_sha256 for item in requests}) == 3
     assert all(
         item.chunk.boundary.end_ms - item.chunk.boundary.start_ms <= 25_000
         for item in requests
@@ -824,7 +840,7 @@ async def test_duplicate_chunk_ordinals_are_unavailable_before_runtime_initializ
     assert report.denominators.measured == 0
     assert report.denominators.unavailable == 1
     assert report.status.value == "NOT_VERIFIED"
-    assert factory.audio_preparation.releases == 1
+    assert factory.audio_preparation.aborts == 1
     assert factory.creates == factory.runtime.calls == 0
     assert reports.calls == 1
 
