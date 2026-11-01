@@ -173,6 +173,421 @@ test('test_requirements_artifact_is_restored_from_scoped_api_after_browser_reloa
   )).toBe(true);
 });
 
+test('test_composed_offline_backend_persists_start_and_reload', { tag: '@requirements-composed' }, async ({ page }) => {
+  await installContainerRuntime(page);
+  await page.goto('/workflow/start');
+
+  await page.getByLabel('Сообщение').fill('Запуск');
+  await page.getByRole('button', { name: 'Добавить принятую версию источника' }).click();
+  await page.getByLabel('Source Object ID').fill('10000000-0000-4000-8000-000000001b5a');
+  await page.getByLabel('Source Revision ID').fill('00000000-0000-0000-0000-00000009db72');
+  await page.getByLabel('Provenance ID').fill('10000000-0000-4000-8000-000000001bbe');
+  const startResponse = page.waitForResponse((response) =>
+    response.request().method() === 'POST' && response.url().endsWith('/api/v1/runs'),
+  );
+  await page.getByRole('button', { name: 'Начать работу' }).click();
+  const startResult = await startResponse;
+  expect(startResult.status(), await startResult.text()).toBe(202);
+
+  await expect(page).toHaveURL(/\/workflow\/runs\/[0-9a-f-]{36}$/);
+  await expect(page.getByText('commercial.requirements · 1.0.0')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Требования · версия 1' })).toBeVisible();
+  await expect(page.getByRole('listitem').filter({ hasText: 'unresolved_information: Запуск' }).first()).toBeVisible();
+  await expect(page.getByText('SourceRevision: 00000000-0000-0000-0000-00000009db72')).toBeVisible();
+  await expect(page.getByText('Подтверждения: не проверено · точных ссылок 1')).toBeVisible();
+  await page.getByRole('button', { name: 'Открыть evidence' }).click();
+  await expect(page.getByText('Запуск', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Ответ менеджера')).toBeVisible();
+
+  await page.reload();
+
+  await expect(page.getByRole('heading', { name: 'Требования · версия 1' })).toBeVisible();
+  await expect(page.getByRole('listitem').filter({ hasText: 'unresolved_information: Запуск' }).first()).toBeVisible();
+  await expect(page.getByText('Подтверждения: не проверено · точных ссылок 1')).toBeVisible();
+  await expect(page.getByLabel('Ответ менеджера')).toBeVisible();
+  await expect(page.locator('section[aria-labelledby="workflow-run-heading"] > ol > li').first()).toBeVisible();
+
+  await page.getByLabel('Ответ менеджера').fill('Запуск 20 декабря для коммерческого предложения; успех — согласование заказчиком.');
+  await page.getByRole('button', { name: 'Ответить и продолжить' }).click();
+  await expect(page.getByRole('heading', { name: 'Требования · версия 2' })).toBeVisible();
+
+  await page.reload();
+
+  await expect(page.getByRole('heading', { name: 'Требования · версия 2' })).toBeVisible();
+  await expect(page.getByText('Уточнение получено и учтено в версии 2.')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Редактировать требование' }).click();
+  await page.getByLabel('Формулировка требования').fill('Запуск должен состояться до 20 декабря.');
+  await page.getByLabel('Причина изменения').fill('Зафиксирован подтверждённый срок.');
+  await page.getByRole('button', { name: 'Сохранить изменение' }).click();
+  await expect(page.getByRole('heading', { name: 'Требования · версия 3' })).toBeVisible();
+
+  await page.getByLabel('Причина решения').fill('Нужна независимая проверка формулировки.');
+  await page.getByRole('button', { name: 'Вернуть на доработку' }).click();
+  await expect(page.getByRole('heading', { name: 'Требования · версия 4' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Переклассифицировать требование' }).click();
+  await page.getByLabel('Новая независимая формулировка').fill('Ответственный менеджер подтвердил выпуск 20 декабря.');
+  await page.getByLabel('Обоснование').fill('Независимое подтверждение менеджера.');
+  await page.getByRole('checkbox', { name: /Подтверждаю, что написал новую формулировку/ }).check();
+  const reclassificationResponse = page.waitForResponse((response) =>
+    response.request().method() === 'POST' && response.url().endsWith('/commands'),
+  );
+  await page.getByRole('button', { name: 'Создать новую версию' }).click();
+  const reclassificationResult = await reclassificationResponse;
+  expect(
+    reclassificationResult.status(),
+    await reclassificationResult.text(),
+  ).toBe(202);
+  await expect(page.getByRole('heading', { name: 'Требования · версия 5' })).toBeVisible();
+  await expect(page.getByText('Статус: human_reviewed')).toBeVisible();
+
+  await page.getByRole('checkbox', { name: /Подтверждаю эти количества/ }).check();
+  const acceptanceResponse = page.waitForResponse((response) =>
+    response.request().method() === 'POST' && response.url().endsWith('/commands'),
+  );
+  await page.getByRole('button', { name: 'Принять требования' }).click();
+  const acceptanceResult = await acceptanceResponse;
+  expect(acceptanceResult.status(), await acceptanceResult.text()).toBe(202);
+  await expect(page.getByText('Состояние', { exact: true }).locator('..')).toContainText('completed');
+
+  await page.reload();
+
+  await expect(page.getByRole('heading', { name: 'Требования · версия 5' })).toBeVisible();
+  await expect(page.getByText('Состояние', { exact: true }).locator('..')).toContainText('completed');
+});
+
+test('test_browser_fixture_exercises_recovery_and_exact_requirements_version_controls', async ({ page }) => {
+  const workItemId = 'b0000000-0000-4000-8000-000000000003';
+  const workflowVersionId = 'b0000000-0000-4000-8000-000000000005';
+  const requirementId = 'b0000000-0000-4000-8000-000000000006';
+  const clarificationId = 'b0000000-0000-4000-8000-000000000007';
+  const sourceObjectId = 'b0000000-0000-4000-8000-000000000008';
+  const sourceRevisionId = 'b0000000-0000-4000-8000-000000000009';
+  const provenanceId = 'b0000000-0000-4000-8000-000000000010';
+  const segmentId = 'b0000000-0000-4000-8000-000000000011';
+  const parsedArtifactId = 'b0000000-0000-4000-8000-000000000012';
+  const evidenceValidationId = 'b0000000-0000-4000-8000-000000000013';
+  const authorizationDecisionId = 'b0000000-0000-4000-8000-000000000014';
+  const managerId = 'b0000000-0000-4000-8000-000000000015';
+  const auditId = 'b0000000-0000-4000-8000-000000000016';
+  const startRequests: { idempotencyKey?: string; body: string }[] = [];
+  const commands: Record<string, unknown>[] = [];
+  const requestedPaths: string[] = [];
+  let startAttempts = 0;
+  let clarificationResponseLost = false;
+  let phase = 1;
+  let statement = 'Запуск должен состояться в декабре.';
+
+  const artifact = () => {
+    const artifactVersion = Math.min(phase, 5);
+    const answered = phase >= 2;
+    const reviewed = phase >= 5;
+    return {
+      artifact_id: requirementsArtifact,
+      artifact_version: artifactVersion,
+      schema_version: 'requirements:v3',
+      production_identity: `requirements-offline-v${artifactVersion}`,
+      production_digest: String(artifactVersion).repeat(64),
+      workspace_id: primaryWorkspace,
+      environment_id: localEnvironment,
+      work_item_id: workItemId,
+      run_id: workflowRun,
+      state: reviewed ? 'human_reviewed' : phase === 1 ? 'partial' : 'candidate',
+      upstream_artifact_ids: [],
+      predecessor_version: artifactVersion > 1 ? artifactVersion - 1 : null,
+      clarifications: [{
+        schema_version: 'clarification:v1',
+        clarification_id: clarificationId,
+        run_id: workflowRun,
+        requirement_id: requirementId,
+        originating_artifact_id: requirementsArtifact,
+        originating_artifact_version: 1,
+        question: 'Уточните точную дату запуска.',
+        reason: 'missing_information',
+        asked_by: { kind: 'agent', id: managerId },
+        asked_event_id: clarificationId,
+        asked_at: '2026-11-01T09:00:00Z',
+        correlation_id: workflowRun,
+        answer: answered ? '20 декабря.' : null,
+        answered_by: answered ? { kind: 'human', id: managerId } : null,
+        answered_event_id: answered ? clarificationId : null,
+        answered_at: answered ? '2026-11-01T09:05:00Z' : null,
+        resulting_artifact_version: answered ? 2 : null,
+        affected_validation_references: answered ? [evidenceValidationId] : [],
+      }],
+      requirements: [{
+        requirement_id: requirementId,
+        schema_version: 'requirement:v3',
+        category: 'schedule',
+        statement,
+        constraints: answered ? ['deadline=2026-12-20'] : [],
+        uncertainty: answered ? null : 'Точная дата не указана.',
+        ambiguous_markers: answered ? [] : ['launch_date'],
+        missing_markers: answered ? [] : ['launch_date'],
+        state: reviewed ? 'human_reviewed' : phase === 1 ? 'partial' : 'candidate',
+        review_state: reviewed ? 'reviewed' : 'needs_review',
+        confidence: null,
+        source_refs: [{
+          source_object_id: sourceObjectId,
+          source_revision_id: sourceRevisionId,
+          provenance_id: provenanceId,
+        }],
+        evidence_refs: [{
+          source_ref: {
+            source_object_id: sourceObjectId,
+            source_revision_id: sourceRevisionId,
+            provenance_id: provenanceId,
+          },
+          parsed_artifact_ref: {
+            id: parsedArtifactId,
+            schema_name: 'parsed-document',
+            schema_version: 'parsed-document:v1',
+          },
+          transcript_locator: null,
+          segment_id: segmentId,
+          segment_digest: 'e'.repeat(64),
+          locator_contract_version: 'physical-line-locator:v1',
+          locator: { kind: 'physical_line', line_number: 4, start_codepoint: 0, end_codepoint: 41 },
+          relationship: 'supports',
+          validation: {
+            validation_reference: evidenceValidationId,
+            status: 'available',
+          },
+        }],
+        evidence_status: 'referenced',
+        upstream_artifact_ids: [],
+        acceptance_basis: reviewed ? 'manager_assertion' : null,
+        acceptance_rationale: reviewed ? 'Проверено менеджером.' : null,
+        false_consequence: null,
+        attributed_by: reviewed ? { kind: 'human', id: managerId } : null,
+        assertion_audit_reference: reviewed ? auditId : null,
+        independent_human_assertion: reviewed ? true : null,
+        conflict_resolution_rationale: null,
+      }],
+    };
+  };
+
+  await installContainerRuntime(page);
+  await page.route('**/api/v1/runs**', async (route) => {
+    const url = new URL(route.request().url());
+    if (route.request().method() !== 'POST' || !/^\/api\/v1\/runs\/?$/.test(url.pathname)) {
+      return route.fallback();
+    }
+    startAttempts += 1;
+    startRequests.push({
+      idempotencyKey: route.request().headers()['idempotency-key'],
+      body: route.request().postData() ?? '',
+    });
+    if (startAttempts === 1) {
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          code: 'spine.client.api_unavailable',
+          retryability: 'same_command',
+          safe_message: 'The start response was lost. Retry the same command.',
+          trace_id: traceId,
+        }),
+      });
+      return;
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        schema_version: 1,
+        command_id: managerId,
+        work_item_id: workItemId,
+        run_id: workflowRun,
+        workflow_version_id: workflowVersionId,
+        state: 'admitted',
+        run_version: 1,
+        admission: 'replayed',
+      }),
+    });
+  });
+  await page.route('**/api/v1/artifacts/*/requirements/*/evidence/*', async (route) => {
+    requestedPaths.push(new URL(route.request().url()).pathname);
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ data: {
+        schema_version: 'requirements-evidence-inspection-response:v1',
+        status: 'available',
+        evidence: {
+          schema_version: 'requirements-evidence-inspection-evidence:v1',
+          source_object_id: sourceObjectId,
+          source_revision_id: sourceRevisionId,
+          segment_id: segmentId,
+          segment_digest: 'e'.repeat(64),
+          locator: { kind: 'physical_line', line_number: 4, start_codepoint: 0, end_codepoint: 41 },
+          text: 'Ввод в эксплуатацию — 20 декабря.',
+          validation_reference: evidenceValidationId,
+          authorization_decision_reference: authorizationDecisionId,
+        },
+      } }),
+    });
+  });
+  await page.route('**/api/v1/runs/' + workflowRun + '**', async (route) => {
+    const url = new URL(route.request().url());
+    requestedPaths.push(url.pathname);
+    if (route.request().method() === 'POST' && url.pathname.endsWith('/commands')) {
+      const command = route.request().postDataJSON() as Record<string, unknown>;
+      commands.push(command);
+      const commandType = command.command_type;
+      if (commandType === 'answer_clarification') {
+        phase = 2;
+        if (!clarificationResponseLost) {
+          clarificationResponseLost = true;
+          await route.fulfill({
+            status: 503,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              code: 'spine.client.api_unavailable',
+              retryability: 'same_command',
+              safe_message: 'The command response was lost. Retry the same command.',
+              trace_id: traceId,
+            }),
+          });
+          return;
+        }
+      }
+      if (commandType === 'edit_requirement') {
+        phase = 3;
+        statement = (command.payload as { statement: string }).statement;
+      }
+      if (commandType === 'request_rework') phase = 4;
+      if (commandType === 'save_review') phase = 5;
+      if (commandType === 'accept_requirements') phase = 6;
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          schema_version: 1,
+          command_id: command.command_id,
+          work_item_id: workItemId,
+          run_id: workflowRun,
+          workflow_version_id: workflowVersionId,
+          state: phase === 6 ? 'completed' : 'running',
+          run_version: phase + 1,
+          admission: 'accepted',
+        }),
+      });
+      return;
+    }
+    if (url.pathname.endsWith('/requirements')) {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify(artifact()) });
+      return;
+    }
+    if (url.pathname.endsWith('/events')) {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          schema_version: 1,
+          items: [
+            { sequence: 1, event_id: managerId, event_type: 'workflow.started', summary: 'Запрос принят', occurred_at: '2026-11-01T09:00:00Z' },
+            { sequence: 2, event_id: clarificationId, event_type: 'workflow.clarification-requested', summary: 'Запрошено уточнение', occurred_at: '2026-11-01T09:01:00Z' },
+            ...(phase >= 2 ? [{ sequence: 3, event_id: auditId, event_type: 'workflow.clarification-answered', summary: 'Уточнение сохранено', occurred_at: '2026-11-01T09:05:00Z' }] : []),
+            ...(phase >= 6 ? [{ sequence: 4, event_id: authorizationDecisionId, event_type: 'workflow.requirements-accepted', summary: 'Требования приняты', occurred_at: '2026-11-01T09:10:00Z' }] : []),
+          ],
+          limit: 100,
+          next_cursor: null,
+        }),
+      });
+      return;
+    }
+    const allowedCommands = phase === 1
+      ? ['answer_clarification', 'cancel']
+      : phase === 2
+        ? ['edit_requirement', 'request_rework', 'save_review', 'cancel']
+        : phase === 3
+          ? ['request_rework', 'save_review', 'cancel']
+          : phase === 4
+            ? ['edit_requirement', 'save_review', 'cancel']
+            : phase === 5
+              ? ['accept_requirements']
+              : [];
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        schema_version: 1,
+        run_id: workflowRun,
+        work_item_id: workItemId,
+        workspace_id: primaryWorkspace,
+        environment_id: localEnvironment,
+        workflow_key: 'commercial.requirements',
+        workflow_version_id: workflowVersionId,
+        workflow_version: '1.0.0',
+        run_version: phase + 1,
+        state: phase === 6 ? 'completed' : phase === 1 ? 'waiting_human' : 'running',
+        allowed_commands: allowedCommands,
+        created_at: '2026-11-01T09:00:00Z',
+      }),
+    });
+  });
+
+  await page.goto('/workflow/start');
+  await page.getByLabel('Сообщение').fill('Подготовьте требования по принятой версии ТЗ.');
+  await page.getByRole('button', { name: 'Добавить принятую версию источника' }).click();
+  await page.getByLabel('Source Object ID').fill(sourceObjectId);
+  await page.getByLabel('Source Revision ID').fill(sourceRevisionId);
+  await page.getByLabel('Provenance ID').fill(provenanceId);
+  await page.getByRole('button', { name: 'Начать работу' }).click();
+  await expect.poll(() => startAttempts).toBe(1);
+  await expect(page.getByRole('alert')).toContainText('Retry the same command');
+  await page.getByRole('button', { name: 'Начать работу' }).click();
+  await expect(page).toHaveURL(new RegExp(`/workflow/runs/${workflowRun}`));
+  expect(startRequests).toHaveLength(2);
+  expect(startRequests[1]).toEqual(startRequests[0]);
+
+  await expect(page.getByText('Статус: partial')).toBeVisible();
+  await expect(page.getByText('Не указано: launch_date')).toBeVisible();
+  await page.getByRole('button', { name: 'Открыть evidence' }).click();
+  await expect(page.getByText('Ввод в эксплуатацию — 20 декабря.')).toBeVisible();
+  await page.getByLabel('Ответ менеджера').fill('20 декабря.');
+  await page.getByRole('button', { name: 'Ответить и продолжить' }).click();
+  await expect(page.getByRole('alert')).toContainText('Не удалось сохранить ответ');
+  await page.getByRole('button', { name: 'Ответить и продолжить' }).click();
+  expect(commands[1]).toEqual(commands[0]);
+
+  await page.getByRole('button', { name: 'Редактировать требование' }).click();
+  await page.getByLabel('Формулировка требования').fill('Запуск должен состояться до 20 декабря.');
+  await page.getByLabel('Причина изменения').fill('Уточнена формулировка срока.');
+  await page.getByRole('button', { name: 'Сохранить изменение' }).click();
+  await expect(page.getByRole('heading', { name: 'Требования · версия 3' })).toBeVisible();
+  await page.getByLabel('Причина решения').fill('Нужно повторно проверить итоговую формулировку.');
+  await page.getByRole('button', { name: 'Вернуть на доработку' }).click();
+  await expect(page.getByRole('heading', { name: 'Требования · версия 4' })).toBeVisible();
+  await page.getByLabel('Причина решения').fill('Проверена точная версия и её evidence.');
+  await page.getByRole('button', { name: 'Сохранить проверку' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Требования · версия 5' })).toBeVisible();
+  await expect(page.getByText('Статус: human_reviewed')).toBeVisible();
+  const acceptedArtifact = artifact();
+  await page.getByRole('checkbox', { name: /Подтверждаю эти количества/ }).click();
+  await page.getByRole('button', { name: 'Принять требования' }).click();
+  await expect(page.getByText('Состояние').locator('..')).toContainText('completed');
+
+  const acceptCommand = commands.find((command) => command.command_type === 'accept_requirements');
+  expect(acceptCommand).toMatchObject({
+    expected_run_version: 6,
+    artifact_refs: [{ artifact_id: requirementsArtifact, artifact_version: 5 }],
+    payload: {
+      artifact_digest: acceptedArtifact.production_digest,
+      policy_version: 'requirements-artifact-acceptance:v1',
+      acknowledged_assertion_count: 1,
+      acknowledged_assumption_count: 0,
+    },
+  });
+
+  await page.reload();
+  await expect(page.getByText('Состояние').locator('..')).toContainText('completed');
+  await expect(page.getByRole('heading', { name: 'Требования · версия 5' })).toBeVisible();
+  await expect(page.getByText('Уточнение получено и учтено в версии 2.')).toBeVisible();
+  await expect(page.getByText('Запуск должен состояться до 20 декабря.')).toBeVisible();
+  await expect(page.getByText('Требования приняты')).toBeVisible();
+  expect(requestedPaths.some((path) => path.includes('/evidence/'))).toBe(true);
+  expect(requestedPaths.every((path) => !path.includes('temporal') && !path.includes('/qa/'))).toBe(true);
+});
+
 test('test_qa_runs_fixture_shows_embedded_run_history', { tag: '@embedded-fixture' }, async ({ page }) => {
   await installContainerRuntime(page);
   await page.goto('/qa/runs');

@@ -200,6 +200,7 @@ def _review_successor(
     command_id: UUID,
     production_identity: str,
 ) -> RequirementsArtifact:
+    clarifications = previous.clarifications
     if isinstance(payload, EditRequirementCommandV1):
         found = False
         requirements = []
@@ -226,6 +227,9 @@ def _review_successor(
         found = False
         requirements = []
         statement = payload.statement.strip()
+        reclassified_requirement_id = _reclassified_requirement_id(
+            command_id, payload.requirement_id
+        )
         for requirement in previous.requirements:
             if requirement.requirement_id == payload.requirement_id:
                 found = True
@@ -252,9 +256,7 @@ def _review_successor(
                     {
                         **requirement.model_dump(),
                         "schema_version": "requirement:v3",
-                        "requirement_id": _reclassified_requirement_id(
-                            command_id, requirement.requirement_id
-                        ),
+                        "requirement_id": reclassified_requirement_id,
                         "statement": statement,
                         "state": RequirementState.HUMAN_REVIEWED,
                         "review_state": RequirementReviewState.REVIEWED,
@@ -294,6 +296,14 @@ def _review_successor(
             requirements.append(requirement)
         if not found:
             raise RequirementsReviewUnavailableError("Requirement is unavailable.")
+        clarifications = tuple(
+            clarification.model_copy(
+                update={"requirement_id": reclassified_requirement_id}
+            )
+            if clarification.requirement_id == payload.requirement_id
+            else clarification
+            for clarification in previous.clarifications
+        )
         changed_requirement_id = str(payload.requirement_id)
     else:
         review_state = (
@@ -335,6 +345,7 @@ def _review_successor(
             "production_identity": production_identity,
             "production_digest": digest,
             "requirements": tuple(requirements),
+            "clarifications": clarifications,
             "state": (
                 RequirementState.HUMAN_REVIEWED
                 if isinstance(

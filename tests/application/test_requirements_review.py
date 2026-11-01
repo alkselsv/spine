@@ -29,6 +29,8 @@ from spine.domain.common import ActorKind, ActorRef, ContextOrigin
 from spine.domain.artifacts import ArtifactRef, PhysicalLineLocator
 from spine.domain.workflows import (
     AcceptedSourceRevisionRef,
+    Clarification,
+    ClarificationReason,
     Requirement,
     RequirementEvidenceRef,
     RequirementEvidenceStatus,
@@ -355,6 +357,51 @@ async def test_explicit_manager_reclassification_creates_source_free_v3_successo
     assert reclassified.assertion_audit_reference == command.command_id
     assert reclassified.upstream_artifact_ids == (UUID(int=40),)
     assert uow.requirements_artifacts.items[0].requirements[0].source_refs
+
+
+@pytest.mark.asyncio
+async def test_reclassification_rebinds_clarification_lineage_to_new_requirement() -> None:
+    uow = _source_backed_uow()
+    base = uow.requirements_artifacts.items[0]
+    uow.requirements_artifacts.items[0] = base.model_copy(
+        update={
+            "clarifications": (
+                Clarification(
+                    clarification_id=UUID(int=60),
+                    run_id=base.run_id,
+                    requirement_id=UUID(int=41),
+                    originating_artifact_id=base.artifact_id,
+                    originating_artifact_version=base.artifact_version,
+                    question="When must delivery complete?",
+                    reason=ClarificationReason.MISSING_INFORMATION,
+                    asked_by=ActorRef(kind=ActorKind.HUMAN, id=UUID(int=21)),
+                    asked_event_id=UUID(int=61),
+                    asked_at=datetime(2026, 11, 1, tzinfo=timezone.utc),
+                    correlation_id=UUID(int=62),
+                ),
+            )
+        }
+    )
+    command = _review_command(
+        command_type="reclassify_requirement",
+        payload=ReclassifyRequirementCommandV1(
+            requirement_id=UUID(int=41),
+            statement="The account owner commits completion before the weekend.",
+            acceptance_basis="manager_assertion",
+            rationale="I own the delivery commitment.",
+            independence_attestation=(
+                "authored_from_independent_knowledge_without_protected_text"
+            ),
+        ),
+    )
+
+    receipt = await RequirementsReviewService(lambda _: _Context(uow)).dispatch(
+        context=_context(), command=command
+    )
+
+    assert receipt is not None
+    successor = uow.requirements_artifacts.items[-1]
+    assert successor.clarifications[0].requirement_id == receipt.changed_requirement_id
 
 
 @pytest.mark.asyncio

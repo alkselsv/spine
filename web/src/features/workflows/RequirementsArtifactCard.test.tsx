@@ -295,7 +295,9 @@ describe('RequirementsArtifactCard', () => {
       }],
     };
     get.mockResolvedValue({ data: artifact });
-    post.mockResolvedValue({ data: { run_id: artifact.run_id, run_version: 3 } });
+    post
+      .mockRejectedValueOnce(new Error('response lost after command commit'))
+      .mockResolvedValueOnce({ data: { run_id: artifact.run_id, run_version: 3 } });
     const onAnswered = vi.fn().mockResolvedValue(undefined);
     render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <RequirementsArtifactCard
@@ -311,7 +313,12 @@ describe('RequirementsArtifactCard', () => {
     await userEvent.type(await screen.findByLabelText('Ответ менеджера'), 'December 20.');
     await userEvent.click(screen.getByRole('button', { name: 'Ответить и продолжить' }));
 
-    expect(post).toHaveBeenCalledWith(
+    expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось сохранить ответ');
+    await userEvent.click(screen.getByRole('button', { name: 'Ответить и продолжить' }));
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post.mock.calls[1]).toEqual(post.mock.calls[0]);
+    expect(post).toHaveBeenLastCalledWith(
       '/api/v1/runs/{run_id}/commands',
       expect.objectContaining({ body: expect.objectContaining({
         command_type: 'answer_clarification', expected_run_version: 2,
@@ -396,6 +403,9 @@ describe('RequirementsArtifactCard', () => {
       <RequirementsArtifactCard client={{ GET: get, POST: post }} queryKey={['workspace', 'run']} runId={artifact.run_id} />
     </QueryClientProvider>);
 
+    expect(await screen.findByText(
+      'SourceRevision: 80000000-0000-4000-8000-000000000002',
+    )).toBeVisible();
     await userEvent.click(await screen.findByRole('button', { name: /evidence/ }));
     expect(await screen.findByText('current protected evidence')).toBeVisible();
     expect(get).toHaveBeenCalledWith(
