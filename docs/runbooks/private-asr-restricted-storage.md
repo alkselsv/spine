@@ -20,32 +20,45 @@ On reviewed main base `ddf676bad8e9f56e9e001ea122b19dba57ab4a97`, the
 migration chain in this branch ends at `20261228_96`: main's processing
 admission migration is `20261227_95`, followed by the ASR migration.
 
-The adapter receives current authority readers for admission, AccessPolicy and
-the approved private ASR retention profile. It verifies exact source object,
-revision, digest, purpose, actor, scope, current policy, authority expiry and
-retention profile before touching payload bytes. Reads first select metadata,
-check authority and fences, and only then select the payload.
+The adapter receives current authority readers for admission and AccessPolicy.
+The former private-ASR profile-reader contract was removed because it had no
+canonical implementation and accepted a caller-supplied expiry. Canonical
+retention is `RetentionApplicability` plus its current
+pointer and approved policy identity, but no implemented approved policy-terms
+source supplies actual retention rules or expiry. Until a transaction-aware
+adapter verifies the canonical binding, policy approvals, terms, scope, exact
+source lineage and artifact class, retention-dependent ASR reads, writes and
+expiration must remain disabled. Explicit scoped cleanup and source-revocation
+tombstoning remain separate operations.
+The read adapter may query scoped metadata first to resolve an opaque
+reference, but normalizes missing-reference and denied-authority errors and
+does not select payload bytes after retention denial.
 
-The storage classes are distinct: `staging` holds bounded incomplete/derived
+The physical storage classes are distinct: `staging` holds bounded incomplete
 bytes, `original` holds a verified immutable source copy, `annotation` holds
 versioned private annotations, `report` holds detailed qualification reports,
 canonical `audit_events` hold content-free audit receipts, and
-`private_asr_aggregate_exports` holds only allowlisted sanitized aggregates.
-No URL or repository path is produced.
+`private_asr_aggregate_exports` is blocked. Additive retention taxonomy
+candidates are `PRIVATE_ASR_SOURCE_ORIGINAL`, `PRIVATE_ASR_STAGING`,
+`PRIVATE_ASR_ANNOTATION`, `PRIVATE_ASR_DETAILED_REPORT`,
+`PRIVATE_ASR_SANITIZED_AGGREGATE`, and `PRIVATE_ASR_AUDIT_EVIDENCE`. They are
+not approved bindings or policy terms. The content-free audit event does not
+inherit the audio's lineage automatically; any source-bearing audit evidence
+would need its own explicit lineage and class decision. No URL or repository
+path is produced.
 
 ## Transaction and publication
 
-Report preparation inserts a `staging` row inside one PostgreSQL transaction.
-The adapter verifies report schema, scope, digest, audit receipt, source
-lineage, current AccessPolicy, current retention and source fences. It takes
+The report path is currently unreachable because retention-dependent storage
+operations fail closed before payload access. Once canonical authority exists,
+report preparation must stage and commit within one PostgreSQL transaction.
+The intended adapter checks report schema, scope, digest, audit receipt, source
+lineage, current AccessPolicy, retention authority and source fences. It takes
 transaction advisory locks for every exact revision and row locks for current
 policy pointers and existing source-fence rows. It checks source-object scope
-inside the transaction. It awaits `authorize_commit` after
-preparation while those locks remain held, then changes the row to `committed`.
-The payload, manifest identity and report receipt reference become visible at
-the successful PostgreSQL transaction commit. That commit is the
-linearization point. Callback refusal, exception or cancellation rolls back the
-new row and report-source associations.
+inside the transaction, awaits `authorize_commit` while locks remain held, then
+changes the row to `committed`. This describes a former tested adapter shape,
+not a currently available report-write capability.
 
 Storage-level ASR revocation takes the same private-ASR per-revision advisory
 lock. That orders ASR fence updates with ASR report writes only. The canonical
@@ -53,13 +66,28 @@ source replacement path in #800 instead locks a workspace/environment
 generation counter, `_lock_admission_revision`, and `current_source_heads`;
 its key differs from the private-ASR key. A source-head replacement can
 therefore race a report commit. AccessPolicy activation serializes on
-`current_access_policies`, which the ASR adapter locks. The current
-retention-profile reader has no transaction participant or fence token. The
-focused PostgreSQL test currently substitutes a no-op for `_locked_source`,
-so it does not prove actual source/head/policy lock access under the runtime
-role. These are blocking transaction gaps, not operator-only qualifications.
+`current_access_policies`, which the ASR adapter locks. The canonical retention
+repository writes the current applicability pointer with row lock + CAS in its
+UoW, but the reader used by ASR has no transaction participant or fence token;
+the ASR transaction never locks that pointer. Its `profile_ref` UUID is not
+mapped to applicability ID/generation or policy ID/version/digest. Also, no
+approved policy-terms source computes an artifact expiry. `effective_until`
+only defines applicability validity and is not an artifact deletion deadline.
+The ASR original's stored expiry had been set from
+`admitted.authority.expires_at`, conflating two clocks; that profile-based
+expiry path has been removed rather than replacing it with an unauthoritative
+timestamp. An earlier focused PostgreSQL test substituted a no-op for
+`_locked_source`; that test was removed. The current test denies on missing
+retention authority before reaching any source lock, so it does not prove
+actual source/head/policy lock access under the runtime role. These are blocking
+transaction and authority gaps, not operator-only qualifications.
 
 ## Data lifecycle and retry
+
+The following describes persistence mechanics present in adapter code; the
+canonical-retention guard currently makes these data paths unreachable, and
+the former fake-reader tests were removed. These mechanics are not qualified at
+the current branch head.
 
 Staging identities are deterministic for workspace, environment, exact source
 revision and digest. A retry resumes an incomplete row. Finalization verifies
@@ -73,10 +101,14 @@ idempotency key; concurrent retries serialize on a PostgreSQL advisory lock.
 After a lost response, replay rechecks authority and returns the committed
 identity without creating another visible report.
 
-Staging, report and annotation deletion uses tombstone state and clears payload
-bytes within the database. Source revocation advances a durable fence epoch and
-tombstones derivatives and linked reports. Retention expiry checks the stored
-expiry copied from the exact current approved profile. Cleanup is idempotent.
+Staging, report and annotation tombstone/delete mechanics exist in code, but
+retention-dependent operations currently fail closed before reaching them.
+Source revocation advances a durable fence epoch and tombstones derivatives and
+linked reports. No authoritative ASR `expires_at` is currently derived or
+stored. No duration, starting event, exception/legal-hold interaction,
+supersession, or backup-deletion term may be inferred from it. Until those
+terms are supplied by canonical approved-policy authority, expiry-governed ASR
+operations must fail closed. Cleanup is idempotent.
 The canonical audit writer retains only bounded operation/outcome metadata and
 the exact source revision reference where supplied.
 
@@ -87,15 +119,16 @@ reconciliation and expired-payload cleanup for every replica and backup set.
 
 ## Recovery and audit integrity
 
-PostgreSQL rolls back an uncommitted report on process or connection loss. A
-crash after commit but before the caller receives its response is recovered by
-replaying the same idempotency key and verifying the committed digest. The
-canonical audit receipt is written through Spine's existing PostgreSQL UoW
-audit writer; the report references its immutable event id. The runner creates
-that report receipt before calling the storage port. Callback refusal rolls
-back the report row but leaves the receipt event, so it cannot attest successful
-publication. The report and source links commit together, but receipt creation
-is a separate transaction.
+PostgreSQL transactions roll back uncommitted writes on connection loss. The
+prior adapter shape intended to recover a lost post-commit response by
+replaying an idempotency key and verifying the stable committed identity, but
+that path is not reachable or integration-tested at the current head. Process
+crash, restart and restore reconciliation remain unverified. The canonical
+audit receipt is written through Spine's existing PostgreSQL UoW audit writer;
+the runner creates that report receipt before calling the storage port. A
+retention denial before report storage therefore leaves the pre-created audit
+event, which cannot attest successful publication. Even the prior report shape
+committed its row and source links separately from receipt creation.
 Aggregate export is disabled in the concrete adapter. The prior path called an
 independent privacy callback, committed audit in a separate UoW, then inserted
 the aggregate. It could not prove a single authorization/audit/publication
@@ -112,10 +145,13 @@ For each named environment, record evidence for:
   settings; runtime must not use a bypass-RLS or migration role.
 - Secretless connection configuration, network reachability, backup/replica
   topology, encryption-at-rest mechanism and key ownership.
-- Composition wiring to current purpose authority, AccessPolicy, approved
-  retention profile, canonical audit writer and trusted context verifier.
-- Approved retention profile identity, expiry, revocation propagation and
-  cleanup schedule; confirm profile changes reach the resolver.
+- Composition wiring to current purpose authority, AccessPolicy, canonical
+  retention applicability and approved policy-terms authority, canonical audit
+  writer and trusted context verifier.
+- Exact mapping from profile/reference to applicability ID/generation, policy
+  ID/version/digest, workspace/environment, source lineage and artifact class;
+  approved expiry derivation, revocation and cleanup evidence. A UUID match or
+  applicability `effective_until` is insufficient.
 - Concurrent commit/revocation and AccessPolicy activation using the same
   database and locking records as production.
 - Restart recovery for interrupted staging, lost commit responses and cleanup;
@@ -130,7 +166,7 @@ For each named environment, record evidence for:
 ## Evidence boundary
 
 Implementation status: **NEEDS INFO; Issue #795 acceptance is incomplete**.
-The concrete report path has a PostgreSQL transaction, but source-head and
+The latent former report path has a PostgreSQL transaction, but source-head and
 retention authority are not transactionally fenced. The storage boundary does
 not resolve an authoritative dataset manifest; record-to-revision bindings
 come from the runner and are checked only against report outcome IDs and stored
@@ -139,10 +175,15 @@ privacy authorization and audit write can share a visibility boundary. Resolve
 these contracts and missing negative/concurrency tests before using the adapter
 for real recordings.
 
-The automated PostgreSQL tests prove report transaction rollback/commit,
-stable idempotency, same-tenant wrong-purpose isolation, scope binding and
-blocked aggregate publication on the pinned test database. They do not prove
-canonical source-head locking or concurrent source/policy revocation interleaving.
+At the current branch head, the focused PostgreSQL test proves that `begin`,
+report storage, retention expiration and payload reads deny when canonical
+retention authority and approved policy terms are absent. It checks no artifact
+row or payload SELECT is produced, compares missing/existing reference denials,
+and verifies the restricted role has forced RLS and no BYPASSRLS. Earlier
+callback/idempotency mechanics tests used a synthetic reader as authority and
+were removed. The current test does not prove report transaction
+rollback/commit, stable idempotency, source-head locking or concurrent
+source/policy revocation interleaving.
 They cannot prove production role configuration,
 encryption-at-rest, physical deletion, backup deletion, remote authority
 locking, operator access controls or a named deployment. Those remain
