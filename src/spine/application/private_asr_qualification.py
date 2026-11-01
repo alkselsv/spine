@@ -861,6 +861,7 @@ class PrivateRealASREvaluationRunner:
         profile = self._processing_profile
         if (
             prepared.decoder_reference != profile.decoder_reference
+            or prepared.original_sha256 != recording.original_sha256
             or prepared.inspection.inspected_media_type != recording.media_type
             or prepared.inspection.byte_length != recording.original_reference.byte_length
             or prepared.inspection.duration_ms != recording.recording_duration_ms
@@ -874,18 +875,23 @@ class PrivateRealASREvaluationRunner:
             range(1, len(boundaries) + 1)
         ):
             raise ValueError("decoder returned invalid chunk coverage")
+        if len(prepared.chunks) != len(boundaries) or tuple(
+            item.boundary for item in prepared.chunks
+        ) != boundaries:
+            raise ValueError("decoder did not return verified artifacts for every chunk")
         chunks: list[AudioChunkHandle] = []
-        for boundary in boundaries:
+        for boundary, artifact in zip(boundaries, prepared.chunks, strict=True):
             if (
                 boundary.end_ms > recording.recording_duration_ms
                 or boundary.end_ms - boundary.start_ms > 25_000
+                or artifact.decoded_reference.byte_length <= 44
             ):
                 raise ValueError("candidate chunk window is outside its pinned bound")
             chunks.append(AudioChunkHandle.create(
                 boundary=boundary,
                 decoder_reference=prepared.decoder_reference,
-                decoded_reference=prepared.decoded_reference,
-                decoded_sha256=prepared.decoded_sha256,
+                decoded_reference=artifact.decoded_reference,
+                decoded_sha256=artifact.decoded_reference.digest_hex,
             ))
         return tuple(chunks)
 

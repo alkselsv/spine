@@ -404,6 +404,9 @@ class _FakeAudioPreparation:
                 silent=False,
             ),
             decoder_reference="deterministic-fake-decoder:v1",
+            decoder_build_version="synthetic ffmpeg build",
+            decoder_build_sha256="a" * 64,
+            original_sha256=request.recording.original_sha256,
             decoded_reference=request.recording.original_reference.model_copy(
                 update={"object_id": _id(25), "byte_length": 640_000}
             ),

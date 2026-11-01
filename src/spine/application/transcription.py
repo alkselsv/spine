@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from spine.domain.artifacts.transcription import (
     AudioChunkHandle,
+    AudioChunkBoundary,
     AudioMediaInspection,
     AudioRecordingHandle,
     SpeechToTextRequest,
@@ -73,16 +74,29 @@ class AudioPreparationRequest(BaseModel):
     processing_profile: TranscriptionProcessingProfile
 
 
+class AudioPreparedChunk(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["audio-prepared-chunk:v1"] = "audio-prepared-chunk:v1"
+    boundary: AudioChunkBoundary
+    decoded_reference: ObjectReference
+
+
 class AudioPreparationResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    schema_version: Literal["audio-preparation-result:v2"] = "audio-preparation-result:v2"
     inspection: AudioMediaInspection
     decoder_reference: str = Field(min_length=1, max_length=128)
+    decoder_build_version: str = Field(min_length=1, max_length=128)
+    decoder_build_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    original_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     decoded_reference: ObjectReference
     decoded_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     decoded_byte_length: int = Field(gt=0)
     peak_memory_bytes: int = Field(ge=0)
     peak_working_bytes: int = Field(ge=0)
+    chunks: tuple[AudioPreparedChunk, ...] = ()
 
     @model_validator(mode="after")
     def validate_decoded_reference(self) -> "AudioPreparationResult":
@@ -94,6 +108,9 @@ class AudioPreparationResult(BaseModel):
             raise ValueError(
                 "decoded reference length does not match preparation result"
             )
+        ordinals = tuple(chunk.boundary.ordinal for chunk in self.chunks)
+        if ordinals and ordinals != tuple(range(1, len(ordinals) + 1)):
+            raise ValueError("prepared audio chunks must have stable sequential ordinals")
         return self
 
 
@@ -1115,6 +1132,7 @@ __all__ = [
     "AudioProcessingAuthorizer",
     "AudioProcessingDeniedError",
     "AudioPreparationPort",
+    "AudioPreparedChunk",
     "AudioPreparationRequest",
     "AudioPreparationResult",
     "InMemoryTranscriptionRepository",
