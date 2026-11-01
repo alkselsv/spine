@@ -241,7 +241,8 @@ describe('RequirementsArtifactCard review controls', () => {
       />
     </QueryClientProvider>);
 
-    expect(await screen.findByText(`Digest версии: ${artifact.production_digest}`)).toBeVisible();
+    expect(await screen.findByText('Digest версии:', { exact: false })).toBeVisible();
+    expect(screen.getByText(artifact.production_digest, { selector: 'code' })).toBeVisible();
     expect(screen.getByText('Утверждения менеджера: 1. Явные допущения: 0.')).toBeVisible();
     const accept = screen.getByRole('button', { name: 'Принять требования' });
     expect(accept).toBeDisabled();
