@@ -142,7 +142,7 @@ def downgrade() -> None:
     op.execute(f"DROP FUNCTION {SCHEMA}.deny_canonical_acceptance_v2_write()")
     op.drop_index("ix_canonical_acceptances_processing_admission", table_name="canonical_acceptances", schema=SCHEMA)
     op.drop_constraint("fk_canonical_acceptances_processing_admission", "canonical_acceptances", schema=SCHEMA, type_="foreignkey")
-    op.drop_constraint("ck_canonical_acceptances_schema_processing", "canonical_acceptances", schema=SCHEMA, type_="check")
+    op.drop_constraint(op.f("ck_canonical_acceptances_schema_processing"), "canonical_acceptances", schema=SCHEMA, type_="check")
     op.drop_column("canonical_acceptances", "processing_admission_id", schema=SCHEMA)
     op.drop_column("canonical_acceptances", "canonical_acceptance_schema_version", schema=SCHEMA)
     op.drop_table("source_processing_admissions", schema=SCHEMA)
