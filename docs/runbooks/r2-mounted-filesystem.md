@@ -134,3 +134,47 @@ the selected non-production backend:
 
 Qualification cannot introduce a direct SMB client or claim backend-stable
 identity from path, inode or checksum evidence.
+
+## Repeatable operator procedure
+
+Generate the synthetic corpus into an approved private staging directory. The
+generator refuses to overwrite an existing package and does not write into the
+mounted namespace:
+
+```bash
+uv run python tools/generate_issue680_mounted_filesystem_corpus.py \
+  --output-dir /approved/private/staging/issue-680
+```
+
+Corpus v1 is deterministic. Its archive SHA-256 is
+`23ddf81990bc322334474b379209a307116283f2d2bf100d0297280c172f1331`.
+Platform Operations verifies that checksum, stages the package on the backend,
+preserves its symlinks and FIFO, and exposes only the exact approved leaf to the
+reader. The generator also creates `outside-scope-synthetic.txt` beside the
+approved `corpus` leaf in the staging package. Platform Operations preserves
+that placement so the escape symlink resolves to an existing object;
+the target is deliberately excluded from the archive and must never be exposed
+or ingested through the approved leaf. Its byte length and SHA-256 are bound in
+the archive's checksum-protected `manifest.json`; Platform Operations verifies
+both before staging the target.
+
+Run the interactive qualification wizard on the deployment host:
+
+```bash
+ISSUE680_STATE_FILE=/approved/private/evidence/issue-680-state.env \
+ISSUE680_REPORT_PATH=/approved/private/evidence/issue-680-report.json \
+  ./tools/issue680_mounted_filesystem_qualification_wizard.sh
+```
+
+The private state contains the concrete leaf and resumable operator inputs. It
+must not be committed; opaque run and approval references remain there. The
+sanitized operator report omits those references as well as the leaf, source
+names, content, share address, credentials and raw errors. It is provisional
+and remains `NOT_VERIFIED` even when every operator-entered scenario is `PASS`;
+an independent evidence review is required before a final qualification result
+can be issued. The wizard performs no mount, unmount or source write. Platform
+Operations controls backend mutations; the operator invokes the deployment-owned
+`MountedFilesystemReconciliationWorker.reconcile` composition for each phase
+and records only opaque content-safe run references. Any missing prerequisite
+or unexercised phase remains `NOT_VERIFIED`. Backend-stable file identity is not
+qualified by this procedure; the conclusion remains path-scoped.
