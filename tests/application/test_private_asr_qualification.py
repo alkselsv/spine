@@ -7,6 +7,7 @@ from hashlib import sha256
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
 
 from spine.application.persistence.context import (
     ContextOrigin, EnvironmentScope, PersistenceOperation, PersistencePurpose,
@@ -20,12 +21,13 @@ from spine.application.private_asr_corpus import (
 from spine.application.private_asr_qualification import (
     ApprovedPrivateAnnotation, PrivateEvaluationUnavailable,
     PrivateRealASREvaluationRunner, SpeechToTextCandidateRuntime,
+    reassemble_private_asr_chunk_segments,
 )
 from spine.application.transcription import AudioPreparationResult
 from spine.domain.artifacts.transcription import (
-    AudioMediaInspection, AudioRecordingHandle, SpeechToTextRequestV2,
+    AudioChunkBoundary, AudioMediaInspection, AudioRecordingHandle, SpeechToTextRequestV2,
     SpeechToTextResult, SpeechToTextResultV2, SpeechToTextSegment,
-    TranscriptionProcessingProfile,
+    TranscriptionProcessingProfile, audio_chunk_id,
 )
 from spine.domain.evaluations.private_asr_corpus import (
     AnnotationReview, AnnotationStatus, AudioDigestVerification, ClusterLineage,
@@ -64,7 +66,9 @@ def trusted_context() -> TrustedPersistenceContext:
     )
 
 
-def corpus() -> tuple[object, PrivateCorpusRecord, SourceObject, object]:
+def corpus(
+    *, recording_duration_ms: int = 1_000,
+) -> tuple[object, PrivateCorpusRecord, SourceObject, object]:
     source_id, revision_id = _id(100), _id(101)
     original = ObjectReference(
         schema_version=1, object_id=_id(102), storage_generation=_id(103),
@@ -105,7 +109,7 @@ def corpus() -> tuple[object, PrivateCorpusRecord, SourceObject, object]:
         }, audio_verification=None,
         media=MediaMetadata(
             media_type="audio/wav", container="wav", codec="pcm_s16le",
-            byte_length=len(RAW), duration_ms=1000, sample_rate_hz=16000,
+            byte_length=len(RAW), duration_ms=recording_duration_ms, sample_rate_hz=16000,
             channels=1, audio_stream_count=1,
         ), original_storage_ref=ref(128, "original"),
         derived_staging_profile="stage:v1", annotation_ref=ref(129, "annotation"),
@@ -145,6 +149,8 @@ class FakeAdmission:
         self.events: list[str] = []
         self.annotation_reads = 0
         self.release_checks = 0
+        self.annotation_text = "синтетика"
+        self.release_error: BaseException | None = None
 
     def _check(self, name: str) -> bool:
         self.events.append(name)
@@ -208,7 +214,9 @@ class FakeAdmission:
             annotation_id=_id(150), version=1, source_record_id=record.record_id,
             status=AnnotationStatus.APPROVED, authored_by=_id(151),
             author_authorization_ref=ref(152), authored_at=NOW,
-            segments=(TranscriptSegment(start_ms=0, end_ms=800, human_text="синтетика"),),
+            segments=(TranscriptSegment(
+                start_ms=0, end_ms=800, human_text=self.annotation_text,
+            ),),
             reviews=(AnnotationReview(
                 annotation_version=1, reviewer_id=_id(153),
                 authorization_ref=ref(154), status="approved", reviewed_at=NOW,
@@ -227,11 +235,13 @@ class FakeAdmission:
             source_revision_id=REVISION.revision_id,
             source_revision_digest=REVISION.revision_digest,
             original_sha256=DIGEST, original_reference=REVISION.original_reference,
-            media_type="audio/wav", recording_duration_ms=1000,
+            media_type="audio/wav", recording_duration_ms=record.media.duration_ms,
         )
 
     async def current_release_authorized(self, report, *, context):
         self.release_checks += 1
+        if self.release_error is not None:
+            raise self.release_error
         return self._check("release_authorized")
 
 
@@ -257,7 +267,8 @@ class FakeAudioPreparation:
         return AudioPreparationResult(
             inspection=AudioMediaInspection(
                 inspected_media_type="audio/wav", container="wav", codec="pcm_s16le",
-                byte_length=len(RAW), duration_ms=1000, audio_stream_count=1, silent=False,
+                byte_length=len(RAW), duration_ms=recording.recording_duration_ms,
+                audio_stream_count=1, silent=False,
             ), decoder_reference=profile.decoder_reference,
             decoded_reference=decoded, decoded_sha256=decoded.digest_hex,
             decoded_byte_length=decoded.byte_length, peak_memory_bytes=128, peak_working_bytes=256,
@@ -285,6 +296,7 @@ class FakeSourceAdmission:
         self.revoked_after_inference = revoked_after_inference
         self.deny_admission = deny_admission
         self.revoke_at_recheck = revoke_at_recheck
+        self.revoke_after_next_recheck = False
         self.runtime_started = False
         self.previously_verified_hashes: list[str | None] = []
         self.events: list[str] = []
@@ -330,6 +342,10 @@ class FakeSourceAdmission:
         self.rechecks += 1
         if self.revoke_at_recheck is not None and self.rechecks >= self.revoke_at_recheck:
             return False
+        if self.revoke_after_next_recheck:
+            self.revoke_after_next_recheck = False
+            self.revoked_after_inference = True
+            return True
         return not (self.revoked_after_inference and self.rechecks >= 6)
 
 
@@ -345,6 +361,11 @@ class FakeRuntime:
         self.legacy_result = False
         self.detected_language = None
         self.requests = []
+        self.results = []
+        self.segments_by_ordinal = {}
+        self.missing_chunk_ordinals = set()
+        self.after_result = None
+        self.wrong_model_config = False
 
     async def transcribe(self, request):
         self.calls += 1
@@ -356,14 +377,20 @@ class FakeRuntime:
         assert request.recording.environment_id == ENVIRONMENT
         assert request.recording.source_revision_id == _id(101)
         assert request.recording.source_revision_digest == REVISION.revision_digest
-        assert request.chunk.boundary.ordinal == 1
+        assert request.chunk.boundary.ordinal > 0
         assert request.chunk.boundary.end_ms - request.chunk.boundary.start_ms <= 25_000
         assert request.chunk.decoded_sha256 == request.chunk.decoded_reference.digest_hex
         if self.cancel:
             raise asyncio.CancelledError
         if self.fail_with_content:
             raise RuntimeError("synthetic private transcript must not escape")
-        segments = (SpeechToTextSegment(start_ms=0, end_ms=500, text="синтетика"),)
+        ordinal = request.chunk.boundary.ordinal
+        if ordinal in self.missing_chunk_ordinals:
+            return None
+        segments = self.segments_by_ordinal.get(
+            ordinal,
+            (SpeechToTextSegment(start_ms=0, end_ms=500, text="синтетика"),),
+        )
         if self.invalid_timestamps:
             segments = (SpeechToTextSegment(start_ms=0, end_ms=1500, text="синтетика"),)
         if self.out_of_order:
@@ -372,18 +399,28 @@ class FakeRuntime:
                 SpeechToTextSegment(start_ms=0, end_ms=100, text="первое"),
             )
         if self.legacy_result:
-            return SpeechToTextResult(
+            result = SpeechToTextResult(
                 adapter_reference=request.adapter_reference,
                 model_config_reference=request.model_config_reference,
                 segments=segments,
             )
-        return SpeechToTextResultV2(
-            adapter_reference=("other-adapter:v1" if self.wrong_identity else request.adapter_reference),
-            model_config_reference=request.model_config_reference,
-            timeline="chunk",
-            detected_language=self.detected_language,
-            segments=segments,
-        )
+        else:
+            result = SpeechToTextResultV2(
+                adapter_reference=(
+                    "other-adapter:v1" if self.wrong_identity else request.adapter_reference
+                ),
+                model_config_reference=(
+                    "other-model-config:v1" if self.wrong_model_config
+                    else request.model_config_reference
+                ),
+                timeline="chunk",
+                detected_language=self.detected_language,
+                segments=segments,
+            )
+        self.results.append(result)
+        if self.after_result is not None:
+            self.after_result(request)
+        return result
 
 
 class FakeRuntimeFactory:
@@ -406,22 +443,29 @@ class FakeReports:
         self.fail = fail
         self.calls = 0
         self.payloads = []
+        self.receipts = []
+        self.events = []
         self.before_commit = None
 
     async def store_private_report(
         self, payload, *, retention_profile_ref, audit_receipt_ref, authorize_commit,
     ):
         self.calls += 1
+        self.events.append("prepare_write")
         if self.before_commit is not None:
             await self.before_commit()
+        self.events.append("authorize_commit")
         await authorize_commit()
         if self.fail:
             raise OSError("synthetic storage failure")
         self.payloads.append(payload)
-        return PrivateReportReceipt(
+        self.events.append("atomic_visibility")
+        receipt = PrivateReportReceipt(
             report_ref=ref(170, "report"), manifest_ref=ref(171, "manifest"),
             audit_receipt_ref=ref(172, "audit"), retention_profile_ref=retention_profile_ref,
         )
+        self.receipts.append(receipt)
+        return receipt
 
 
 class FakeAudit:
@@ -452,6 +496,7 @@ def runner(
     admission, source_admission, *, reports=None, candidate_id="synthetic_candidate",
     configuration_candidate_id="synthetic_candidate",
     adapter_reference="fake_adapter:v1", model_config_reference="fake_config:v1",
+    processing_profile=None,
 ):
     source_admission.events = admission.events
     factory = FakeRuntimeFactory(admission)
@@ -459,30 +504,47 @@ def runner(
     factory.audio_preparation = audio_preparation
     storage = FakeReports() if reports is None else reports
     aggregate_export = FakeAggregateExport()
+    profile = processing_profile or TranscriptionProcessingProfile(
+        profile_reference="fake_processing:v1", supported_media_types=("audio/wav",),
+        supported_codecs=("pcm_s16le",), maximum_source_bytes=1000,
+        maximum_duration_ms=10_000, maximum_decoded_bytes=1000,
+        maximum_memory_bytes=1000, maximum_working_bytes=1000,
+        maximum_decode_seconds=2.0, chunk_duration_ms=1000, chunk_overlap_ms=0,
+        maximum_chunks=10, maximum_model_attempts=1,
+        decoder_reference="fake_decoder:v1", reassembly_reference="fake_reassembly:v1",
+    )
     subject = PrivateRealASREvaluationRunner(
         contexts=ContextVerifier(), admission=admission,
         source_admission=source_admission, runtime_factory=factory,
         audio_preparation=audio_preparation,
-        processing_profile=TranscriptionProcessingProfile(
-            profile_reference="fake_processing:v1", supported_media_types=("audio/wav",),
-            supported_codecs=("pcm_s16le",), maximum_source_bytes=1000,
-            maximum_duration_ms=10_000, maximum_decoded_bytes=1000,
-            maximum_memory_bytes=1000, maximum_working_bytes=1000,
-            maximum_decode_seconds=2.0, chunk_duration_ms=1000, chunk_overlap_ms=0,
-            maximum_chunks=10, maximum_model_attempts=1,
-            decoder_reference="fake_decoder:v1", reassembly_reference="fake_reassembly:v1",
-        ),
+        processing_profile=profile,
         reports=storage, report_audit=FakeAudit(),
         aggregate_builder=FakeAggregateBuilder(), aggregate_export=aggregate_export,
         clock=FakeClock().now, candidate_id=candidate_id,
         configuration=PrivateCandidateConfiguration(
             candidate_id=configuration_candidate_id, adapter_reference=adapter_reference,
-            model_config_reference=model_config_reference, processing_profile_reference="fake_processing:v1",
+            model_config_reference=model_config_reference,
+            processing_profile_reference=profile.profile_reference,
             configuration_digest="f" * 64,
         ),
         report_id_factory=lambda: _id(180),
     )
     return subject, factory, storage, aggregate_export
+
+
+def multi_chunk_profile(**overrides) -> TranscriptionProcessingProfile:
+    profile = {
+        "profile_reference": "fake_processing:multi:v1",
+        "supported_media_types": ("audio/wav",), "supported_codecs": ("pcm_s16le",),
+        "maximum_source_bytes": 1000, "maximum_duration_ms": 30_000,
+        "maximum_decoded_bytes": 1000, "maximum_memory_bytes": 1000,
+        "maximum_working_bytes": 1000, "maximum_decode_seconds": 2.0,
+        "chunk_duration_ms": 10_000, "chunk_overlap_ms": 2_000,
+        "maximum_chunks": 5, "maximum_model_attempts": 1,
+        "decoder_reference": "fake_decoder:v1", "reassembly_reference": "fake_reassembly:v1",
+    }
+    profile.update(overrides)
+    return TranscriptionProcessingProfile(**profile)
 
 
 @pytest.fixture(autouse=True)
@@ -572,6 +634,275 @@ async def test_governed_v2_bridge_binds_each_candidate_identity(
     assert request.language_hint == "ru"
     assert request.chunk.boundary.ordinal == 1
     assert report.status.value == "NOT_VERIFIED"
+
+
+@pytest.mark.asyncio
+async def test_private_bridge_reassembles_three_overlapping_chunks_on_recording_timeline():
+    profile = multi_chunk_profile()
+    manifest, _, _, _ = corpus(recording_duration_ms=26_000)
+    admission, source_admission = FakeAdmission(), FakeSourceAdmission()
+    admission.annotation_text = "начало граница конец"
+    subject, factory, reports, aggregate_export = runner(
+        admission, source_admission, processing_profile=profile,
+    )
+    factory.runtime.segments_by_ordinal = {
+        1: (SpeechToTextSegment(start_ms=9_000, end_ms=9_900, text="начало"),),
+        2: (
+            SpeechToTextSegment(start_ms=0, end_ms=1_000, text="полный-дубликат"),
+            SpeechToTextSegment(start_ms=1_500, end_ms=2_500, text="граница"),
+        ),
+        3: (
+            SpeechToTextSegment(start_ms=0, end_ms=1_000, text="полный-дубликат"),
+            SpeechToTextSegment(start_ms=1_500, end_ms=2_500, text="конец"),
+        ),
+    }
+
+    report, receipt = await subject.run(
+        manifest, requested_split=CorpusSplit.QUALIFICATION, context=trusted_context()
+    )
+
+    requests = factory.runtime.requests
+    planned_boundaries = profile.plan_chunks(AudioMediaInspection(
+        inspected_media_type="audio/wav", container="wav", codec="pcm_s16le",
+        byte_length=len(RAW), duration_ms=26_000, audio_stream_count=1, silent=False,
+    ))
+    assert tuple(item.chunk.boundary for item in requests) == planned_boundaries
+    assert [request.chunk.boundary.ordinal for request in requests] == [1, 2, 3]
+    assert [
+        (item.chunk.boundary.start_ms, item.chunk.boundary.end_ms,
+         item.chunk.boundary.overlap_before_ms)
+        for item in requests
+    ] == [(0, 10_000, 0), (8_000, 18_000, 2_000), (16_000, 26_000, 2_000)]
+    assert len({item.chunk.chunk_id for item in requests}) == 3
+    assert [item.chunk.chunk_id for item in requests] == [
+        audio_chunk_id(
+            decoded_sha256=sha256(b"synthetic decoded audio").hexdigest(),
+            decoder_reference=profile.decoder_reference,
+            boundary=item.chunk.boundary,
+        )
+        for item in requests
+    ]
+    assert all(isinstance(item, SpeechToTextRequestV2) for item in requests)
+    assert all(item.recording == requests[0].recording for item in requests)
+    assert all(item.language_hint == "ru" for item in requests)
+    assert all(item.adapter_reference == "fake_adapter:v1" for item in requests)
+    assert all(item.model_config_reference == "fake_config:v1" for item in requests)
+    assert all(item.recording.source_revision_id == _id(101) for item in requests)
+    assert all(item.recording.source_revision_digest == REVISION.revision_digest for item in requests)
+    assert all(item.recording.original_sha256 == DIGEST for item in requests)
+    assert all(
+        item.processing_profile_reference == profile.profile_reference for item in requests
+    )
+    assert all(result.detected_language is None for result in factory.runtime.results)
+    assert all(item.chunk.decoder_reference == profile.decoder_reference for item in requests)
+    assert all(
+        item.chunk.decoded_sha256 == item.chunk.decoded_reference.digest_hex
+        for item in requests
+    )
+    assert all(
+        item.chunk.decoded_sha256 == sha256(b"synthetic decoded audio").hexdigest()
+        for item in requests
+    )
+    assert all(
+        item.chunk.boundary.end_ms - item.chunk.boundary.start_ms <= 25_000
+        for item in requests
+    )
+    assert [
+        (request.chunk.boundary.start_ms + local_start,
+         request.chunk.boundary.start_ms + local_end)
+        for request, (local_start, local_end) in zip(
+            requests, ((9_000, 9_900), (1_500, 2_500), (1_500, 2_500))
+        )
+    ] == [(9_000, 9_900), (9_500, 10_500), (17_500, 18_500)]
+    reassembled = []
+    for request, result in zip(requests, factory.runtime.results):
+        translated = reassemble_private_asr_chunk_segments(
+            request.chunk.boundary, result.segments, prior_segments=reassembled,
+        )
+        assert translated is not None
+        reassembled.extend(translated)
+    assert [(item.start_ms, item.end_ms, item.text) for item in reassembled] == [
+        (9_000, 9_900, "начало"),
+        (9_500, 10_500, "граница"),
+        (17_500, 18_500, "конец"),
+    ]
+    assert report.denominators.measured == 1
+    assert report.outcomes[0].word_errors == 0
+    assert report.outcomes[0].reference_words == 3
+    assert report.outcomes[0].character_errors == 0
+    assert report.outcomes[0].reference_characters == 20
+    assert report.status.value == "NOT_VERIFIED"
+    assert receipt.report_ref.reference_id == _id(170)
+    assert reports.calls == 1
+    assert aggregate_export.calls == 0
+    assert reports.events == ["prepare_write", "authorize_commit", "atomic_visibility"]
+    assert all(
+        private_text.encode() not in reports.payloads[0]
+        for private_text in ("начало", "граница", "конец", "полный-дубликат")
+    )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"ordinal": 0}, "ordinal"),
+        ({"start_ms": 100, "end_ms": 100}, "end_ms"),
+        ({"start_ms": 0, "end_ms": 1_000, "overlap_before_ms": 1_000}, "overlap"),
+        ({"ordinal": 1, "overlap_before_ms": 1}, "first chunk"),
+    ],
+)
+def test_chunk_boundary_contract_rejects_invalid_multi_chunk_window(overrides, message):
+    values = {"ordinal": 2, "start_ms": 8_000, "end_ms": 18_000,
+              "overlap_before_ms": 2_000}
+    values.update(overrides)
+
+    with pytest.raises(ValidationError, match=message):
+        AudioChunkBoundary(**values)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["missing_chunk", "invalid_timestamp", "wrong_identity", "out_of_order"],
+)
+@pytest.mark.asyncio
+async def test_invalid_multichunk_result_is_unavailable_and_not_measured(failure):
+    manifest, _, _, _ = corpus(recording_duration_ms=26_000)
+    admission, source_admission = FakeAdmission(), FakeSourceAdmission()
+    subject, factory, reports, _ = runner(
+        admission, source_admission, processing_profile=multi_chunk_profile(),
+    )
+    if failure == "missing_chunk":
+        factory.runtime.missing_chunk_ordinals.add(2)
+    elif failure == "invalid_timestamp":
+        factory.runtime.segments_by_ordinal = {
+            1: (SpeechToTextSegment(start_ms=100, end_ms=200, text="синтетика"),),
+            2: (SpeechToTextSegment(start_ms=0, end_ms=10_001, text="private text"),),
+        }
+    elif failure == "wrong_identity":
+        factory.runtime.wrong_model_config = True
+    else:
+        factory.runtime.out_of_order = True
+
+    report, _ = await subject.run(
+        manifest, requested_split=CorpusSplit.QUALIFICATION, context=trusted_context()
+    )
+
+    assert report.denominators.measured == 0
+    assert report.denominators.unavailable == 1
+    assert report.outcomes[0].disposition.value == "unavailable"
+    assert report.outcomes[0].word_errors is None
+    assert report.outcomes[0].character_errors is None
+    assert report.status.value == "NOT_VERIFIED"
+    assert factory.runtime.calls == (
+        2 if failure in {"missing_chunk", "invalid_timestamp"} else 1
+    )
+    assert factory.audio_preparation.releases == 1
+    assert factory.creates == 1
+    assert source_admission.admissions == source_admission.content_verifications == 1
+    assert reports.calls == 1
+    assert "private text" not in reports.payloads[0].decode()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_chunk_ordinals_are_unavailable_before_runtime_initialization():
+    class DuplicateOrdinalProfile(TranscriptionProcessingProfile):
+        def plan_chunks(self, inspection):
+            boundaries = super().plan_chunks(inspection)
+            return (boundaries[0], boundaries[0], *boundaries[2:])
+
+    profile = DuplicateOrdinalProfile(**multi_chunk_profile().model_dump())
+    manifest, _, _, _ = corpus(recording_duration_ms=26_000)
+    admission, source_admission = FakeAdmission(), FakeSourceAdmission()
+    subject, factory, reports, _ = runner(
+        admission, source_admission, processing_profile=profile,
+    )
+
+    report, _ = await subject.run(
+        manifest, requested_split=CorpusSplit.QUALIFICATION, context=trusted_context()
+    )
+
+    assert report.denominators.measured == 0
+    assert report.denominators.unavailable == 1
+    assert report.status.value == "NOT_VERIFIED"
+    assert factory.audio_preparation.releases == 1
+    assert factory.creates == factory.runtime.calls == 0
+    assert reports.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_revocation_between_chunks_stops_before_next_chunk_and_report():
+    manifest, _, _, _ = corpus(recording_duration_ms=26_000)
+    admission, source_admission = FakeAdmission(), FakeSourceAdmission()
+    subject, factory, reports, _ = runner(
+        admission, source_admission, processing_profile=multi_chunk_profile(),
+    )
+    factory.runtime.after_result = lambda request: setattr(
+        source_admission, "revoke_after_next_recheck", True,
+    )
+
+    with pytest.raises(CorpusAdmissionDenied) as refused:
+        await subject.run(
+            manifest, requested_split=CorpusSplit.QUALIFICATION, context=trusted_context()
+        )
+
+    assert refused.value.outcome.kind.value == "revoked"
+    assert factory.runtime.calls == 1
+    assert factory.audio_preparation.releases == 1
+    assert factory.creates == 1
+    assert reports.calls == 0
+    assert reports.payloads == reports.receipts == []
+
+
+@pytest.mark.asyncio
+async def test_report_commit_refusal_prevents_payload_and_receipt_visibility():
+    manifest, _, _, _ = corpus()
+    admission, source_admission = FakeAdmission(fail_at="release_authorized"), FakeSourceAdmission()
+    subject, _, reports, _ = runner(admission, source_admission)
+
+    with pytest.raises(CorpusAdmissionDenied):
+        await subject.run(
+            manifest, requested_split=CorpusSplit.QUALIFICATION, context=trusted_context()
+        )
+
+    assert reports.calls == 1
+    assert reports.events == ["prepare_write", "authorize_commit"]
+    assert reports.payloads == reports.receipts == []
+
+
+@pytest.mark.asyncio
+async def test_report_commit_callback_exception_is_content_free_and_not_visible():
+    manifest, _, _, _ = corpus()
+    admission, source_admission = FakeAdmission(), FakeSourceAdmission()
+    admission.release_error = RuntimeError("private report authorization locator")
+    subject, _, reports, _ = runner(admission, source_admission)
+
+    with pytest.raises(PrivateEvaluationUnavailable) as unavailable:
+        await subject.run(
+            manifest, requested_split=CorpusSplit.QUALIFICATION, context=trusted_context()
+        )
+
+    assert str(unavailable.value) == "private report storage failed"
+    assert "private report authorization locator" not in str(unavailable.value)
+    assert reports.calls == 1
+    assert reports.events == ["prepare_write", "authorize_commit"]
+    assert reports.payloads == reports.receipts == []
+
+
+@pytest.mark.asyncio
+async def test_report_commit_callback_cancellation_propagates_without_visibility_or_retry():
+    manifest, _, _, _ = corpus()
+    admission, source_admission = FakeAdmission(), FakeSourceAdmission()
+    admission.release_error = asyncio.CancelledError()
+    subject, _, reports, _ = runner(admission, source_admission)
+
+    with pytest.raises(asyncio.CancelledError):
+        await subject.run(
+            manifest, requested_split=CorpusSplit.QUALIFICATION, context=trusted_context()
+        )
+
+    assert reports.calls == 1
+    assert reports.events == ["prepare_write", "authorize_commit"]
+    assert reports.payloads == reports.receipts == []
 
 
 @pytest.mark.parametrize(
