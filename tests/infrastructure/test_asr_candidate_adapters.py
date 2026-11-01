@@ -20,6 +20,7 @@ from spine.domain.artifacts.transcription import (
     AudioRecordingHandle,
     SpeechToTextRequest,
     SpeechToTextRequestV2,
+    SpeechToTextResultV2,
     SpeechToTextSegment,
 )
 from spine.application.transcription import SpeechToTextCancelled, SpeechToTextFailed
@@ -238,7 +239,10 @@ async def test_gigaam_adapter_maps_word_timestamps_through_the_port(tmp_path: Pa
     result = await adapter.transcribe(_request(audio_path, payload))
 
     assert backend.loaded
-    assert result.detected_language == "ru"
+    assert isinstance(result, SpeechToTextResultV2)
+    assert result.adapter_reference == manifest.adapter_reference
+    assert result.model_config_reference == manifest.model_config_reference
+    assert result.detected_language is None
     assert result.timeline == "chunk"
     assert [(item.start_ms, item.end_ms, item.text) for item in result.segments] == [(100, 600, "Привет")]
 
@@ -274,7 +278,7 @@ async def test_candidate_v1_request_is_rejected_before_audio_resolution(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_gigaam_adapter_rejects_non_russian_or_wrong_configuration(tmp_path: Path) -> None:
+async def test_gigaam_adapter_rejects_non_russian_language_hint(tmp_path: Path) -> None:
     manifest = _runtime_manifest(tmp_path)
     audio_path = tmp_path / "chunk.wav"
     payload = _write_wav(audio_path)
@@ -288,6 +292,31 @@ async def test_gigaam_adapter_rejects_non_russian_or_wrong_configuration(tmp_pat
 
     with pytest.raises(Exception, match="policy_denied"):
         await adapter.transcribe(request)
+
+
+@pytest.mark.asyncio
+async def test_gigaam_adapter_rejects_wrong_model_configuration(tmp_path: Path) -> None:
+    manifest = _runtime_manifest(tmp_path)
+    resolver_calls = 0
+
+    class CountingResolver:
+        async def resolve(self, request: SpeechToTextRequestV2) -> ResolvedAudioChunk:
+            nonlocal resolver_calls
+            resolver_calls += 1
+            raise AssertionError("wrong model configuration must be rejected before resolution")
+
+    backend = _Backend(SimpleNamespace(text="Привет", words=()))
+    adapter = GigaAMV3RNNTAdapter(manifest, CountingResolver(), backend=backend)
+    request = _request(Path("unused"), b"synthetic audio identity").model_copy(
+        update={"model_config_reference": "gigaam-v3-rnnt-unpinned:v1"}
+    )
+
+    with pytest.raises(SpeechToTextFailed) as failure:
+        await adapter.transcribe(request)
+
+    assert failure.value.code.value == "policy_denied"
+    assert resolver_calls == 0
+    assert backend.transcription_calls == 0
 
 
 def test_gigaam_adapter_marks_chunk_window_timestamp_fallback(tmp_path: Path) -> None:
@@ -547,7 +576,10 @@ async def test_whisper_runtime_pins_local_russian_transcription(monkeypatch: pyt
     assert calls["model_kwargs"]["local_files_only"] is True
     assert calls["transcribe_kwargs"]["language"] == "ru"
     assert calls["transcribe_kwargs"]["task"] == "transcribe"
-    assert result.detected_language == "ru"
+    assert isinstance(result, SpeechToTextResultV2)
+    assert result.adapter_reference == whisper_manifest.adapter_reference
+    assert result.model_config_reference == whisper_manifest.model_config_reference
+    assert result.detected_language is None
     assert result.segments[0].text == "Привет"
 
 

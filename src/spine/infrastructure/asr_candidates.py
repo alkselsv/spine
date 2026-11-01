@@ -554,7 +554,9 @@ class _LocalAdapter(SpeechToTextPort):
         return SpeechToTextResultV2(
             adapter_reference=self.manifest.adapter_reference,
             model_config_reference=self.manifest.model_config_reference,
-            detected_language="ru",
+            # Both candidate runtimes use a pinned Russian transcription mode;
+            # neither provides independent language-detection evidence here.
+            detected_language=None,
             timeline="chunk",
             segments=segments,
         )
