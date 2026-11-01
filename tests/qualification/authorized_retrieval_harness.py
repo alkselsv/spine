@@ -29,6 +29,7 @@ from spine.application.context_profiles import (
 )
 from spine.application.diagnostics import DiagnosticContext
 from spine.application.evidence_lineage_verification import VerifiedEvidenceItem
+from spine.application.testing import DeterministicCurrentProcessingDispositionAuthority
 from spine.domain.context_profiles import (
     CompletenessRequirement,
     ContextProfileVersion,
@@ -306,6 +307,7 @@ async def retrieve_canonical_revision(
         retrieval=retrieval,
         evidence_verifier=Evidence(),
         bundles=bundles,
+        processing_authority=DeterministicCurrentProcessingDispositionAuthority(),
         clock=lambda: NOW,
     )
     request = AuthorizedContextRequest(

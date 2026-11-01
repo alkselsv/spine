@@ -44,6 +44,10 @@ from spine.application.persistence.repositories import SourceObservationReposito
 from spine.application.persistence.unit_of_work_activity import (
     unit_of_work_is_active,
 )
+from spine.application.processing_disposition import (
+    CanonicalCurrentProcessingDispositionAuthority,
+    OrdinaryProcessingEligibilityReason,
+)
 from spine.application.projection_result_mapping import (
     AdapterProjectionReceipt,
     ProjectionMappingConflictError,
@@ -131,6 +135,12 @@ class CanonicalProjectionRequestResolver(Protocol):
         self,
         request: ProjectionRequestEnvelope,
     ) -> CanonicalProjectionRequestContext: ...
+
+    async def revalidate_before_physical_projection(
+        self,
+        request: ProjectionRequestEnvelope,
+        command: ProjectCommand,
+    ) -> None: ...
 
 
 class CanonicalProjectionRequestUnitOfWork(Protocol):
@@ -253,6 +263,16 @@ class PersistenceCanonicalProjectionRequestResolver:
                 or current.current_revision_id != revision.revision_id
                 or current.current_revision_kind is not RevisionKind.CONTENT
             ):
+                self._reject()
+            processing = await CanonicalCurrentProcessingDispositionAuthority(
+                uow.canonical
+            ).resolve(
+                workspace_id=request.workspace_id,
+                environment_id=request.environment_id,
+                source_object_id=revision.source_object_id,
+                source_revision_id=revision.revision_id,
+            )
+            if not processing.eligible:
                 self._reject()
 
             runs = await uow.projections.list_runs_for_source_revision(
@@ -393,6 +413,23 @@ class PersistenceCanonicalProjectionRequestResolver:
                     or not receipts
                 ):
                     self._reject()
+                boundary_processing = (
+                    await CanonicalCurrentProcessingDispositionAuthority(
+                        uow.canonical
+                    ).resolve(
+                        workspace_id=run.workspace_id,
+                        environment_id=run.environment_id,
+                        source_object_id=boundary_member.source_object_id,
+                        source_revision_id=boundary_member.source_revision_id,
+                    )
+                )
+                if not boundary_processing.eligible:
+                    if (
+                        boundary_processing.reason
+                        is OrdinaryProcessingEligibilityReason.OPAQUE_ACCEPTANCE
+                    ):
+                        continue
+                    self._reject()
                 selected_receipt = (
                     receipt
                     if boundary_member.source_revision_id == payload.source_revision_id
@@ -450,6 +487,26 @@ class PersistenceCanonicalProjectionRequestResolver:
                 command_identity=partition.expected_command_identity,
                 command_digest=partition.expected_command_digest,
             )
+
+    async def revalidate_before_physical_projection(
+        self,
+        request: ProjectionRequestEnvelope,
+        command: ProjectCommand,
+    ) -> None:
+        """Close the current-authority window immediately before adapter I/O."""
+
+        async with self._uow_factory(self._context_factory(request)) as uow:
+            for source in command.source_revisions:
+                processing = await CanonicalCurrentProcessingDispositionAuthority(
+                    uow.canonical
+                ).resolve(
+                    workspace_id=command.workspace_id,
+                    environment_id=command.environment_id,
+                    source_object_id=source.source_object_id,
+                    source_revision_id=source.source_revision_id,
+                )
+                if not processing.eligible:
+                    self._reject()
 
     @staticmethod
     def _reject() -> None:
@@ -594,6 +651,24 @@ class ProjectionRequestConsumer:
             raise TerminalOutboxConsumerFailure(
                 "projection.request.canonical_uow_open"
             )
+        try:
+            await self._canonical_resolver.revalidate_before_physical_projection(
+                request, command
+            )
+        except ProjectionMappingError:
+            await self._observe_projection_failure(
+                request, diagnostic_context, command=command
+            )
+            raise TerminalOutboxConsumerFailure(
+                "projection.request.canonical_rejected"
+            ) from None
+        except Exception:
+            await self._observe_projection_failure(
+                request, diagnostic_context, command=command
+            )
+            raise RetryableOutboxConsumerFailure(
+                "projection.request.resolution_retryable"
+            ) from None
         try:
             result = await self._projection.project(command)
         except Exception:

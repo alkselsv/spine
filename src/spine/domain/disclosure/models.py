@@ -17,6 +17,7 @@ from pydantic import ConfigDict, Field, model_validator
 
 from spine.domain.common import DefinitionModel
 from spine.domain.context_bundles import ContextBundle
+from spine.domain.sources.processing_admission import ProcessingAdmissionMode
 
 
 _DIGEST = r"^[0-9a-f]{64}$"
@@ -72,7 +73,19 @@ class DisclosureRevalidationFailureCode(str, Enum):
     LATER_PUBLICATION_IMPACT = "later_publication_impact"
     UNKNOWN_PUBLICATION_IMPACT = "unknown_publication_impact"
     REVALIDATION_UNAVAILABLE = "revalidation_unavailable"
+    PROCESSING_DISPOSITION_INELIGIBLE = "processing_disposition_ineligible"
     IDEMPOTENCY_CONFLICT = "idempotency_conflict"
+
+
+class DisclosureProcessingDispositionReason(str, Enum):
+    """Content-free reason returned by the canonical processing authority."""
+
+    ELIGIBLE = "eligible"
+    CURRENT_AUTHORITY_UNAVAILABLE = "current_authority_unavailable"
+    CURRENT_REVISION_MISMATCH = "current_revision_mismatch"
+    ACCEPTANCE_UNAVAILABLE = "acceptance_unavailable"
+    PROCESSING_DISPOSITION_UNAVAILABLE = "processing_disposition_unavailable"
+    OPAQUE_ACCEPTANCE = "opaque_acceptance"
 
 
 class DisclosurePublicationImpact(str, Enum):
@@ -255,6 +268,11 @@ class DisclosureDependencyObservation(DefinitionModel):
     contributor_authorized: bool = False
     current_revision_id: UUID | None = None
     current_revision_digest: str | None = Field(default=None, pattern=_DIGEST)
+    current_acceptance_id: UUID | None = None
+    processing_admission_id: UUID | None = None
+    processing_mode: ProcessingAdmissionMode | None = None
+    processing_disposition_eligible: bool = False
+    processing_disposition_reason: DisclosureProcessingDispositionReason | None = None
     historical_revision_id: UUID | None = None
     historical_revision_digest: str | None = Field(default=None, pattern=_DIGEST)
     revision_current: bool = False
@@ -275,6 +293,21 @@ class DisclosureDependencyObservation(DefinitionModel):
             _id(self.current_revision_id, "current_revision_id")
         if self.historical_revision_id is not None:
             _id(self.historical_revision_id, "historical_revision_id")
+        if self.current_acceptance_id is not None:
+            _id(self.current_acceptance_id, "current_acceptance_id")
+        if self.processing_admission_id is not None:
+            _id(self.processing_admission_id, "processing_admission_id")
+        if self.processing_disposition_eligible and self.processing_disposition_reason not in {
+            None,
+            DisclosureProcessingDispositionReason.ELIGIBLE,
+        }:
+            raise ValueError("eligible processing disposition has a rejection reason")
+        if (
+            self.processing_disposition_reason
+            is DisclosureProcessingDispositionReason.ELIGIBLE
+            and not self.processing_disposition_eligible
+        ):
+            raise ValueError("eligible processing reason requires eligible disposition")
         return self
 
 
@@ -528,6 +561,7 @@ __all__ = [
     "DisclosureDependencyObservation",
     "DisclosureDependencySet",
     "DisclosurePublicationImpact",
+    "DisclosureProcessingDispositionReason",
     "DisclosurePublicationObservation",
     "DisclosureRevalidationCheckpoint",
     "DisclosureRevalidationDisposition",

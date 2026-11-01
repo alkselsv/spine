@@ -12,6 +12,7 @@ from spine.application.persistence.disclosure import DisclosureValidationReposit
 from spine.domain.disclosure import (
     DisclosureDependency,
     DisclosurePublicationImpact,
+    DisclosureProcessingDispositionReason,
     DisclosureRevalidationCheckpoint,
     DisclosureRevalidationDisposition,
     DisclosureRevalidationFailureCode,
@@ -175,7 +176,10 @@ class DisclosureRevalidationService:
                     request,
                     dependency_id=dependency.dependency_id,
                     disposition=(
-                        DisclosureRevalidationDisposition.INELIGIBLE
+                        DisclosureRevalidationDisposition.RETRYABLE_FAILURE
+                        if DisclosureRevalidationFailureCode.REVALIDATION_UNAVAILABLE
+                        in dependency_failures
+                        else DisclosureRevalidationDisposition.INELIGIBLE
                         if dependency_failures
                         else DisclosureRevalidationDisposition.SAFE_REUSE
                     ),
@@ -190,7 +194,9 @@ class DisclosureRevalidationService:
             else _publication_failures(observation, request.dependencies.dependencies)
         )
         failures.extend(publication_failures)
-        if observation.requester_authorized is False:
+        if DisclosureRevalidationFailureCode.REVALIDATION_UNAVAILABLE in failures:
+            disposition = DisclosureRevalidationDisposition.RETRYABLE_FAILURE
+        elif observation.requester_authorized is False:
             disposition = DisclosureRevalidationDisposition.INELIGIBLE
         elif missing or any(
             code
@@ -203,6 +209,7 @@ class DisclosureRevalidationService:
                 DisclosureRevalidationFailureCode.REQUESTER_UNAUTHORIZED,
                 DisclosureRevalidationFailureCode.DEPENDENCY_MISSING,
                 DisclosureRevalidationFailureCode.SOURCE_REVISION_UNAVAILABLE,
+                DisclosureRevalidationFailureCode.PROCESSING_DISPOSITION_INELIGIBLE,
             }
             for code in failures
         ):
@@ -365,6 +372,17 @@ def _dependency_failures(
         failures.append(DisclosureRevalidationFailureCode.DISCLOSURE_REVIEW_REQUIRED)
     if observation.active_disclosure_hold:
         failures.append(DisclosureRevalidationFailureCode.DISCLOSURE_HELD)
+    unavailable_processing_reasons = {
+        DisclosureProcessingDispositionReason.CURRENT_AUTHORITY_UNAVAILABLE,
+        DisclosureProcessingDispositionReason.ACCEPTANCE_UNAVAILABLE,
+        DisclosureProcessingDispositionReason.PROCESSING_DISPOSITION_UNAVAILABLE,
+    }
+    if observation.processing_disposition_reason in unavailable_processing_reasons:
+        failures.append(DisclosureRevalidationFailureCode.REVALIDATION_UNAVAILABLE)
+    elif not observation.processing_disposition_eligible:
+        failures.append(
+            DisclosureRevalidationFailureCode.PROCESSING_DISPOSITION_INELIGIBLE
+        )
     if allow_historical_revision:
         if (
             not observation.historical_revision_available

@@ -63,6 +63,10 @@ from spine.application.evidence_lineage_verification import (
     VerifiedEvidenceItem,
 )
 from spine.application.projection_locator import canonical_projection_locator_digest
+from spine.application.processing_disposition import (
+    CanonicalCurrentProcessingDispositionAuthority,
+    OrdinaryProcessingEligibilityReason,
+)
 from spine.application.production_qa_capability import (
     AnswerQuestionEvaluationLineage,
     AnswerQuestionValidationPlan,
@@ -1382,8 +1386,21 @@ class _CurrentCitationValidator(_ScopedPort):
                 revision = await uow.sources.resolve_revision(
                     citation.evidence_reference.source_revision_id
                 )
+                source_reference = citation.evidence_reference
+                processing = await CanonicalCurrentProcessingDispositionAuthority(
+                    uow.canonical
+                ).resolve(
+                    workspace_id=scope.workspace_id,
+                    environment_id=scope.environment_id,
+                    source_object_id=source_reference.source_object_id,
+                    source_revision_id=source_reference.source_revision_id,
+                )
                 await uow.commit()
-            source_reference = citation.evidence_reference
+            processing_rejection = _processing_citation_rejection(
+                processing, reference_id
+            )
+            if processing_rejection is not None:
+                return processing_rejection
             exact_projection = tuple(
                 item
                 for item in references
@@ -1436,6 +1453,24 @@ class _CurrentCitationValidator(_ScopedPort):
                 validation_reference=reference_id,
                 retryable=True,
             )
+
+
+def _processing_citation_rejection(
+    processing: object, validation_reference: UUID
+) -> RejectedCitation | None:
+    """Map processing eligibility without conflating it with authorization."""
+
+    if getattr(processing, "eligible", False):
+        return None
+    if (
+        getattr(processing, "reason", None)
+        is OrdinaryProcessingEligibilityReason.OPAQUE_ACCEPTANCE
+    ):
+        return RejectedCitation(
+            reason_code=CitationValidationReasonCode.EVIDENCE_INVALIDATED,
+            validation_reference=validation_reference,
+        )
+    raise ValueError("citation processing authority is unavailable")
 
 
 def _projection_reference_matches_evidence(
@@ -2055,6 +2090,22 @@ class _CurrentRetrievalDisclosureConstraint(_ScopedPort):
             return allowed
 
 
+class _CurrentProcessingDispositionAuthority(_ScopedPort):
+    async def resolve(self, **values: object):
+        persistence = self.context()
+        if (
+            values.get("workspace_id") != persistence.scope.workspace_id
+            or values.get("environment_id") != persistence.scope.environment_id
+        ):
+            raise RuntimeError("processing disposition scope changed")
+        async with self._uow_factory(persistence) as uow:  # type: ignore[operator]
+            result = await CanonicalCurrentProcessingDispositionAuthority(
+                uow.canonical
+            ).resolve(**values)  # type: ignore[arg-type]
+            await uow.commit()
+            return result
+
+
 class _CurrentDisclosureStateProvider(_ScopedPort):
     def __init__(self, *, authorization: ContentAuthorizationDecisionService, **kwargs: object) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
@@ -2103,6 +2154,14 @@ class _CurrentDisclosureStateProvider(_ScopedPort):
                     artifact_id=artifact_id,
                     evaluated_at=datetime.now(timezone.utc),
                 )
+                processing = await CanonicalCurrentProcessingDispositionAuthority(
+                    uow.canonical
+                ).resolve(
+                    workspace_id=dependency.workspace_id,
+                    environment_id=dependency.environment_id,
+                    source_object_id=dependency.source_object_id,
+                    source_revision_id=dependency.source_revision_id,
+                )
                 observations.append(
                     DisclosureDependencyObservation(
                         dependency_id=dependency.dependency_id,
@@ -2125,6 +2184,11 @@ class _CurrentDisclosureStateProvider(_ScopedPort):
                         current_revision_digest=(
                             None if revision is None else revision.revision_digest
                         ),
+                        current_acceptance_id=processing.canonical_acceptance_id,
+                        processing_admission_id=processing.processing_admission_id,
+                        processing_mode=processing.processing_mode,
+                        processing_disposition_eligible=processing.eligible,
+                        processing_disposition_reason=processing.reason.value,
                         revision_current=(
                             revision is not None
                             and revision.revision_id == dependency.source_revision_id
@@ -2502,6 +2566,10 @@ async def build_production_qa_capability_graph(
         noninteractive_authority=noninteractive_authority,
     )
     snapshot_members = _SnapshotMembers(**port_values)
+    processing_authority = _CurrentProcessingDispositionAuthority(
+        **port_values,
+        operation="resolve_processing_disposition",
+    )
     scope_resolver = AuthorizedRetrievalScopeResolver(
         authorization=broker_content_authorization,
         snapshot_members=snapshot_members,  # type: ignore[arg-type]
@@ -2510,6 +2578,7 @@ async def build_production_qa_capability_graph(
             **port_values,
             operation="resolve_retrieval_disclosure_constraints",
         ),
+        processing_authority=processing_authority,
     )
     profile_resolver = ServerApprovedContextProfileResolver(
         repository=_ProfileRepository(**port_values),
@@ -2534,6 +2603,7 @@ async def build_production_qa_capability_graph(
             authorization=broker_content_authorization,
         ),
         bundles=broker_bundle_repository,  # type: ignore[arg-type]
+        processing_authority=processing_authority,
     )
     qualified_context_broker = OneShotQualifiedContextBroker(
         broker=broker,

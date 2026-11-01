@@ -21,7 +21,7 @@ from spine.application.processing_commands import (
     RetryProcessingCommand,
 )
 from spine.application.document_lifecycle import ReplacementProcessingIntent
-from spine.domain.sources import RevisionKind
+from spine.domain.sources import ProcessingAdmissionMode, RevisionKind
 from spine.domain.sources.original_reference import ObjectReference
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 
@@ -205,11 +205,32 @@ class _ReplacementSources:
 
 
 class _ReplacementCanonical:
-    async def resolve_current(self, source_object_id):
-        return SimpleNamespace(
-            source_object_id=source_object_id,
+    def __init__(self) -> None:
+        self.current = SimpleNamespace(
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+            source_object_id=identifier("source"),
             current_revision_id=identifier("revision"),
+            current_revision_kind=RevisionKind.CONTENT,
             acceptance_id=identifier("canonical-acceptance"),
+        )
+
+    async def resolve_current(self, source_object_id):
+        return self.current
+
+    async def resolve_acceptance_read(self, acceptance_id):
+        return SimpleNamespace(
+            is_current=True,
+            current=self.current,
+            processing_admission=None,
+            acceptance=SimpleNamespace(
+                canonical_acceptance_schema_version=1,
+                canonical_acceptance_id=acceptance_id,
+                workspace_id=WORKSPACE,
+                environment_id=ENVIRONMENT,
+                source_object_id=identifier("source"),
+                source_revision_id=identifier("revision"),
+            ),
         )
 
     async def resolve_acceptance(self, acceptance_id):
@@ -218,6 +239,39 @@ class _ReplacementCanonical:
             source_object_id=identifier("source"),
             source_revision_id=identifier("revision"),
             accepted_at=NOW,
+        )
+
+
+class _OpaqueCanonical(_ReplacementCanonical):
+    async def resolve_acceptance_read(self, acceptance_id):
+        resolved = await super().resolve_acceptance_read(acceptance_id)
+        return SimpleNamespace(
+            is_current=True,
+            current=self.current,
+            acceptance=resolved.acceptance.model_copy(
+                update={
+                    "canonical_acceptance_schema_version": 2,
+                    "processing_admission_id": identifier("opaque-admission"),
+                }
+            )
+            if hasattr(resolved.acceptance, "model_copy")
+            else SimpleNamespace(
+                canonical_acceptance_schema_version=2,
+                canonical_acceptance_id=acceptance_id,
+                workspace_id=WORKSPACE,
+                environment_id=ENVIRONMENT,
+                source_object_id=identifier("source"),
+                source_revision_id=identifier("revision"),
+                processing_admission_id=identifier("opaque-admission"),
+            ),
+            processing_admission=SimpleNamespace(
+                processing_admission_id=identifier("opaque-admission"),
+                workspace_id=WORKSPACE,
+                environment_id=ENVIRONMENT,
+                source_object_id=identifier("source"),
+                source_revision_id=identifier("revision"),
+                mode=ProcessingAdmissionMode.OPAQUE_ACCEPTANCE,
+            ),
         )
 
 
@@ -253,6 +307,50 @@ def test_reprocess_command_rejects_malformed_profile_reference() -> None:
             idempotency_key="reprocess-1",
             processing_profile_reference="not a profile",
         )
+
+
+@pytest.mark.asyncio
+async def test_opaque_reprocess_is_rejected_before_item_parser_or_byte_read() -> None:
+    ingestion = _Ingestion()
+    parser_calls: list[object] = []
+    reader_calls: list[object] = []
+
+    class Reader:
+        async def read_finalized(self, **kwargs):
+            reader_calls.append(kwargs)
+            yield b"opaque"
+
+    service = OrchestratedProcessingCommandService(
+        uow_factory=lambda _: _Uow(
+            ingestion,
+            _ReplacementSources(),
+            _OpaqueCanonical(),
+        ),
+        validation_reader=Reader(),
+        parsed_artifacts=object(),
+        parser=lambda *args, **kwargs: parser_calls.append((args, kwargs)),
+        context_factory=lambda operation, trace_id: trusted_context(),
+        outbox_events=OutboxEventRegistry(),
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(ProcessingCommandRejected):
+        await service.reprocess(
+            context=trusted_context(),
+            command=ReprocessProcessingCommand(
+                workspace_id=WORKSPACE,
+                environment_id=ENVIRONMENT,
+                source_object_id=identifier("source"),
+                source_revision_id=identifier("revision"),
+                expected_current_revision_id=identifier("revision"),
+                idempotency_key="opaque-reprocess",
+                processing_profile_reference="document-processing:r1",
+            ),
+        )
+
+    assert ingestion.created_items == []
+    assert reader_calls == []
+    assert parser_calls == []
 
 
 @pytest.mark.asyncio

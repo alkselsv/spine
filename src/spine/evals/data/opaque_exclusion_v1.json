@@ -1,0 +1,17 @@
+{
+  "dataset_id": "opaque-exclusion-safety",
+  "schema_version": "opaque-exclusion-eval:v1",
+  "version": "1.0.0",
+  "cases": [
+    {
+      "case_id": "opaque-current-never-retrieved",
+      "acceptance_mode": "opaque_acceptance",
+      "current_revision": true,
+      "expected_projection_request": false,
+      "expected_parser_calls": 0,
+      "expected_projection_adapter_calls": 0,
+      "expected_retrieval_references": 0,
+      "expected_disclosure": "abstained"
+    }
+  ]
+}

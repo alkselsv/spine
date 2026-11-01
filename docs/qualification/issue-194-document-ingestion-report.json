@@ -33,7 +33,7 @@
       "evidence": [
         "tests/application/test_document_ingestion.py::test_document_ingestion_completes_text_path_and_replays_stably",
         "tests/application/test_document_ingestion.py::test_projection_request_is_not_visible_when_its_transaction_fails",
-        "tests/application/test_document_ingestion.py::test_stale_revision_is_processed_without_projection_request",
+        "tests/application/test_document_ingestion.py::test_stale_revision_is_rejected_before_parser_and_projection_request",
         "tests/application/outbox/test_dispatch.py::test_projection_request_redelivery_has_one_logical_consumer_effect",
         "tests/application/outbox/test_dispatch.py::test_concurrent_projection_request_dispatch_has_one_logical_consumer_effect",
         "tests/contracts/persistence/test_idempotency_repository_contract.py::test_independent_workspaces_environments_and_keys_do_not_collide",

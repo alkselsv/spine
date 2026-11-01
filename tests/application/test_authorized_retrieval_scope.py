@@ -18,6 +18,10 @@ from spine.application.content_authorization import (
     CurrentContentAuthorizationSnapshot,
     TrustedAuthorizationContext,
 )
+from spine.application.processing_disposition import (
+    OrdinaryProcessingEligibility,
+    OrdinaryProcessingEligibilityReason,
+)
 from spine.application.context_profiles import EffectiveContextRetrievalPolicy
 from spine.domain.context_profiles import (
     CompletenessRequirement,
@@ -179,6 +183,23 @@ class _DisclosureConstraint:
         return self.allowed
 
 
+class _ProcessingAuthority:
+    def __init__(self, allowed: bool = True) -> None:
+        self.allowed = allowed
+        self.calls = []
+
+    async def resolve(self, **values):
+        self.calls.append(values)
+        return OrdinaryProcessingEligibility(
+            eligible=self.allowed,
+            reason=(
+                OrdinaryProcessingEligibilityReason.ELIGIBLE
+                if self.allowed
+                else OrdinaryProcessingEligibilityReason.OPAQUE_ACCEPTANCE
+            ),
+        )
+
+
 def _context(
     mode: AuthorizationContextMode = AuthorizationContextMode.HUMAN_DISCLOSURE,
     *,
@@ -316,6 +337,7 @@ def _resolver(
     *,
     context: TrustedAuthorizationContext | None = None,
     provider_allowed: bool | None = None,
+    processing_allowed: bool = True,
 ) -> tuple[AuthorizedRetrievalScopeResolver, _AuthorizationRepository, _ProviderScopeSafety | None]:
     repository = _AuthorizationRepository(snapshots)
     authorization = ContentAuthorizationDecisionService(
@@ -330,6 +352,7 @@ def _resolver(
             authorization=authorization,
             snapshot_members=_SnapshotMembers(members),
             disclosure_constraint=_DisclosureConstraint(True),
+            processing_authority=_ProcessingAuthority(processing_allowed),
             provider_scope_safety=safety,
             clock=lambda: NOW,
         ),
@@ -552,6 +575,7 @@ async def test_active_disclosure_constraint_denies_retrieval_before_provider_rea
         snapshot_members=_SnapshotMembers((member,)),
         provider_scope_safety=_ProviderScopeSafety(True),
         disclosure_constraint=constraint,
+        processing_authority=_ProcessingAuthority(),
         clock=lambda: NOW,
     )
 
@@ -561,6 +585,29 @@ async def test_active_disclosure_constraint_denies_retrieval_before_provider_rea
     assert result.reason is AuthorizedRetrievalScopeReason.SOURCE_UNAVAILABLE
     assert repository.calls == []
     assert constraint.calls == [(_context(), member, NOW)]
+
+
+@pytest.mark.asyncio
+async def test_opaque_current_revision_denies_retrieval_before_authorization_or_provider_read() -> None:
+    resolver, repository, safety = _resolver(
+        {
+            SOURCE_A: _authorization_snapshot(
+                SOURCE_A,
+                REVISION_A,
+                (_grant(81, PrincipalKind.HUMAN, HUMAN),),
+            )
+        },
+        (_member(SOURCE_A, REVISION_A, 1),),
+        provider_allowed=True,
+        processing_allowed=False,
+    )
+
+    result = await resolver.resolve(_request())
+
+    assert result.outcome is AuthorizedRetrievalScopeOutcome.UNAVAILABLE
+    assert result.reason is AuthorizedRetrievalScopeReason.SOURCE_UNAVAILABLE
+    assert repository.calls == []
+    assert safety is not None and safety.scopes == []
 
 
 @pytest.mark.asyncio
