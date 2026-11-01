@@ -646,6 +646,17 @@ class OrchestratedProcessingCommandService:
         async with self.uow_factory(
             self.context_factory(PersistenceOperation("processing_receipt"), trace_id)
         ) as uow:
+            processing = await CanonicalCurrentProcessingDispositionAuthority(
+                uow.canonical
+            ).resolve(
+                workspace_id=run.workspace_id,
+                environment_id=run.environment_id,
+                source_object_id=revision.source_object_id,  # type: ignore[attr-defined]
+                source_revision_id=revision.revision_id,  # type: ignore[attr-defined]
+            )
+            if not processing.eligible:
+                await uow.rollback()
+                raise ProcessingCommandRejected()
             head = await uow.ingestion.resolve_item_head(item.ingestion_run_source_id)
             if head is None:
                 await uow.rollback()

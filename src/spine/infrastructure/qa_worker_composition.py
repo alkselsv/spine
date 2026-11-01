@@ -1402,7 +1402,7 @@ class _CurrentCitationValidator(_ScopedPort):
                     is OrdinaryProcessingEligibilityReason.OPAQUE_ACCEPTANCE
                 ):
                     return RejectedCitation(
-                        reason_code=CitationValidationReasonCode.AUTHORIZATION_DENIED,
+                        reason_code=CitationValidationReasonCode.EVIDENCE_INVALIDATED,
                         validation_reference=reference_id,
                     )
                 raise ValueError

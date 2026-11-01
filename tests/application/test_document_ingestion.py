@@ -45,7 +45,7 @@ from spine.domain.ingestion import (
     IngestionTransition,
     ProcessingReceipt,
 )
-from spine.domain.sources import AdmissionDisposition, RevisionKind
+from spine.domain.sources import AdmissionDisposition, ProcessingAdmissionMode, RevisionKind
 from spine.infrastructure.object_storage import (
     IntegrityResult,
     IntegrityStatus,
@@ -259,11 +259,12 @@ class _Admissions:
 
 
 class _Canonical:
-    def __init__(self) -> None:
+    def __init__(self, *, opaque: bool = False) -> None:
         self.calls = 0
         self.current_revision_id: UUID | None = None
         self.expected_revision = None
         self.accepted_revision = None
+        self.opaque = opaque
 
     async def accept(self, command):
         self.calls += 1
@@ -288,17 +289,30 @@ class _Canonical:
 
     async def resolve_acceptance_read(self, acceptance_id):
         current = await self.resolve_current(self.accepted_revision.source_object_id)
+        processing_admission_id = _id("opaque-admission") if self.opaque else None
         return SimpleNamespace(
             is_current=True,
             current=current,
-            processing_admission=None,
+            processing_admission=(
+                SimpleNamespace(
+                    processing_admission_id=processing_admission_id,
+                    workspace_id=self.accepted_revision.workspace_id,
+                    environment_id=self.accepted_revision.environment_id,
+                    source_object_id=self.accepted_revision.source_object_id,
+                    source_revision_id=self.accepted_revision.revision_id,
+                    mode=ProcessingAdmissionMode.OPAQUE_ACCEPTANCE,
+                )
+                if self.opaque
+                else None
+            ),
             acceptance=SimpleNamespace(
-                canonical_acceptance_schema_version=1,
+                canonical_acceptance_schema_version=2 if self.opaque else 1,
                 canonical_acceptance_id=acceptance_id,
                 workspace_id=self.accepted_revision.workspace_id,
                 environment_id=self.accepted_revision.environment_id,
                 source_object_id=self.accepted_revision.source_object_id,
                 source_revision_id=self.accepted_revision.revision_id,
+                processing_admission_id=processing_admission_id,
             ),
         )
 
@@ -368,10 +382,11 @@ def _orchestrator(
     pre_acceptance_faults: list[bool] | None = None,
     fault_injector=None,
     clock=lambda: NOW,
+    opaque_current: bool = False,
 ):
     ingestion = _Ingestion()
     admissions = _Admissions()
-    canonical = _Canonical()
+    canonical = _Canonical(opaque=opaque_current)
     outbox = _Outbox()
     uow = _Uow(ingestion, admissions, canonical, outbox)
     uploader = _Uploader(content)
@@ -690,6 +705,28 @@ async def test_document_ingestion_completes_text_path_and_replays_stably() -> No
     assert item_states[-2:] == [
         IngestionItemState.PROCESSED,
         IngestionItemState.PROJECTION_REQUESTED,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_opaque_current_acceptance_suppresses_projection_request_creation() -> None:
+    parser_calls: list[int] = []
+    orchestrator, _, _, _, outbox, _ = _orchestrator(
+        b"opaque-approved\n",
+        media_type="text/plain",
+        parser_calls=parser_calls,
+        opaque_current=True,
+    )
+
+    result = await orchestrator.ingest(
+        request=_request("text/plain", key="opaque-current"),
+        chunks=_stream(b"opaque-approved\n"),
+    )
+
+    assert result.status is DocumentIngestionStatus.SUCCEEDED
+    assert parser_calls == [1]
+    assert [event.event_type for event in outbox.events] == [
+        "ingestion.processing.requested"
     ]
 
 

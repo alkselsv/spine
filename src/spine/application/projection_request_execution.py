@@ -482,6 +482,28 @@ class PersistenceCanonicalProjectionRequestResolver:
                 command_digest=partition.expected_command_digest,
             )
 
+    async def revalidate_before_physical_projection(
+        self,
+        request: ProjectionRequestEnvelope,
+        command: ProjectCommand,
+    ) -> None:
+        """Close the current-authority window immediately before adapter I/O."""
+
+        async with self._uow_factory(self._context_factory(request)) as uow:
+            for source in command.source_revisions:
+                processing = await CanonicalCurrentProcessingDispositionAuthority(
+                    uow.canonical
+                ).resolve(
+                    workspace_id=command.workspace_id,
+                    environment_id=command.environment_id,
+                    source_object_id=source.source_object_id,
+                    source_revision_id=source.source_revision_id,
+                )
+                if not processing.eligible:
+                    await uow.rollback()
+                    self._reject()
+            await uow.commit()
+
     @staticmethod
     def _reject() -> None:
         raise ProjectionMappingError("canonical projection request was rejected")
@@ -625,6 +647,28 @@ class ProjectionRequestConsumer:
             raise TerminalOutboxConsumerFailure(
                 "projection.request.canonical_uow_open"
             )
+        revalidate = getattr(
+            self._canonical_resolver,
+            "revalidate_before_physical_projection",
+            None,
+        )
+        if revalidate is not None:
+            try:
+                await revalidate(request, command)
+            except ProjectionMappingError:
+                await self._observe_projection_failure(
+                    request, diagnostic_context, command=command
+                )
+                raise TerminalOutboxConsumerFailure(
+                    "projection.request.canonical_rejected"
+                ) from None
+            except Exception:
+                await self._observe_projection_failure(
+                    request, diagnostic_context, command=command
+                )
+                raise RetryableOutboxConsumerFailure(
+                    "projection.request.resolution_retryable"
+                ) from None
         try:
             result = await self._projection.project(command)
         except Exception:

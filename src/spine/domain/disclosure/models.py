@@ -297,6 +297,17 @@ class DisclosureDependencyObservation(DefinitionModel):
             _id(self.current_acceptance_id, "current_acceptance_id")
         if self.processing_admission_id is not None:
             _id(self.processing_admission_id, "processing_admission_id")
+        if self.processing_disposition_eligible and self.processing_disposition_reason not in {
+            None,
+            DisclosureProcessingDispositionReason.ELIGIBLE,
+        }:
+            raise ValueError("eligible processing disposition has a rejection reason")
+        if (
+            self.processing_disposition_reason
+            is DisclosureProcessingDispositionReason.ELIGIBLE
+            and not self.processing_disposition_eligible
+        ):
+            raise ValueError("eligible processing reason requires eligible disposition")
         return self
 
 

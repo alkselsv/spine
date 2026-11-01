@@ -31,6 +31,7 @@ from spine.application.projection_request_execution import (
 from spine.application.projection_result_mapping import (
     AdapterProjectionReceipt,
     ProjectionMappingConflictError,
+    ProjectionMappingError,
     ProjectionResultMappingBridge,
 )
 from spine.application.telemetry import (
@@ -80,6 +81,12 @@ class _CanonicalResolver:
     ) -> CanonicalProjectionRequestContext:
         self.requests.append(request)
         return _canonical_context(self.command)
+
+
+class _OpaqueAfterResolutionResolver(_CanonicalResolver):
+    async def revalidate_before_physical_projection(self, request, command):
+        del request, command
+        raise ProjectionMappingError("opaque current acceptance")
 
 
 class _AdapterReceiptBuilder:
@@ -225,6 +232,37 @@ async def test_committed_projection_request_records_canonical_handoff() -> None:
         == command.command_identity
     )
     assert replay.handoff.receipt_command.receipt.command_digest == command.command_digest
+
+
+@pytest.mark.asyncio
+async def test_current_turning_opaque_after_resolution_never_reaches_projection_adapter() -> None:
+    command = _command()
+    projection = DeterministicContextProjection()
+    consumer = ProjectionRequestConsumer(
+        canonical_resolver=_OpaqueAfterResolutionResolver(command),
+        projection=projection,
+        receipt_builder=_AdapterReceiptBuilder(),
+        result_bridge=ProjectionResultMappingBridge(
+            DeterministicCanonicalProjectionGateway((_context(command),)),
+            id_source=lambda: UUID(int=105),
+        ),
+    )
+    intent = _intent()
+
+    with pytest.raises(
+        TerminalOutboxConsumerFailure,
+        match="projection.request.canonical_rejected",
+    ):
+        await consumer.consume(
+            intent,
+            DiagnosticContext(
+                trace_id=intent.trace_id,
+                correlation_id=intent.correlation_id,
+                causation_id=intent.event_id,
+            ),
+        )
+
+    assert projection.recorded_commands == ()
 
 
 @pytest.mark.asyncio
