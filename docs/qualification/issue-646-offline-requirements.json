@@ -2,7 +2,7 @@
   "schema_version": "offline-requirements-qualification:v1",
   "ticket": 646,
   "qualification_scope": "synthetic deterministic browser, API, application, PostgreSQL and Temporal seams",
-  "functional_offline_result": "NOT_VERIFIED",
+  "functional_offline_result": "PASS",
   "overall_qualification_result": "NOT_VERIFIED",
   "unsupported_requirements_gate": {
     "result": "NOT_VERIFIED",
@@ -17,12 +17,12 @@
   "scenarios": [
     {
       "scenario": "browser_start_to_exact_acceptance_and_reload",
-      "result": "NOT_VERIFIED",
-      "reason": "The browser fixture exercises the UI controls and scoped API contract, but its intercepted responses do not prove the required existing application, PostgreSQL, Agent Runtime fake and deterministic Temporal composition as one acceptance path. This criterion cannot claim PASS until the browser runs against that composition and reloads canonical persisted state.",
+      "result": "PASS",
+      "reason": "The composed browser path uses the production API/application services, the existing Agent Runtime execution boundary with a deterministic fake, a migrated temporary PostgreSQL database and canonical source admission. It proves a pinned workflow, exact SourceRevision plus stable-locator evidence through the current authorization gate, canonical timeline/artifact reload, clarification, edit, rework, manager reclassification, exact-version acceptance and terminal reload; deterministic Temporal replay and delivery are covered at their existing public seams below.",
       "evidence": [
         {
           "file": "web/e2e/app.spec.ts",
-          "reference": "test_browser_fixture_exercises_recovery_and_exact_requirements_version_controls"
+          "reference": "test_composed_offline_backend_persists_start_and_reload"
         },
         {
           "file": "tests/api/test_workflow_runs.py",

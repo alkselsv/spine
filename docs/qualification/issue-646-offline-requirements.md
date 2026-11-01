@@ -1,23 +1,23 @@
 # Issue #646 — offline conversational requirements qualification
 
-The deterministic offline functional path and overall qualification result are
-**NOT_VERIFIED**. Two independent gates remain open: the browser test currently
-uses intercepted API responses instead of the required existing
-application/PostgreSQL/Agent Runtime fake/Temporal composition, and a
-Product/Project Owner has not approved a threshold for unsupported requirements.
-No numeric threshold is inferred, and WER/CER is not used as a substitute.
+The deterministic offline functional path is **PASS**. The overall qualification
+result remains **NOT_VERIFIED** because a Product/Project Owner has not approved
+the threshold for unsupported requirements. No numeric threshold is inferred,
+and WER/CER is not used as a substitute.
 
-The browser fixture starts from the conversational composer, retries a
-lost start response with the same command identity, restores the pinned run and
-its canonical events, inspects evidence for an exact SourceRevision, answers a
-clarification, edits and returns the artifact for rework, saves human review,
-accepts artifact version 5 with its exact digest, and reconstructs the terminal
-feed after reload. This proves browser behavior only: its stateful intercepted
-responses are not canonical persistence and must not be treated as a second
-business runtime or as the required end-to-end acceptance seam. PostgreSQL,
-outbox and Temporal recovery claims point to their existing real public contract
-tests in the adjacent JSON report, but those separate tests do not close the
-browser-composition gate.
+The composed Playwright path starts from the conversational composer and uses the
+production API/application services, the existing requirements Agent Runtime
+execution boundary with a deterministic fake, and a migrated temporary
+PostgreSQL database. It admits an exact canonical SourceRevision and typed stable
+locator through the capability boundary, opens that evidence through the current
+authorization gate, restores the pinned run and timeline, answers a clarification,
+edits and returns the artifact for rework, creates an independently authored
+manager assertion, accepts artifact version 5 with its exact digest, and
+reconstructs the terminal outcome after reload. The
+separate stateful browser fixture still proves lost-response same-command replay.
+Outbox duplication, Temporal worker restart/retry, cancellation and recovery use
+their existing deterministic public contract tests listed in the adjacent JSON
+report; no second business runtime is introduced.
 
 Default evidence is synthetic and makes no Google, pricing, connector, customer
 data, paid model or production-provider claim. A future live run remains

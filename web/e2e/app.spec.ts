@@ -173,6 +173,90 @@ test('test_requirements_artifact_is_restored_from_scoped_api_after_browser_reloa
   )).toBe(true);
 });
 
+test('test_composed_offline_backend_persists_start_and_reload', { tag: '@requirements-composed' }, async ({ page }) => {
+  await installContainerRuntime(page);
+  await page.goto('/workflow/start');
+
+  await page.getByLabel('Сообщение').fill('Запуск');
+  await page.getByRole('button', { name: 'Добавить принятую версию источника' }).click();
+  await page.getByLabel('Source Object ID').fill('10000000-0000-4000-8000-000000001b5a');
+  await page.getByLabel('Source Revision ID').fill('00000000-0000-0000-0000-00000009db72');
+  await page.getByLabel('Provenance ID').fill('10000000-0000-4000-8000-000000001bbe');
+  const startResponse = page.waitForResponse((response) =>
+    response.request().method() === 'POST' && response.url().endsWith('/api/v1/runs'),
+  );
+  await page.getByRole('button', { name: 'Начать работу' }).click();
+  const startResult = await startResponse;
+  expect(startResult.status(), await startResult.text()).toBe(202);
+
+  await expect(page).toHaveURL(/\/workflow\/runs\/[0-9a-f-]{36}$/);
+  await expect(page.getByText('commercial.requirements · 1.0.0')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Требования · версия 1' })).toBeVisible();
+  await expect(page.getByRole('listitem').filter({ hasText: 'unresolved_information: Запуск' }).first()).toBeVisible();
+  await expect(page.getByText('SourceRevision: 00000000-0000-0000-0000-00000009db72')).toBeVisible();
+  await expect(page.getByText('Подтверждения: не проверено · точных ссылок 1')).toBeVisible();
+  await page.getByRole('button', { name: 'Открыть evidence' }).click();
+  await expect(page.getByText('Запуск', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Ответ менеджера')).toBeVisible();
+
+  await page.reload();
+
+  await expect(page.getByRole('heading', { name: 'Требования · версия 1' })).toBeVisible();
+  await expect(page.getByRole('listitem').filter({ hasText: 'unresolved_information: Запуск' }).first()).toBeVisible();
+  await expect(page.getByText('Подтверждения: не проверено · точных ссылок 1')).toBeVisible();
+  await expect(page.getByLabel('Ответ менеджера')).toBeVisible();
+  await expect(page.locator('section[aria-labelledby="workflow-run-heading"] > ol > li').first()).toBeVisible();
+
+  await page.getByLabel('Ответ менеджера').fill('Запуск 20 декабря для коммерческого предложения; успех — согласование заказчиком.');
+  await page.getByRole('button', { name: 'Ответить и продолжить' }).click();
+  await expect(page.getByRole('heading', { name: 'Требования · версия 2' })).toBeVisible();
+
+  await page.reload();
+
+  await expect(page.getByRole('heading', { name: 'Требования · версия 2' })).toBeVisible();
+  await expect(page.getByText('Уточнение получено и учтено в версии 2.')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Редактировать требование' }).click();
+  await page.getByLabel('Формулировка требования').fill('Запуск должен состояться до 20 декабря.');
+  await page.getByLabel('Причина изменения').fill('Зафиксирован подтверждённый срок.');
+  await page.getByRole('button', { name: 'Сохранить изменение' }).click();
+  await expect(page.getByRole('heading', { name: 'Требования · версия 3' })).toBeVisible();
+
+  await page.getByLabel('Причина решения').fill('Нужна независимая проверка формулировки.');
+  await page.getByRole('button', { name: 'Вернуть на доработку' }).click();
+  await expect(page.getByRole('heading', { name: 'Требования · версия 4' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Переклассифицировать требование' }).click();
+  await page.getByLabel('Новая независимая формулировка').fill('Ответственный менеджер подтвердил выпуск 20 декабря.');
+  await page.getByLabel('Обоснование').fill('Независимое подтверждение менеджера.');
+  await page.getByRole('checkbox', { name: /Подтверждаю, что написал новую формулировку/ }).check();
+  const reclassificationResponse = page.waitForResponse((response) =>
+    response.request().method() === 'POST' && response.url().endsWith('/commands'),
+  );
+  await page.getByRole('button', { name: 'Создать новую версию' }).click();
+  const reclassificationResult = await reclassificationResponse;
+  expect(
+    reclassificationResult.status(),
+    await reclassificationResult.text(),
+  ).toBe(202);
+  await expect(page.getByRole('heading', { name: 'Требования · версия 5' })).toBeVisible();
+  await expect(page.getByText('Статус: human_reviewed')).toBeVisible();
+
+  await page.getByRole('checkbox', { name: /Подтверждаю эти количества/ }).check();
+  const acceptanceResponse = page.waitForResponse((response) =>
+    response.request().method() === 'POST' && response.url().endsWith('/commands'),
+  );
+  await page.getByRole('button', { name: 'Принять требования' }).click();
+  const acceptanceResult = await acceptanceResponse;
+  expect(acceptanceResult.status(), await acceptanceResult.text()).toBe(202);
+  await expect(page.getByText('Состояние', { exact: true }).locator('..')).toContainText('completed');
+
+  await page.reload();
+
+  await expect(page.getByRole('heading', { name: 'Требования · версия 5' })).toBeVisible();
+  await expect(page.getByText('Состояние', { exact: true }).locator('..')).toContainText('completed');
+});
+
 test('test_browser_fixture_exercises_recovery_and_exact_requirements_version_controls', async ({ page }) => {
   const workItemId = 'b0000000-0000-4000-8000-000000000003';
   const workflowVersionId = 'b0000000-0000-4000-8000-000000000005';

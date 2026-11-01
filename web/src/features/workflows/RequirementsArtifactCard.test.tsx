@@ -403,6 +403,9 @@ describe('RequirementsArtifactCard', () => {
       <RequirementsArtifactCard client={{ GET: get, POST: post }} queryKey={['workspace', 'run']} runId={artifact.run_id} />
     </QueryClientProvider>);
 
+    expect(await screen.findByText(
+      'SourceRevision: 80000000-0000-4000-8000-000000000002',
+    )).toBeVisible();
     await userEvent.click(await screen.findByRole('button', { name: /evidence/ }));
     expect(await screen.findByText('current protected evidence')).toBeVisible();
     expect(get).toHaveBeenCalledWith(

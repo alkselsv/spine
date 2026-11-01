@@ -46,7 +46,7 @@ def test_issue646_report_resolves_every_offline_recovery_scenario() -> None:
 
     assert report["schema_version"] == "offline-requirements-qualification:v1"
     assert report["ticket"] == 646
-    assert report["functional_offline_result"] == "NOT_VERIFIED"
+    assert report["functional_offline_result"] == "PASS"
     scenarios = report["scenarios"]
     assert {scenario["scenario"] for scenario in scenarios} == REQUIRED_SCENARIOS
 

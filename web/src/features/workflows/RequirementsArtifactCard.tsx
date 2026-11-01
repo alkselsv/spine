@@ -184,6 +184,9 @@ export function RequirementsArtifactCard({
             {requirement.missing_markers.map((marker) => <p key={marker}>Не указано: {marker}</p>)}
             {requirement.ambiguous_markers.map((marker) => <p key={marker}>Требует уточнения: {marker}</p>)}
             <small>Ревизии источников: {requirement.source_refs.length || 'нет'}</small>
+            {requirement.source_refs.map((source) => (
+              <code key={source.source_revision_id}>SourceRevision: {source.source_revision_id}</code>
+            ))}
             <small>
               Подтверждения: {evidenceStatusLabel(requirement.evidence_status)} · точных ссылок {requirement.evidence_refs.length}
             </small>

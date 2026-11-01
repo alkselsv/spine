@@ -9,6 +9,15 @@ export default defineConfig(({ mode }) => ({
     __SPINE_EMBEDDED_FIXTURES_ENABLED__: JSON.stringify(mode === 'fixtures'),
   },
   plugins: [react()],
+  preview: process.env.SPINE_QUALIFICATION_API_ORIGIN
+    ? {
+        proxy: {
+          '/api': {
+            target: process.env.SPINE_QUALIFICATION_API_ORIGIN,
+          },
+        },
+      }
+    : undefined,
   test: {
     environment: 'jsdom',
     setupFiles: './vitest.setup.ts',
