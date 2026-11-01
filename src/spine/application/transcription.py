@@ -680,7 +680,8 @@ class TranscriptionService:
                 adapter_reference=command.adapter_reference,
                 model_config_reference=command.model_config_reference,
                 recording_duration_ms=recording_duration_ms,
-                language=adapter_result.detected_language or command.language_hint,
+                # A request hint is not evidence about the language detected.
+                language=adapter_result.detected_language,
                 segments=adapter_result.segments,
                 **artifact_provenance,
                 created_at=self._clock(),

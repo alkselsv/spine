@@ -265,6 +265,35 @@ async def test_long_audio_is_inspected_chunked_and_reassembled_reproducibly() ->
 
 
 @pytest.mark.asyncio
+async def test_chunked_artifact_preserves_missing_detected_language() -> None:
+    class UndetectedLanguage(ChunkedSpeechToText):
+        async def transcribe(self, request):
+            result = await super().transcribe(request)
+            return result.model_copy(update={"detected_language": None})
+
+    adapter = UndetectedLanguage()
+    requested = command().model_copy(
+        update={
+            "schema_version": "transcribe-audio-command:v2",
+            "recording_duration_ms": 10_000,
+            "processing_profile_reference": "transcription-long:v1",
+            "processing_profile": bounded_profile(),
+            "idempotency_key": "transcribe-without-detected-language",
+        }
+    )
+    result = await TranscriptionService(
+        repository=InMemoryTranscriptionRepository(clock=lambda: NOW),
+        speech_to_text=adapter,
+        authorizer=FakeAuthorizer(),
+        media_preparation=FakeAudioPreparation(),
+        clock=lambda: NOW,
+    ).transcribe(requested)
+
+    assert result.artifact.language is None
+    assert all(request.language_hint == "ru" for request in adapter.requests)
+
+
+@pytest.mark.asyncio
 async def test_expired_worker_resumes_after_durable_chunk_checkpoint() -> None:
     class CrashesOnceOnSecondChunk(ChunkedSpeechToText):
         def __init__(self) -> None:
