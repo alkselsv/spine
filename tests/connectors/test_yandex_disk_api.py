@@ -350,7 +350,10 @@ async def test_download_approved_https_host_enforces_byte_limit() -> None:
             YandexDiskApiResponse(
                 status_code=200,
                 json_body={
-                    "href": "https://downloader.disk.yandex.ru/disk/signed",
+                    "href": (
+                        "https://downloader.disk.yandex.ru/disk/signed"
+                        "?uid=synthetic&token=signature"
+                    ),
                     "method": "GET",
                     "templated": False,
                 },
@@ -372,7 +375,10 @@ async def test_download_approved_https_host_enforces_byte_limit() -> None:
     )
 
     assert result.content == b"data"
-    assert transport.requests[-1].url == "https://downloader.disk.yandex.ru/disk/signed"
+    assert transport.requests[-1].url == (
+        "https://downloader.disk.yandex.ru/disk/signed"
+        "?uid=synthetic&token=signature"
+    )
     assert transport.requests[-1].headers == {}
     assert transport.requests[-1].max_response_bytes == 4
 
@@ -386,6 +392,37 @@ async def test_download_rejects_unapproved_signed_url_without_fetching_it() -> N
                 status_code=200,
                 json_body={
                     "href": "https://attacker.example/collect",
+                    "method": "GET",
+                    "templated": False,
+                },
+            ),
+        ]
+    )
+
+    with pytest.raises(YandexDiskContractError):
+        await _service(transport).download(
+            _connection(),
+            SCOPE,
+            path="disk:/Spine-Qualification-678-v1/brief.pdf",
+            revision="1700000000000000",
+            max_bytes=4,
+        )
+
+    assert len(transport.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_download_rejects_downloader_url_without_signature_query() -> None:
+    transport = Transport(
+        [
+            _identity(),
+            YandexDiskApiResponse(
+                status_code=200,
+                json_body={
+                    "href": (
+                        "https://downloader.disk.yandex.ru/disk/signed"
+                        "?uid=synthetic"
+                    ),
                     "method": "GET",
                     "templated": False,
                 },
@@ -462,6 +499,164 @@ async def test_httpx_transport_stops_stream_after_approved_response_budget() -> 
 
         with pytest.raises(YandexDiskFileTooLargeError):
             await transport.request(request)
+
+
+@pytest.mark.asyncio
+async def test_httpx_transport_preserves_signed_download_query() -> None:
+    observed_url: httpx.URL | None = None
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal observed_url
+        observed_url = request.url
+        return httpx.Response(200, content=b"data", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = HttpxYandexDiskApiTransport(client=client)
+        await transport.request(
+            YandexDiskApiRequest(
+                method="GET",
+                url=(
+                    "https://downloader.disk.yandex.ru/disk/signed"
+                    "?uid=synthetic&token=signature"
+                ),
+                headers={},
+                query={},
+                timeout_seconds=10.0,
+                max_response_bytes=4,
+            )
+        )
+
+    assert observed_url is not None
+    assert observed_url.query == b"uid=synthetic&token=signature"
+
+
+@pytest.mark.asyncio
+async def test_httpx_transport_follows_one_approved_oauth_free_storage_redirect() -> None:
+    observed: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        observed.append(request)
+        if len(observed) == 1:
+            return httpx.Response(
+                302,
+                headers={
+                    "location": (
+                        "https://mds.storage.yandex.net/get-file/opaque"
+                        "?signature=synthetic"
+                    )
+                },
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            content=b"data",
+            headers={"content-type": "text/plain"},
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        response = await HttpxYandexDiskApiTransport(client=client).request(
+            YandexDiskApiRequest(
+                method="GET",
+                url=(
+                    "https://downloader.disk.yandex.ru/disk/signed"
+                    "?uid=synthetic&token=signature"
+                ),
+                headers={},
+                query={},
+                timeout_seconds=10.0,
+                max_response_bytes=4,
+            )
+        )
+
+    assert response.status_code == 200
+    assert response.content == b"data"
+    assert len(observed) == 2
+    assert observed[1].url.host == "mds.storage.yandex.net"
+    assert "authorization" not in observed[0].headers
+    assert "authorization" not in observed[1].headers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "redirect",
+    (
+        "https://attacker.example/file?signature=stolen",
+        "https://user:password@mds.storage.yandex.net/file?signature=synthetic",
+        "https://mds.storage.yandex.net:444/file?signature=synthetic",
+        "https://mds.storage.yandex.net/file?signature=synthetic#fragment",
+        "https://mds.storage.yandex.net/file?unrelated=value",
+        "https://mds.storage.yandex.net/file",
+    ),
+)
+async def test_httpx_transport_rejects_invalid_storage_redirect(
+    redirect: str,
+) -> None:
+    requests = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(
+            302,
+            headers={"location": redirect},
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(YandexDiskContractError):
+            await HttpxYandexDiskApiTransport(client=client).request(
+                YandexDiskApiRequest(
+                    method="GET",
+                    url=(
+                        "https://downloader.disk.yandex.ru/disk/signed"
+                        "?uid=synthetic&token=signature"
+                    ),
+                    headers={},
+                    query={},
+                    timeout_seconds=10.0,
+                    max_response_bytes=4,
+                )
+            )
+
+    assert requests == 1
+
+
+@pytest.mark.asyncio
+async def test_httpx_transport_rejects_second_storage_redirect() -> None:
+    requests = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(
+            302,
+            headers={
+                "location": (
+                    "https://mds.storage.yandex.net/get-file/opaque"
+                    "?signature=synthetic"
+                )
+            },
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(YandexDiskContractError):
+            await HttpxYandexDiskApiTransport(client=client).request(
+                YandexDiskApiRequest(
+                    method="GET",
+                    url=(
+                        "https://downloader.disk.yandex.ru/disk/signed"
+                        "?uid=synthetic&token=signature"
+                    ),
+                    headers={},
+                    query={},
+                    timeout_seconds=10.0,
+                    max_response_bytes=4,
+                )
+            )
+
+    assert requests == 2
 
 
 def test_qualification_request_policy_is_fixed_to_approved_ops_budget() -> None:

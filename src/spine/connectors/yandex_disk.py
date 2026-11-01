@@ -498,7 +498,17 @@ class YandexDiskProviderAdapter:
         try:
             return seen[target]
         except KeyError:
-            raise YandexDiskResourceNotFoundError() from None
+            # The root listing is intentionally non-recursive. Exact admitted
+            # paths may point at files in approved subdirectories, so resolve
+            # only that path rather than widening traversal.
+            resource = await self._service.get_resource(
+                connection,
+                command.resource_scope_reference,
+                path=target,
+            )
+            if resource.path != target:
+                raise YandexDiskContractError()
+            return resource
 
     @staticmethod
     def _validate_content(

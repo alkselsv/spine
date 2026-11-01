@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import json
 from typing import Any, Literal, Protocol
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
 import httpx
@@ -51,6 +51,9 @@ _APPROVED_DOWNLOAD_HOSTS = (
     "downloader.disk.yandex.net",
     "downloader.disk.yandex.ru",
 )
+_APPROVED_DOWNLOAD_REDIRECT_HOSTS = ("mds.storage.yandex.net",)
+_DOWNLOADER_SIGNATURE_QUERY_KEYS = frozenset({"etag", "hash", "tknv", "token"})
+_STORAGE_SIGNATURE_QUERY_KEYS = frozenset({"hash", "sign", "signature", "token"})
 _JSON_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
@@ -159,13 +162,47 @@ class HttpxYandexDiskApiTransport:
     client: httpx.AsyncClient
 
     async def request(self, request: YandexDiskApiRequest) -> YandexDiskApiResponse:
+        response = await self._request_once(request)
+        if response.status_code != 302:
+            return response
+        location = (response.headers or {}).get("location")
+        if request.headers or location is None:
+            return response
+        _require_signed_download_url(request.url)
+        _require_signed_download_redirect_url(location)
+        redirected = await self._request_once(
+            YandexDiskApiRequest(
+                method="GET",
+                url=location,
+                headers={},
+                query={},
+                timeout_seconds=request.timeout_seconds,
+                max_response_bytes=request.max_response_bytes,
+            )
+        )
+        if redirected.status_code == 302:
+            raise YandexDiskContractError()
+        wire_bytes = (response.wire_bytes or 0) + (redirected.wire_bytes or 0)
+        if wire_bytes > request.max_response_bytes:
+            raise YandexDiskFileTooLargeError()
+        return YandexDiskApiResponse(
+            status_code=redirected.status_code,
+            json_body=redirected.json_body,
+            content=redirected.content,
+            headers=redirected.headers,
+            wire_bytes=wire_bytes,
+        )
+
+    async def _request_once(
+        self, request: YandexDiskApiRequest
+    ) -> YandexDiskApiResponse:
         content = bytearray()
         try:
             async with self.client.stream(
                 request.method,
                 request.url,
                 headers=dict(request.headers),
-                params=dict(request.query),
+                params=dict(request.query) if request.query else None,
                 timeout=request.timeout_seconds,
                 follow_redirects=False,
             ) as response:
@@ -180,6 +217,9 @@ class HttpxYandexDiskApiTransport:
                 retry_after = response.headers.get("retry-after")
                 if retry_after:
                     response_headers["retry-after"] = retry_after
+                location = response.headers.get("location")
+                if location:
+                    response_headers["location"] = location
                 json_body: Mapping[str, Any] | None = None
                 if "json" in content_type.lower() and content:
                     try:
@@ -538,14 +578,40 @@ def _path_is_in_root(path: str, approved_root: str) -> bool:
 
 
 def _require_signed_download_url(value: str) -> None:
+    _require_signed_https_url(
+        value,
+        approved_hosts=_APPROVED_DOWNLOAD_HOSTS,
+        signature_query_keys=_DOWNLOADER_SIGNATURE_QUERY_KEYS,
+    )
+
+
+def _require_signed_download_redirect_url(value: str) -> None:
+    _require_signed_https_url(
+        value,
+        approved_hosts=_APPROVED_DOWNLOAD_REDIRECT_HOSTS,
+        signature_query_keys=_STORAGE_SIGNATURE_QUERY_KEYS,
+    )
+
+
+def _require_signed_https_url(
+    value: str,
+    *,
+    approved_hosts: tuple[str, ...],
+    signature_query_keys: frozenset[str],
+) -> None:
     parsed = urlsplit(value)
+    query = parse_qs(parsed.query, keep_blank_values=True)
     if (
         parsed.scheme != "https"
-        or parsed.hostname not in _APPROVED_DOWNLOAD_HOSTS
+        or parsed.hostname not in approved_hosts
         or parsed.username is not None
         or parsed.password is not None
         or parsed.port not in (None, 443)
         or parsed.fragment
+        or not any(
+            key in signature_query_keys and any(value for value in values)
+            for key, values in query.items()
+        )
     ):
         raise YandexDiskContractError()
 
