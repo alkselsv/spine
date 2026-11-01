@@ -6,8 +6,10 @@ from spine.application.persistence.bootstrap import (
 )
 from spine.application.persistence.canonical import (
     CANONICAL_ACCEPTANCE_SCHEMA_VERSION,
+    CANONICAL_ACCEPTANCE_V2_SCHEMA_VERSION,
     CanonicalAcceptanceCommand,
     CanonicalAcceptanceRepository,
+    CanonicalAcceptanceReadResult,
     CanonicalAcceptanceResult,
 )
 from spine.application.persistence.boundary import (
@@ -69,6 +71,7 @@ from spine.application.persistence.errors import (
     RetryablePersistenceError,
     TransactionDeadlockError,
     TransactionSerializationError,
+    UnknownCommitOutcomeError,
     UnexpectedPersistenceError,
     UnitOfWorkLifecycleError,
     ContextProfileApprovalError,
@@ -254,8 +257,10 @@ __all__ = [
     "PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE",
     "PROJECTION_OUTBOX_SCHEMA_VERSION",
     "CANONICAL_ACCEPTANCE_SCHEMA_VERSION",
+    "CANONICAL_ACCEPTANCE_V2_SCHEMA_VERSION",
     "CanonicalAcceptanceCommand",
     "CanonicalAcceptanceRepository",
+    "CanonicalAcceptanceReadResult",
     "CanonicalAcceptanceResult",
     "CanonicalBoundaryCaptureCommand",
     "CanonicalBoundaryClaimCaptureResult",
@@ -377,6 +382,7 @@ __all__ = [
     "TransactionRetryPolicy",
     "TransactionDeadlockError",
     "TransactionSerializationError",
+    "UnknownCommitOutcomeError",
     "TenantUnitOfWork",
     "TenantUnitOfWorkFactory",
     "TrustedContextProvenance",

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 from uuid import UUID
 
 from pydantic import ConfigDict, Field, model_validator
@@ -63,6 +64,7 @@ class CanonicalAcceptance(DefinitionModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    canonical_acceptance_schema_version: Literal[1, 2] = 1
     canonical_acceptance_id: UUID
     source_object_id: UUID
     source_revision_id: UUID
@@ -76,6 +78,7 @@ class CanonicalAcceptance(DefinitionModel):
     ordering_token: str | None = None
     admission_decision_id: UUID | None = None
     access_policy_version_id: UUID | None = None
+    processing_admission_id: UUID | None = None
     provenance_id: UUID
     idempotency_receipt_id: UUID
     audit_event_id: UUID
@@ -109,6 +112,15 @@ class CanonicalAcceptance(DefinitionModel):
             raise ValueError("trusted acceptance requires ordering evidence")
         if self.ordering is CanonicalOrdering.EXPECTED_CURRENT and self.ordering_scheme is not None:
             raise ValueError("expected-current acceptance cannot carry trusted ordering")
+        if self.canonical_acceptance_schema_version == 2:
+            if self.processing_admission_id is None:
+                raise ValueError("canonical acceptance version 2 requires a processing admission")
+            if self.processing_admission_id.int == 0:
+                raise ValueError("processing_admission_id must be non-zero")
+            if self.admission_decision_id is None or self.access_policy_version_id is None:
+                raise ValueError("canonical acceptance version 2 is content-only")
+        elif self.processing_admission_id is not None:
+            raise ValueError("canonical acceptance version 1 cannot carry a processing admission")
         return self
 
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 from types import TracebackType
 from typing import Callable, Protocol
 
+from spine.domain.sources import SourceProcessingAdmission
+
 from spine.application.persistence.canonical import (
     CanonicalAcceptanceCommand,
     CanonicalAcceptanceRepository,
@@ -16,6 +18,9 @@ from spine.application.persistence.errors import (
     CanonicalAcceptanceAuditUnavailableError,
     CanonicalAuthorityConflictError,
     CanonicalEligibilityError,
+    TransactionDeadlockError,
+    TransactionSerializationError,
+    UnknownCommitOutcomeError,
 )
 
 
@@ -41,6 +46,16 @@ class CanonicalAcceptanceUnitOfWork(Protocol):
     async def commit(self) -> None: ...
 
 
+class CurrentProcessingAdmissionAuthority(Protocol):
+    """Revalidate mode-specific authority while the canonical UoW is active."""
+
+    async def revalidate(
+        self,
+        admission: SourceProcessingAdmission,
+        transaction: CanonicalAcceptanceUnitOfWork,
+    ) -> None: ...
+
+
 class CanonicalAcceptanceCoordinator:
     """Run one acceptance in a single UoW and audit failed CAS separately."""
 
@@ -53,6 +68,8 @@ class CanonicalAcceptanceCoordinator:
             [CanonicalAcceptanceCommand], TrustedPersistenceContext
         ],
         failed_attempt_audit: CanonicalAcceptanceFailedAttemptAudit,
+        maximum_transaction_attempts: int = 3,
+        processing_authority: CurrentProcessingAdmissionAuthority | None = None,
     ) -> None:
         if uow_factory is None or context_factory is None or failed_attempt_audit is None:
             raise TypeError(
@@ -61,31 +78,73 @@ class CanonicalAcceptanceCoordinator:
         self._uow_factory = uow_factory
         self._context_factory = context_factory
         self._failed_attempt_audit = failed_attempt_audit
+        if maximum_transaction_attempts < 1:
+            raise ValueError("maximum_transaction_attempts must be positive")
+        self._maximum_transaction_attempts = maximum_transaction_attempts
+        self._processing_authority = processing_authority
 
     async def accept(
         self, command: CanonicalAcceptanceCommand
     ) -> CanonicalAcceptanceResult:
-        try:
-            async with self._uow_factory(self._context_factory(command)) as uow:
-                result = await uow.canonical.accept(command)
-                await uow.commit()
-                return result
-        except (
-            CanonicalAuthorityConflictError,
-            CanonicalEligibilityError,
-            OptimisticConflictError,
-        ) as rejection:
-            if isinstance(rejection, CanonicalAuthorityConflictError):
-                reason = "canonical_authority_conflict"
-            elif isinstance(rejection, CanonicalEligibilityError):
-                reason = "canonical_evidence_ineligible"
-            else:
-                reason = "canonical_order_or_cas_conflict"
+        retry_failure: (
+            TransactionDeadlockError
+            | TransactionSerializationError
+            | UnknownCommitOutcomeError
+            | None
+        ) = None
+        for attempt in range(1, self._maximum_transaction_attempts + 1):
             try:
-                await self._failed_attempt_audit.record_failed_cas(command, reason)
-            except Exception as audit_failure:
-                raise CanonicalAcceptanceAuditUnavailableError() from audit_failure
-            raise
+                async with self._uow_factory(self._context_factory(command)) as uow:
+                    processing_admission = getattr(command, "processing_admission", None)
+                    if processing_admission is not None:
+                        if self._processing_authority is None:
+                            raise CanonicalEligibilityError(
+                                "Current processing authority is unavailable."
+                            )
+                        await self._processing_authority.revalidate(
+                            processing_admission, uow
+                        )
+                    result = await uow.canonical.accept(command)
+                    await uow.commit()
+                    return result
+            except (
+                TransactionDeadlockError,
+                TransactionSerializationError,
+                UnknownCommitOutcomeError,
+            ) as failure:
+                retry_failure = failure
+                if attempt < self._maximum_transaction_attempts:
+                    continue
+                reason = (
+                    "canonical_unknown_commit_reconciliation_exhausted"
+                    if isinstance(failure, UnknownCommitOutcomeError)
+                    else "canonical_serialization_retry_exhausted"
+                )
+                await self._record_rejection(command, reason)
+                raise
+            except (
+                CanonicalAuthorityConflictError,
+                CanonicalEligibilityError,
+                OptimisticConflictError,
+            ) as rejection:
+                if isinstance(rejection, CanonicalAuthorityConflictError):
+                    reason = "canonical_authority_conflict"
+                elif isinstance(rejection, CanonicalEligibilityError):
+                    reason = "canonical_evidence_ineligible"
+                else:
+                    reason = "canonical_order_or_cas_conflict"
+                await self._record_rejection(command, reason)
+                raise
+        assert retry_failure is not None
+        raise retry_failure
+
+    async def _record_rejection(
+        self, command: CanonicalAcceptanceCommand, reason: str
+    ) -> None:
+        try:
+            await self._failed_attempt_audit.record_failed_cas(command, reason)
+        except Exception as audit_failure:
+            raise CanonicalAcceptanceAuditUnavailableError() from audit_failure
 
 
 def build_canonical_acceptance_coordinator(
@@ -97,6 +156,8 @@ def build_canonical_acceptance_coordinator(
         [CanonicalAcceptanceCommand], TrustedPersistenceContext
     ],
     failed_attempt_audit: CanonicalAcceptanceFailedAttemptAudit,
+    maximum_transaction_attempts: int = 3,
+    processing_authority: CurrentProcessingAdmissionAuthority | None = None,
 ) -> CanonicalAcceptanceCoordinator:
     """Build the only application entry point for canonical acceptance.
 
@@ -109,6 +170,8 @@ def build_canonical_acceptance_coordinator(
         uow_factory=uow_factory,
         context_factory=context_factory,
         failed_attempt_audit=failed_attempt_audit,
+        maximum_transaction_attempts=maximum_transaction_attempts,
+        processing_authority=processing_authority,
     )
 
 
@@ -117,5 +180,6 @@ __all__ = [
     "CanonicalAcceptanceCoordinator",
     "CanonicalAcceptanceFailedAttemptAudit",
     "CanonicalAcceptanceUnitOfWork",
+    "CurrentProcessingAdmissionAuthority",
     "build_canonical_acceptance_coordinator",
 ]

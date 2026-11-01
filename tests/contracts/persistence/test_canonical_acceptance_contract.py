@@ -571,12 +571,20 @@ async def test_canonical_happy_path_and_exact_replay(
     async with persistence_adapter.uow_factory(case.context) as uow:
         first = await uow.canonical.accept(case.command)
         await uow.commit()
+    assert first.acceptance is not None
     async with persistence_adapter.uow_factory(case.context) as uow:
         replay = await uow.canonical.accept(case.command)
+        persisted = await uow.canonical.resolve_acceptance_read(
+            first.acceptance.canonical_acceptance_id
+        )
         await uow.rollback()
     assert first.advanced is True
     assert replay.replay is True
     assert replay.result_reference == first.result_reference
+    assert persisted is not None
+    assert persisted.acceptance == first.acceptance
+    assert persisted.processing_admission is None
+    assert persisted.is_current is True
 
 
 @pytest.mark.asyncio

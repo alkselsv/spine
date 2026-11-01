@@ -407,6 +407,27 @@ CANONICAL_ACCEPTANCE_CONSTRAINTS = {
     "ck_canonical_acceptances_ordering",
     "ck_canonical_acceptances_order_pair",
     "ck_canonical_acceptances_ordering_shape",
+    "ck_canonical_acceptances_schema_processing",
+    "pk_source_processing_admissions",
+    "uq_source_processing_admissions_acceptance_binding",
+    "uq_source_processing_admissions_revision",
+    "uq_source_processing_admissions_idempotency",
+    "fk_source_processing_admissions_revision",
+    "fk_source_processing_admissions_selector",
+    "fk_source_processing_admissions_connection",
+    "fk_source_processing_admissions_root_policy",
+    "fk_source_processing_admissions_content_policy",
+    "fk_source_processing_admissions_exact_receipt",
+    "fk_source_processing_admissions_verifier",
+    "fk_source_processing_admissions_lifecycle",
+    "fk_source_processing_admissions_retention",
+    "fk_source_processing_admissions_idempotency",
+    "fk_source_processing_admissions_audit",
+    "ck_source_processing_admissions_schema",
+    "ck_source_processing_admissions_generations",
+    "ck_source_processing_admissions_digests",
+    "ck_source_processing_admissions_mode",
+    "fk_canonical_acceptances_processing_admission",
     "pk_current_source_heads",
     "fk_current_source_heads_revision",
     "fk_current_source_heads_acceptance",
@@ -424,6 +445,14 @@ CANONICAL_ACCEPTANCE_INDEXES = {
     "uq_canonical_acceptances_idempotency_receipt",
     "uq_canonical_acceptances_head_tuple",
     "ix_canonical_acceptances_source_generation",
+    "ix_canonical_acceptances_processing_admission",
+    "pk_source_processing_admissions",
+    "uq_source_processing_admissions_acceptance_binding",
+    "uq_source_processing_admissions_revision",
+    "uq_source_processing_admissions_idempotency",
+    "ix_source_processing_admissions_revision",
+    "uq_source_receipt_associations_processing_binding",
+    "uq_trusted_content_evidence_processing_binding",
     "pk_current_source_heads",
 }
 CANONICAL_ACCEPTANCE_COLUMNS = {
@@ -438,6 +467,7 @@ CANONICAL_ACCEPTANCE_COLUMNS = {
         "ordering_scheme", "ordering_token", "admission_decision_id",
         "access_policy_version_id", "provenance_id", "idempotency_receipt_id",
         "audit_event_id", "outbox_event_id", "accepted_at",
+        "canonical_acceptance_schema_version", "processing_admission_id",
     )
 } | {
     ("current_source_heads", column)
@@ -1597,6 +1627,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "recovery_evidence_invalidations",
         "canonical_generation_counters",
         "canonical_acceptances",
+        "source_processing_admissions",
         "current_source_heads",
         "parsed_documents",
         "parsed_document_segments",
@@ -2156,6 +2187,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         | AUDIT_CONSTRAINTS
         | DELIVERY_CONSTRAINTS
         | ADMISSION_CONSTRAINTS
+        | CANONICAL_ACCEPTANCE_CONSTRAINTS
         | {
             "pk_transcription_jobs",
             "uq_transcription_jobs_command",
@@ -2703,6 +2735,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "recovery_evidence_invalidations": (True, True),
         "canonical_generation_counters": (True, True),
         "canonical_acceptances": (True, True),
+        "source_processing_admissions": (True, True),
         "current_source_heads": (True, True),
         "parsed_documents": (True, True),
         "parsed_document_segments": (True, True),
@@ -2872,6 +2905,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "admission_decisions": (True, True, False, False),
         "canonical_generation_counters": (True, True, True, False),
         "canonical_acceptances": (True, True, False, False),
+        "source_processing_admissions": (True, True, False, False),
         "current_source_heads": (True, True, True, False),
             "canonical_boundaries": (True, True, False, False),
             "canonical_boundary_members": (True, True, False, False),
@@ -3064,7 +3098,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'access_policy_versions', "
                             "'access_policy_grants', 'policy_proposals', 'policy_approvals', "
                             "'policy_activations', 'current_access_policies', "
-                            "'canonical_generation_counters', 'canonical_acceptances', "
+                            "'canonical_generation_counters', 'canonical_acceptances', 'source_processing_admissions', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
                             "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', "
                             "'retention_applicabilities', 'current_retention_applicabilities', "
@@ -3108,7 +3142,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'source_security_domain_bindings', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
-                            "'canonical_generation_counters', 'canonical_acceptances', "
+                            "'canonical_generation_counters', 'canonical_acceptances', 'source_processing_admissions', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
                             "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', "
                             "'retention_applicabilities', 'current_retention_applicabilities', "
@@ -3146,7 +3180,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'source_security_domain_bindings', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
-                            "'canonical_generation_counters', 'canonical_acceptances', "
+                            "'canonical_generation_counters', 'canonical_acceptances', 'source_processing_admissions', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
                             "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', "
                             "'retention_applicabilities', 'current_retention_applicabilities', "
@@ -3183,7 +3217,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                                 "'source_security_domain_bindings', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
-                            "'canonical_generation_counters', 'canonical_acceptances', "
+                            "'canonical_generation_counters', 'canonical_acceptances', 'source_processing_admissions', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
                             "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', "
                             "'retention_applicabilities', 'current_retention_applicabilities', "
@@ -3219,7 +3253,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'process_only_operation_lineages', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
-                            "'canonical_generation_counters', 'canonical_acceptances', "
+                            "'canonical_generation_counters', 'canonical_acceptances', 'source_processing_admissions', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
                             "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', "
                             "'retention_applicabilities', 'current_retention_applicabilities', "
@@ -3921,7 +3955,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'backup_fence_leases', 'fence_operation_tickets', "
                         "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                         "'recovery_evidence_invalidations', "
-                        "'canonical_generation_counters', 'canonical_acceptances', 'current_source_heads', "
+                        "'canonical_generation_counters', 'canonical_acceptances', 'source_processing_admissions', 'current_source_heads', "
                         "'canonical_boundaries', 'canonical_boundary_members', "
                         "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', "
                         "'retention_applicabilities', 'current_retention_applicabilities', "
@@ -4041,6 +4075,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "recovery_evidence_invalidations": (True, True),
             "canonical_generation_counters": (True, True),
             "canonical_acceptances": (True, True),
+            "source_processing_admissions": (True, True),
             "current_source_heads": (True, True),
         "lifecycle_observations": (True, True),
         "lifecycle_decisions": (True, True),
@@ -5524,13 +5559,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261224_92_requirements_acceptance.py",
         "20261225_93_crm_relationship_v2.py",
         "20261226_94_canonical_acceptance_selectors.py",
+        "20261227_95_processing_admission_expand.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261227_95_injected_failure.py").write_text(
+    (target / "versions" / "20261228_96_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261227_95'\n"
-        "down_revision = '20261226_94'\n"
+        "revision = '20261228_96'\n"
+        "down_revision = '20261227_95'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
