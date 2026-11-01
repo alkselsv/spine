@@ -72,6 +72,7 @@ class _Uow:
         additional_boundary_member=None,
         locator_contract_version="locator:v1",
         opaque_current=False,
+        opaque_additional=False,
     ) -> None:
         command = _command()
         context = _context(command)
@@ -116,6 +117,7 @@ class _Uow:
         self._current_revision_id = current_revision_id
         self._current_revision_kind = current_revision_kind
         self._opaque_current = opaque_current
+        self._opaque_additional = opaque_additional
         self._context = context
         if additional_boundary_member is not None:
             self._context = context.model_copy(
@@ -189,12 +191,17 @@ class _Uow:
             source_id = self._additional_source.source_object_id
             revision_id = self._additional_source.revision_id
             generation = self._additional_boundary_member.accepted_generation
+        opaque = self._opaque_current or (
+            self._opaque_additional
+            and self._additional_source is not None
+            and source_id == self._additional_source.source_object_id
+        )
         current = await self._resolve_current(source_id)
         if current is None or current.acceptance_id != acceptance_id:
             return None
         admission = None
         acceptance = CanonicalAcceptance(
-            canonical_acceptance_schema_version=2 if self._opaque_current else 1,
+            canonical_acceptance_schema_version=2 if opaque else 1,
             canonical_acceptance_id=acceptance_id,
             source_object_id=source_id,
             source_revision_id=revision_id,
@@ -202,16 +209,16 @@ class _Uow:
             environment_id=ENVIRONMENT,
             accepted_generation=generation,
             ordering=CanonicalOrdering.EXPECTED_CURRENT,
-            admission_decision_id=UUID(int=170) if self._opaque_current else None,
-            access_policy_version_id=UUID(int=171) if self._opaque_current else None,
-            processing_admission_id=UUID(int=172) if self._opaque_current else None,
+            admission_decision_id=UUID(int=170) if opaque else None,
+            access_policy_version_id=UUID(int=171) if opaque else None,
+            processing_admission_id=UUID(int=172) if opaque else None,
             provenance_id=UUID(int=130 + generation),
             idempotency_receipt_id=UUID(int=140 + generation),
             audit_event_id=UUID(int=150 + generation),
             outbox_event_id=UUID(int=160 + generation),
             accepted_at=NOW,
         )
-        if self._opaque_current:
+        if opaque:
             admission = processor_admission().model_copy(
                 update={
                     "processing_admission_id": UUID(int=172),
@@ -465,6 +472,30 @@ async def test_production_resolver_returns_detached_canonical_command_context() 
 async def test_opaque_current_revision_is_rejected_before_physical_projection() -> None:
     with pytest.raises(ProjectionMappingError, match="canonical projection request"):
         await _resolver(_Uow(opaque_current=True)).resolve(_request())
+
+
+@pytest.mark.asyncio
+async def test_opaque_boundary_member_is_excluded_from_projection_command() -> None:
+    context = _context(_command())
+    additional = context.boundary_members[0].model_copy(
+        update={
+            "source_object_id": UUID(int=121),
+            "source_revision_id": UUID(int=122),
+            "acceptance_id": UUID(int=123),
+            "accepted_generation": 2,
+        }
+    )
+
+    resolved = await _resolver(
+        _Uow(
+            additional_boundary_member=additional,
+            opaque_additional=True,
+        )
+    ).resolve(_request())
+
+    assert tuple(
+        item.source_revision_id for item in resolved.source_revisions
+    ) == (REVISION,)
 
 
 @pytest.mark.asyncio

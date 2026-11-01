@@ -77,6 +77,17 @@ class DisclosureRevalidationFailureCode(str, Enum):
     IDEMPOTENCY_CONFLICT = "idempotency_conflict"
 
 
+class DisclosureProcessingDispositionReason(str, Enum):
+    """Content-free reason returned by the canonical processing authority."""
+
+    ELIGIBLE = "eligible"
+    CURRENT_AUTHORITY_UNAVAILABLE = "current_authority_unavailable"
+    CURRENT_REVISION_MISMATCH = "current_revision_mismatch"
+    ACCEPTANCE_UNAVAILABLE = "acceptance_unavailable"
+    PROCESSING_DISPOSITION_UNAVAILABLE = "processing_disposition_unavailable"
+    OPAQUE_ACCEPTANCE = "opaque_acceptance"
+
+
 class DisclosurePublicationImpact(str, Enum):
     NONE = "none"
     ACTIVATION_ONLY = "activation_only"
@@ -261,6 +272,7 @@ class DisclosureDependencyObservation(DefinitionModel):
     processing_admission_id: UUID | None = None
     processing_mode: ProcessingAdmissionMode | None = None
     processing_disposition_eligible: bool = False
+    processing_disposition_reason: DisclosureProcessingDispositionReason | None = None
     historical_revision_id: UUID | None = None
     historical_revision_digest: str | None = Field(default=None, pattern=_DIGEST)
     revision_current: bool = False
@@ -538,6 +550,7 @@ __all__ = [
     "DisclosureDependencyObservation",
     "DisclosureDependencySet",
     "DisclosurePublicationImpact",
+    "DisclosureProcessingDispositionReason",
     "DisclosurePublicationObservation",
     "DisclosureRevalidationCheckpoint",
     "DisclosureRevalidationDisposition",

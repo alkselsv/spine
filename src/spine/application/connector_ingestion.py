@@ -55,6 +55,9 @@ from spine.application.persistence.outbox import (
 )
 from spine.application.persistence.repositories import SourceObservationCommand
 from spine.application.persistence.unit_of_work import UnitOfWorkFactory
+from spine.application.processing_disposition import (
+    CanonicalCurrentProcessingDispositionAuthority,
+)
 from spine.application.storage import OriginalUploadOutcome
 from spine.application.diagnostics import AuditEventRegistry
 from spine.domain.audit import (
@@ -882,6 +885,15 @@ class ConnectorIngestionOrchestrator:
             stored = result.value
             if not isinstance(stored, ProcessingReceipt):
                 raise TypeError("processing receipt repository returned an invalid value")
+            processing = await CanonicalCurrentProcessingDispositionAuthority(
+                uow.canonical
+            ).resolve(
+                workspace_id=run.workspace_id,
+                environment_id=run.environment_id,
+                source_object_id=stored.source_object_id,
+                source_revision_id=stored.source_revision_id,
+            )
+            request_projection = request_projection and processing.eligible
             if request_projection:
                 await uow.outbox.append(
                     build_projection_request_intent(

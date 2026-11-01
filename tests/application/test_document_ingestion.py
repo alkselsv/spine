@@ -45,7 +45,7 @@ from spine.domain.ingestion import (
     IngestionTransition,
     ProcessingReceipt,
 )
-from spine.domain.sources import AdmissionDisposition
+from spine.domain.sources import AdmissionDisposition, RevisionKind
 from spine.infrastructure.object_storage import (
     IntegrityResult,
     IntegrityStatus,
@@ -263,19 +263,44 @@ class _Canonical:
         self.calls = 0
         self.current_revision_id: UUID | None = None
         self.expected_revision = None
+        self.accepted_revision = None
 
     async def accept(self, command):
         self.calls += 1
         if self.expected_revision is not None:
             assert command.revision == self.expected_revision
         self.current_revision_id = command.revision.revision_id
+        self.accepted_revision = command.revision
         return command
 
     async def resolve_current(self, source_object_id):
         del source_object_id
         if self.current_revision_id is None:
             return None
-        return SimpleNamespace(current_revision_id=self.current_revision_id)
+        return SimpleNamespace(
+            workspace_id=self.accepted_revision.workspace_id,
+            environment_id=self.accepted_revision.environment_id,
+            source_object_id=self.accepted_revision.source_object_id,
+            current_revision_id=self.current_revision_id,
+            current_revision_kind=RevisionKind.CONTENT,
+            acceptance_id=_id("canonical-acceptance"),
+        )
+
+    async def resolve_acceptance_read(self, acceptance_id):
+        current = await self.resolve_current(self.accepted_revision.source_object_id)
+        return SimpleNamespace(
+            is_current=True,
+            current=current,
+            processing_admission=None,
+            acceptance=SimpleNamespace(
+                canonical_acceptance_schema_version=1,
+                canonical_acceptance_id=acceptance_id,
+                workspace_id=self.accepted_revision.workspace_id,
+                environment_id=self.accepted_revision.environment_id,
+                source_object_id=self.accepted_revision.source_object_id,
+                source_revision_id=self.accepted_revision.revision_id,
+            ),
+        )
 
 
 class _Uow:

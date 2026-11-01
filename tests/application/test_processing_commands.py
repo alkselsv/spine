@@ -205,11 +205,32 @@ class _ReplacementSources:
 
 
 class _ReplacementCanonical:
-    async def resolve_current(self, source_object_id):
-        return SimpleNamespace(
-            source_object_id=source_object_id,
+    def __init__(self) -> None:
+        self.current = SimpleNamespace(
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+            source_object_id=identifier("source"),
             current_revision_id=identifier("revision"),
+            current_revision_kind=RevisionKind.CONTENT,
             acceptance_id=identifier("canonical-acceptance"),
+        )
+
+    async def resolve_current(self, source_object_id):
+        return self.current
+
+    async def resolve_acceptance_read(self, acceptance_id):
+        return SimpleNamespace(
+            is_current=True,
+            current=self.current,
+            processing_admission=None,
+            acceptance=SimpleNamespace(
+                canonical_acceptance_schema_version=1,
+                canonical_acceptance_id=acceptance_id,
+                workspace_id=WORKSPACE,
+                environment_id=ENVIRONMENT,
+                source_object_id=identifier("source"),
+                source_revision_id=identifier("revision"),
+            ),
         )
 
     async def resolve_acceptance(self, acceptance_id):

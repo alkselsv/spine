@@ -34,6 +34,9 @@ from spine.application.persistence.outbox import (
 )
 from spine.application.persistence.parsed_artifacts import ParsedArtifactCommand
 from spine.application.persistence.unit_of_work import UnitOfWorkFactory
+from spine.application.processing_disposition import (
+    CanonicalCurrentProcessingDispositionAuthority,
+)
 from spine.application.document_lifecycle import (
     ReplacementProcessingIntent,
     replacement_processing_operation_id,
@@ -533,6 +536,16 @@ class OrchestratedProcessingCommandService:
             or current.current_revision_id != command.source_revision_id
             or command.expected_current_revision_id != command.source_revision_id
         ):
+            raise ProcessingCommandRejected()
+        processing = await CanonicalCurrentProcessingDispositionAuthority(
+            uow.canonical  # type: ignore[attr-defined]
+        ).resolve(
+            workspace_id=command.workspace_id,
+            environment_id=command.environment_id,
+            source_object_id=command.source_object_id,
+            source_revision_id=command.source_revision_id,
+        )
+        if not processing.eligible:
             raise ProcessingCommandRejected()
         parent_failure = None
         parent_item = None

@@ -87,15 +87,15 @@ class CanonicalCurrentProcessingDispositionAuthority:
                 OrdinaryProcessingEligibilityReason.CURRENT_AUTHORITY_UNAVAILABLE
             )
         if (
-            current.workspace_id != workspace_id
-            or current.environment_id != environment_id
-            or current.source_object_id != source_object_id
-            or current.current_revision_id != source_revision_id
-            or current.current_revision_kind is not RevisionKind.CONTENT
+            getattr(current, "workspace_id", None) != workspace_id
+            or getattr(current, "environment_id", None) != environment_id
+            or getattr(current, "source_object_id", None) != source_object_id
+            or getattr(current, "current_revision_id", None) != source_revision_id
+            or getattr(current, "current_revision_kind", None) is not RevisionKind.CONTENT
         ):
             return self._reject(
                 OrdinaryProcessingEligibilityReason.CURRENT_REVISION_MISMATCH,
-                canonical_acceptance_id=current.acceptance_id,
+                canonical_acceptance_id=getattr(current, "acceptance_id", None),
             )
         try:
             resolved = await self._canonical.resolve_acceptance_read(

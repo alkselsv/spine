@@ -65,6 +65,7 @@ from spine.application.evidence_lineage_verification import (
 from spine.application.projection_locator import canonical_projection_locator_digest
 from spine.application.processing_disposition import (
     CanonicalCurrentProcessingDispositionAuthority,
+    OrdinaryProcessingEligibilityReason,
 )
 from spine.application.production_qa_capability import (
     AnswerQuestionEvaluationLineage,
@@ -1385,8 +1386,26 @@ class _CurrentCitationValidator(_ScopedPort):
                 revision = await uow.sources.resolve_revision(
                     citation.evidence_reference.source_revision_id
                 )
+                source_reference = citation.evidence_reference
+                processing = await CanonicalCurrentProcessingDispositionAuthority(
+                    uow.canonical
+                ).resolve(
+                    workspace_id=scope.workspace_id,
+                    environment_id=scope.environment_id,
+                    source_object_id=source_reference.source_object_id,
+                    source_revision_id=source_reference.source_revision_id,
+                )
                 await uow.commit()
-            source_reference = citation.evidence_reference
+            if not processing.eligible:
+                if (
+                    processing.reason
+                    is OrdinaryProcessingEligibilityReason.OPAQUE_ACCEPTANCE
+                ):
+                    return RejectedCitation(
+                        reason_code=CitationValidationReasonCode.AUTHORIZATION_DENIED,
+                        validation_reference=reference_id,
+                    )
+                raise ValueError
             exact_projection = tuple(
                 item
                 for item in references
@@ -2156,6 +2175,7 @@ class _CurrentDisclosureStateProvider(_ScopedPort):
                         processing_admission_id=processing.processing_admission_id,
                         processing_mode=processing.processing_mode,
                         processing_disposition_eligible=processing.eligible,
+                        processing_disposition_reason=processing.reason.value,
                         revision_current=(
                             revision is not None
                             and revision.revision_id == dependency.source_revision_id

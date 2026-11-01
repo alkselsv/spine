@@ -49,6 +49,9 @@ from spine.application.persistence.parsed_artifacts import (
 )
 from spine.application.persistence.repositories import SourceObservationCommand
 from spine.application.persistence.unit_of_work import UnitOfWorkFactory
+from spine.application.processing_disposition import (
+    CanonicalCurrentProcessingDispositionAuthority,
+)
 from spine.application.storage import OriginalUploadOutcome
 from spine.domain.artifacts import ParseCoverage, ParsedDocument
 from spine.domain.ingestion import (
@@ -993,22 +996,31 @@ class DocumentIngestionOrchestrator:
                     and current.current_revision_id
                     == stored_receipt.source_revision_id
                 ):
-                    await uow.outbox.append(
-                        build_projection_request_intent(
-                            registry=self.outbox_events,
-                            run=run,
-                            item=item,
-                            receipt=stored_receipt,
-                            trace_id=context.trace_id,
-                            causation_id=intent.event_id,
+                    processing = await CanonicalCurrentProcessingDispositionAuthority(
+                        uow.canonical
+                    ).resolve(
+                        workspace_id=request.workspace_id,
+                        environment_id=request.environment_id,
+                        source_object_id=stored_receipt.source_object_id,
+                        source_revision_id=stored_receipt.source_revision_id,
+                    )
+                    if processing.eligible:
+                        await uow.outbox.append(
+                            build_projection_request_intent(
+                                registry=self.outbox_events,
+                                run=run,
+                                item=item,
+                                receipt=stored_receipt,
+                                trace_id=context.trace_id,
+                                causation_id=intent.event_id,
+                            )
                         )
-                    )
-                    await self._advance_item_in_uow(
-                        uow,
-                        item,
-                        IngestionItemState.PROJECTION_REQUESTED,
-                        self._now(),
-                    )
+                        await self._advance_item_in_uow(
+                            uow,
+                            item,
+                            IngestionItemState.PROJECTION_REQUESTED,
+                            self._now(),
+                        )
             await uow.commit()
             return stored_receipt
 

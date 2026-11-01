@@ -202,6 +202,7 @@ class _CurrentSessionDisclosureState:
                     processing_admission_id=processing.processing_admission_id,
                     processing_mode=processing.processing_mode,
                     processing_disposition_eligible=processing.eligible,
+                    processing_disposition_reason=processing.reason.value,
                     revision_current=bool(
                         revision is not None
                         and revision.revision_id == dependency.source_revision_id

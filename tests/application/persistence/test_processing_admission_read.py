@@ -213,3 +213,36 @@ async def test_opaque_current_acceptance_denies_ordinary_processing() -> None:
 
     assert result.eligible is False
     assert result.reason is OrdinaryProcessingEligibilityReason.OPAQUE_ACCEPTANCE
+
+
+@pytest.mark.asyncio
+async def test_processing_authority_isolates_current_head_between_workspaces() -> None:
+    current = CurrentSourceHead(
+        source_object_id=uid(4),
+        workspace_id=uid(2),
+        environment_id=uid(3),
+        current_revision_id=uid(5),
+        current_revision_kind=RevisionKind.CONTENT,
+        acceptance_id=uid(21),
+        accepted_generation=1,
+        cas_version=1,
+        changed_at=NOW,
+    )
+    authority = CanonicalCurrentProcessingDispositionAuthority(
+        _CanonicalReader(
+            CanonicalAcceptanceReadResult(
+                acceptance(), processing_admission(), current
+            )
+        )
+    )
+
+    result = await authority.resolve(
+        workspace_id=uid(99),
+        environment_id=uid(3),
+        source_object_id=uid(4),
+        source_revision_id=uid(5),
+    )
+
+    assert result.eligible is False
+    assert result.reason is OrdinaryProcessingEligibilityReason.CURRENT_REVISION_MISMATCH
+    assert result.processing_admission_id is None

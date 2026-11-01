@@ -56,6 +56,10 @@ from spine.application.projection_publication_faults import (
 )
 from spine.application.projection_result_mapping import ProjectionMappingResult
 from spine.application.projection_identity import projection_publication_entity_id
+from spine.application.processing_disposition import (
+    CanonicalCurrentProcessingDispositionAuthority,
+    OrdinaryProcessingEligibilityReason,
+)
 from spine.infrastructure.db.settings import (
     DispatcherDatabaseSettings,
     POSTGRESQL_SEARCH_PATH_OPTIONS,
@@ -784,45 +788,66 @@ class ProjectionPublicationCompletion:
             included_sources = {
                 source.source_object_id for source in command.source_revisions
             }
-            members = tuple(
-                ProjectionSnapshotMember(
-                    projection_snapshot_member_id=uuid5(
-                        NAMESPACE_URL,
-                        f"spine:projection-publication-member:v1:{snapshot_id}:{member.source_object_id}",
-                    ),
-                    projection_snapshot_id=snapshot_id,
-                    canonical_boundary_id=command.canonical_boundary.boundary_id,
-                    canonical_boundary_member_id=member.source_object_id,
-                    workspace_id=command.workspace_id,
-                    environment_id=command.environment_id,
-                    source_object_id=member.source_object_id,
-                    source_revision_id=member.source_revision_id,
-                    disposition=(
-                        ProjectionSnapshotMemberDisposition.TOMBSTONED
-                        if member.revision_kind is RevisionKind.TOMBSTONE
-                        else ProjectionSnapshotMemberDisposition.INCLUDED
-                        if member.source_object_id in included_sources
-                        else ProjectionSnapshotMemberDisposition.EXCLUDED
-                    ),
-                    exclusion_code=(
-                        "outside_request"
-                        if member.revision_kind is RevisionKind.CONTENT
-                        and member.source_object_id not in included_sources
-                        else None
-                    ),
-                    projection_partition_id=(
-                        receipt.projection_partition_id
-                        if member.source_object_id in included_sources
-                        else None
-                    ),
-                    projection_receipt_id=(
-                        receipt.projection_receipt_id
-                        if member.source_object_id in included_sources
-                        else None
-                    ),
+            members: list[ProjectionSnapshotMember] = []
+            for member in boundary_members:
+                exclusion_code = None
+                if (
+                    member.revision_kind is RevisionKind.CONTENT
+                    and member.source_object_id not in included_sources
+                ):
+                    processing = await CanonicalCurrentProcessingDispositionAuthority(
+                        uow.canonical
+                    ).resolve(
+                        workspace_id=command.workspace_id,
+                        environment_id=command.environment_id,
+                        source_object_id=member.source_object_id,
+                        source_revision_id=member.source_revision_id,
+                    )
+                    if (
+                        processing.reason
+                        is OrdinaryProcessingEligibilityReason.OPAQUE_ACCEPTANCE
+                    ):
+                        exclusion_code = "opaque_acceptance"
+                    elif processing.eligible:
+                        exclusion_code = "outside_request"
+                    else:
+                        raise ValueError(
+                            "projection snapshot current authority is unavailable"
+                        )
+                members.append(
+                    ProjectionSnapshotMember(
+                        projection_snapshot_member_id=uuid5(
+                            NAMESPACE_URL,
+                            f"spine:projection-publication-member:v1:{snapshot_id}:{member.source_object_id}",
+                        ),
+                        projection_snapshot_id=snapshot_id,
+                        canonical_boundary_id=command.canonical_boundary.boundary_id,
+                        canonical_boundary_member_id=member.source_object_id,
+                        workspace_id=command.workspace_id,
+                        environment_id=command.environment_id,
+                        source_object_id=member.source_object_id,
+                        source_revision_id=member.source_revision_id,
+                        disposition=(
+                            ProjectionSnapshotMemberDisposition.TOMBSTONED
+                            if member.revision_kind is RevisionKind.TOMBSTONE
+                            else ProjectionSnapshotMemberDisposition.INCLUDED
+                            if member.source_object_id in included_sources
+                            else ProjectionSnapshotMemberDisposition.EXCLUDED
+                        ),
+                        exclusion_code=exclusion_code,
+                        projection_partition_id=(
+                            receipt.projection_partition_id
+                            if member.source_object_id in included_sources
+                            else None
+                        ),
+                        projection_receipt_id=(
+                            receipt.projection_receipt_id
+                            if member.source_object_id in included_sources
+                            else None
+                        ),
+                    )
                 )
-                for member in boundary_members
-            )
+            member_values = tuple(members)
             snapshot = ProjectionSnapshot(
                 projection_snapshot_id=snapshot_id,
                 projection_run_id=command.projection_run_id,
@@ -836,20 +861,20 @@ class ProjectionPublicationCompletion:
                 predecessor_snapshot_id=predecessor_snapshot_id,
                 candidate_evidence_digest=evidence_digest,
                 manifest_digest="0" * 64,
-                member_count=len(members),
+                member_count=len(member_values),
                 created_at=self.clock(),  # type: ignore[operator]
             )
             snapshot = snapshot.model_copy(
                 update={
                     "manifest_digest": projection_snapshot_manifest_digest(
-                        snapshot, members
+                        snapshot, member_values
                     )
                 }
             )
             result = await uow.projections.assemble_snapshot(
                 ProjectionSnapshotCommand.create(
                     snapshot=snapshot,
-                    members=members,
+                    members=member_values,
                     idempotency_key=IdempotencyKey(
                         f"projection-snapshot-{command.projection_run_id}"
                     ),

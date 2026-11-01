@@ -451,8 +451,9 @@ class _Ingestion:
         return self.source if self.source and self.source.source_object_id == source_object_id else None
 
     async def record_processing_receipt(self, command):
-        self.receipt = self.receipt or command.receipt
-        return SimpleNamespace(value=self.receipt, replay=self.receipt != command.receipt)
+        replay = self.receipt == command.receipt
+        self.receipt = command.receipt
+        return SimpleNamespace(value=self.receipt, replay=replay)
 
 
 class _Admissions:
@@ -474,13 +475,16 @@ class _Uow:
         self.sources = ingestion
         self.admissions = admissions
         self.canonical = SimpleNamespace(
-            accept=self._accept, resolve_current=self._resolve_current
+            accept=self._accept,
+            resolve_current=self._resolve_current,
+            resolve_acceptance_read=self._resolve_acceptance_read,
         )
         self.outbox = SimpleNamespace(append=self._append)
         self.accepted = 0
         self.current_revision_id = None
         self.current_revision_kind = None
         self.last_accepted_revision = None
+        self.accepted_revision = None
         self.events = []
         self.trace_id = _id("uow-trace")
 
@@ -502,6 +506,7 @@ class _Uow:
         self.last_accepted_revision = command.revision.revision_id
         self.current_revision_id = command.revision.revision_id
         self.current_revision_kind = command.revision.kind
+        self.accepted_revision = command.revision
         self.sources.revisions[command.revision.revision_id] = command.revision
         return SimpleNamespace(
             advanced=True,
@@ -510,12 +515,44 @@ class _Uow:
         )
 
     async def _resolve_current(self, source_object_id):
-        del source_object_id
         if self.current_revision_id is None:
             return None
+        workspace_id = (
+            WORKSPACE if self.accepted_revision is None else self.accepted_revision.workspace_id
+        )
+        environment_id = (
+            ENVIRONMENT
+            if self.accepted_revision is None
+            else self.accepted_revision.environment_id
+        )
+        resolved_source_object_id = (
+            source_object_id
+            if self.accepted_revision is None
+            else self.accepted_revision.source_object_id
+        )
         return SimpleNamespace(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            source_object_id=resolved_source_object_id,
             current_revision_id=self.current_revision_id,
             current_revision_kind=self.current_revision_kind,
+            acceptance_id=_id(f"acceptance-{self.current_revision_id}"),
+        )
+
+    async def _resolve_acceptance_read(self, acceptance_id):
+        current = await self._resolve_current(self.accepted_revision.source_object_id)
+        return SimpleNamespace(
+            is_current=True,
+            current=current,
+            processing_admission=None,
+            acceptance=SimpleNamespace(
+                canonical_acceptance_schema_version=1,
+                canonical_acceptance_id=acceptance_id,
+                workspace_id=self.accepted_revision.workspace_id,
+                environment_id=self.accepted_revision.environment_id,
+                source_object_id=self.accepted_revision.source_object_id,
+                source_revision_id=self.accepted_revision.revision_id,
+            ),
         )
 
     async def _append(self, intent):

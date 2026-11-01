@@ -16,6 +16,7 @@ from spine.domain.disclosure import (
     DisclosureDependencyObservation,
     DisclosureDependencySet,
     DisclosurePublicationImpact,
+    DisclosureProcessingDispositionReason,
     DisclosurePublicationObservation,
     DisclosureRevalidationCheckpoint,
     DisclosureRevalidationDisposition,
@@ -173,6 +174,32 @@ async def test_opaque_current_dependency_suppresses_cached_answer() -> None:
         in result.failure_codes
     )
     assert not result.can_disclose_content
+
+
+@pytest.mark.asyncio
+async def test_unavailable_processing_authority_is_retryable_not_ineligible() -> None:
+    result = await DisclosureRevalidationService(
+        FakeStateProvider(
+            observation(
+                processing_disposition_eligible=False,
+                processing_disposition_reason=(
+                    DisclosureProcessingDispositionReason.CURRENT_AUTHORITY_UNAVAILABLE
+                ),
+            )
+        ),
+        InMemoryDisclosureValidationResultRepository(),
+        clock=lambda: NOW,
+    ).revalidate(request(request_id=UUID(int=45)))
+
+    assert result.disposition is DisclosureRevalidationDisposition.RETRYABLE_FAILURE
+    assert (
+        DisclosureRevalidationFailureCode.REVALIDATION_UNAVAILABLE
+        in result.failure_codes
+    )
+    assert (
+        DisclosureRevalidationFailureCode.PROCESSING_DISPOSITION_INELIGIBLE
+        not in result.failure_codes
+    )
 
 
 @pytest.mark.asyncio

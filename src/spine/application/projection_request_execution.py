@@ -46,6 +46,7 @@ from spine.application.persistence.unit_of_work_activity import (
 )
 from spine.application.processing_disposition import (
     CanonicalCurrentProcessingDispositionAuthority,
+    OrdinaryProcessingEligibilityReason,
 )
 from spine.application.projection_result_mapping import (
     AdapterProjectionReceipt,
@@ -417,6 +418,11 @@ class PersistenceCanonicalProjectionRequestResolver:
                     )
                 )
                 if not boundary_processing.eligible:
+                    if (
+                        boundary_processing.reason
+                        is OrdinaryProcessingEligibilityReason.OPAQUE_ACCEPTANCE
+                    ):
+                        continue
                     self._reject()
                 selected_receipt = (
                     receipt
