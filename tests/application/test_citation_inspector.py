@@ -137,6 +137,7 @@ class CurrentState:
             "contributor_authorized": True,
             "current_revision_id": dependency.source_revision_id,
             "current_revision_digest": dependency.source_revision_digest,
+            "processing_disposition_eligible": True,
             "revision_current": True,
             "retention_eligible": True,
             "lifecycle_disclosure_eligible": True,

@@ -43,6 +43,7 @@ from spine.application.persistence.delivery import (
 )
 from spine.application.persistence.outbox import OutboxIntent
 from spine.application.persistence.errors import AuditConflictError
+from spine.application.testing import DeterministicCurrentProcessingDispositionAuthority
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.projection import (
     PROJECTION_SUCCESSOR_REQUESTED_OUTBOX_EVENT_TYPE,
@@ -1201,6 +1202,7 @@ async def test_postgresql_temporal_production_ask_composition_reaches_terminal_s
         retrieval=object(),
         evidence_verifier=object(),
         bundles=object(),
+        processing_authority=DeterministicCurrentProcessingDispositionAuthority(),
     )
 
     async def no_usable_evidence(_request):

@@ -23,6 +23,7 @@ from spine.application.content_authorization import (
     ContentAuthorizationDecisionService,
     TrustedAuthorizationContext,
 )
+from spine.application.processing_disposition import CurrentProcessingDispositionAuthority
 from spine.application.context_profiles import EffectiveContextRetrievalPolicy
 from spine.domain.common import ValidatedDefinitionModel
 from spine.domain.context_profiles import (
@@ -219,6 +220,7 @@ class AuthorizedRetrievalScopeResolver:
         authorization: ContentAuthorizationDecisionService,
         snapshot_members: SnapshotMemberRepository,
         disclosure_constraint: RetrievalDisclosureConstraint,
+        processing_authority: CurrentProcessingDispositionAuthority,
         provider_scope_safety: ProviderScopeSafetyPolicy | None = None,
         expected_purpose: str = "answer_question",
         expected_operation: str = "retrieve_context",
@@ -228,6 +230,7 @@ class AuthorizedRetrievalScopeResolver:
         self._snapshot_members = snapshot_members
         self._provider_scope_safety = provider_scope_safety
         self._disclosure_constraint = disclosure_constraint
+        self._processing_authority = processing_authority
         self._expected_purpose = expected_purpose
         self._expected_operation = expected_operation
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -295,6 +298,20 @@ class AuthorizedRetrievalScopeResolver:
 
         constraints: list[AuthorizedSourceConstraint] = []
         for member in included:
+            try:
+                processing = await self._processing_authority.resolve(
+                    workspace_id=context.workspace_id,
+                    environment_id=context.environment_id,
+                    source_object_id=member.source_object_id,
+                    source_revision_id=member.source_revision_id,
+                )
+            except Exception:
+                processing = None
+            if processing is None or not processing.eligible:
+                return self._reject(
+                    AuthorizedRetrievalScopeOutcome.UNAVAILABLE,
+                    AuthorizedRetrievalScopeReason.SOURCE_UNAVAILABLE,
+                )
             try:
                 disclosure_allowed = await self._disclosure_constraint.allows(
                     context, member, self._now()

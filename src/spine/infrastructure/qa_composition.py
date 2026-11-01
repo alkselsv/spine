@@ -35,6 +35,9 @@ from spine.application.disclosure_revalidation import (
     DisclosureRevalidationService,
     RevalidatingQAMessageDisclosure,
 )
+from spine.application.processing_disposition import (
+    CanonicalCurrentProcessingDispositionAuthority,
+)
 from spine.application.citation_inspector import (
     CitationInspectorRequester,
     ProtectedCitationInspector,
@@ -158,6 +161,14 @@ class _CurrentSessionDisclosureState:
                 artifact_id=artifact_id,
                 evaluated_at=datetime.now(timezone.utc),
             )
+            processing = await CanonicalCurrentProcessingDispositionAuthority(
+                self.uow.canonical  # type: ignore[attr-defined]
+            ).resolve(
+                workspace_id=dependency.workspace_id,
+                environment_id=dependency.environment_id,
+                source_object_id=dependency.source_object_id,
+                source_revision_id=dependency.source_revision_id,
+            )
             requester_authorized = requester_authorized and contributor_authorized
             observations.append(
                 DisclosureDependencyObservation(
@@ -187,6 +198,10 @@ class _CurrentSessionDisclosureState:
                     current_revision_digest=(
                         None if revision is None else revision.revision_digest
                     ),
+                    current_acceptance_id=processing.canonical_acceptance_id,
+                    processing_admission_id=processing.processing_admission_id,
+                    processing_mode=processing.processing_mode,
+                    processing_disposition_eligible=processing.eligible,
                     revision_current=bool(
                         revision is not None
                         and revision.revision_id == dependency.source_revision_id

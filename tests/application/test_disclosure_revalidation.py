@@ -52,6 +52,7 @@ def observation(**overrides: object) -> DisclosureRevalidationObservation:
         "contributor_authorized": True,
         "current_revision_id": dependency.source_revision_id,
         "current_revision_digest": dependency.source_revision_digest,
+        "processing_disposition_eligible": True,
         "revision_current": True,
         "retention_eligible": True,
         "lifecycle_disclosure_eligible": True,
@@ -155,6 +156,22 @@ async def test_current_ineligible_dependency_suppresses_whole_answer(
 
     assert result.disposition is DisclosureRevalidationDisposition.INELIGIBLE
     assert failure in result.failure_codes
+    assert not result.can_disclose_content
+
+
+@pytest.mark.asyncio
+async def test_opaque_current_dependency_suppresses_cached_answer() -> None:
+    result = await DisclosureRevalidationService(
+        FakeStateProvider(observation(processing_disposition_eligible=False)),
+        InMemoryDisclosureValidationResultRepository(),
+        clock=lambda: NOW,
+    ).revalidate(request(request_id=UUID(int=41)))
+
+    assert result.disposition is DisclosureRevalidationDisposition.INELIGIBLE
+    assert (
+        DisclosureRevalidationFailureCode.PROCESSING_DISPOSITION_INELIGIBLE
+        in result.failure_codes
+    )
     assert not result.can_disclose_content
 
 

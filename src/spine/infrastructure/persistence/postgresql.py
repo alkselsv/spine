@@ -85,6 +85,9 @@ from spine.application.persistence.errors import (
     UnknownCommitOutcomeError,
 )
 from spine.application.persistence.errors import RevisionDigestMismatchError
+from spine.application.processing_disposition import (
+    CanonicalCurrentProcessingDispositionAuthority,
+)
 from spine.application.persistence.repositories import (
     SourceObservationCommand,
     SourceObservationResult,
@@ -6024,6 +6027,23 @@ class _PostgreSQLProjectionSnapshotMixin:
             await self._uow._fail(ConstraintConflictError("Projection snapshot is not finalized."))
         if snapshot.projection_kind != command.projection_kind:
             await self._uow._fail(ConstraintConflictError("Projection activation kind is invalid."))
+        for member in await self.list_snapshot_members(snapshot.projection_snapshot_id):
+            if member.disposition is not ProjectionSnapshotMemberDisposition.INCLUDED:
+                continue
+            processing = await CanonicalCurrentProcessingDispositionAuthority(
+                self._uow.canonical
+            ).resolve(
+                workspace_id=member.workspace_id,
+                environment_id=member.environment_id,
+                source_object_id=member.source_object_id,
+                source_revision_id=member.source_revision_id,
+            )
+            if not processing.eligible:
+                await self._uow._fail(
+                    ConstraintConflictError(
+                        "Projection snapshot contains an ineligible source member."
+                    )
+                )
         boundary_row = (
             await self._uow._execute(
                 select(_CANONICAL_BOUNDARIES).where(

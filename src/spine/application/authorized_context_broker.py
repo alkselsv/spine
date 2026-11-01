@@ -47,6 +47,7 @@ from spine.application.retrieval_gates import (
     RetrievalGateService,
 )
 from spine.application.persistence.errors import ContextBundleConflictError
+from spine.application.processing_disposition import CurrentProcessingDispositionAuthority
 from spine.domain.context_bundles import (
     ContextBundle,
     ContextBundleEvidenceReference,
@@ -340,6 +341,7 @@ class AuthorizedContextBrokerApplicationService:
         retrieval: StructuredReadPort | PhysicalReadPlanExecutor,
         evidence_verifier: EvidenceLineageVerifier,
         bundles: ContextBundleStore,
+        processing_authority: CurrentProcessingDispositionAuthority | None = None,
         provider_capability_reference: str = "context.retrieve",
         projection_kind: str = "qa",
         clock: Callable[[], datetime] | None = None,
@@ -353,6 +355,7 @@ class AuthorizedContextBrokerApplicationService:
         self._retrieval = retrieval
         self._evidence_verifier = evidence_verifier
         self._bundles = bundles
+        self._processing_authority = processing_authority
         self._provider_capability_reference = provider_capability_reference
         self._projection_kind = projection_kind
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -519,6 +522,10 @@ class AuthorizedContextBrokerApplicationService:
                 return self._response(
                     ContextOutcome.UNAVAILABLE, ContextReasonCode.RETRIEVAL_UNAVAILABLE
                 )
+            if not await self._bundle_processing_is_current(replay):
+                return self._response(
+                    ContextOutcome.UNAVAILABLE, ContextReasonCode.RETRIEVAL_UNAVAILABLE
+                )
             return self._response_from_bundle(replay)
 
         profile_resolution = await self._resolve_profile(request)
@@ -610,6 +617,10 @@ class AuthorizedContextBrokerApplicationService:
             verifications=verifications,
             scope=scope,
         )
+        if not await self._scope_processing_is_current(scope):
+            return self._response(
+                ContextOutcome.UNAVAILABLE, ContextReasonCode.RETRIEVAL_UNAVAILABLE
+            )
         _LOGGER.warning(
             "authorized context retrieval evaluated: projection=%s items=%s "
             "verifications=%s gate=%s reason=%s",
@@ -674,6 +685,48 @@ class AuthorizedContextBrokerApplicationService:
                 # Observability failures never change the authorized response.
                 pass
         return response
+
+    async def _scope_processing_is_current(
+        self, scope: AuthorizedRetrievalScope
+    ) -> bool:
+        if self._processing_authority is None:
+            return False
+        for constraint in scope.source_constraints:
+            try:
+                result = await self._processing_authority.resolve(
+                    workspace_id=scope.workspace_id,
+                    environment_id=scope.environment_id,
+                    source_object_id=constraint.source_object_id,
+                    source_revision_id=constraint.source_revision_id,
+                )
+            except Exception:
+                return False
+            if not result.eligible:
+                return False
+        return bool(scope.source_constraints)
+
+    async def _bundle_processing_is_current(self, bundle: ContextBundle) -> bool:
+        if self._processing_authority is None:
+            return False
+        sources = {
+            (reference.source_object_id, reference.source_revision_id)
+            for reference in bundle.evidence_references
+        }
+        if not sources:
+            return False
+        for source_object_id, source_revision_id in sources:
+            try:
+                result = await self._processing_authority.resolve(
+                    workspace_id=bundle.workspace_id,
+                    environment_id=bundle.environment_id,
+                    source_object_id=source_object_id,
+                    source_revision_id=source_revision_id,
+                )
+            except Exception:
+                return False
+            if not result.eligible:
+                return False
+        return True
 
     async def _resolve_trusted_context(
         self, request: AuthorizedContextRequest

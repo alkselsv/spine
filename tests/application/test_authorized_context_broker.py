@@ -152,12 +152,22 @@ class NeverCalled:
         raise AssertionError(f"unexpected collaborator call: {name}")
 
 
+class ProcessingAllowed:
+    def __init__(self, eligible: bool = True) -> None:
+        self.eligible = eligible
+
+    async def resolve(self, **values: object) -> object:
+        del values
+        return type("Eligibility", (), {"eligible": self.eligible})()
+
+
 def service(
     *,
     bundles: object | None = None,
     trusted_available: bool = True,
     profiles: object | None = None,
     publication: object | None = None,
+    processing_eligible: bool = True,
 ) -> AuthorizedContextBrokerApplicationService:
     trusted = (
         Trusted(
@@ -188,6 +198,7 @@ def service(
         retrieval=NeverCalled(),
         evidence_verifier=NeverCalled(),
         bundles=bundles or InMemoryContextBundleStore(),
+        processing_authority=ProcessingAllowed(processing_eligible),
     )
 
 
@@ -388,12 +399,20 @@ async def test_replay_returns_immutable_bundle_without_reinvoking_profile_or_pub
     bundle_id = UUID(int=90)
     stored = SimpleNamespace(
         bundle_id=bundle_id,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
         outcome=ContextOutcome.ALLOWED,
         reason_code=ContextReasonCode.ALLOWED.value,
         reference=ContextBundleRef(
             bundle_id=bundle_id, bundle_version=1, bundle_digest="b" * 64
         ),
         publication_pin_id=UUID(int=91),
+        evidence_references=(
+            SimpleNamespace(
+                source_object_id=UUID(int=92),
+                source_revision_id=UUID(int=93),
+            ),
+        ),
     )
 
     class ReplayStore:
@@ -412,6 +431,47 @@ async def test_replay_returns_immutable_bundle_without_reinvoking_profile_or_pub
     assert response.outcome is ContextOutcome.ALLOWED
     assert response.context_bundle_ref is stored.reference
     assert response.publication_pin_id == UUID(int=91)
+
+
+@pytest.mark.asyncio
+async def test_replay_is_denied_when_cached_revision_is_now_opaque() -> None:
+    current = request()
+    bundle_id = context_bundle_id_for_request(current)
+    stored = SimpleNamespace(
+        bundle_id=bundle_id,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        outcome=ContextOutcome.ALLOWED,
+        reason_code=ContextReasonCode.ALLOWED.value,
+        reference=ContextBundleRef(
+            bundle_id=bundle_id,
+            bundle_version=1,
+            bundle_digest="b" * 64,
+        ),
+        publication_pin_id=UUID(int=91),
+        evidence_references=(
+            SimpleNamespace(
+                source_object_id=UUID(int=92),
+                source_revision_id=UUID(int=93),
+            ),
+        ),
+    )
+
+    class ReplayStore:
+        async def resolve_attempt(self, **kwargs: object) -> object:
+            del kwargs
+            return stored
+
+        async def create_or_replay(self, bundle: object) -> object:
+            raise AssertionError("opaque replay must not create a bundle")
+
+    response = await service(
+        bundles=ReplayStore(), processing_eligible=False
+    ).retrieve(current)
+
+    assert response.outcome is ContextOutcome.UNAVAILABLE
+    assert response.reason_code is ContextReasonCode.RETRIEVAL_UNAVAILABLE
+    assert response.context_bundle_ref is None
 
 
 @pytest.mark.asyncio
@@ -642,6 +702,7 @@ async def test_allowed_request_persists_exact_bundle_and_replays_without_second_
         retrieval=retrieval,
         evidence_verifier=Evidence(),
         bundles=bundles,
+        processing_authority=ProcessingAllowed(),
         clock=lambda: clock_now[0],
     )
 

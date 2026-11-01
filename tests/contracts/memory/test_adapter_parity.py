@@ -19,6 +19,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 import pytest
 
 from spine.application.diagnostics import DiagnosticContext
+from spine.application.testing import DeterministicCurrentProcessingDispositionAuthority
 
 from spine.application.authorized_context_broker import (
     AuthorizedContextBrokerApplicationService,
@@ -578,6 +579,7 @@ def _authorized_broker(
         retrieval=retrieval,
         evidence_verifier=_Evidence(),
         bundles=InMemoryContextBundleStore(),
+        processing_authority=DeterministicCurrentProcessingDispositionAuthority(),
         clock=lambda: NOW,
     )
     return service, _authorized_request(profile, scenario), read_model, retrieval
