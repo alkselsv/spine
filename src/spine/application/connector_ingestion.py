@@ -94,6 +94,7 @@ from spine.domain.connections.google import OpaqueGoogleReference
 from spine.domain.connections.provider import (
     OpaqueProviderReference,
     ProviderCapabilityKind,
+    ProviderKind,
 )
 from spine.infrastructure.object_storage.contracts import OriginalUploadCommandInput
 from spine.connectors.observations import (
@@ -656,6 +657,9 @@ class ConnectorIngestionOrchestrator:
             media_type=observation.media_type,
             observed_at=observation.observed_at,
         )
+        source_contract_id, source_contract_version = _source_contract_identity(
+            observation
+        )
         provenance = SourceRevisionProvenance(
             provenance_id=_stable_id(
                 "provenance", source.source_object_id, observation.event_identity
@@ -669,6 +673,13 @@ class ConnectorIngestionOrchestrator:
             event_identity=observation.event_identity,
             event_digest=observation.event_digest,
             connection_id=observation.connection_id,
+            source_contract_id=source_contract_id,
+            source_contract_version=source_contract_version,
+            resource_scope_reference=(
+                observation.resource_scope_reference.value
+                if hasattr(observation.resource_scope_reference, "value")
+                else observation.resource_scope_reference
+            ),
             bitrix24_disk_membership=observation.scope_membership,
             upload_command_reference=_event_reference(command, observation, "original"),
             origin_locator_kind=observation.origin_locator_kind,
@@ -1149,6 +1160,22 @@ def _event_reference(
     suffix: str,
 ) -> str:
     return f"connector-event:{_sha256(_event_key(command, observation, suffix).value)[:48]}"
+
+
+def _source_contract_identity(
+    observation: ConnectorObservation,
+) -> tuple[str, str]:
+    """Return the source contract whose provenance survives compatibility mapping."""
+
+    if (
+        isinstance(observation, NormalizedExternalObservationV2)
+        and observation.provider_kind is ProviderKind.GOOGLE
+    ):
+        # Google v2 explicitly expands the accepted v1 contract. Its
+        # provider-neutral envelope must not replace the source contract identity.
+        return "connector-observation", "v1"
+    contract_id, contract_version = observation.schema_version.rsplit(":", 1)
+    return contract_id, contract_version
 
 
 def _has_stable_lifecycle_identity(observation: ConnectorObservation) -> bool:

@@ -993,6 +993,9 @@ async def test_source_observation_catalog_and_runtime_security_contract(
             ("source_revision_provenance", "event_identity"): "text",
             ("source_revision_provenance", "event_digest"): "text",
             ("source_revision_provenance", "connection_id"): "uuid",
+            ("source_revision_provenance", "source_contract_id"): "text",
+            ("source_revision_provenance", "source_contract_version"): "text",
+            ("source_revision_provenance", "resource_scope_reference"): "uuid",
             ("source_revision_provenance", "upload_command_reference"): "text",
             ("source_revision_provenance", "origin_locator_kind"): "text",
             ("source_revision_provenance", "origin_locator_value"): "text",
@@ -1035,6 +1038,7 @@ async def test_source_observation_catalog_and_runtime_security_contract(
             "fk_source_revision_provenance_revision", "uq_source_revision_provenance_event",
             "ck_source_revision_provenance_order_pair", "ck_source_revision_provenance_digest",
             "ck_source_revision_provenance_fields",
+            "ck_source_revision_provenance_selector_contract_pair",
             "ck_source_provenance_b24_membership_record",
         }
         missing_source_constraints = {
@@ -1049,6 +1053,7 @@ async def test_source_observation_catalog_and_runtime_security_contract(
                     "ck_source_revision_provenance_order_pair",
                     "ck_source_revision_provenance_digest",
                     "ck_source_revision_provenance_fields",
+                    "ck_source_revision_provenance_selector_contract_pair",
                     "ck_source_provenance_b24_membership_record",
                 }
                 and any(
@@ -1064,7 +1069,7 @@ async def test_source_observation_catalog_and_runtime_security_contract(
                 for name in constraints
                 if name.startswith("ck_source_revision_provenance_")
             ]
-        ) == 4
+        ) == 5
 
         indexes = set(
             (
@@ -1356,6 +1361,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "crm_relationship_eligibility_heads",
         "crm_relationship_idempotency",
         "crm_relationship_v2_state",
+        "trusted_canonical_acceptance_selector_versions",
+        "current_trusted_canonical_acceptance_selectors",
     }
     tables = set(
         (
@@ -2618,6 +2625,12 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_corrected_transcript_artifacts",
         "uq_corrected_transcript_artifacts_review",
     } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES | CANONICAL_BOUNDARY_INDEXES | {
+        "pk_trusted_canonical_acceptance_selectors",
+        "pk_current_trusted_canonical_acceptance_selector",
+        "uq_trusted_canonical_acceptance_selector_version",
+        "uq_trusted_canonical_acceptance_selector_idempotency",
+        "uq_trusted_canonical_acceptance_selector_series_id",
+        "uq_trusted_canonical_acceptance_selector_predecessor",
         "uq_audit_events_tenant_event",
         "uq_outbox_intents_tenant_event",
         "uq_source_objects_lifecycle_connection",
@@ -3040,7 +3053,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "JOIN pg_namespace AS source_namespace "
                         "ON source_namespace.oid = relation.relnamespace "
                         "WHERE source_namespace.nspname = 'spine' AND relation.relname IN "
-                            "('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', 'crm_relationship_identities', 'crm_relationship_profiles', 'crm_relationship_authority_heads', 'crm_relationship_claims', 'crm_relationship_receipts', 'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', 'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', 'crm_relationship_v2_state', "
+                            "('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', 'crm_relationship_identities', 'crm_relationship_profiles', 'crm_relationship_authority_heads', 'crm_relationship_claims', 'crm_relationship_receipts', 'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', 'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', 'crm_relationship_v2_state', 'trusted_canonical_acceptance_selector_versions', 'current_trusted_canonical_acceptance_selectors', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                          "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', 'ingestion_runs', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -3085,7 +3098,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "WHERE table_schema = 'spine' "
                             "AND table_name NOT LIKE 'source_canonical%' "
                             "AND table_name <> 'requirements_acceptance_decisions' "
-                            "AND table_name NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', 'crm_relationship_identities', 'crm_relationship_profiles', 'crm_relationship_authority_heads', 'crm_relationship_claims', 'crm_relationship_receipts', 'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', 'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', 'crm_relationship_v2_state', "
+                            "AND table_name NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', 'crm_relationship_identities', 'crm_relationship_profiles', 'crm_relationship_authority_heads', 'crm_relationship_claims', 'crm_relationship_receipts', 'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', 'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', 'crm_relationship_v2_state', 'trusted_canonical_acceptance_selector_versions', 'current_trusted_canonical_acceptance_selectors', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                             "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -3123,7 +3136,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "WHERE schemaname = 'spine' "
                             "AND indexname NOT LIKE 'pk_source_canonical%' "
                             "AND tablename <> 'requirements_acceptance_decisions' "
-                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', 'crm_relationship_identities', 'crm_relationship_profiles', 'crm_relationship_authority_heads', 'crm_relationship_claims', 'crm_relationship_receipts', 'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', 'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', 'crm_relationship_v2_state', "
+                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', 'crm_relationship_identities', 'crm_relationship_profiles', 'crm_relationship_authority_heads', 'crm_relationship_claims', 'crm_relationship_receipts', 'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', 'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', 'crm_relationship_v2_state', 'trusted_canonical_acceptance_selector_versions', 'current_trusted_canonical_acceptance_selectors', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                          "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -3160,7 +3173,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "SELECT tablename FROM pg_tables WHERE schemaname = 'spine' "
                             "AND tablename NOT LIKE 'source_canonical%' "
                             "AND tablename <> 'requirements_acceptance_decisions' "
-                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', 'crm_relationship_identities', 'crm_relationship_profiles', 'crm_relationship_authority_heads', 'crm_relationship_claims', 'crm_relationship_receipts', 'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', 'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', 'crm_relationship_v2_state', "
+                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', 'crm_relationship_identities', 'crm_relationship_profiles', 'crm_relationship_authority_heads', 'crm_relationship_claims', 'crm_relationship_receipts', 'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', 'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', 'crm_relationship_v2_state', 'trusted_canonical_acceptance_selector_versions', 'current_trusted_canonical_acceptance_selectors', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                          "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -3197,7 +3210,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "SELECT tableowner FROM pg_tables WHERE schemaname = 'spine' "
                             "AND tablename NOT LIKE 'source_canonical%' "
                             "AND tablename <> 'requirements_acceptance_decisions' "
-                            "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', 'crm_relationship_identities', 'crm_relationship_profiles', 'crm_relationship_authority_heads', 'crm_relationship_claims', 'crm_relationship_receipts', 'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', 'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', 'crm_relationship_v2_state', "
+                            "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', 'crm_relationship_identities', 'crm_relationship_profiles', 'crm_relationship_authority_heads', 'crm_relationship_claims', 'crm_relationship_receipts', 'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', 'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', 'crm_relationship_v2_state', 'trusted_canonical_acceptance_selector_versions', 'current_trusted_canonical_acceptance_selectors', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                          "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -3893,7 +3906,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'crm_relationship_claims', 'crm_relationship_receipts', "
                         "'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', "
                         "'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', "
-                        "'crm_relationship_v2_state', "
+                        "'crm_relationship_v2_state', 'trusted_canonical_acceptance_selector_versions', 'current_trusted_canonical_acceptance_selectors', "
                         "'admission_decisions', "
                         "'source_objects', 'source_revisions', "
                          "'source_revision_provenance', 'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
@@ -4081,6 +4094,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "crm_relationship_eligibility_heads": (True, True),
         "crm_relationship_idempotency": (True, True),
         "crm_relationship_v2_state": (False, False),
+        "trusted_canonical_acceptance_selector_versions": (True, True),
+        "current_trusted_canonical_acceptance_selectors": (True, True),
         "provider_connection_approvals": (True, True),
         "provider_connection_versions": (True, True),
         "bitrix24_disk_content_policy_versions": (True, True),
@@ -5508,13 +5523,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261223_91_disclosure_holds.py",
         "20261224_92_requirements_acceptance.py",
         "20261225_93_crm_relationship_v2.py",
+        "20261226_94_canonical_acceptance_selectors.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261226_94_injected_failure.py").write_text(
+    (target / "versions" / "20261227_95_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261226_94'\n"
-        "down_revision = '20261225_93'\n"
+        "revision = '20261227_95'\n"
+        "down_revision = '20261226_94'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

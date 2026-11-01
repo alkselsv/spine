@@ -2220,8 +2220,14 @@ class _PostgreSQLSourceObservationRepository:
             rev_row = (await self._uow._execute(rev_query)).mappings().one()
         if association is not None and association.revision_id != rev_row.revision_id:
             association = association.model_copy(update={"revision_id": rev_row.revision_id})
+        provenance_values = provenance.model_dump(mode="python")
+        provenance_values["bitrix24_disk_membership"] = (
+            provenance.bitrix24_disk_membership.model_dump(mode="json")
+            if provenance.bitrix24_disk_membership is not None
+            else null()
+        )
         await self._uow._execute(
-            postgresql_insert(_SOURCE_PROVENANCE).values(**provenance.model_dump(mode="python")).on_conflict_do_nothing(
+            postgresql_insert(_SOURCE_PROVENANCE).values(**provenance_values).on_conflict_do_nothing(
                 index_elements=[_SOURCE_PROVENANCE.c.workspace_id, _SOURCE_PROVENANCE.c.environment_id, _SOURCE_PROVENANCE.c.producer_kind, _SOURCE_PROVENANCE.c.producer_reference, _SOURCE_PROVENANCE.c.event_identity]
             )
         )
