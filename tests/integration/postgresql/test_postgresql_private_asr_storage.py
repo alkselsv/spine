@@ -345,6 +345,29 @@ async def test_postgresql_report_callback_denial_is_invisible_and_retry_is_stabl
     assert bindings == [revision.revision_id]
     assert source_record == UUID(int=202)
 
+    export_authorization_called = False
+
+    async def authorize_aggregate_export() -> None:
+        nonlocal export_authorization_called
+        export_authorization_called = True
+
+    with pytest.raises(PrivateASRStorageDenied, match="not enabled"):
+        await store.export_sanitized(
+            b"synthetic aggregate payload",
+            context=context,
+            authorize_export=authorize_aggregate_export,
+        )
+    assert not export_authorization_called
+    async with sessions() as session, session.begin():
+        await store._set_scope(session, context)
+        aggregate_rows = (await session.execute(select(
+            private_asr_aggregate_exports.c.export_id
+        ).where(
+            private_asr_aggregate_exports.c.workspace_id == workspace_id,
+            private_asr_aggregate_exports.c.environment_id == environment_id,
+        ))).scalars().all()
+    assert aggregate_rows == []
+
     async with private_asr_database.migration.begin() as connection:
         await connection.execute(insert(private_asr_source_fences).values(
             workspace_id=workspace_id, environment_id=environment_id,

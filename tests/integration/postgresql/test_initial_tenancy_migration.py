@@ -5573,7 +5573,7 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261225_93_crm_relationship_v2.py",
         "20261226_94_canonical_acceptance_selectors.py",
         "20261227_95_processing_admission_expand.py",
-        "20261227_95_private_asr_storage.py",
+        "20261228_96_private_asr_storage.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "20261229_97_injected_failure.py").write_text(
