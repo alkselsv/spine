@@ -34,6 +34,12 @@ class TransactionSerializationError(RetryablePersistenceError):
     """A translated transaction serialization failure."""
 
 
+class UnknownCommitOutcomeError(
+    RetryablePersistenceError, PersistenceUnavailableError
+):
+    """The client lost certainty about whether a commit became durable."""
+
+
 class OptimisticConflictError(PersistenceError):
     """An expected predecessor or version no longer matches."""
 

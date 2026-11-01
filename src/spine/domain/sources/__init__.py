@@ -23,6 +23,12 @@ from .access_policy import (
     SourceSecurityDomainBinding,
 )
 from .canonical import CanonicalAcceptance, CanonicalOrdering, CurrentSourceHead
+from .processing_admission import (
+    ExactOpaqueApprovalReference,
+    ProcessingAdmissionMode,
+    QualifiedProcessorReference,
+    SourceProcessingAdmission,
+)
 from .lifecycle import (
     CurrentLifecycleEligibility,
     LifecycleAuthorityKind,
@@ -150,6 +156,10 @@ __all__ = [
     "disclosure_hold_dependency_id",
     "AccessGrant",
     "CanonicalAcceptance",
+    "ExactOpaqueApprovalReference",
+    "ProcessingAdmissionMode",
+    "QualifiedProcessorReference",
+    "SourceProcessingAdmission",
     "RegisterAssociationAcceptance",
     "RegisterAssociationFutureOwner",
     "RegisterExternalIdentifierType",

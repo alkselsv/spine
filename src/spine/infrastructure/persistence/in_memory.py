@@ -102,6 +102,7 @@ from spine.application.persistence.repositories import (
 from spine.application.persistence.canonical import (
     ALLOWED_CANONICAL_ADMISSION_PROFILES,
     CanonicalAcceptanceCommand,
+    CanonicalAcceptanceReadResult,
     CanonicalAcceptanceResult,
     SourceOrderComparison,
     SourceOrderingPolicyError,
@@ -178,6 +179,7 @@ from spine.domain.sources import (
     SourceRevision,
     SourceRevisionProvenance,
     SourceRevisionReceiptAssociation,
+    SourceProcessingAdmission,
     CanonicalAcceptance,
     CanonicalOrdering,
     CurrentSourceHead,
@@ -260,6 +262,7 @@ class _StoreState:
     processing_receipts: dict[UUID, ProcessingReceipt]
     process_only_lineages: dict[UUID, ProcessOnlyOperationLineage]
     canonical_acceptances: dict[UUID, CanonicalAcceptance]
+    source_processing_admissions: dict[UUID, SourceProcessingAdmission]
     current_source_heads: dict[UUID, CurrentSourceHead]
     canonical_generations: dict[tuple[UUID, UUID], int]
     canonical_boundaries: dict[UUID, CanonicalBoundary]
@@ -333,6 +336,7 @@ class _Store:
             processing_receipts={},
             process_only_lineages={},
             canonical_acceptances={},
+            source_processing_admissions={},
             current_source_heads={},
             canonical_generations={},
             canonical_boundaries={},
@@ -465,6 +469,10 @@ class _Store:
     @property
     def canonical_acceptances(self) -> dict[UUID, CanonicalAcceptance]:
         return self.state.canonical_acceptances
+
+    @property
+    def source_processing_admissions(self) -> dict[UUID, SourceProcessingAdmission]:
+        return self.state.source_processing_admissions
 
     @property
     def current_source_heads(self) -> dict[UUID, CurrentSourceHead]:
@@ -1966,6 +1974,12 @@ class _CanonicalAcceptanceRepository:
             | self._uow._pending_canonical_acceptances
         )
 
+    def _processing_admissions(self) -> dict[UUID, SourceProcessingAdmission]:
+        return (
+            self._uow._base_source_processing_admissions
+            | self._uow._pending_source_processing_admissions
+        )
+
     def _heads(self) -> dict[UUID, CurrentSourceHead]:
         return (
             self._uow._base_current_source_heads
@@ -2055,6 +2069,37 @@ class _CanonicalAcceptanceRepository:
         ):
             return None
         return value.model_copy(deep=True)
+
+    async def resolve_processing_admission(
+        self, processing_admission_id: UUID
+    ) -> SourceProcessingAdmission | None:
+        self._uow._guard_active()
+        value = self._processing_admissions().get(processing_admission_id)
+        if value is None or not isinstance(self._uow.scope, EnvironmentScope):
+            return None
+        if (value.workspace_id, value.environment_id) != (
+            self._uow.scope.workspace_id,
+            self._uow.scope.environment_id,
+        ):
+            return None
+        return value.model_copy(deep=True)
+
+    async def resolve_acceptance_read(
+        self, canonical_acceptance_id: UUID
+    ) -> CanonicalAcceptanceReadResult | None:
+        acceptance = await self.resolve_acceptance(canonical_acceptance_id)
+        if acceptance is None:
+            return None
+        processing_admission = (
+            await self.resolve_processing_admission(acceptance.processing_admission_id)
+            if acceptance.processing_admission_id is not None
+            else None
+        )
+        return CanonicalAcceptanceReadResult(
+            acceptance=acceptance,
+            processing_admission=processing_admission,
+            current=await self.resolve_current(acceptance.source_object_id),
+        )
 
     async def list_acceptances(
         self, source_object_id: UUID
@@ -2188,6 +2233,13 @@ class _CanonicalAcceptanceRepository:
                 False,
                 claim,
                 claim.result,
+                (
+                    await self.resolve_processing_admission(
+                        acceptance.processing_admission_id
+                    )
+                    if acceptance.processing_admission_id is not None
+                    else None
+                ),
             )
         revision = self._revisions().get(command.revision.revision_id)
         provenance = self._provenance().get(command.provenance.provenance_id)
@@ -2323,6 +2375,13 @@ class _CanonicalAcceptanceRepository:
                 False,
                 claim,
                 reference,
+                (
+                    await self.resolve_processing_admission(
+                        acceptance.processing_admission_id
+                    )
+                    if acceptance.processing_admission_id is not None
+                    else None
+                ),
             )
         if comparison is SourceOrderComparison.LOWER:
             self._uow._fail(OptimisticConflictError("Trusted source order is stale."))
@@ -2411,8 +2470,39 @@ class _CanonicalAcceptanceRepository:
             admission_id = admission.decision_id
             policy_id = command.access_policy_version_id
         else:
+            if command.processing_admission is not None:
+                self._uow._fail(
+                    CanonicalEligibilityError(
+                        "Processing admission is valid only for content revisions."
+                    )
+                )
             admission_id = None
             policy_id = None
+        processing_admission = command.processing_admission
+        if processing_admission is not None:
+            if (
+                processing_admission.workspace_id,
+                processing_admission.environment_id,
+                processing_admission.source_object_id,
+                processing_admission.source_revision_id,
+                processing_admission.receipt_association_id,
+                processing_admission.audit_event_id,
+            ) != (
+                scope.workspace_id,
+                scope.environment_id,
+                source.source_object_id,
+                revision.revision_id,
+                association.association_id,
+                command.audit_event_id,
+            ):
+                self._uow._fail(
+                    CanonicalAuthorityConflictError(
+                        "Processing admission evidence conflicts."
+                    )
+                )
+            processing_admission = processing_admission.model_copy(
+                update={"idempotency_receipt_id": claim.receipt_id}
+            )
         generation_key = (scope.workspace_id, scope.environment_id)
         generation = self._uow._base_canonical_generations.get(generation_key, 0)
         generation = (
@@ -2424,6 +2514,9 @@ class _CanonicalAcceptanceRepository:
             else CanonicalOrdering.EXPECTED_CURRENT
         )
         acceptance = CanonicalAcceptance(
+            canonical_acceptance_schema_version=(
+                2 if processing_admission is not None else 1
+            ),
             canonical_acceptance_id=command.canonical_acceptance_id,
             source_object_id=source.source_object_id,
             source_revision_id=revision.revision_id,
@@ -2437,12 +2530,46 @@ class _CanonicalAcceptanceRepository:
             ordering_token=provenance.order_token,
             admission_decision_id=admission_id,
             access_policy_version_id=policy_id,
+            processing_admission_id=(
+                None
+                if processing_admission is None
+                else processing_admission.processing_admission_id
+            ),
             provenance_id=provenance.provenance_id,
             idempotency_receipt_id=claim.receipt_id,
             audit_event_id=command.audit_event_id,
             outbox_event_id=command.outbox_event_id,
             accepted_at=command.accepted_at,
         )
+        if processing_admission is not None:
+            conflicting_admission = next(
+                (
+                    existing
+                    for existing in self._processing_admissions().values()
+                    if existing.processing_admission_id
+                    == processing_admission.processing_admission_id
+                    or (
+                        existing.workspace_id,
+                        existing.environment_id,
+                        existing.source_revision_id,
+                    )
+                    == (
+                        processing_admission.workspace_id,
+                        processing_admission.environment_id,
+                        processing_admission.source_revision_id,
+                    )
+                ),
+                None,
+            )
+            if conflicting_admission is not None:
+                self._uow._fail(
+                    ConstraintConflictError(
+                        "Processing admission identity already exists."
+                    )
+                )
+            self._uow._pending_source_processing_admissions[
+                processing_admission.processing_admission_id
+            ] = processing_admission
         self._uow._pending_canonical_acceptances[acceptance.canonical_acceptance_id] = acceptance
         self._uow._pending_canonical_generations[generation_key] = generation
         head = CurrentSourceHead(
@@ -2547,7 +2674,17 @@ class _CanonicalAcceptanceRepository:
             self._uow._fail(ConstraintConflictError("Canonical evidence identity is invalid."))
         reference = OpaqueResultReference(result_type="canonical_acceptance", result_id=acceptance.canonical_acceptance_id, schema_version=1)
         await self._uow.idempotency.complete(claim, reference)
-        return CanonicalAcceptanceResult(source.model_copy(deep=True), revision.model_copy(deep=True), head, acceptance, False, True, claim, reference)
+        return CanonicalAcceptanceResult(
+            source.model_copy(deep=True),
+            revision.model_copy(deep=True),
+            head,
+            acceptance,
+            False,
+            True,
+            claim,
+            reference,
+            processing_admission,
+        )
 
 
 class _AuditWriter:
@@ -3733,6 +3870,9 @@ class InMemoryUnitOfWork:
         self._base_processing_receipts: dict[UUID, ProcessingReceipt] = {}
         self._base_process_only_lineages: dict[UUID, ProcessOnlyOperationLineage] = {}
         self._base_canonical_acceptances: dict[UUID, CanonicalAcceptance] = {}
+        self._base_source_processing_admissions: dict[
+            UUID, SourceProcessingAdmission
+        ] = {}
         self._base_current_source_heads: dict[UUID, CurrentSourceHead] = {}
         self._base_canonical_generations: dict[tuple[UUID, UUID], int] = {}
         self._base_canonical_boundaries: dict[UUID, CanonicalBoundary] = {}
@@ -3779,6 +3919,9 @@ class InMemoryUnitOfWork:
         self._pending_processing_receipts: dict[UUID, ProcessingReceipt] = {}
         self._pending_process_only_lineages: dict[UUID, ProcessOnlyOperationLineage] = {}
         self._pending_canonical_acceptances: dict[UUID, CanonicalAcceptance] = {}
+        self._pending_source_processing_admissions: dict[
+            UUID, SourceProcessingAdmission
+        ] = {}
         self._pending_current_source_heads: dict[UUID, CurrentSourceHead] = {}
         self._pending_canonical_generations: dict[tuple[UUID, UUID], int] = {}
         self._pending_canonical_boundaries: dict[UUID, CanonicalBoundary] = {}
@@ -4047,6 +4190,10 @@ class InMemoryUnitOfWork:
                     key: value.model_copy(deep=True)
                     for key, value in self._store.canonical_acceptances.items()
                 }
+                self._base_source_processing_admissions = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.source_processing_admissions.items()
+                }
                 self._base_current_source_heads = {
                     key: value.model_copy(deep=True)
                     for key, value in self._store.current_source_heads.items()
@@ -4311,6 +4458,16 @@ class InMemoryUnitOfWork:
                         for key, value in self._pending_canonical_acceptances.items()
                     }
                 )
+                prepared_source_processing_admissions = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.source_processing_admissions.items()
+                }
+                prepared_source_processing_admissions.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_source_processing_admissions.items()
+                    }
+                )
                 prepared_current_source_heads = {
                     key: value.model_copy(deep=True)
                     for key, value in self._store.current_source_heads.items()
@@ -4508,6 +4665,7 @@ class InMemoryUnitOfWork:
                     processing_receipts=prepared_processing_receipts,
                     process_only_lineages=prepared_process_only_lineages,
                     canonical_acceptances=prepared_canonical_acceptances,
+                    source_processing_admissions=prepared_source_processing_admissions,
                     current_source_heads=prepared_current_source_heads,
                     canonical_generations=prepared_canonical_generations,
                     canonical_boundaries=prepared_canonical_boundaries,
@@ -4566,6 +4724,7 @@ class InMemoryUnitOfWork:
         self._pending_processing_receipts.clear()
         self._pending_process_only_lineages.clear()
         self._pending_canonical_acceptances.clear()
+        self._pending_source_processing_admissions.clear()
         self._pending_current_source_heads.clear()
         self._pending_canonical_generations.clear()
         self._pending_canonical_boundaries.clear()
@@ -5051,6 +5210,7 @@ class InMemoryUnitOfWork:
         self._base_processing_receipts.clear()
         self._base_process_only_lineages.clear()
         self._base_canonical_acceptances.clear()
+        self._base_source_processing_admissions.clear()
         self._base_current_source_heads.clear()
         self._base_canonical_generations.clear()
         self._base_canonical_boundaries.clear()
@@ -5093,6 +5253,7 @@ class InMemoryUnitOfWork:
         self._pending_processing_receipts.clear()
         self._pending_process_only_lineages.clear()
         self._pending_canonical_acceptances.clear()
+        self._pending_source_processing_admissions.clear()
         self._pending_current_source_heads.clear()
         self._pending_canonical_generations.clear()
         self._pending_canonical_boundaries.clear()

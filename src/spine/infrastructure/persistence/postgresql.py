@@ -26,6 +26,7 @@ from spine.application.persistence.command_digest import CommandDigest
 from spine.application.persistence.canonical import (
     ALLOWED_CANONICAL_ADMISSION_PROFILES,
     CanonicalAcceptanceCommand,
+    CanonicalAcceptanceReadResult,
     CanonicalAcceptanceResult,
     SourceOrderComparison,
     SourceOrderingPolicyError,
@@ -79,7 +80,9 @@ from spine.application.persistence.errors import (
     ObservationIntegrityConflictError,
     ObservationCommandDigestMismatchError,
     PersistenceError,
+    PersistenceUnavailableError,
     UnitOfWorkLifecycleError,
+    UnknownCommitOutcomeError,
 )
 from spine.application.persistence.errors import RevisionDigestMismatchError
 from spine.application.persistence.repositories import (
@@ -202,6 +205,10 @@ from spine.domain.sources import (
     SourceRevision,
     SourceRevisionProvenance,
     SourceRevisionReceiptAssociation,
+    SourceProcessingAdmission,
+    RetentionApplicability,
+    RetentionArtifactClass,
+    LifecycleDecision,
     TrustedContentVerificationEvidence,
     SourceSecurityDomainBinding,
 )
@@ -270,6 +277,14 @@ from spine.infrastructure.persistence.answer_question_audit import (
 from spine.infrastructure.persistence.postgresql_errors import (
     translate_persistence_error,
 )
+from spine.infrastructure.connections.postgresql_provider_management import (
+    provider_connection_approvals as _PROVIDER_CONNECTION_APPROVALS,
+    provider_connection_versions as _PROVIDER_CONNECTION_VERSIONS,
+)
+from spine.infrastructure.connections.postgresql_bitrix24_oauth import (
+    bitrix24_grant_authorities as _BITRIX24_GRANT_AUTHORITIES,
+    bitrix24_grant_bindings as _BITRIX24_GRANT_BINDINGS,
+)
 from spine.infrastructure.persistence.postgresql_mappings import (
     access_policy_grants as _ACCESS_POLICY_GRANTS,
     access_policy_versions as _ACCESS_POLICY_VERSIONS,
@@ -306,9 +321,16 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     policy_proposals as _POLICY_PROPOSALS,
     canonical_generation_counters as _CANONICAL_GENERATION_COUNTERS,
     canonical_acceptances as _CANONICAL_ACCEPTANCES,
+    source_processing_admissions as _SOURCE_PROCESSING_ADMISSIONS,
     current_source_heads as _CURRENT_SOURCE_HEADS,
     current_lifecycle_authorities as _CURRENT_LIFECYCLE_AUTHORITIES,
     lifecycle_decisions as _LIFECYCLE_DECISIONS,
+    retention_applicabilities as _RETENTION_APPLICABILITIES,
+    current_retention_applicabilities as _CURRENT_RETENTION_APPLICABILITIES,
+    trusted_canonical_acceptance_selector_versions as _CANONICAL_ACCEPTANCE_SELECTORS,
+    current_trusted_canonical_acceptance_selectors as _CURRENT_CANONICAL_ACCEPTANCE_SELECTORS,
+    current_bitrix24_disk_root_policies as _CURRENT_BITRIX24_ROOT_POLICIES,
+    current_bitrix24_disk_content_policies as _CURRENT_BITRIX24_CONTENT_POLICIES,
     canonical_boundaries as _CANONICAL_BOUNDARIES,
     canonical_boundary_members as _CANONICAL_BOUNDARY_MEMBERS,
     ontology_versions as _ONTOLOGY_VERSIONS,
@@ -2565,6 +2587,434 @@ class _PostgreSQLCanonicalAcceptanceRepository:
     def _acceptance(row: Mapping[str, Any]) -> CanonicalAcceptance:
         return CanonicalAcceptance.model_validate(dict(row))
 
+    async def resolve_processing_admission(
+        self, processing_admission_id: UUID
+    ) -> SourceProcessingAdmission | None:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return None
+        record = (
+            await self._uow._execute(
+                select(_SOURCE_PROCESSING_ADMISSIONS.c.record).where(
+                    _SOURCE_PROCESSING_ADMISSIONS.c.processing_admission_id
+                    == processing_admission_id,
+                    _SOURCE_PROCESSING_ADMISSIONS.c.workspace_id == scope.workspace_id,
+                    _SOURCE_PROCESSING_ADMISSIONS.c.environment_id == scope.environment_id,
+                )
+            )
+        ).scalar_one_or_none()
+        return (
+            SourceProcessingAdmission.model_validate(record)
+            if record is not None
+            else None
+        )
+
+    @staticmethod
+    def _processing_values(
+        admission: SourceProcessingAdmission,
+    ) -> dict[str, object | None]:
+        processor = admission.processor
+        opaque = admission.opaque_approval
+        return {
+            **admission.model_dump(
+                mode="python", exclude={"processor", "opaque_approval"}
+            ),
+            "mode": admission.mode.value,
+            "processor_capability_id": None if processor is None else processor.capability_id,
+            "processor_capability_version": None if processor is None else processor.capability_version,
+            "processor_profile_version": None if processor is None else processor.processor_profile_version,
+            "processor_qualification_reference": None if processor is None else processor.qualification_evidence_reference,
+            "processor_qualification_digest": None if processor is None else processor.qualification_evidence_digest,
+            "opaque_approval_id": None if opaque is None else opaque.approval_id,
+            "opaque_approval_version": None if opaque is None else opaque.approval_version,
+            "opaque_approval_digest": None if opaque is None else opaque.approval_digest,
+            "opaque_approved_purpose": None if opaque is None else opaque.approved_purpose,
+            "opaque_security_controls_reference": None if opaque is None else opaque.security_controls_reference,
+            "record": admission.model_dump(mode="json"),
+        }
+
+    async def _validate_processing_admission(
+        self,
+        *,
+        command: CanonicalAcceptanceCommand,
+        association: Mapping[str, Any],
+    ) -> SourceProcessingAdmission | None:
+        admission = command.processing_admission
+        if admission is None:
+            if (
+                command.provenance.source_contract_version == "v2"
+                and command.provenance.bitrix24_disk_membership is not None
+            ):
+                await self._uow._fail(
+                    CanonicalEligibilityError(
+                        "Canonical acceptance v2 processing admission is required."
+                    )
+                )
+            return None
+        if command.revision.kind is not RevisionKind.CONTENT:
+            await self._uow._fail(
+                CanonicalAuthorityConflictError(
+                    "Tombstones cannot carry processing admission."
+                )
+            )
+        scope = self._scope(command)
+        exact = (
+            scope.workspace_id,
+            scope.environment_id,
+            command.source.source_object_id,
+            command.revision.revision_id,
+            association["association_id"],
+        )
+        if (
+            admission.exact_acceptance_binding != exact
+            or admission.verified_sha256 != command.revision.original_sha256
+            or admission.verified_byte_length != command.revision.byte_length
+            or admission.audit_event_id != command.audit_event_id
+        ):
+            await self._uow._fail(
+                CanonicalAuthorityConflictError(
+                    "Processing admission exact binding conflicts."
+                )
+            )
+        membership = command.provenance.bitrix24_disk_membership
+        if membership is None or (
+            membership.workspace_id,
+            membership.environment_id,
+            membership.connection_id,
+            membership.connection_version_id,
+            membership.resource_scope_reference.value,
+            membership.authorization_generation,
+            membership.configuration_generation,
+            membership.grant_binding_id,
+            membership.grant_token_epoch,
+            membership.grant_security_fence,
+            membership.root_policy_id,
+            membership.root_policy_version,
+            membership.root_policy_digest,
+            membership.content_policy_id,
+            membership.content_policy_version,
+            membership.content_policy_digest,
+        ) != (
+            admission.workspace_id,
+            admission.environment_id,
+            admission.provider_connection_id,
+            admission.provider_connection_version_id,
+            admission.resource_scope_reference,
+            admission.authorization_generation,
+            admission.configuration_generation,
+            admission.grant_binding_id,
+            admission.grant_token_epoch,
+            admission.grant_security_fence,
+            admission.root_policy_id,
+            admission.root_policy_version,
+            admission.root_policy_digest,
+            admission.content_policy_id,
+            admission.content_policy_version,
+            admission.content_policy_digest,
+        ):
+            await self._uow._fail(
+                CanonicalAuthorityConflictError(
+                    "Processing admission membership evidence conflicts."
+                )
+            )
+
+        # Shared order with selector and policy writers:
+        # connection advisory -> root policy -> content policy -> selector head.
+        await self._uow._execute(
+            text(
+                "SELECT pg_advisory_xact_lock_shared("
+                "hashtextextended(:connection_lock, 0))"
+            ),
+            {"connection_lock": str(admission.provider_connection_id)},
+        )
+        root = (
+            await self._uow._execute(
+                select(_CURRENT_BITRIX24_ROOT_POLICIES).where(
+                    _CURRENT_BITRIX24_ROOT_POLICIES.c.workspace_id == scope.workspace_id,
+                    _CURRENT_BITRIX24_ROOT_POLICIES.c.environment_id == scope.environment_id,
+                    _CURRENT_BITRIX24_ROOT_POLICIES.c.policy_id == admission.root_policy_id,
+                    _CURRENT_BITRIX24_ROOT_POLICIES.c.current_version == admission.root_policy_version,
+                    _CURRENT_BITRIX24_ROOT_POLICIES.c.current_digest == admission.root_policy_digest,
+                ).with_for_update()
+            )
+        ).mappings().one_or_none()
+        content = (
+            await self._uow._execute(
+                select(_CURRENT_BITRIX24_CONTENT_POLICIES).where(
+                    _CURRENT_BITRIX24_CONTENT_POLICIES.c.workspace_id == scope.workspace_id,
+                    _CURRENT_BITRIX24_CONTENT_POLICIES.c.environment_id == scope.environment_id,
+                    _CURRENT_BITRIX24_CONTENT_POLICIES.c.policy_id == admission.content_policy_id,
+                    _CURRENT_BITRIX24_CONTENT_POLICIES.c.current_version == admission.content_policy_version,
+                    _CURRENT_BITRIX24_CONTENT_POLICIES.c.current_digest == admission.content_policy_digest,
+                ).with_for_update()
+            )
+        ).mappings().one_or_none()
+        if root is None or content is None:
+            await self._uow._fail(
+                CanonicalEligibilityError("Current source policy is unavailable.")
+            )
+
+        selector = (
+            await self._uow._execute(
+                select(_CANONICAL_ACCEPTANCE_SELECTORS)
+                .select_from(
+                    _CANONICAL_ACCEPTANCE_SELECTORS.join(
+                        _CURRENT_CANONICAL_ACCEPTANCE_SELECTORS,
+                        (_CURRENT_CANONICAL_ACCEPTANCE_SELECTORS.c.workspace_id
+                         == _CANONICAL_ACCEPTANCE_SELECTORS.c.workspace_id)
+                        & (_CURRENT_CANONICAL_ACCEPTANCE_SELECTORS.c.environment_id
+                           == _CANONICAL_ACCEPTANCE_SELECTORS.c.environment_id)
+                        & (_CURRENT_CANONICAL_ACCEPTANCE_SELECTORS.c.selector_series_id
+                           == _CANONICAL_ACCEPTANCE_SELECTORS.c.selector_series_id)
+                        & (_CURRENT_CANONICAL_ACCEPTANCE_SELECTORS.c.current_selector_id
+                           == _CANONICAL_ACCEPTANCE_SELECTORS.c.selector_id),
+                    )
+                )
+                .where(
+                    _CANONICAL_ACCEPTANCE_SELECTORS.c.workspace_id == scope.workspace_id,
+                    _CANONICAL_ACCEPTANCE_SELECTORS.c.environment_id == scope.environment_id,
+                    _CANONICAL_ACCEPTANCE_SELECTORS.c.selector_id == admission.selector_id,
+                    _CANONICAL_ACCEPTANCE_SELECTORS.c.required_schema_version == 2,
+                )
+                .with_for_update(of=_CURRENT_CANONICAL_ACCEPTANCE_SELECTORS)
+            )
+        ).mappings().one_or_none()
+        selector_mismatch = selector is None
+        if selector is not None:
+            selector_mismatch = any(
+                selector[name] != getattr(admission, name)
+                for name in (
+                    "provider_connection_id", "provider_connection_version_id",
+                    "provider_approval_id", "resource_scope_reference",
+                    "root_policy_id", "root_policy_version", "root_policy_digest",
+                    "content_policy_id", "content_policy_version", "content_policy_digest",
+                )
+            ) or (
+                selector.source_kind != str(command.source.source_kind)
+                or selector.source_contract_id
+                != command.provenance.source_contract_id
+                or selector.source_contract_version
+                != command.provenance.source_contract_version
+                or selector.approved_scope_reference
+                != command.provenance.resource_scope_reference
+                or command.source.connection_id
+                != admission.provider_connection_id
+                or command.provenance.connection_id
+                != admission.provider_connection_id
+            )
+        if selector_mismatch:
+            await self._uow._fail(
+                CanonicalEligibilityError("Current canonical selector is unavailable.")
+            )
+
+        connection = (
+            await self._uow._execute(
+                select(_PROVIDER_CONNECTION_VERSIONS).where(
+                    _PROVIDER_CONNECTION_VERSIONS.c.workspace_id == scope.workspace_id,
+                    _PROVIDER_CONNECTION_VERSIONS.c.environment_id == scope.environment_id,
+                    _PROVIDER_CONNECTION_VERSIONS.c.connection_id == admission.provider_connection_id,
+                    _PROVIDER_CONNECTION_VERSIONS.c.connection_version_id == admission.provider_connection_version_id,
+                    _PROVIDER_CONNECTION_VERSIONS.c.approval_id == admission.provider_approval_id,
+                    _PROVIDER_CONNECTION_VERSIONS.c.authorization_generation == admission.authorization_generation,
+                    _PROVIDER_CONNECTION_VERSIONS.c.configuration_generation == admission.configuration_generation,
+                    _PROVIDER_CONNECTION_VERSIONS.c.status == "active",
+                ).with_for_update()
+            )
+        ).mappings().one_or_none()
+        latest_connection_version_id = (
+            await self._uow._execute(
+                select(_PROVIDER_CONNECTION_VERSIONS.c.connection_version_id)
+                .where(
+                    _PROVIDER_CONNECTION_VERSIONS.c.workspace_id == scope.workspace_id,
+                    _PROVIDER_CONNECTION_VERSIONS.c.environment_id == scope.environment_id,
+                    _PROVIDER_CONNECTION_VERSIONS.c.connection_id == admission.provider_connection_id,
+                )
+                .order_by(_PROVIDER_CONNECTION_VERSIONS.c.version.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        approval = (
+            await self._uow._execute(
+                select(_PROVIDER_CONNECTION_APPROVALS).where(
+                    _PROVIDER_CONNECTION_APPROVALS.c.workspace_id == scope.workspace_id,
+                    _PROVIDER_CONNECTION_APPROVALS.c.environment_id == scope.environment_id,
+                    _PROVIDER_CONNECTION_APPROVALS.c.approval_id == admission.provider_approval_id,
+                    _PROVIDER_CONNECTION_APPROVALS.c.authorization_generation == admission.authorization_generation,
+                    _PROVIDER_CONNECTION_APPROVALS.c.configuration_generation == admission.configuration_generation,
+                    _PROVIDER_CONNECTION_APPROVALS.c.status == "active",
+                ).with_for_update()
+            )
+        ).mappings().one_or_none()
+        if (
+            connection is None
+            or latest_connection_version_id
+            != admission.provider_connection_version_id
+            or approval is None
+            or admission.resource_scope_reference
+            not in connection.approved_resource_scope_references
+            or admission.resource_scope_reference
+            not in approval.approved_resource_scope_references
+        ):
+            await self._uow._fail(
+                CanonicalEligibilityError("Current provider authority is unavailable.")
+            )
+
+        grant = (
+            await self._uow._execute(
+                select(_BITRIX24_GRANT_AUTHORITIES)
+                .select_from(
+                    _BITRIX24_GRANT_BINDINGS.join(
+                        _BITRIX24_GRANT_AUTHORITIES,
+                        (_BITRIX24_GRANT_AUTHORITIES.c.binding_id
+                         == _BITRIX24_GRANT_BINDINGS.c.binding_id)
+                        & (_BITRIX24_GRANT_AUTHORITIES.c.workspace_id
+                           == _BITRIX24_GRANT_BINDINGS.c.workspace_id)
+                        & (_BITRIX24_GRANT_AUTHORITIES.c.environment_id
+                           == _BITRIX24_GRANT_BINDINGS.c.environment_id),
+                    )
+                )
+                .where(
+                    _BITRIX24_GRANT_BINDINGS.c.workspace_id == scope.workspace_id,
+                    _BITRIX24_GRANT_BINDINGS.c.environment_id == scope.environment_id,
+                    _BITRIX24_GRANT_BINDINGS.c.binding_id == admission.grant_binding_id,
+                    _BITRIX24_GRANT_BINDINGS.c.connection_id == admission.provider_connection_id,
+                    _BITRIX24_GRANT_BINDINGS.c.connection_version_id == admission.provider_connection_version_id,
+                    _BITRIX24_GRANT_BINDINGS.c.authorization_generation == admission.authorization_generation,
+                    _BITRIX24_GRANT_BINDINGS.c.configuration_generation == admission.configuration_generation,
+                    _BITRIX24_GRANT_AUTHORITIES.c.token_epoch == admission.grant_token_epoch,
+                    _BITRIX24_GRANT_AUTHORITIES.c.security_fence == admission.grant_security_fence,
+                    _BITRIX24_GRANT_AUTHORITIES.c.state == "active",
+                )
+                .with_for_update(of=_BITRIX24_GRANT_AUTHORITIES)
+            )
+        ).mappings().one_or_none()
+        if grant is None:
+            await self._uow._fail(
+                CanonicalEligibilityError("Current Bitrix24 grant authority is unavailable.")
+            )
+
+        evidence_record = (
+            await self._uow._execute(
+                select(_TRUSTED_CONTENT_EVIDENCE.c.record).where(
+                    _TRUSTED_CONTENT_EVIDENCE.c.evidence_id == admission.verifier_evidence_id,
+                    _TRUSTED_CONTENT_EVIDENCE.c.workspace_id == scope.workspace_id,
+                    _TRUSTED_CONTENT_EVIDENCE.c.environment_id == scope.environment_id,
+                    _TRUSTED_CONTENT_EVIDENCE.c.source_object_id == command.source.source_object_id,
+                    _TRUSTED_CONTENT_EVIDENCE.c.source_revision_id == command.revision.revision_id,
+                    _TRUSTED_CONTENT_EVIDENCE.c.receipt_association_id == admission.receipt_association_id,
+                    _TRUSTED_CONTENT_EVIDENCE.c.original_sha256 == admission.verified_sha256,
+                    _TRUSTED_CONTENT_EVIDENCE.c.byte_length == admission.verified_byte_length,
+                    _TRUSTED_CONTENT_EVIDENCE.c.evidence_digest == admission.verifier_evidence_digest,
+                )
+            )
+        ).scalar_one_or_none()
+        if evidence_record is None:
+            await self._uow._fail(
+                CanonicalEligibilityError("Trusted verifier evidence is unavailable.")
+            )
+        evidence = TrustedContentVerificationEvidence.model_validate(evidence_record)
+        if (
+            evidence.verifier_profile_version != admission.verifier_profile_version
+            or evidence.outcome.value != "verified"
+        ):
+            await self._uow._fail(
+                CanonicalEligibilityError("Trusted verifier evidence is ineligible.")
+            )
+
+        lifecycle = (
+            await self._uow._execute(
+                select(
+                    _CURRENT_LIFECYCLE_AUTHORITIES,
+                    _LIFECYCLE_DECISIONS.c.record.label(
+                        "lifecycle_decision_record"
+                    ),
+                )
+                .select_from(
+                    _CURRENT_LIFECYCLE_AUTHORITIES.join(
+                        _LIFECYCLE_DECISIONS,
+                        (_LIFECYCLE_DECISIONS.c.workspace_id == _CURRENT_LIFECYCLE_AUTHORITIES.c.workspace_id)
+                        & (_LIFECYCLE_DECISIONS.c.environment_id == _CURRENT_LIFECYCLE_AUTHORITIES.c.environment_id)
+                        & (_LIFECYCLE_DECISIONS.c.source_object_id == _CURRENT_LIFECYCLE_AUTHORITIES.c.source_object_id)
+                        & (_LIFECYCLE_DECISIONS.c.decision_id == _CURRENT_LIFECYCLE_AUTHORITIES.c.current_decision_id)
+                        & (_LIFECYCLE_DECISIONS.c.generation == _CURRENT_LIFECYCLE_AUTHORITIES.c.generation),
+                    )
+                )
+                .where(
+                    _CURRENT_LIFECYCLE_AUTHORITIES.c.workspace_id == scope.workspace_id,
+                    _CURRENT_LIFECYCLE_AUTHORITIES.c.environment_id == scope.environment_id,
+                    _CURRENT_LIFECYCLE_AUTHORITIES.c.source_object_id == command.source.source_object_id,
+                    _CURRENT_LIFECYCLE_AUTHORITIES.c.current_decision_id == admission.lifecycle_eligibility_reference,
+                    _CURRENT_LIFECYCLE_AUTHORITIES.c.generation == admission.lifecycle_eligibility_generation,
+                    _LIFECYCLE_DECISIONS.c.status == "eligible",
+                ).with_for_update(of=_CURRENT_LIFECYCLE_AUTHORITIES)
+            )
+        ).mappings().one_or_none()
+        retention = (
+            await self._uow._execute(
+                select(
+                    _CURRENT_RETENTION_APPLICABILITIES,
+                    _RETENTION_APPLICABILITIES.c.record.label(
+                        "retention_applicability_record"
+                    ),
+                )
+                .select_from(
+                    _CURRENT_RETENTION_APPLICABILITIES.join(
+                        _RETENTION_APPLICABILITIES,
+                        (_RETENTION_APPLICABILITIES.c.workspace_id == _CURRENT_RETENTION_APPLICABILITIES.c.workspace_id)
+                        & (_RETENTION_APPLICABILITIES.c.environment_id == _CURRENT_RETENTION_APPLICABILITIES.c.environment_id)
+                        & (_RETENTION_APPLICABILITIES.c.applicability_id == _CURRENT_RETENTION_APPLICABILITIES.c.current_applicability_id)
+                        & (_RETENTION_APPLICABILITIES.c.generation == _CURRENT_RETENTION_APPLICABILITIES.c.generation),
+                    )
+                )
+                .where(
+                    _CURRENT_RETENTION_APPLICABILITIES.c.workspace_id == scope.workspace_id,
+                    _CURRENT_RETENTION_APPLICABILITIES.c.environment_id == scope.environment_id,
+                    _CURRENT_RETENTION_APPLICABILITIES.c.target_kind == "exact_source",
+                    _CURRENT_RETENTION_APPLICABILITIES.c.target_reference == command.source.source_object_id,
+                    _CURRENT_RETENTION_APPLICABILITIES.c.current_applicability_id == admission.retention_applicability_reference,
+                    _CURRENT_RETENTION_APPLICABILITIES.c.generation == admission.retention_applicability_generation,
+                ).with_for_update(of=_CURRENT_RETENTION_APPLICABILITIES)
+            )
+        ).mappings().one_or_none()
+        lifecycle_decision = (
+            LifecycleDecision.model_validate(lifecycle.lifecycle_decision_record)
+            if lifecycle is not None
+            else None
+        )
+        lifecycle_is_current = bool(
+            lifecycle_decision is not None
+            and not lifecycle_decision.legal_hold_active
+        )
+        retention_binding = (
+            RetentionApplicability.model_validate(
+                retention.retention_applicability_record
+            )
+            if retention is not None
+            else None
+        )
+        retention_is_current = bool(
+            retention_binding is not None
+            and RetentionArtifactClass.ORIGINAL in retention_binding.artifact_classes
+            and (
+                admission.mode.value != "processor_required"
+                or RetentionArtifactClass.PARSED_CONTENT
+                in retention_binding.artifact_classes
+            )
+            and command.accepted_at >= retention_binding.effective_from
+            and (
+                retention_binding.effective_until is None
+                or command.accepted_at < retention_binding.effective_until
+            )
+        )
+        if not lifecycle_is_current or not retention_is_current:
+            await self._uow._fail(
+                CanonicalEligibilityError(
+                    "Current lifecycle or retention authority is unavailable."
+                )
+            )
+        return admission
+
     async def resolve_current(self, source_object_id: UUID) -> CurrentSourceHead | None:
         self._uow._guard_active()
         scope = self._uow.scope
@@ -2636,6 +3086,25 @@ class _PostgreSQLCanonicalAcceptanceRepository:
             )
         ).mappings().all()
         return tuple(self._acceptance(row) for row in rows)
+
+    async def resolve_acceptance_read(
+        self, canonical_acceptance_id: UUID
+    ) -> CanonicalAcceptanceReadResult | None:
+        acceptance = await self.resolve_acceptance(canonical_acceptance_id)
+        if acceptance is None:
+            return None
+        processing_admission = (
+            await self.resolve_processing_admission(
+                acceptance.processing_admission_id
+            )
+            if acceptance.processing_admission_id is not None
+            else None
+        )
+        return CanonicalAcceptanceReadResult(
+            acceptance=acceptance,
+            processing_admission=processing_admission,
+            current=await self.resolve_current(acceptance.source_object_id),
+        )
 
     async def _replay(
         self,
@@ -2731,6 +3200,13 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                 advanced=False,
                 claim=claim,
                 result_reference=claim.result,
+                processing_admission=(
+                    await self.resolve_processing_admission(
+                        acceptance.processing_admission_id
+                    )
+                    if acceptance.processing_admission_id is not None
+                    else None
+                ),
             )
         await self._uow._fail(
             CanonicalEligibilityError("Canonical replay is unavailable.")
@@ -3031,6 +3507,13 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                 False,
                 claim,
                 result_reference,
+                (
+                    await self.resolve_processing_admission(
+                        acceptance.processing_admission_id
+                    )
+                    if acceptance.processing_admission_id is not None
+                    else None
+                ),
             )
         if comparison is SourceOrderComparison.LOWER:
             await self._uow._fail(
@@ -3099,6 +3582,14 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                     CanonicalEligibilityError(
                         "Canonical acceptance evidence is incomplete."
                     )
+                )
+            processing_admission = await self._validate_processing_admission(
+                command=command,
+                association=association,
+            )
+            if processing_admission is not None:
+                processing_admission = processing_admission.model_copy(
+                    update={"idempotency_receipt_id": claim.receipt_id}
                 )
             admission = (
                 (
@@ -3182,6 +3673,7 @@ class _PostgreSQLCanonicalAcceptanceRepository:
         else:
             policy_id = None
             admission_id = None
+            processing_admission = None
 
         await self._uow._run_transaction_probe(
             PostgreSQLTransactionStage.AFTER_CANONICAL_EVIDENCE_LOCKED
@@ -3194,6 +3686,9 @@ class _PostgreSQLCanonicalAcceptanceRepository:
             else CanonicalOrdering.EXPECTED_CURRENT
         )
         acceptance = CanonicalAcceptance(
+            canonical_acceptance_schema_version=(
+                2 if processing_admission is not None else 1
+            ),
             canonical_acceptance_id=command.canonical_acceptance_id,
             source_object_id=source.source_object_id,
             source_revision_id=revision.revision_id,
@@ -3207,6 +3702,11 @@ class _PostgreSQLCanonicalAcceptanceRepository:
             ordering_token=provenance.order_token,
             admission_decision_id=admission_id,
             access_policy_version_id=policy_id,
+            processing_admission_id=(
+                None
+                if processing_admission is None
+                else processing_admission.processing_admission_id
+            ),
             provenance_id=provenance.provenance_id,
             idempotency_receipt_id=claim.receipt_id,
             audit_event_id=command.audit_event_id,
@@ -3226,6 +3726,12 @@ class _PostgreSQLCanonicalAcceptanceRepository:
             await self._uow._fail(
                 CanonicalAuthorityConflictError(
                     "Canonical audit or outbox evidence conflicts."
+                )
+            )
+        if processing_admission is not None:
+            await self._uow._execute(
+                insert(_SOURCE_PROCESSING_ADMISSIONS).values(
+                    **self._processing_values(processing_admission)
                 )
             )
         await self._uow._execute(insert(_CANONICAL_ACCEPTANCES).values(**acceptance.model_dump(mode="python")))
@@ -3363,7 +3869,15 @@ class _PostgreSQLCanonicalAcceptanceRepository:
         )
         await self._uow.idempotency.complete(claim, result_reference)
         return CanonicalAcceptanceResult(
-            source, revision, head, acceptance, False, True, claim, result_reference
+            source,
+            revision,
+            head,
+            acceptance,
+            False,
+            True,
+            claim,
+            result_reference,
+            processing_admission,
         )
 
 
@@ -7082,6 +7596,14 @@ class PostgreSQLTenantUnitOfWork:
         try:
             await self._session.commit()
         except BaseException as error:
+            if isinstance(error, Exception) and isinstance(
+                translate_persistence_error(error), PersistenceUnavailableError
+            ):
+                await self._terminate(
+                    UnknownCommitOutcomeError(
+                        "Commit outcome requires idempotent reconciliation."
+                    )
+                )
             await self._terminate(error)
         self._lifecycle = _Lifecycle.COMMITTED
         self._owned_claims.clear()

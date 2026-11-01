@@ -38,6 +38,7 @@ from spine.domain.sources import (
     CanonicalAcceptance,
     CurrentSourceHead,
     RevisionKind,
+    SourceProcessingAdmission,
     SourceObject,
     SourceRevision,
     SourceRevisionProvenance,
@@ -47,6 +48,7 @@ if TYPE_CHECKING:
     from spine.application.lifecycle import LifecycleEligibilityQuery
 
 CANONICAL_ACCEPTANCE_SCHEMA_VERSION = 1
+CANONICAL_ACCEPTANCE_V2_SCHEMA_VERSION = 2
 ALLOWED_CANONICAL_ADMISSION_PROFILES = frozenset({"admission:r1"})
 CANONICAL_ACCEPTANCE_OUTBOX_EVENT_TYPE = "canonical.accepted"
 CANONICAL_ACCEPTANCE_OUTBOX_SCHEMA_VERSION = 1
@@ -244,6 +246,7 @@ class CanonicalAcceptanceCommand:
     audit_event: AuditEvent | None
     outbox_intent: OutboxIntent | None
     lifecycle_query: "LifecycleEligibilityQuery | None"
+    processing_admission: SourceProcessingAdmission | None
     digest: CommandDigest
 
     def expected_digest(self) -> CommandDigest:
@@ -262,6 +265,7 @@ class CanonicalAcceptanceCommand:
             audit_event=self.audit_event,
             outbox_intent=self.outbox_intent,
             lifecycle_query=self.lifecycle_query,
+            processing_admission=self.processing_admission,
             operation=self.digest.operation,
         ).digest
 
@@ -283,6 +287,7 @@ class CanonicalAcceptanceCommand:
         audit_event: AuditEvent | None = None,
         outbox_intent: OutboxIntent | None = None,
         lifecycle_query: "LifecycleEligibilityQuery | None" = None,
+        processing_admission: SourceProcessingAdmission | None = None,
         operation: PersistenceOperation = PersistenceOperation("canonical_acceptance"),
     ) -> "CanonicalAcceptanceCommand":
         payload = {
@@ -314,10 +319,20 @@ class CanonicalAcceptanceCommand:
                 if lifecycle_query is not None
                 else {}
             ),
+            "processing_admission": (
+                processing_admission.model_dump(mode="json")
+                if processing_admission is not None
+                else None
+            ),
         }
+        operation_schema_version = (
+            CANONICAL_ACCEPTANCE_V2_SCHEMA_VERSION
+            if processing_admission is not None
+            else CANONICAL_ACCEPTANCE_SCHEMA_VERSION
+        )
         digest = digest_command(
             operation=operation,
-            operation_schema_version=CANONICAL_ACCEPTANCE_SCHEMA_VERSION,
+            operation_schema_version=operation_schema_version,
             payload=payload,
         )
         return cls(
@@ -335,6 +350,7 @@ class CanonicalAcceptanceCommand:
             audit_event=audit_event,
             outbox_intent=outbox_intent,
             lifecycle_query=lifecycle_query,
+            processing_admission=processing_admission,
             digest=digest,
         )
 
@@ -374,6 +390,48 @@ class CanonicalAcceptanceResult:
     advanced: bool
     claim: IdempotencyClaimResult
     result_reference: OpaqueResultReference
+    processing_admission: SourceProcessingAdmission | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalAcceptanceReadResult:
+    """Persisted v1/v2 acceptance with exact processing disposition/currentness."""
+
+    acceptance: CanonicalAcceptance
+    processing_admission: SourceProcessingAdmission | None
+    current: CurrentSourceHead | None
+
+    def __post_init__(self) -> None:
+        expected = self.acceptance.processing_admission_id
+        actual = (
+            None
+            if self.processing_admission is None
+            else self.processing_admission.processing_admission_id
+        )
+        if expected != actual:
+            raise ValueError("canonical acceptance processing link is incomplete")
+        if self.processing_admission is not None and (
+            self.processing_admission.workspace_id,
+            self.processing_admission.environment_id,
+            self.processing_admission.source_object_id,
+            self.processing_admission.source_revision_id,
+        ) != (
+            self.acceptance.workspace_id,
+            self.acceptance.environment_id,
+            self.acceptance.source_object_id,
+            self.acceptance.source_revision_id,
+        ):
+            raise ValueError("canonical acceptance processing scope is inconsistent")
+
+    @property
+    def is_current(self) -> bool:
+        return bool(
+            self.current is not None
+            and self.current.acceptance_id
+            == self.acceptance.canonical_acceptance_id
+            and self.current.current_revision_id
+            == self.acceptance.source_revision_id
+        )
 
 
 class CanonicalAcceptanceRepository(Protocol):
@@ -393,15 +451,25 @@ class CanonicalAcceptanceRepository(Protocol):
         self, source_object_id: UUID
     ) -> tuple[CanonicalAcceptance, ...]: ...
 
+    async def resolve_processing_admission(
+        self, processing_admission_id: UUID
+    ) -> SourceProcessingAdmission | None: ...
+
+    async def resolve_acceptance_read(
+        self, canonical_acceptance_id: UUID
+    ) -> CanonicalAcceptanceReadResult | None: ...
+
 
 __all__ = [
     "ALLOWED_CANONICAL_ADMISSION_PROFILES",
     "CANONICAL_ACCEPTANCE_OUTBOX_EVENT_TYPE",
     "CANONICAL_ACCEPTANCE_OUTBOX_SCHEMA_VERSION",
     "CANONICAL_ACCEPTANCE_SCHEMA_VERSION",
+    "CANONICAL_ACCEPTANCE_V2_SCHEMA_VERSION",
     "CanonicalAcceptanceCommand",
     "CanonicalAcceptanceOutboxPayload",
     "CanonicalAcceptanceRepository",
+    "CanonicalAcceptanceReadResult",
     "CanonicalAcceptanceResult",
     "SourceOrderComparison",
     "SourceOrderingPolicyError",

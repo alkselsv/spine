@@ -9876,7 +9876,10 @@ async def test_selector_migration_rollback_preserves_existing_v1_acceptance(
                 text("SELECT * FROM spine.canonical_acceptances WHERE canonical_acceptance_id = :id"),
                 {"id": accepted_id},
             )).mappings().one()
-            assert dict(after_downgrade) == dict(before)
+            legacy_before = dict(before)
+            legacy_before.pop("canonical_acceptance_schema_version")
+            legacy_before.pop("processing_admission_id")
+            assert dict(after_downgrade) == legacy_before
     finally:
         await migration_engine.dispose()
 
