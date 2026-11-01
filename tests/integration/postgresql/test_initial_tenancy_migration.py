@@ -1388,7 +1388,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                     "'lifecycle_observations','lifecycle_decisions','current_lifecycle_authorities',"
                     "'retention_applicabilities','current_retention_applicabilities',"
                     "'disclosure_holds','disclosure_hold_source_revisions','disclosure_hold_targets',"
-                    "'disclosure_hold_releases','current_disclosure_holds'))"
+                    "'disclosure_hold_releases','current_disclosure_holds',"
                     "'crm_relationship_identities','crm_relationship_profiles','crm_relationship_authority_heads',"
                     "'crm_relationship_claims','crm_relationship_receipts','crm_relationship_eligibility',"
                     "'crm_relationship_lifecycle_events','crm_relationship_eligibility_heads',"
@@ -1414,7 +1414,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                      "'lifecycle_observations','lifecycle_decisions','current_lifecycle_authorities',"
                      "'retention_applicabilities','current_retention_applicabilities',"
                      "'disclosure_holds','disclosure_hold_source_revisions','disclosure_hold_targets',"
-                     "'disclosure_hold_releases','current_disclosure_holds')")
+                     "'disclosure_hold_releases','current_disclosure_holds',"
                      "'crm_relationship_identities','crm_relationship_profiles','crm_relationship_authority_heads',"
                      "'crm_relationship_claims','crm_relationship_receipts','crm_relationship_eligibility',"
                      "'crm_relationship_lifecycle_events','crm_relationship_eligibility_heads',"

@@ -701,15 +701,6 @@ async def postgresql_adapter(
             operation=operation,
             trace_id=trace_id,
         )
-    ) -> TrustedPersistenceContext:
-        return boundary.interactive(
-            scope=EnvironmentScope(
-                workspace_id=workspace_id,
-                environment_id=environment_id,
-            ),
-            governance_context=governance_context,
-            interactive_environment_context=interactive_environment_context,
-        )
 
     def worker_workspace_context(workspace_id: UUID) -> TrustedPersistenceContext:
         return boundary.worker(
