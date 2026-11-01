@@ -1,0 +1,198 @@
+{
+  "schema_version": "offline-requirements-qualification:v1",
+  "ticket": 646,
+  "qualification_scope": "synthetic deterministic browser, API, application, PostgreSQL and Temporal seams",
+  "functional_offline_result": "NOT_VERIFIED",
+  "overall_qualification_result": "NOT_VERIFIED",
+  "unsupported_requirements_gate": {
+    "result": "NOT_VERIFIED",
+    "threshold_approved": false,
+    "threshold": null,
+    "owner": "Product/Project Owner",
+    "reason_code": "UNSUPPORTED_REQUIREMENTS_THRESHOLD_NOT_APPROVED",
+    "asr_metrics_are_substitute": false,
+    "dataset": "russian-meeting-transcription-synthetic@1.0.0",
+    "behavior_contract_issue": 682
+  },
+  "scenarios": [
+    {
+      "scenario": "browser_start_to_exact_acceptance_and_reload",
+      "result": "NOT_VERIFIED",
+      "reason": "The browser fixture exercises the UI controls and scoped API contract, but its intercepted responses do not prove the required existing application, PostgreSQL, Agent Runtime fake and deterministic Temporal composition as one acceptance path. This criterion cannot claim PASS until the browser runs against that composition and reloads canonical persisted state.",
+      "evidence": [
+        {
+          "file": "web/e2e/app.spec.ts",
+          "reference": "test_browser_fixture_exercises_recovery_and_exact_requirements_version_controls"
+        },
+        {
+          "file": "tests/api/test_workflow_runs.py",
+          "reference": "test_accept_requirements_uses_server_resolved_authority_and_returns_terminal_receipt"
+        }
+      ]
+    },
+    {
+      "scenario": "lost_start_and_command_response",
+      "result": "PASS",
+      "reason": "The browser retries a lost start response with the exact request and idempotency key; command replay returns the original receipt without another effect.",
+      "evidence": [
+        {
+          "file": "web/src/features/workflows/WorkflowStartPage.test.tsx",
+          "reference": "test_lost_response_restores_the_form_and_retries_the_exact_start_command"
+        },
+        {
+          "file": "web/src/features/workflows/RequirementsArtifactCard.test.tsx",
+          "reference": "answers_the_persisted_clarification_on_the_same_run_and_artifact_version"
+        },
+        {
+          "file": "tests/infrastructure/persistence/test_postgresql_workflow_runs.py",
+          "reference": "test_add_context_replay_returns_original_receipt_without_second_effect"
+        }
+      ]
+    },
+    {
+      "scenario": "idempotency_conflict",
+      "result": "PASS",
+      "reason": "A changed start or continuation payload under an existing scoped idempotency identity is rejected before a second business effect.",
+      "evidence": [
+        {
+          "file": "tests/infrastructure/persistence/test_postgresql_workflow_runs.py",
+          "reference": "test_changed_idempotency_payload_conflicts_before_creating_run"
+        },
+        {
+          "file": "tests/infrastructure/persistence/test_postgresql_workflow_runs.py",
+          "reference": "test_add_context_payload_conflict_has_no_second_effect"
+        }
+      ]
+    },
+    {
+      "scenario": "duplicate_outbox_and_temporal_delivery",
+      "result": "PASS",
+      "reason": "The canonical outbox intent carries the pinned run and duplicate delivery resolves to one stable Temporal workflow identity.",
+      "evidence": [
+        {
+          "file": "tests/infrastructure/persistence/test_postgresql_workflow_runs.py",
+          "reference": "test_admission_writes_pinned_run_and_content_safe_dispatch_atomically"
+        },
+        {
+          "file": "tests/application/workflows/test_run_start_dispatch.py",
+          "reference": "test_duplicate_delivery_resolves_to_one_stable_temporal_run"
+        }
+      ]
+    },
+    {
+      "scenario": "worker_restart_and_retry",
+      "result": "PASS",
+      "reason": "The deterministic Temporal workflow replays its pinned state with an empty worker cache and continues the same run through sequenced clarification signals.",
+      "evidence": [
+        {
+          "file": "tests/workflows/test_temporal_requirements.py",
+          "reference": "test_temporal_wait_survives_worker_restart_and_sequences_questions"
+        },
+        {
+          "file": "tests/workflows/test_temporal_requirements.py",
+          "reference": "test_temporal_acceptance_completes_the_same_pinned_run"
+        }
+      ]
+    },
+    {
+      "scenario": "partial_extraction",
+      "result": "PASS",
+      "reason": "Low-information and weak/contradictory synthetic inputs persist typed partial candidates and clarification outcomes rather than invented facts.",
+      "evidence": [
+        {
+          "file": "tests/application/test_requirements_artifacts.py",
+          "reference": "test_low_information_first_message_produces_partial_candidate"
+        },
+        {
+          "file": "tests/application/test_extract_requirements.py",
+          "reference": "test_weak_unknown_and_contradictory_transcript_requests_clarification"
+        }
+      ]
+    },
+    {
+      "scenario": "unavailable_or_revoked_evidence",
+      "result": "PASS",
+      "reason": "Current evidence authority is rechecked at handoff and acceptance; revoked or unavailable evidence blocks persistence/disclosure and exact acceptance.",
+      "evidence": [
+        {
+          "file": "tests/application/test_extract_requirements.py",
+          "reference": "test_revocation_after_runtime_blocks_handoff_and_persistence"
+        },
+        {
+          "file": "tests/application/test_requirements_acceptance.py",
+          "reference": "test_each_nonvalid_source_evidence_state_blocks_acceptance"
+        }
+      ]
+    },
+    {
+      "scenario": "cancellation",
+      "result": "PASS",
+      "reason": "Cancellation while waiting is terminal on the same canonical run and deterministic Temporal replay preserves the clarification lineage.",
+      "evidence": [
+        {
+          "file": "tests/infrastructure/persistence/test_postgresql_workflow_runs.py",
+          "reference": "test_cancel_while_waiting_is_terminal_on_the_same_run"
+        },
+        {
+          "file": "tests/workflows/test_temporal_requirements.py",
+          "reference": "test_temporal_cancellation_is_durable_while_waiting"
+        }
+      ]
+    },
+    {
+      "scenario": "explicitly_recoverable_failure",
+      "result": "PASS",
+      "reason": "A failure after review admission retains prior state and an explicit same-command retry creates one logical immutable successor.",
+      "evidence": [
+        {
+          "file": "tests/application/test_requirements_review.py",
+          "reference": "test_retry_after_partial_failure_creates_one_logical_successor"
+        },
+        {
+          "file": "tests/application/workflows/test_run_start_dispatch.py",
+          "reference": "test_temporal_delivery_failure_remains_retryable"
+        }
+      ]
+    },
+    {
+      "scenario": "postgresql_lineage_and_replay",
+      "result": "PASS",
+      "reason": "Real PostgreSQL tests preserve one WorkItem/WorkflowRun, immutable artifact successors, acceptance decision, terminal receipt and replay/concurrency semantics.",
+      "evidence": [
+        {
+          "file": "tests/integration/postgresql/test_postgresql_unit_of_work.py",
+          "reference": "test_requirements_artifacts_replay_successor_and_isolate_workspaces"
+        },
+        {
+          "file": "tests/integration/postgresql/test_postgresql_unit_of_work.py",
+          "reference": "test_requirements_acceptance_is_replay_safe_and_concurrent_decisions_have_one_effect"
+        }
+      ]
+    },
+    {
+      "scenario": "unsupported_requirements_quality_gate",
+      "result": "NOT_VERIFIED",
+      "reason": "The synthetic dataset reports requirements/evidence metrics separately from WER/CER, but no attributable Product/Project Owner threshold for unsupported requirements has been approved or measured.",
+      "evidence": [
+        {
+          "file": "tests/evals/test_transcription_russian_v1.py",
+          "reference": "test_fake_baseline_is_repeatable_and_reports_asr_separately_from_requirements"
+        },
+        {
+          "file": "tests/application/test_extract_requirements.py",
+          "reference": "test_transcript_instructions_cannot_change_policy_invoke_tools_or_create_pricing"
+        }
+      ]
+    }
+  ],
+  "future_opt_in_qualification": {
+    "result": "NOT_VERIFIED",
+    "claimed_by_default_ci": false,
+    "prerequisites": [
+      "approved isolated PostgreSQL target and migrations",
+      "reachable Temporal service and registered requirements worker",
+      "approved provider credentials and model configuration",
+      "authorized live source revisions and disclosure policy"
+    ]
+  }
+}

@@ -51,30 +51,47 @@ export function WorkflowStartPage() {
     commandRef.current = command;
     setSubmitting(true);
     setError(null);
-    const { data, error: responseError } = await client.POST('/api/v1/runs', {
-      params: { header: { 'Idempotency-Key': command.idempotencyKey } },
-      body: {
-        schema_version: 1,
-        workflow_key: 'commercial.requirements',
-        work_item_key: command.workItemKey,
-        message: command.message,
-        accepted_sources: command.source ? [command.source] : [],
-      },
-    });
-    setSubmitting(false);
-    if (responseError || !data) {
-      setError(responseError instanceof SpineApiError ? responseError.safeMessage : 'Не удалось запустить работу. Повторите запрос.');
-      return;
+    try {
+      const { data, error: responseError } = await client.POST('/api/v1/runs', {
+        params: { header: { 'Idempotency-Key': command.idempotencyKey } },
+        body: {
+          schema_version: 1,
+          workflow_key: 'commercial.requirements',
+          work_item_key: command.workItemKey,
+          message: command.message,
+          accepted_sources: command.source ? [command.source] : [],
+        },
+      });
+      if (responseError || !data) {
+        setError(responseError instanceof SpineApiError ? responseError.safeMessage : 'Не удалось запустить работу. Повторите запрос.');
+        return;
+      }
+      commandRef.current = null;
+      navigate(`/workflow/runs/${data.run_id}`);
+    } catch (requestError) {
+      setError(requestError instanceof SpineApiError ? requestError.safeMessage : 'Не удалось запустить работу. Повторите запрос.');
+    } finally {
+      setSubmitting(false);
     }
-    commandRef.current = null;
-    navigate(`/workflow/runs/${data.run_id}`);
   }
 
   function updateSource(field: keyof AcceptedSource, value: string) {
+    commandRef.current = null;
     const next = { ...sourceFields, [field]: value };
     setSourceFields(next);
     if (Object.values(next).every((item) => item.length > 0)) setSource(next);
     else setSource(null);
+  }
+
+  function toggleSource() {
+    commandRef.current = null;
+    const nextVisible = !showSource;
+    setShowSource(nextVisible);
+    setSource(
+      nextVisible && Object.values(sourceFields).every((item) => item.length > 0)
+        ? sourceFields
+        : null,
+    );
   }
 
   return (
@@ -96,7 +113,11 @@ export function WorkflowStartPage() {
           placeholder="Например: подготовь требования для коммерческого предложения…"
           value={message}
         />
-        <button className={styles.textButton} onClick={() => setShowSource((value) => !value)} type="button">
+        <button
+          className={styles.textButton}
+          onClick={toggleSource}
+          type="button"
+        >
           {showSource ? 'Убрать ссылку на источник' : 'Добавить принятую версию источника'}
         </button>
         {showSource ? (

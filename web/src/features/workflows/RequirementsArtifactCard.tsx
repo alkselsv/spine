@@ -435,41 +435,46 @@ function ClarificationPrompt({
     commandRef.current = command;
     setSubmitting(true);
     setError(null);
-    const { data, error: responseError } = await client.POST('/api/v1/runs/{run_id}/commands', {
-      params: {
-        path: { run_id: artifact.run_id },
-        header: { 'Idempotency-Key': command.idempotencyKey },
-      },
-      body: {
-        schema_version: 1,
-        command_id: command.commandId,
-        command_type: 'answer_clarification',
-        command_schema_version: 1,
-        expected_run_version: runVersion,
-        payload: {
-          schema_version: 1,
-          clarification_id: clarification.clarification_id,
-          requirement_id: clarification.requirement_id,
-          answer: command.answer,
+    try {
+      const { data, error: responseError } = await client.POST('/api/v1/runs/{run_id}/commands', {
+        params: {
+          path: { run_id: artifact.run_id },
+          header: { 'Idempotency-Key': command.idempotencyKey },
         },
-        artifact_refs: [{
-          artifact_id: artifact.artifact_id,
-          schema_name: 'requirements',
-          schema_version: artifact.schema_version,
-          artifact_version: artifact.artifact_version,
-        }],
-        correlation_id: artifact.run_id,
-        causation_id: clarification.asked_event_id,
-      },
-    });
-    setSubmitting(false);
-    if (responseError || !data) {
+        body: {
+          schema_version: 1,
+          command_id: command.commandId,
+          command_type: 'answer_clarification',
+          command_schema_version: 1,
+          expected_run_version: runVersion,
+          payload: {
+            schema_version: 1,
+            clarification_id: clarification.clarification_id,
+            requirement_id: clarification.requirement_id,
+            answer: command.answer,
+          },
+          artifact_refs: [{
+            artifact_id: artifact.artifact_id,
+            schema_name: 'requirements',
+            schema_version: artifact.schema_version,
+            artifact_version: artifact.artifact_version,
+          }],
+          correlation_id: artifact.run_id,
+          causation_id: clarification.asked_event_id,
+        },
+      });
+      if (responseError || !data) {
+        setError('Не удалось сохранить ответ. Обновите запуск и повторите команду.');
+        return;
+      }
+      commandRef.current = null;
+      setAnswer('');
+      await onAnswered?.();
+    } catch {
       setError('Не удалось сохранить ответ. Обновите запуск и повторите команду.');
-      return;
+    } finally {
+      setSubmitting(false);
     }
-    commandRef.current = null;
-    setAnswer('');
-    await onAnswered?.();
   }
 
   return (

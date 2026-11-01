@@ -67,4 +67,65 @@ describe('WorkflowStartPage', () => {
       '/workflow/runs/30000000-0000-4000-8000-000000000001',
     );
   });
+
+  it('test_lost_response_restores_the_form_and_retries_the_exact_start_command', async () => {
+    post
+      .mockRejectedValueOnce(new Error('connection closed after commit'))
+      .mockResolvedValueOnce({
+        data: { run_id: '30000000-0000-4000-8000-000000000001' },
+      });
+    const user = userEvent.setup();
+    render(<WorkflowStartPage />);
+
+    await user.type(
+      screen.getByLabelText('Сообщение'),
+      'Подготовь требования по принятой версии ТЗ',
+    );
+    await user.click(screen.getByRole('button', { name: 'Начать работу' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Не удалось запустить работу. Повторите запрос.',
+    );
+    expect(screen.getByRole('button', { name: 'Начать работу' })).toBeEnabled();
+
+    await user.click(screen.getByRole('button', { name: 'Начать работу' }));
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post.mock.calls[1]?.[1]).toEqual(post.mock.calls[0]?.[1]);
+    expect(navigate).toHaveBeenCalledWith(
+      '/workflow/runs/30000000-0000-4000-8000-000000000001',
+    );
+  });
+
+  it('test_source_edit_after_lost_response_starts_a_new_command_with_current_provenance', async () => {
+    post
+      .mockRejectedValueOnce(new Error('connection closed after commit'))
+      .mockResolvedValueOnce({
+        data: { run_id: '30000000-0000-4000-8000-000000000001' },
+      });
+    const user = userEvent.setup();
+    render(<WorkflowStartPage />);
+
+    await user.type(screen.getByLabelText('Сообщение'), 'Подготовь требования');
+    await user.click(screen.getByRole('button', { name: 'Добавить принятую версию источника' }));
+    await user.type(screen.getByLabelText('Source Object ID'), 'source-1');
+    await user.type(screen.getByLabelText('Source Revision ID'), 'revision-1');
+    await user.type(screen.getByLabelText('Provenance ID'), 'provenance-1');
+    await user.click(screen.getByRole('button', { name: 'Начать работу' }));
+
+    expect(await screen.findByRole('alert')).toBeVisible();
+    await user.clear(screen.getByLabelText('Source Revision ID'));
+    await user.type(screen.getByLabelText('Source Revision ID'), 'revision-2');
+    await user.click(screen.getByRole('button', { name: 'Начать работу' }));
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post.mock.calls[1]?.[1].params.header['Idempotency-Key']).not.toBe(
+      post.mock.calls[0]?.[1].params.header['Idempotency-Key'],
+    );
+    expect(post.mock.calls[1]?.[1].body.accepted_sources).toEqual([{
+      source_object_id: 'source-1',
+      source_revision_id: 'revision-2',
+      provenance_id: 'provenance-1',
+    }]);
+  });
 });
