@@ -76,7 +76,7 @@ def upgrade() -> None:
     # security-definer boundary. Lock the current row there so a concurrent
     # authority change serializes with each CRM v2 write transaction.
     op.execute(f"""
-    CREATE FUNCTION {SCHEMA}.lock_current_authorization_generation(
+    CREATE OR REPLACE FUNCTION {SCHEMA}.lock_current_authorization_generation(
         requested_workspace_id uuid,
         requested_environment_id uuid
     ) RETURNS bigint
@@ -101,7 +101,7 @@ def upgrade() -> None:
     op.execute(f"REVOKE ALL ON FUNCTION {SCHEMA}.lock_current_authorization_generation(uuid, uuid) FROM PUBLIC")
     op.execute(f"GRANT EXECUTE ON FUNCTION {SCHEMA}.lock_current_authorization_generation(uuid, uuid) TO {_role('runtime_role')}")
     op.execute(f"""
-    CREATE FUNCTION {SCHEMA}.lock_provider_connection_authority(
+    CREATE OR REPLACE FUNCTION {SCHEMA}.lock_provider_connection_authority(
         requested_workspace_id uuid,
         requested_environment_id uuid,
         requested_connection_id uuid,
