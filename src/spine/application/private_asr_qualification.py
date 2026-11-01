@@ -6,7 +6,9 @@ filesystem resolver, model import, or public report path.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 import unicodedata
 from typing import Protocol
@@ -32,12 +34,14 @@ from spine.application.private_asr_corpus import (
     SanitizedReportBuilder,
     TwoStageSourceAdmission,
 )
-from spine.application.transcription import SpeechToTextPort
+from spine.application.transcription import AudioPreparationResult, SpeechToTextPort
 from spine.domain.artifacts.transcription import (
+    AudioChunkHandle,
     AudioRecordingHandle,
-    SpeechToTextRequest,
-    SpeechToTextResult,
+    SpeechToTextRequestV2,
     SpeechToTextResultV2,
+    SpeechToTextSegment,
+    TranscriptionProcessingProfile,
 )
 from spine.domain.evaluations.private_asr_corpus import (
     AggregateCategory,
@@ -169,11 +173,34 @@ class EvaluationDataAdmissionPort(Protocol):
 
 
 class PrivateCandidateRuntime(Protocol):
-    """Candidate boundary backed by the provider-neutral SpeechToTextPort."""
+    """Candidate boundary accepts only the bounded chunk contract."""
 
     async def transcribe(
-        self, request: SpeechToTextRequest,
-    ) -> SpeechToTextResult | SpeechToTextResultV2: ...
+        self, request: SpeechToTextRequestV2,
+    ) -> SpeechToTextResultV2: ...
+
+
+class GovernedPrivateAudioPreparationPort(Protocol):
+    """Decode only a verified staged source under the current private context.
+
+    Implementations must use ``content.staged_ref`` (never a user path), verify
+    decoder output before returning, and make ``abort`` idempotent for partial
+    ephemeral staging.
+    """
+
+    async def prepare(
+        self, recording: AudioRecordingHandle, content: ContentVerificationResult,
+        profile: TranscriptionProcessingProfile, *, context: TrustedPersistenceContext,
+    ) -> AudioPreparationResult: ...
+
+    async def release(
+        self, prepared: AudioPreparationResult, *, context: TrustedPersistenceContext,
+    ) -> None: ...
+
+    async def abort(
+        self, recording: AudioRecordingHandle, content: ContentVerificationResult,
+        profile: TranscriptionProcessingProfile, *, context: TrustedPersistenceContext,
+    ) -> None: ...
 
 
 class SpeechToTextCandidateRuntime:
@@ -183,10 +210,10 @@ class SpeechToTextCandidateRuntime:
         self._port = port
 
     async def transcribe(
-        self, request: SpeechToTextRequest,
-    ) -> SpeechToTextResult | SpeechToTextResultV2:
+        self, request: SpeechToTextRequestV2,
+    ) -> SpeechToTextResultV2:
         result = await self._port.transcribe(request)
-        if not isinstance(result, (SpeechToTextResult, SpeechToTextResultV2)):
+        if not isinstance(result, SpeechToTextResultV2):
             raise PrivateEvaluationUnavailable("candidate returned an unsupported result contract")
         if (
             result.adapter_reference != request.adapter_reference
@@ -200,6 +227,17 @@ class PrivateCandidateRuntimeFactory(Protocol):
     def create(
         self, *, candidate_id: str, configuration: PrivateCandidateConfiguration,
     ) -> PrivateCandidateRuntime: ...
+
+
+@dataclass(frozen=True)
+class _PreparedPrivateAudioCase:
+    record: PrivateCorpusRecord
+    admitted: AdmittedSourceRevision
+    content: ContentVerificationResult
+    annotation: GroundTruthAnnotation
+    recording: AudioRecordingHandle
+    prepared: AudioPreparationResult
+    chunks: tuple[AudioChunkHandle, ...]
 
 
 class PrivateReportAuditPort(Protocol):
@@ -252,6 +290,8 @@ class PrivateRealASREvaluationRunner:
         self, *, contexts: TrustedContextVerifier,
         admission: EvaluationDataAdmissionPort,
         source_admission: TwoStageSourceAdmission,
+        audio_preparation: GovernedPrivateAudioPreparationPort,
+        processing_profile: TranscriptionProcessingProfile,
         runtime_factory: PrivateCandidateRuntimeFactory,
         reports: PrivateReportStoragePort,
         report_audit: PrivateReportAuditPort,
@@ -269,6 +309,8 @@ class PrivateRealASREvaluationRunner:
         self._admission = admission
         self._resolver = GovernedPrivateDatasetResolver(admission)
         self._source_admission = source_admission
+        self._audio_preparation = audio_preparation
+        self._processing_profile = processing_profile
         self._runtime_factory = runtime_factory
         self._reports = reports
         self._report_audit = report_audit
@@ -279,6 +321,10 @@ class PrivateRealASREvaluationRunner:
         self._configuration = configuration
         if configuration.candidate_id != candidate_id:
             raise ValueError("candidate identity does not match its frozen configuration")
+        if processing_profile.profile_reference != configuration.processing_profile_reference:
+            raise ValueError("processing profile does not match its frozen configuration")
+        if processing_profile.chunk_duration_ms > 25_000:
+            raise ValueError("private candidate chunk duration cannot exceed 25 seconds")
         self._evaluator_id = evaluator_id
         self._evaluator_version = evaluator_version
         self._normalizer_version = normalizer_version
@@ -405,7 +451,7 @@ class PrivateRealASREvaluationRunner:
             await self._recheck(
                 admitted, context=trusted, stage="annotation_read",
                 eligible=len(selected), admitted_count=len(admissions), verified=len(verified),
-                annotated=len(annotations),
+                annotated=len(annotations), manifest=manifest,
             )
             try:
                 loaded = await self._admission.load_approved_annotation(
@@ -429,117 +475,194 @@ class PrivateRealASREvaluationRunner:
                     annotated=len(annotations))
             annotations.append((record, admitted, content, annotation))
 
-        # Fake-backed providers produce observations only. Qualification remains NOT_VERIFIED.
-        for _, admitted, _, _ in annotations:
-            await self._recheck(
-                admitted, context=trusted, stage="before_runtime_initialization",
-                eligible=len(selected), admitted_count=len(admissions), verified=len(verified),
-                annotated=len(annotations),
-            )
-        runtime_failure = False
+        # Decode and prepare the complete admitted set before candidate creation:
+        # concrete factories may import runtimes or initialize pinned model assets.
+        prepared_cases: list[_PreparedPrivateAudioCase] = []
+        outcomes: list[PrivateCaseOutcome] = []
+        cleanup_failed = False
         try:
-            if annotations:
+            for record, admitted, content, annotation in annotations:
+                await self._recheck(
+                    admitted, context=trusted, stage="before_audio_preparation",
+                    eligible=len(selected), admitted_count=len(admissions), verified=len(verified),
+                    annotated=len(annotations), manifest=manifest,
+                )
+                recording: AudioRecordingHandle | None = None
+                prepared: AudioPreparationResult | None = None
+                try:
+                    recording = await self._admission.audio_handle(record, content, context=trusted)
+                    await self._recheck(
+                        admitted, context=trusted, stage="before_audio_preparation",
+                        eligible=len(selected), admitted_count=len(admissions), verified=len(verified),
+                        annotated=len(annotations), manifest=manifest,
+                    )
+                    self._validate_verified_recording(record, admitted, content, recording, manifest)
+                    prepared = await self._audio_preparation.prepare(
+                        recording, content, self._processing_profile, context=trusted
+                    )
+                    chunks = self._chunks_for(recording, prepared)
+                    prepared_cases.append(_PreparedPrivateAudioCase(
+                        record=record, admitted=admitted, content=content, annotation=annotation,
+                        recording=recording, prepared=prepared, chunks=chunks,
+                    ))
+                except asyncio.CancelledError:
+                    if recording is not None:
+                        try:
+                            await self._audio_preparation.abort(
+                                recording, content, self._processing_profile, context=trusted
+                            )
+                        except Exception:
+                            pass
+                    raise
+                except Exception:
+                    try:
+                        if prepared is not None:
+                            await self._audio_preparation.release(prepared, context=trusted)
+                        elif recording is not None:
+                            await self._audio_preparation.abort(
+                                recording, content, self._processing_profile, context=trusted
+                            )
+                    except Exception:
+                        raise PrivateEvaluationUnavailable(
+                            "audio preparation cleanup is unavailable"
+                        ) from None
+                    outcomes.append(PrivateCaseOutcome(
+                        record_ref=_record_ref(record), split=record.split,
+                        disposition=PrivateCaseDisposition.UNAVAILABLE,
+                    ))
+
+            for case in prepared_cases:
+                await self._recheck(
+                    case.admitted, context=trusted, stage="before_runtime_initialization",
+                    eligible=len(selected), admitted_count=len(admissions), verified=len(verified),
+                    annotated=len(annotations), manifest=manifest,
+                )
+            runtime_failure = False
+            try:
                 runtime = self._runtime_factory.create(
                     candidate_id=self._candidate_id, configuration=self._configuration
-                )
-                if runtime is None:
+                ) if prepared_cases else None
+                if prepared_cases and runtime is None:
                     raise TypeError("candidate runtime factory returned no runtime")
-            else:
+            except Exception:
                 runtime = None
-        except Exception:
-            runtime = None
-            runtime_failure = True
-        outcomes: list[PrivateCaseOutcome] = [
-            PrivateCaseOutcome(
-                record_ref=_record_ref(record), split=record.split,
-                disposition=PrivateCaseDisposition.UNAVAILABLE,
-            )
-            for record, _, _, _ in annotations
-        ] if runtime_failure else []
-        for record, admitted, content, annotation in annotations:
-            if runtime is None:
-                continue
-            await self._recheck(
-                admitted, context=trusted, stage="before_inference",
-                eligible=len(selected), admitted_count=len(admissions), verified=len(verified),
-                annotated=len(annotations),
-            )
-            try:
-                recording = await self._admission.audio_handle(record, content, context=trusted)
-            except Exception:
-                outcomes.append(PrivateCaseOutcome(
-                    record_ref=_record_ref(record), split=record.split,
+                runtime_failure = True
+            if runtime_failure:
+                outcomes.extend(PrivateCaseOutcome(
+                    record_ref=_record_ref(item.record), split=item.record.split,
                     disposition=PrivateCaseDisposition.UNAVAILABLE,
-                ))
-                continue
-            # Resolving the restricted handle may itself wait on storage or an
-            # adapter. Recheck after that await and immediately before inference.
-            await self._recheck(
-                admitted, context=trusted, stage="before_candidate_invocation",
-                eligible=len(selected), admitted_count=len(admissions), verified=len(verified),
-                annotated=len(annotations),
-            )
-            try:
-                result = await runtime.transcribe(SpeechToTextRequest(
-                    recording=recording,
-                    processing_profile_reference=self._configuration.processing_profile_reference,
-                    adapter_reference=self._configuration.adapter_reference,
-                    model_config_reference=self._configuration.model_config_reference,
-                    language_hint="ru",
-                ))
-            except Exception:
-                await self._recheck(
-                    admitted, context=trusted, stage="candidate_inference",
-                    eligible=len(selected), admitted_count=len(admissions), verified=len(verified),
-                    annotated=len(annotations),
+                ) for item in prepared_cases)
+
+            for case in prepared_cases:
+                if runtime is None:
+                    continue
+                record, admitted, annotation, recording = (
+                    case.record, case.admitted, case.annotation, case.recording
                 )
+                segments: list[SpeechToTextSegment] = []
+                valid = True
+                for chunk in case.chunks:
+                    await self._recheck(
+                        admitted, context=trusted, stage="before_inference",
+                        eligible=len(selected), admitted_count=len(admissions), verified=len(verified),
+                        annotated=len(annotations), manifest=manifest,
+                    )
+                    try:
+                        result = await runtime.transcribe(SpeechToTextRequestV2(
+                            recording=recording,
+                            processing_profile_reference=self._configuration.processing_profile_reference,
+                            adapter_reference=self._configuration.adapter_reference,
+                            model_config_reference=self._configuration.model_config_reference,
+                            language_hint="ru", chunk=chunk,
+                        ))
+                    except Exception:
+                        await self._recheck(
+                            admitted, context=trusted, stage="candidate_inference",
+                            eligible=len(selected), admitted_count=len(admissions), verified=len(verified),
+                            annotated=len(annotations), manifest=manifest,
+                        )
+                        valid = False
+                        break
+                    await self._recheck(
+                        admitted, context=trusted, stage="candidate_inference",
+                        eligible=len(selected), admitted_count=len(admissions), verified=len(verified),
+                        annotated=len(annotations), manifest=manifest,
+                    )
+                    if not isinstance(result, SpeechToTextResultV2) or (
+                        result.schema_version != "speech-to-text-result:v2"
+                        or result.timeline != "chunk"
+                        or result.adapter_reference != self._configuration.adapter_reference
+                        or result.model_config_reference != self._configuration.model_config_reference
+                    ):
+                        valid = False
+                        break
+                    # Both pinned candidates use explicit Russian transcription and
+                    # provide no independent language-detection evidence.
+                    if result.detected_language is not None:
+                        valid = False
+                        break
+                    boundary = chunk.boundary
+                    chunk_duration = boundary.end_ms - boundary.start_ms
+                    previous_start = -1
+                    overlap_end = boundary.start_ms + boundary.overlap_before_ms
+                    for segment in result.segments:
+                        if (
+                            segment.start_ms < previous_start
+                            or segment.end_ms > chunk_duration
+                            or segment.end_ms <= segment.start_ms
+                        ):
+                            valid = False
+                            break
+                        previous_start = segment.start_ms
+                        absolute_start = boundary.start_ms + segment.start_ms
+                        absolute_end = boundary.start_ms + segment.end_ms
+                        if boundary.ordinal > 1 and absolute_end <= overlap_end:
+                            continue
+                        if segments and absolute_start < segments[-1].start_ms:
+                            valid = False
+                            break
+                        segments.append(segment.model_copy(update={
+                            "start_ms": absolute_start, "end_ms": absolute_end,
+                        }))
+                    if not valid:
+                        break
+                if not valid:
+                    outcomes.append(PrivateCaseOutcome(
+                        record_ref=_record_ref(record), split=record.split,
+                        disposition=PrivateCaseDisposition.UNAVAILABLE,
+                    ))
+                    continue
+                reference = _normalize_text(" ".join(
+                    segment.human_text for segment in annotation.segments if segment.human_text
+                ))
+                hypothesis = _normalize_text(" ".join(segment.text for segment in segments))
+                ref_words, hyp_words = reference.split(), hypothesis.split()
+                ref_chars, hyp_chars = list(reference), list(hypothesis)
+                if not ref_words or not ref_chars:
+                    outcomes.append(PrivateCaseOutcome(record_ref=_record_ref(record), split=record.split,
+                        disposition=PrivateCaseDisposition.UNSCORABLE))
+                    continue
                 outcomes.append(PrivateCaseOutcome(
                     record_ref=_record_ref(record), split=record.split,
-                    disposition=PrivateCaseDisposition.UNAVAILABLE,
+                    disposition=PrivateCaseDisposition.MEASURED,
+                    word_errors=_edit_distance(ref_words, hyp_words), reference_words=len(ref_words),
+                    character_errors=_edit_distance(ref_chars, hyp_chars), reference_characters=len(ref_chars),
                 ))
-                continue
-            await self._recheck(
-                admitted, context=trusted, stage="candidate_inference",
-                eligible=len(selected), admitted_count=len(admissions), verified=len(verified),
-                annotated=len(annotations),
-            )
-            if not isinstance(result, (SpeechToTextResult, SpeechToTextResultV2)):
-                outcomes.append(PrivateCaseOutcome(
-                    record_ref=_record_ref(record), split=record.split,
-                    disposition=PrivateCaseDisposition.UNAVAILABLE,
-                ))
-                continue
-            if (
-                result.adapter_reference != self._configuration.adapter_reference
-                or result.model_config_reference != self._configuration.model_config_reference
-            ):
-                outcomes.append(PrivateCaseOutcome(
-                    record_ref=_record_ref(record), split=record.split,
-                    disposition=PrivateCaseDisposition.UNAVAILABLE,
-                ))
-                continue
-            reference = _normalize_text(" ".join(
-                segment.human_text for segment in annotation.segments if segment.human_text
-            ))
-            hypothesis = _normalize_text(" ".join(segment.text for segment in result.segments))
-            ref_words, hyp_words = reference.split(), hypothesis.split()
-            ref_chars, hyp_chars = list(reference), list(hypothesis)
-            if not ref_words or not ref_chars:
-                outcomes.append(PrivateCaseOutcome(record_ref=_record_ref(record), split=record.split,
-                    disposition=PrivateCaseDisposition.UNSCORABLE))
-                continue
-            outcomes.append(PrivateCaseOutcome(
-                record_ref=_record_ref(record), split=record.split,
-                disposition=PrivateCaseDisposition.MEASURED,
-                word_errors=_edit_distance(ref_words, hyp_words), reference_words=len(ref_words),
-                character_errors=_edit_distance(ref_chars, hyp_chars), reference_characters=len(ref_chars),
-            ))
+        finally:
+            for case in prepared_cases:
+                try:
+                    await self._audio_preparation.release(case.prepared, context=trusted)
+                except Exception:
+                    cleanup_failed = True
+
+        if cleanup_failed:
+            raise PrivateEvaluationUnavailable("audio preparation cleanup is unavailable") from None
 
         for record, admitted in admissions:
             await self._recheck(
                 admitted, context=trusted, stage="before_report_acceptance",
                 eligible=len(selected), admitted_count=len(admissions), verified=len(verified),
-                annotated=len(annotations),
+                annotated=len(annotations), manifest=manifest,
             )
         try:
             report = await self._build_report(
@@ -550,6 +673,7 @@ class PrivateRealASREvaluationRunner:
             raise PrivateEvaluationUnavailable("private report preparation failed") from None
         receipt = await self._persist_private_report(
             report, admitted_sources=tuple(item[1] for item in admissions), context=trusted,
+            manifest=manifest,
             eligible=len(selected), verified=len(verified), annotated=len(annotations),
         )
         return report, receipt
@@ -692,6 +816,7 @@ class PrivateRealASREvaluationRunner:
     async def _recheck(
         self, admitted: AdmittedSourceRevision, *, context: TrustedPersistenceContext,
         stage: str, eligible: int, admitted_count: int, verified: int, annotated: int,
+        manifest: PrivateCorpusManifest | None = None,
     ) -> None:
         try:
             current = await self._source_admission.recheck_current(admitted, context=context)
@@ -704,6 +829,81 @@ class PrivateRealASREvaluationRunner:
         if not current:
             self._raise_refusal(kind=PrivateEvaluationFailureKind.REVOKED, stage=stage,
                 eligible=eligible, admitted=admitted_count, verified=verified, annotated=annotated)
+        if manifest is not None:
+            try:
+                host_is_eligible = await self._admission.verify_host_no_egress(
+                    manifest, context=context
+                )
+            except Exception:
+                host_is_eligible = False
+            if not host_is_eligible:
+                self._raise_refusal(kind=PrivateEvaluationFailureKind.DENIED, stage=stage,
+                    eligible=eligible, admitted=admitted_count, verified=verified,
+                    annotated=annotated)
+
+    @staticmethod
+    def _validate_verified_recording(
+        record: PrivateCorpusRecord,
+        admitted: AdmittedSourceRevision,
+        content: ContentVerificationResult,
+        recording: AudioRecordingHandle,
+        manifest: PrivateCorpusManifest,
+    ) -> None:
+        binding = record.source_binding
+        digest = content.digest_verification
+        if (
+            content.admitted != admitted
+            or digest.source_revision_id != binding.source_revision_id
+            or digest.audio_sha256 != admitted.source_revision.original_sha256
+            or digest.byte_length != admitted.source_revision.byte_length
+            or content.byte_length != digest.byte_length
+            or recording.workspace_id != manifest.workspace_id
+            or recording.environment_id != manifest.environment_id
+            or recording.source_object_id != binding.source_object_id
+            or recording.source_revision_id != binding.source_revision_id
+            or recording.source_revision_digest != binding.source_revision_digest
+            or recording.original_sha256 != digest.audio_sha256
+            or recording.original_reference.digest_hex != digest.audio_sha256
+            or recording.media_type != record.media.media_type
+            or recording.recording_duration_ms != record.media.duration_ms
+        ):
+            raise ValueError("verified source identity does not match the frozen record")
+
+    def _chunks_for(
+        self,
+        recording: AudioRecordingHandle,
+        prepared: AudioPreparationResult,
+    ) -> tuple[AudioChunkHandle, ...]:
+        profile = self._processing_profile
+        if (
+            prepared.decoder_reference != profile.decoder_reference
+            or prepared.inspection.inspected_media_type != recording.media_type
+            or prepared.inspection.byte_length != recording.original_reference.byte_length
+            or prepared.inspection.duration_ms != recording.recording_duration_ms
+            or prepared.decoded_byte_length > profile.maximum_decoded_bytes
+            or prepared.peak_memory_bytes > profile.maximum_memory_bytes
+            or prepared.peak_working_bytes > profile.maximum_working_bytes
+        ):
+            raise ValueError("decoded media does not match the admitted processing profile")
+        boundaries = profile.plan_chunks(prepared.inspection)
+        if not boundaries or tuple(item.ordinal for item in boundaries) != tuple(
+            range(1, len(boundaries) + 1)
+        ):
+            raise ValueError("decoder returned invalid chunk coverage")
+        chunks: list[AudioChunkHandle] = []
+        for boundary in boundaries:
+            if (
+                boundary.end_ms > recording.recording_duration_ms
+                or boundary.end_ms - boundary.start_ms > 25_000
+            ):
+                raise ValueError("candidate chunk window is outside its pinned bound")
+            chunks.append(AudioChunkHandle.create(
+                boundary=boundary,
+                decoder_reference=prepared.decoder_reference,
+                decoded_reference=prepared.decoded_reference,
+                decoded_sha256=prepared.decoded_sha256,
+            ))
+        return tuple(chunks)
 
     async def _build_report(
         self, manifest, selected, admissions, verified, annotations, outcomes,
@@ -794,6 +994,7 @@ class PrivateRealASREvaluationRunner:
     async def _persist_private_report(
         self, report: PrivateRealASREvaluationReport, *,
         admitted_sources: tuple[AdmittedSourceRevision, ...],
+        manifest: PrivateCorpusManifest,
         context: TrustedPersistenceContext,
         eligible: int, verified: int, annotated: int,
     ) -> PrivateReportReceipt:
@@ -801,27 +1002,48 @@ class PrivateRealASREvaluationRunner:
             await self._recheck(
                 admitted, context=context, stage="before_private_report_commit",
                 eligible=eligible, admitted_count=len(admitted_sources),
-                verified=verified, annotated=annotated,
+                verified=verified, annotated=annotated, manifest=manifest,
             )
-        try:
-            release_authorized = await self._admission.current_release_authorized(
-                report, context=context
-            )
-        except Exception:
-            raise PrivateEvaluationUnavailable("private report authorization is unavailable") from None
-        if not release_authorized:
-            self._raise_refusal(kind=PrivateEvaluationFailureKind.DENIED,
-                stage="private_report_release", eligible=eligible,
-                admitted=len(admitted_sources), verified=verified, annotated=annotated)
+        async def authorize_commit() -> None:
+            """Fence authority at the restricted store's atomic commit boundary."""
+            for source in admitted_sources:
+                await self._recheck(
+                    source, context=context, stage="before_private_report_commit",
+                    eligible=eligible, admitted_count=len(admitted_sources),
+                    verified=verified, annotated=annotated, manifest=manifest,
+                )
+            try:
+                release_authorized = await self._admission.current_release_authorized(
+                    report, context=context
+                )
+            except Exception:
+                raise PrivateEvaluationUnavailable(
+                    "private report authorization is unavailable"
+                ) from None
+            if not release_authorized:
+                self._raise_refusal(kind=PrivateEvaluationFailureKind.DENIED,
+                    stage="private_report_release", eligible=eligible,
+                    admitted=len(admitted_sources), verified=verified, annotated=annotated)
+            # Policy verification may await an authority service. Recheck the
+            # mutable source and runtime gates after that await, at final handoff.
+            for source in admitted_sources:
+                await self._recheck(
+                    source, context=context, stage="before_private_report_commit",
+                    eligible=eligible, admitted_count=len(admitted_sources),
+                    verified=verified, annotated=annotated, manifest=manifest,
+                )
         try:
             receipt = await self._reports.store_private_report(
                 report.model_dump_json().encode(),
                 retention_profile_ref=report.retention_profile_ref,
                 audit_receipt_ref=report.audit_receipt_ref,
+                authorize_commit=authorize_commit,
             )
             if receipt.retention_profile_ref != report.retention_profile_ref:
                 raise ValueError("restricted report receipt scope mismatch")
             return receipt
+        except PrivateEvaluationRefused:
+            raise
         except Exception:
             raise PrivateEvaluationUnavailable("private report storage failed") from None
 
