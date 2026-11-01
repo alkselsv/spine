@@ -802,6 +802,34 @@ class DocumentIngestionOrchestrator:
         assert isinstance(revision, SourceRevision)
         item = values["item"]
         assert isinstance(item, IngestionRunSource)
+        processing_context = self.context_factory(
+            PersistenceOperation("processing_admission"),
+            _id(request, "processing-admission-trace"),
+        )
+        async with self.uow_factory(processing_context) as uow:
+            processing = await CanonicalCurrentProcessingDispositionAuthority(
+                uow.canonical
+            ).resolve(
+                workspace_id=request.workspace_id,
+                environment_id=request.environment_id,
+                source_object_id=revision.source_object_id,
+                source_revision_id=revision.revision_id,
+            )
+            if not processing.eligible:
+                await uow.rollback()
+                return DocumentIngestionResult(
+                    run=values["run"],
+                    item=item,
+                    source=values["source"],
+                    revision=revision,
+                    provenance=values["provenance"],
+                    binding=values["binding"],
+                    validation=values["validation"],
+                    admission=values["admission"],
+                    status=DocumentIngestionStatus.REJECTED,
+                    replay=bool(values["replay"]),
+                )
+            await uow.commit()
         attempt = await self._item_attempt(request, item)
         status = DocumentIngestionStatus.SUCCEEDED
         artifact: ParsedDocument | None = None

@@ -82,6 +82,9 @@ class _CanonicalResolver:
         self.requests.append(request)
         return _canonical_context(self.command)
 
+    async def revalidate_before_physical_projection(self, request, command):
+        del request, command
+
 
 class _OpaqueAfterResolutionResolver(_CanonicalResolver):
     async def revalidate_before_physical_projection(self, request, command):

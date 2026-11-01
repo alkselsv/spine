@@ -1396,16 +1396,11 @@ class _CurrentCitationValidator(_ScopedPort):
                     source_revision_id=source_reference.source_revision_id,
                 )
                 await uow.commit()
-            if not processing.eligible:
-                if (
-                    processing.reason
-                    is OrdinaryProcessingEligibilityReason.OPAQUE_ACCEPTANCE
-                ):
-                    return RejectedCitation(
-                        reason_code=CitationValidationReasonCode.EVIDENCE_INVALIDATED,
-                        validation_reference=reference_id,
-                    )
-                raise ValueError
+            processing_rejection = _processing_citation_rejection(
+                processing, reference_id
+            )
+            if processing_rejection is not None:
+                return processing_rejection
             exact_projection = tuple(
                 item
                 for item in references
@@ -1458,6 +1453,24 @@ class _CurrentCitationValidator(_ScopedPort):
                 validation_reference=reference_id,
                 retryable=True,
             )
+
+
+def _processing_citation_rejection(
+    processing: object, validation_reference: UUID
+) -> RejectedCitation | None:
+    """Map processing eligibility without conflating it with authorization."""
+
+    if getattr(processing, "eligible", False):
+        return None
+    if (
+        getattr(processing, "reason", None)
+        is OrdinaryProcessingEligibilityReason.OPAQUE_ACCEPTANCE
+    ):
+        return RejectedCitation(
+            reason_code=CitationValidationReasonCode.EVIDENCE_INVALIDATED,
+            validation_reference=validation_reference,
+        )
+    raise ValueError("citation processing authority is unavailable")
 
 
 def _projection_reference_matches_evidence(

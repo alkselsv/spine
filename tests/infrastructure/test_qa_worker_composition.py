@@ -14,6 +14,11 @@ from spine.application.evidence_lineage_verification import (
     EvidenceVerificationReasonCode,
     RejectedEvidenceItem,
 )
+from spine.application.citation_validation import CitationValidationReasonCode
+from spine.application.processing_disposition import (
+    OrdinaryProcessingEligibility,
+    OrdinaryProcessingEligibilityReason,
+)
 from spine.domain.capabilities.answer_evaluation import (
     AnswerDisclosureStatus,
     AnswerPartialityStatus,
@@ -40,6 +45,7 @@ from spine.infrastructure.qa_worker_composition import (
     _ParsedProjectionRetrieval,
     _ValidationPlans,
     _projection_reference_matches_evidence,
+    _processing_citation_rejection,
     OneShotQualifiedContextBroker,
     TrustedQAAuthorizationContextRegistry,
 )
@@ -68,6 +74,20 @@ class _Rows:
 
     def all(self) -> list[SimpleNamespace]:
         return self._rows
+
+
+def test_opaque_citation_is_evidence_invalidated_not_authorization_denied() -> None:
+    rejection = _processing_citation_rejection(
+        OrdinaryProcessingEligibility(
+            eligible=False,
+            reason=OrdinaryProcessingEligibilityReason.OPAQUE_ACCEPTANCE,
+        ),
+        UUID(int=900),
+    )
+
+    assert rejection is not None
+    assert rejection.reason_code is CitationValidationReasonCode.EVIDENCE_INVALIDATED
+    assert rejection.retryable is False
 
 
 class _Transaction:

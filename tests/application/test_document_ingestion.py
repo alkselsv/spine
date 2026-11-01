@@ -723,11 +723,11 @@ async def test_opaque_current_acceptance_suppresses_projection_request_creation(
         chunks=_stream(b"opaque-approved\n"),
     )
 
-    assert result.status is DocumentIngestionStatus.SUCCEEDED
-    assert parser_calls == [1]
-    assert [event.event_type for event in outbox.events] == [
-        "ingestion.processing.requested"
-    ]
+    assert result.status is DocumentIngestionStatus.REJECTED
+    assert result.processing_receipt is None
+    assert result.artifact is None
+    assert parser_calls == []
+    assert outbox.events == []
 
 
 @pytest.mark.asyncio
@@ -892,7 +892,7 @@ async def test_projection_request_is_not_visible_when_its_transaction_fails() ->
 
 
 @pytest.mark.asyncio
-async def test_stale_revision_is_processed_without_projection_request() -> None:
+async def test_stale_revision_is_rejected_before_parser_and_projection_request() -> None:
     parser_calls: list[int] = []
     orchestrator, _, _, canonical, outbox, ingestion = _orchestrator(
         b"hello\n", media_type="text/plain", parser_calls=parser_calls
@@ -908,13 +908,10 @@ async def test_stale_revision_is_processed_without_projection_request() -> None:
         chunks=_stream(b"hello\n"),
     )
 
-    assert result.status is DocumentIngestionStatus.SUCCEEDED
-    assert [event.event_type for event in outbox.events] == [
-        "ingestion.processing.requested"
-    ]
-    assert (
-        await ingestion.resolve_item_head(result.item.ingestion_run_source_id)
-    ).state is IngestionItemState.PROCESSED
+    assert result.status is DocumentIngestionStatus.REJECTED
+    assert result.processing_receipt is None
+    assert parser_calls == []
+    assert outbox.events == []
 
 
 @pytest.mark.asyncio
