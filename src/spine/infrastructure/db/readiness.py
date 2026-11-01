@@ -590,6 +590,10 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "corrected_transcript_artifacts": ExpectedTablePrivileges(
             True, True, True, False, False
         ),
+        "private_asr_artifacts": ExpectedTablePrivileges(True, True, True, True, False),
+        "private_asr_source_fences": ExpectedTablePrivileges(True, True, True, True, False),
+        "private_asr_report_sources": ExpectedTablePrivileges(True, True, True, False, False),
+        "private_asr_aggregate_exports": ExpectedTablePrivileges(True, True, True, False, False),
     }
     if set(tables) != set(expected):
         return False
