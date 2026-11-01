@@ -4281,7 +4281,6 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                         "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                         "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'yandex_disk_reconciliation_runs', 'mounted_fs_reconciliation_runs', 'mounted_fs_removal_policies', 'mounted_fs_removal_authorities', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'google_sheets_absence_candidates', 'google_sheets_removal_decisions', 'register_link_claims', 'register_association_acceptances', 'original_upload_records', "
-                        "'qa_agent_artifacts', 'qa_agent_results', 'email_sync_attempts', 'email_sync_pages', 'email_sync_effect_receipts', 'email_message_artifacts', 'email_attachment_artifacts')"
                         "'qa_agent_artifacts', 'qa_agent_results', 'email_sync_attempts', 'email_sync_pages', 'email_sync_effect_receipts', "
                         "'email_message_artifacts', 'email_attachment_artifacts', 'private_asr_artifacts', 'private_asr_source_fences', 'private_asr_report_sources', 'private_asr_aggregate_exports')"
                     )
@@ -5892,6 +5891,7 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20270101_100_email_revision_metadata.py",
         "20270102_101_email_attachment_artifacts.py",
         "20261227_95_private_asr_storage.py",
+        "20261228_96_private_asr_storage.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "transactional_failure_probe.py").write_text(

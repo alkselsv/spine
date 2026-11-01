@@ -38,7 +38,6 @@ from spine.infrastructure.persistence.postgresql_mappings import (
 
 _SCHEMA = "spine"
 _SAFE_REASON = re.compile(r"^[a-z][a-z0-9_.:-]{0,63}$")
-_SAFE_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _ASR_METADATA = MetaData(schema=_SCHEMA)
 private_asr_artifacts = Table(
     "private_asr_artifacts", _ASR_METADATA,
@@ -695,80 +694,10 @@ class PostgreSQLPrivateASRStorage:
 
     async def export_sanitized(self, payload: bytes, *, context: TrustedPersistenceContext,
                                authorize_export: Callable[[], Any]) -> None:
-        """Persist only allowlisted aggregates, with a minimal atomic audit row."""
-        from spine.domain.evaluations.private_asr_corpus import (
-            AggregateCategory, AggregateMetric, PrivacyPolicy, QualificationSufficiency,
-            SanitizedAggregate,
-        )
-        workspace_id, environment_id = self._scope(context)
-        try:
-            if not payload or len(payload) > self._max_payload_bytes:
-                raise ValueError
-            value = json.loads(payload)
-            allowed = {
-                "schema_version", "privacy_policy_version", "privacy_policy_approval_version",
-                "privacy_policy", "status", "sufficiency", "aggregates", "metric_names",
-            }
-            if not isinstance(value, dict) or set(value) != allowed:
-                raise ValueError
-            if (
-                value["schema_version"] != "r2-private-asr-sanitized-report:v1"
-                or value["status"] != "NOT_VERIFIED"
-                or not isinstance(value["privacy_policy_approval_version"], str)
-                or not _SAFE_VERSION.fullmatch(value["privacy_policy_approval_version"])
-            ):
-                raise ValueError
-            policy = PrivacyPolicy.model_validate(value["privacy_policy"])
-            if policy.policy_version != value["privacy_policy_version"]:
-                raise ValueError
-            aggregates = tuple(SanitizedAggregate.model_validate(item) for item in value["aggregates"])
-            categories = tuple(AggregateCategory(item) for item in {a.category.value for a in aggregates})
-            metrics = tuple(AggregateMetric(item) for item in {a.metric_name.value for a in aggregates})
-            if any(item.category not in policy.approved_categories or item.metric_name not in policy.approved_metric_names
-                   for item in aggregates):
-                raise ValueError
-            if "sufficiency" not in value or not isinstance(value["metric_names"], list):
-                raise ValueError
-            QualificationSufficiency(value["sufficiency"])
-            if set(value["metric_names"]) != {item.value for item in metrics}:
-                raise ValueError
-            sanitized_payload = {
-                "schema_version": value["schema_version"],
-                "privacy_policy_version": value["privacy_policy_version"],
-                "privacy_policy_approval_version": value["privacy_policy_approval_version"],
-                "status": "NOT_VERIFIED", "sufficiency": value["sufficiency"],
-                "aggregates": [item.model_dump(mode="json") for item in aggregates],
-                "metric_names": sorted(item.value for item in metrics),
-            }
-            clean_version = str(value["privacy_policy_version"])
-            if len(clean_version) > 64:
-                raise ValueError
-        except Exception:
-            raise PrivateASRStorageDenied("Sanitized aggregate export rejected.") from None
-        export_id = self._id_factory()
-        async with self._sessions() as session, session.begin():
-            await self._set_scope(session, context)
-            now = self._clock()
-            # Recheck privacy authorization inside the insertion transaction and
-            # immediately before publishing the sanitized aggregate.
-            try:
-                await authorize_export()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                raise PrivateASRStorageDenied("Sanitized aggregate export denied.") from None
-            audit_ref = await self._audit_receipts.receipt(
-                operation="private_asr_aggregate_export",
-                source_revision_id=None,
-                outcome="recorded",
-                context=context,
-            )
-            await session.execute(insert(private_asr_aggregate_exports).values(
-                export_id=export_id, workspace_id=workspace_id, environment_id=environment_id,
-                purpose="asr_model_evaluation",
-                privacy_policy_version=clean_version, audit_receipt_id=audit_ref.reference_id,
-                payload=sanitized_payload, created_at=now,
-            ))
+        """Fail closed until aggregate authorization and audit share a commit."""
+        del payload, authorize_export
+        self._scope(context)
+        raise PrivateASRStorageDenied("Sanitized aggregate export is not enabled.")
 
     async def fence(self, source_revision_id: UUID, *, reason: str,
                     context: TrustedPersistenceContext) -> None:

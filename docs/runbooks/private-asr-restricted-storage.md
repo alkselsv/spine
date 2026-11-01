@@ -16,6 +16,10 @@ scope fields in every query and validates `TrustedPersistenceContext` through
 the composition-root verifier. `PrivateReference` is an opaque identifier; it
 does not grant access.
 
+On reviewed main base `ddf676bad8e9f56e9e001ea122b19dba57ab4a97`, the
+migration chain in this branch ends at `20261228_96`: main's processing
+admission migration is `20261227_95`, followed by the ASR migration.
+
 The adapter receives current authority readers for admission, AccessPolicy and
 the approved private ASR retention profile. It verifies exact source object,
 revision, digest, purpose, actor, scope, current policy, authority expiry and
@@ -43,19 +47,17 @@ the successful PostgreSQL transaction commit. That commit is the
 linearization point. Callback refusal, exception or cancellation rolls back the
 new row and report-source associations.
 
-Storage-level source revocation takes the same per-revision advisory lock. If
-revocation obtains the lock first, report commit sees the fence and fails. If
-report commit obtains it first, the report commits before the revocation; the
-revocation then tombstones source artifacts and linked reports in its own
-transaction. Current AccessPolicy activation serializes on the same canonical
-current-policy row. The current retention-profile reader and source-revision
-head reader do not expose transaction-lock participation. Their independent
-updates remain a contract gap for strict commit-time TOCTOU proof. The focused
-PostgreSQL test substitutes a no-op for canonical source-row locking; it proves
-storage transaction rollback, idempotency and scope behavior, but not
-AccessPolicy lock privileges or external authority serialization. An external
-authority that does not participate in the protocol remains outside the
-guarantee and must not be represented as transactionally fenced.
+Storage-level ASR revocation takes the same private-ASR per-revision advisory
+lock. That orders ASR fence updates with ASR report writes only. The canonical
+source replacement path in #800 instead locks a workspace/environment
+generation counter, `_lock_admission_revision`, and `current_source_heads`;
+its key differs from the private-ASR key. A source-head replacement can
+therefore race a report commit. AccessPolicy activation serializes on
+`current_access_policies`, which the ASR adapter locks. The current
+retention-profile reader has no transaction participant or fence token. The
+focused PostgreSQL test currently substitutes a no-op for `_locked_source`,
+so it does not prove actual source/head/policy lock access under the runtime
+role. These are blocking transaction gaps, not operator-only qualifications.
 
 ## Data lifecycle and retry
 
@@ -89,14 +91,18 @@ PostgreSQL rolls back an uncommitted report on process or connection loss. A
 crash after commit but before the caller receives its response is recovered by
 replaying the same idempotency key and verifying the committed digest. The
 canonical audit receipt is written through Spine's existing PostgreSQL UoW
-audit writer; the report references its immutable event id. Aggregate export
-stores a separately sanitized object and its audit reference. Its release
-callback runs inside the PostgreSQL insertion transaction, immediately before
-audit and aggregate persistence. The callback's underlying privacy authority
-does not provide a transaction lock, and the existing UoW audit writer commits
-through a separate transaction; successful aggregate publication and its audit
-event are not one atomic unit. This remains a contract gap, and aggregate export
-is not qualified until both authorities can share a commit boundary.
+audit writer; the report references its immutable event id. The runner creates
+that report receipt before calling the storage port. Callback refusal rolls
+back the report row but leaves the receipt event, so it cannot attest successful
+publication. The report and source links commit together, but receipt creation
+is a separate transaction.
+Aggregate export is disabled in the concrete adapter. The prior path called an
+independent privacy callback, committed audit in a separate UoW, then inserted
+the aggregate. It could not prove a single authorization/audit/publication
+boundary. `export_sanitized` now fails closed before invoking the callback or
+writing an aggregate. Re-enable it only after aggregate data and canonical
+audit append share a transaction (or a durable pending state prevents reads
+until a transactional publisher confirms both).
 
 ## Operator deployment qualification checklist
 
@@ -124,19 +130,20 @@ For each named environment, record evidence for:
 ## Evidence boundary
 
 Implementation status: **NEEDS INFO; Issue #795 acceptance is incomplete**.
-Current SourceRevision-head and retention-profile authorities cannot share the
-report transaction's locks. Aggregate privacy authorization and its canonical
-audit receipt also do not share one atomic transaction. Report source bindings
-are checked against outcome IDs and stored admitted originals, but their
-record-to-revision assertion is supplied by the runner's validated manifest;
-the storage boundary cannot independently query that manifest. Resolve these
-contract gaps and complete the missing negative/concurrency tests before using
-the adapter for real recordings.
+The concrete report path has a PostgreSQL transaction, but source-head and
+retention authority are not transactionally fenced. The storage boundary does
+not resolve an authoritative dataset manifest; record-to-revision bindings
+come from the runner and are checked only against report outcome IDs and stored
+admitted originals. Aggregate publication is explicitly blocked until its
+privacy authorization and audit write can share a visibility boundary. Resolve
+these contracts and missing negative/concurrency tests before using the adapter
+for real recordings.
 
 The automated PostgreSQL tests prove report transaction rollback/commit,
-stable idempotency, same-tenant wrong-purpose isolation and scope binding on the pinned test database. They do not
-currently prove canonical AccessPolicy lock participation or concurrent
-revocation/report interleaving. They cannot prove production role configuration,
+stable idempotency, same-tenant wrong-purpose isolation, scope binding and
+blocked aggregate publication on the pinned test database. They do not prove
+canonical source-head locking or concurrent source/policy revocation interleaving.
+They cannot prove production role configuration,
 encryption-at-rest, physical deletion, backup deletion, remote authority
 locking, operator access controls or a named deployment. Those remain
 `NOT_VERIFIED` until operator evidence is attached. This runbook does not change
