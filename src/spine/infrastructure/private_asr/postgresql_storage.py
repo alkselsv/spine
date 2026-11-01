@@ -25,7 +25,6 @@ from spine.application.private_asr_corpus import (
     AdmittedSourceRevision,
     AdmissionAuthorityPort,
     ScopedAuditReceiptPort,
-    PrivateASRRetentionProfileReader,
     PrivateReportReceipt,
     PrivateReportSourceBinding,
 )
@@ -112,7 +111,6 @@ class PostgreSQLPrivateASRStorage:
         contexts: TrustedContextVerifier,
         authority: AdmissionAuthorityPort,
         access_policies: AccessPolicyPort,
-        retention_profiles: PrivateASRRetentionProfileReader,
         audit_receipts: ScopedAuditReceiptPort,
         clock: Callable[[], datetime] | None = None,
         id_factory: Callable[[], UUID] = uuid4,
@@ -124,7 +122,6 @@ class PostgreSQLPrivateASRStorage:
         self._contexts = contexts
         self._authority = authority
         self._access_policies = access_policies
-        self._retention_profiles = retention_profiles
         self._audit_receipts = audit_receipts
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory
@@ -204,23 +201,12 @@ class PostgreSQLPrivateASRStorage:
     async def _current_retention(
         self, profile_ref: PrivateReference, *, context: TrustedPersistenceContext
     ) -> datetime:
-        workspace_id, environment_id = self._scope(context)
-        now = self._clock()
-        try:
-            profile = await self._retention_profiles.resolve_current(
-                profile_ref, workspace_id=workspace_id, environment_id=environment_id,
-                context=context, evaluated_at=now,
-            )
-        except Exception:
-            raise PrivateASRStorageDenied("Private ASR retention authority unavailable.") from None
-        if (
-            profile is None or profile.profile_ref != profile_ref
-            or profile.workspace_id != workspace_id or profile.environment_id != environment_id
-            or profile.purpose != "asr_model_evaluation" or not profile.approved
-            or not profile.current or profile.revoked or profile.expires_at <= now
-        ):
-            raise PrivateASRStorageDenied("Private ASR retention authority denied.")
-        return profile.expires_at
+        # Do not accept a detached ASR profile reader as retention authority.
+        # Spine has no canonical transaction-aware policy-terms adapter yet.
+        # Until applicability identity/generation, approvals, source lineage,
+        # artifact class, and approved expiry terms can be checked together,
+        # all ASR data operations fail closed.
+        raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
 
     async def _locked_source(self, session: AsyncSession, admitted: AdmittedSourceRevision) -> None:
         source = admitted.source_object
@@ -415,6 +401,9 @@ class PostgreSQLPrivateASRStorage:
             await self._set_scope(session, context)
             await self._locked_source(session, admitted)
             await self._check_admitted(admitted, context)
+            retention_expires_at = await self._current_retention(
+                admitted.retention_profile_ref, context=context
+            )
             audit = (await session.execute(select(audit_events.c.audit_event_id).where(
                 audit_events.c.workspace_id == workspace_id,
                 audit_events.c.environment_id == environment_id,
@@ -450,7 +439,7 @@ class PostgreSQLPrivateASRStorage:
                     content_sha256=sha256, byte_length=byte_length, payload=bytes(source["payload"]),
                     retention_profile_ref=admitted.retention_profile_ref.reference_id,
                     audit_receipt_ref=admitted.audit_receipt_ref.reference_id,
-                    expires_at=admitted.authority.expires_at,
+                    expires_at=retention_expires_at,
                     admitted_record=admitted.model_dump(mode="json"), created_at=self._clock(),
                 ))
         return self._ref(original_id, "original")
@@ -462,6 +451,7 @@ class PostgreSQLPrivateASRStorage:
                                    authorize_commit: Callable[[], Any]) -> PrivateReportReceipt:
         from spine.domain.evaluations.private_asr_qualification import PrivateRealASREvaluationReport
         workspace_id, environment_id = self._scope(context)
+        await self._current_retention(retention_profile_ref, context=context)
         if not payload or len(payload) > self._max_payload_bytes:
             raise PrivateASRStorageDenied("Private ASR report rejected.")
         try:
@@ -669,6 +659,7 @@ class PostgreSQLPrivateASRStorage:
         workspace_id, environment_id = self._require_worker_operation(
             context, "private_asr_retention_expiration"
         )
+        await self._current_retention(policy_ref, context=context)
         now = self._clock()
         async with self._sessions() as session, session.begin():
             await self._set_scope(session, context)
@@ -764,6 +755,15 @@ class PostgreSQLPrivateASRStorage:
 
     async def read_private_reference(self, reference: PrivateReference, *,
                                      context: TrustedPersistenceContext) -> bytes:
+        try:
+            return await self._read_private_reference(reference, context=context)
+        except Exception:
+            # Metadata existence, malformed lineage, and unavailable authority
+            # are deliberately indistinguishable to the caller.
+            raise PrivateASRStorageDenied("Private ASR storage authorization denied.") from None
+
+    async def _read_private_reference(self, reference: PrivateReference, *,
+                                      context: TrustedPersistenceContext) -> bytes:
         workspace_id, environment_id = self._scope(context)
         async with self._sessions() as session, session.begin():
             await self._set_scope(session, context)
@@ -795,6 +795,13 @@ class PostgreSQLPrivateASRStorage:
             ))).scalar_one_or_none()
             if audit is None:
                 raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
+            await self._current_retention(
+                PrivateReference(
+                    reference_id=row["retention_profile_ref"],
+                    reference_kind="private_asr_retention_profile",
+                ),
+                context=context,
+            )
             if row["kind"] == "report":
                 source_ids = set((await session.execute(select(
                     private_asr_report_sources.c.source_revision_id

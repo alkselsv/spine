@@ -88,6 +88,22 @@ def test_source_class_applicability_requires_approved_class_identity() -> None:
         )
 
 
+def test_private_asr_artifact_classes_are_additive_taxonomy_only() -> None:
+    classes = (
+        RetentionArtifactClass.PRIVATE_ASR_SOURCE_ORIGINAL,
+        RetentionArtifactClass.PRIVATE_ASR_STAGING,
+        RetentionArtifactClass.PRIVATE_ASR_ANNOTATION,
+        RetentionArtifactClass.PRIVATE_ASR_DETAILED_REPORT,
+        RetentionArtifactClass.PRIVATE_ASR_SANITIZED_AGGREGATE,
+        RetentionArtifactClass.PRIVATE_ASR_AUDIT_EVIDENCE,
+    )
+    applicability = _applicability(artifact_classes=classes)
+
+    assert RetentionApplicability.model_validate(
+        applicability.model_dump(mode="json")
+    ).artifact_classes == classes
+
+
 @pytest.mark.parametrize(
     "updates",
     [

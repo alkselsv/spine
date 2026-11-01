@@ -351,34 +351,6 @@ class ScopedRetentionExpirationPort(Protocol):
     ) -> None: ...
 
 
-class CurrentPrivateASRRetentionProfile(DefinitionModel):
-    """Current approval result for one exact, scope-bound ASR retention profile."""
-
-    schema_version: Literal["private-asr-retention-profile:v1"] = "private-asr-retention-profile:v1"
-    profile_ref: PrivateReference
-    workspace_id: UUID
-    environment_id: UUID
-    purpose: Literal["asr_model_evaluation"]
-    approved: bool
-    current: bool
-    revoked: bool
-    expires_at: datetime
-
-    @model_validator(mode="after")
-    def validate_expiry(self) -> "CurrentPrivateASRRetentionProfile":
-        if self.expires_at.tzinfo is None or self.expires_at.utcoffset() is None:
-            raise ValueError("retention expiry must be timezone-aware")
-        return self
-
-
-class PrivateASRRetentionProfileReader(Protocol):
-    async def resolve_current(
-        self, profile_ref: PrivateReference, *, workspace_id: UUID,
-        environment_id: UUID, context: TrustedPersistenceContext,
-        evaluated_at: datetime,
-    ) -> CurrentPrivateASRRetentionProfile | None: ...
-
-
 class AuditReceiptPort(Protocol):
     async def receipt(
         self,
@@ -875,9 +847,9 @@ __all__ = [
     "AccessPolicyPort", "AdmittedRevisionContentPort", "AdmittedSourceRevision",
     "AdmissionAuthorityPort", "AggregateMeasurement", "AuditReceiptPort",
     "CleanupPort", "ClockPort", "ContentVerificationResult", "CorpusAdmissionDenied",
-    "CorpusVerificationError", "CurrentPrivateASRRetentionProfile", "DerivedStagingPort", "MetadataInventoryEntry",
+    "CorpusVerificationError", "DerivedStagingPort", "MetadataInventoryEntry",
     "MetadataInventoryPort", "OriginalReferencePort", "PrivacyPolicyApprovalPort", "PrivacySanitizationError",
-    "PrivateAnnotationStoragePort", "PrivateASRRetentionProfileReader", "PrivateReportReceipt", "PrivateReportSourceBinding", "PrivateReportStoragePort",
+    "PrivateAnnotationStoragePort", "PrivateReportReceipt", "PrivateReportSourceBinding", "PrivateReportStoragePort",
     "PurposeAdmissionRequest", "RetentionExpirationPort", "RevocationFencePort",
     "ScopedAuditReceiptPort", "ScopedCleanupPort", "ScopedDerivedStagingPort",
     "ScopedOriginalReferencePort", "ScopedPrivateAnnotationStoragePort",
