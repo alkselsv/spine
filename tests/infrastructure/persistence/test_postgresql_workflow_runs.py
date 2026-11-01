@@ -20,9 +20,11 @@ from spine.application.persistence.idempotency import (
 )
 from spine.application.persistence.workflow_runs import register_workflow_run_outbox_event
 from spine.application.workflow_runs import (
+    AcceptRequirementsCommandV1,
     AddContextCommandV1,
     AnswerClarificationCommandV1,
     CancelWorkflowCommandV1,
+    ReclassifyRequirementCommandV1,
     StartWorkflowCommand,
     WorkflowArtifactRef,
     WorkflowCommand,
@@ -36,6 +38,7 @@ from spine.domain.workflows import (
     Requirement,
     RequirementState,
     RequirementsArtifact,
+    WorkflowRunState,
 )
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.postgresql_workflow_runs import (
@@ -177,6 +180,64 @@ def _continuation(*, expected_run_version: int = 1) -> WorkflowCommand:
     )
 
 
+def _accept_requirements() -> WorkflowCommand:
+    return WorkflowCommand(
+        command_id=UUID("64500000-0000-4000-8000-000000000001"),
+        idempotency_key="accept-645",
+        run_id=RUN_ID,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        actor=ActorRef(kind=ActorKind.HUMAN, id=ACTOR_ID),
+        command_type="accept_requirements",
+        command_schema_version=1,
+        expected_run_version=1,
+        payload=AcceptRequirementsCommandV1(
+            artifact_digest="a" * 64,
+            acknowledged_assertion_count=0,
+            acknowledged_assumption_count=0,
+        ),
+        artifact_refs=(WorkflowArtifactRef(
+            artifact_id=UUID("64500000-0000-4000-8000-000000000002"),
+            schema_name="requirements",
+            schema_version="requirements:v1",
+            artifact_version=1,
+        ),),
+        trace_id=TRACE_ID,
+        correlation_id=UUID("64500000-0000-4000-8000-000000000003"),
+        causation_id=UUID("64500000-0000-4000-8000-000000000004"),
+    )
+
+
+def _reclassify_requirement() -> WorkflowCommand:
+    return WorkflowCommand(
+        command_id=UUID("64500000-0000-4000-8000-000000000011"),
+        idempotency_key="reclassify-645",
+        run_id=RUN_ID,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        actor=ActorRef(kind=ActorKind.HUMAN, id=ACTOR_ID),
+        command_type="reclassify_requirement",
+        command_schema_version=1,
+        expected_run_version=1,
+        payload=ReclassifyRequirementCommandV1(
+            requirement_id=UUID("64500000-0000-4000-8000-000000000012"),
+            statement="Our manager commitment is Friday noon.",
+            acceptance_basis="manager_assertion",
+            rationale="The manager owns this commitment.",
+            independence_attestation="authored_from_independent_knowledge_without_protected_text",
+        ),
+        artifact_refs=(WorkflowArtifactRef(
+            artifact_id=UUID("64500000-0000-4000-8000-000000000002"),
+            schema_name="requirements",
+            schema_version="requirements:v2",
+            artifact_version=1,
+        ),),
+        trace_id=TRACE_ID,
+        correlation_id=UUID("64500000-0000-4000-8000-000000000013"),
+        causation_id=UUID("64500000-0000-4000-8000-000000000014"),
+    )
+
+
 def _run_row(*, state: str = "running", run_version: int = 1) -> dict[str, object]:
     return {
         "run_id": RUN_ID,
@@ -311,6 +372,49 @@ async def test_add_context_updates_run_and_persists_safe_event_and_receipt() -> 
     )
     assert receipt_insert.compile().params["command_payload"]["message"] == "The delivery deadline is December 20."
     assert "delivery deadline" not in str(event_insert.compile().params).lower()
+
+
+@pytest.mark.asyncio
+async def test_accept_requirements_completes_run_with_one_safe_event_and_receipt() -> None:
+    uow = FakeUow(operation="workflow.run.command")
+    uow.replay_row = _run_row()
+    repository = PostgreSQLWorkflowRunAdmissionRepository(uow, clock=lambda: NOW)
+
+    receipt = await repository.dispatch(_accept_requirements())
+
+    assert receipt.state is WorkflowRunState.COMPLETED
+    assert receipt.run_version == 2
+    run_update = next(
+        statement for statement in uow.statements
+        if getattr(getattr(statement, "table", None), "name", None) == "workflow_runs"
+    )
+    assert run_update.compile().params["state"] == "completed"
+    event_insert = next(
+        statement for statement in uow.statements
+        if getattr(getattr(statement, "table", None), "name", None) == "workflow_run_events"
+    )
+    assert event_insert.compile().params["event_type"] == "workflow.requirements-accepted"
+    assert "deliver" not in str(event_insert.compile().params).lower()
+    assert len(uow.intents) == 1
+    assert uow.intents[0].event_type == "workflow.requirements-accepted"
+    assert uow.intents[0].payload.artifact_digest == "a" * 64
+
+
+@pytest.mark.asyncio
+async def test_reclassification_keeps_run_open_and_persists_safe_event() -> None:
+    uow = FakeUow(operation="workflow.run.command")
+    uow.replay_row = _run_row()
+    repository = PostgreSQLWorkflowRunAdmissionRepository(uow, clock=lambda: NOW)
+
+    receipt = await repository.dispatch(_reclassify_requirement())
+
+    assert receipt.state is WorkflowRunState.RUNNING
+    event_insert = next(
+        statement for statement in uow.statements
+        if getattr(getattr(statement, "table", None), "name", None) == "workflow_run_events"
+    )
+    assert event_insert.compile().params["event_type"] == "workflow.requirement-reclassified"
+    assert "friday" not in str(event_insert.compile().params).lower()
 
 
 @pytest.mark.asyncio

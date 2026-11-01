@@ -28,6 +28,7 @@ from spine.application.persistence.answer_disclosure import AnswerDisclosureRepo
 from spine.application.qa_sessions import QASessionRepository
 
 if TYPE_CHECKING:
+    from spine.application.persistence.requirements_acceptance import RequirementsAcceptanceRepository
     from spine.application.requirements_artifacts import RequirementsArtifactRepository
     from spine.application.diagnostics.audit import AuditWriter
     from spine.application.access_policies import AccessPolicyRepository
@@ -58,6 +59,9 @@ class TenantUnitOfWork(Protocol):
 
     @property
     def requirements_artifacts(self) -> RequirementsArtifactRepository: ...
+
+    @property
+    def requirements_acceptances(self) -> "RequirementsAcceptanceRepository": ...
 
     @property
     def disclosure_validations(self) -> DisclosureValidationRepository: ...

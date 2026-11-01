@@ -41,6 +41,12 @@ class RequirementReviewState(str, Enum):
     CHANGES_REQUESTED = "changes_requested"
 
 
+class RequirementAcceptanceBasis(str, Enum):
+    SOURCE_VALIDATED = "source_validated"
+    MANAGER_ASSERTION = "manager_assertion"
+    EXPLICIT_ASSUMPTION = "explicit_assumption"
+
+
 class RequirementCategory(str, Enum):
     FUNCTIONAL = "functional"
     NON_FUNCTIONAL = "non_functional"
@@ -348,8 +354,75 @@ class RequirementV2(Requirement):
     category: RequirementCategory
 
 
+class RequirementV3(RequirementV2):
+    """Acceptance-aware requirement contract with explicit human bases."""
+
+    schema_version: Literal["requirement:v3"] = "requirement:v3"
+    acceptance_basis: RequirementAcceptanceBasis = (
+        RequirementAcceptanceBasis.SOURCE_VALIDATED
+    )
+    acceptance_rationale: StrictStr | None = Field(default=None, max_length=2_000)
+    false_consequence: StrictStr | None = Field(default=None, max_length=2_000)
+    attributed_by: ActorRef | None = None
+    assertion_audit_reference: UUID | None = None
+    independent_human_assertion: bool = False
+    conflict_resolution_rationale: StrictStr | None = Field(
+        default=None, max_length=2_000
+    )
+
+    @model_validator(mode="after")
+    def validate_acceptance_basis(self) -> "RequirementV3":
+        if self.acceptance_basis is RequirementAcceptanceBasis.SOURCE_VALIDATED:
+            if any(
+                value is not None
+                for value in (
+                    self.acceptance_rationale,
+                    self.false_consequence,
+                    self.attributed_by,
+                    self.assertion_audit_reference,
+                    self.conflict_resolution_rationale,
+                )
+            ) or self.independent_human_assertion:
+                raise ValueError(
+                    "source-validated requirements cannot carry human-basis metadata"
+                )
+        elif self.acceptance_basis is RequirementAcceptanceBasis.MANAGER_ASSERTION:
+            if (
+                self.acceptance_rationale is None
+                or not self.acceptance_rationale.strip()
+                or self.attributed_by is None
+                or self.attributed_by.kind.value != "human"
+                or self.assertion_audit_reference is None
+                or self.assertion_audit_reference.int == 0
+                or not self.independent_human_assertion
+                or self.false_consequence is not None
+            ):
+                raise ValueError(
+                    "manager assertions require explicit human attribution and rationale"
+                )
+        elif (
+            self.acceptance_rationale is None
+            or not self.acceptance_rationale.strip()
+            or self.false_consequence is None
+            or not self.false_consequence.strip()
+            or self.attributed_by is None
+            or self.attributed_by.kind.value != "human"
+            or self.assertion_audit_reference is not None
+            or self.independent_human_assertion
+        ):
+            raise ValueError(
+                "explicit assumptions require rationale, consequence and human attribution"
+            )
+        if (
+            self.conflict_resolution_rationale is not None
+            and not self.conflict_resolution_rationale.strip()
+        ):
+            raise ValueError("conflict resolution rationale must not be blank")
+        return self
+
+
 VersionedRequirement = Annotated[
-    Requirement | RequirementV2,
+    Requirement | RequirementV2 | RequirementV3,
     Field(discriminator="schema_version"),
 ]
 
@@ -392,6 +465,10 @@ class RequirementsArtifact(DefinitionModel):
             isinstance(item, RequirementV2) for item in self.requirements
         ):
             raise ValueError("requirements:v1 cannot contain newer requirement contracts")
+        if self.schema_version == "requirements:v2" and any(
+            isinstance(item, RequirementV3) for item in self.requirements
+        ):
+            raise ValueError("requirements:v2 cannot contain newer requirement contracts")
         if self.predecessor_version is None and self.artifact_version != 1:
             raise ValueError("successor versions must identify their predecessor")
         if self.predecessor_version is not None and self.predecessor_version != self.artifact_version - 1:

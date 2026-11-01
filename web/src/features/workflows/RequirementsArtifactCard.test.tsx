@@ -71,6 +71,50 @@ describe('RequirementsArtifactCard review controls', () => {
     expect(refresh).toHaveBeenCalledOnce();
   });
 
+  it('creates_an_explicit_assumption_successor_from_fresh_human_text', async () => {
+    const artifact = requirementsArtifact({
+      requirement_id: '70000000-0000-4000-8000-000000000001',
+      schema_version: 'requirement:v2', category: 'functional', statement: 'Protected source text',
+      constraints: [], uncertainty: null, ambiguous_markers: ['deadline'], missing_markers: [],
+      state: 'partial', review_state: 'reviewed', confidence: null, source_refs: [],
+      evidence_refs: [], evidence_status: 'unsupported', upstream_artifact_ids: [],
+    });
+    get.mockResolvedValue({ data: artifact });
+    post.mockResolvedValue({ data: { action: 'reclassify_requirement' } });
+
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <RequirementsArtifactCard
+        allowedCommands={['reclassify_requirement'] as never}
+        client={{ GET: get, POST: post }} queryKey={['workspace', 'run']}
+        runId={artifact.run_id} runVersion={6}
+      />
+    </QueryClientProvider>);
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Переклассифицировать требование' }));
+    await userEvent.selectOptions(screen.getByLabelText('Основание'), 'explicit_assumption');
+    await userEvent.type(screen.getByLabelText('Новая независимая формулировка'), 'Our planning assumption is Friday noon.');
+    await userEvent.type(screen.getByLabelText('Обоснование'), 'Needed for delivery planning.');
+    await userEvent.type(screen.getByLabelText('Последствие, если допущение неверно'), 'The plan must be revised.');
+    await userEvent.type(screen.getByLabelText('Решение конфликта (если применимо)'), 'Use the explicit planning assumption.');
+    await userEvent.click(screen.getByRole('checkbox', { name: /написал новую формулировку/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Создать новую версию' }));
+
+    expect(post).toHaveBeenCalledWith('/api/v1/runs/{run_id}/commands', expect.objectContaining({
+      body: expect.objectContaining({
+        command_type: 'reclassify_requirement', expected_run_version: 6,
+        artifact_refs: [expect.objectContaining({ artifact_version: 1 })],
+        payload: expect.objectContaining({
+          acceptance_basis: 'explicit_assumption',
+          statement: 'Our planning assumption is Friday noon.',
+          rationale: 'Needed for delivery planning.',
+          independence_attestation: 'authored_from_independent_knowledge_without_protected_text',
+          false_consequence: 'The plan must be revised.',
+          conflict_resolution_rationale: 'Use the explicit planning assumption.',
+        }),
+      }),
+    }));
+  });
+
   it('offers_refresh_after_a_stale_rework_conflict_and_hides_controls_for_terminal_runs', async () => {
     const artifact = {
       artifact_id: '60000000-0000-4000-8000-000000000001', artifact_version: 2,
@@ -168,6 +212,60 @@ describe('RequirementsArtifactCard review controls', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Недостаточно прав');
     expect(screen.queryByText(/безопасно повторить/)).toBeNull();
+  });
+
+  it('submits_exact_acceptance_and_refreshes_after_a_conflict', async () => {
+    const artifact = requirementsArtifact({
+      requirement_id: '70000000-0000-4000-8000-000000000001',
+      schema_version: 'requirement:v3', category: 'functional', statement: 'Friday',
+      constraints: [], uncertainty: null, ambiguous_markers: [], missing_markers: [],
+      state: 'human_reviewed', review_state: 'reviewed', confidence: null,
+      source_refs: [], evidence_refs: [], evidence_status: 'referenced', upstream_artifact_ids: [],
+      acceptance_basis: 'manager_assertion', acceptance_rationale: 'Confirmed by manager',
+      false_consequence: null, attributed_by: { kind: 'human', id: '20000000-0000-4000-8000-000000000071' },
+      assertion_audit_reference: '64500000-0000-4000-8000-000000000010',
+      independent_human_assertion: true, conflict_resolution_rationale: null,
+    }, { state: 'human_reviewed' });
+    get.mockResolvedValue({ data: artifact });
+    post.mockResolvedValue({ error: { code: 'workflow.run_stale' } });
+    const refresh = vi.fn().mockResolvedValue(undefined);
+
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <RequirementsArtifactCard
+        allowedCommands={['accept_requirements'] as never}
+        client={{ GET: get, POST: post }}
+        onRefresh={refresh}
+        queryKey={['workspace', 'run']}
+        runId={artifact.run_id}
+        runVersion={7}
+      />
+    </QueryClientProvider>);
+
+    expect(await screen.findByText('Digest версии:', { exact: false })).toBeVisible();
+    expect(screen.getByText(artifact.production_digest, { selector: 'code' })).toBeVisible();
+    expect(screen.getByText('Утверждения менеджера: 1. Явные допущения: 0.')).toBeVisible();
+    const accept = screen.getByRole('button', { name: 'Принять требования' });
+    expect(accept).toBeDisabled();
+    await userEvent.click(screen.getByRole('checkbox', { name: /Подтверждаю эти количества/ }));
+    await userEvent.click(accept);
+
+    expect(post).toHaveBeenCalledWith('/api/v1/runs/{run_id}/commands', expect.objectContaining({
+      body: expect.objectContaining({
+        command_type: 'accept_requirements', expected_run_version: 7,
+        artifact_refs: [expect.objectContaining({
+          artifact_id: artifact.artifact_id, artifact_version: 1,
+        })],
+        payload: expect.objectContaining({
+          artifact_digest: artifact.production_digest,
+          policy_version: 'requirements-artifact-acceptance:v1',
+          acknowledged_assertion_count: 1,
+          acknowledged_assumption_count: 0,
+        }),
+      }),
+    }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('изменились');
+    await userEvent.click(screen.getByRole('button', { name: 'Обновить версию' }));
+    expect(refresh).toHaveBeenCalledOnce();
   });
 });
 

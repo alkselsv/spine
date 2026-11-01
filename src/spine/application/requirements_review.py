@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+import unicodedata
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from pydantic import ConfigDict, Field
 
@@ -15,6 +16,7 @@ from spine.application.persistence.unit_of_work import UnitOfWorkFactory
 from spine.application.persistence.workflow_runs import validate_workflow_command_context
 from spine.application.workflow_runs import (
     EditRequirementCommandV1,
+    ReclassifyRequirementCommandV1,
     RequestRequirementsReworkCommandV1,
     SaveRequirementsReviewCommandV1,
     WorkflowArtifactRef,
@@ -23,8 +25,10 @@ from spine.application.workflow_runs import (
 from spine.domain.common import ActorRef, SpineModel
 from spine.domain.workflows import (
     RequirementEvidenceStatus,
+    RequirementAcceptanceBasis,
     RequirementReviewState,
     RequirementState,
+    RequirementV3,
     RequirementsArtifact,
     WorkflowCommandReceipt,
 )
@@ -49,7 +53,9 @@ class RequirementsReviewReceipt(SpineModel):
 
     schema_version: Literal[1] = 1
     command_receipt: WorkflowCommandReceipt
-    action: Literal["edit_requirement", "save_review", "request_rework"]
+    action: Literal[
+        "edit_requirement", "reclassify_requirement", "save_review", "request_rework"
+    ]
     actor: ActorRef
     reason: str = Field(min_length=1, max_length=2_000)
     changed_requirement_id: UUID | None = None
@@ -71,7 +77,7 @@ class RequirementsReviewService:
     ) -> RequirementsReviewReceipt | None:
         validate_workflow_command_context(context, command)
         if command.command_type not in {
-            "edit_requirement", "save_review", "request_rework"
+            "edit_requirement", "reclassify_requirement", "save_review", "request_rework"
         }:
             raise ValueError("requirements review command is invalid")
         scope = context.scope
@@ -131,6 +137,8 @@ class RequirementsReviewService:
                 successor = _review_successor(
                     previous=previous,
                     payload=command.payload,
+                    actor=command.actor,
+                    command_id=command.command_id,
                     production_identity=production_identity,
                 )
                 successor = await uow.requirements_artifacts.persist_candidate(successor)
@@ -140,9 +148,17 @@ class RequirementsReviewService:
             command_receipt=command_receipt,
             action=command.command_type,
             actor=command.actor,
-            reason=command.payload.reason,
+            reason=(
+                command.payload.rationale
+                if isinstance(command.payload, ReclassifyRequirementCommandV1)
+                else command.payload.reason
+            ),
             changed_requirement_id=(
-                command.payload.requirement_id
+                _reclassified_requirement_id(
+                    command.command_id, command.payload.requirement_id
+                )
+                if isinstance(command.payload, ReclassifyRequirementCommandV1)
+                else command.payload.requirement_id
                 if isinstance(command.payload, EditRequirementCommandV1)
                 else None
             ),
@@ -176,9 +192,12 @@ def _review_successor(
     previous: RequirementsArtifact,
     payload: (
         EditRequirementCommandV1
+        | ReclassifyRequirementCommandV1
         | SaveRequirementsReviewCommandV1
         | RequestRequirementsReworkCommandV1
     ),
+    actor: ActorRef,
+    command_id: UUID,
     production_identity: str,
 ) -> RequirementsArtifact:
     if isinstance(payload, EditRequirementCommandV1):
@@ -203,6 +222,79 @@ def _review_successor(
             raise RequirementsReviewUnavailableError("Requirement is unavailable.")
         changed_requirement_id = str(payload.requirement_id)
         statement = payload.statement.strip()
+    elif isinstance(payload, ReclassifyRequirementCommandV1):
+        found = False
+        requirements = []
+        statement = payload.statement.strip()
+        for requirement in previous.requirements:
+            if requirement.requirement_id == payload.requirement_id:
+                found = True
+                if (
+                    (requirement.source_refs or requirement.evidence_refs)
+                    and looks_derived_from_protected_text(
+                        statement, requirement.statement
+                    )
+                ):
+                    raise RequirementsReviewUnavailableError(
+                        "Reclassification requires independently supplied text."
+                    )
+                if (
+                    any(
+                        evidence.relationship.value == "contradicts"
+                        for evidence in requirement.evidence_refs
+                    )
+                    and payload.conflict_resolution_rationale is None
+                ):
+                    raise RequirementsReviewUnavailableError(
+                        "Conflicting evidence requires an explicit resolution."
+                    )
+                requirement = RequirementV3.model_validate(
+                    {
+                        **requirement.model_dump(),
+                        "schema_version": "requirement:v3",
+                        "requirement_id": _reclassified_requirement_id(
+                            command_id, requirement.requirement_id
+                        ),
+                        "statement": statement,
+                        "state": RequirementState.HUMAN_REVIEWED,
+                        "review_state": RequirementReviewState.REVIEWED,
+                        "source_refs": (),
+                        "evidence_refs": (),
+                        "evidence_status": RequirementEvidenceStatus.UNVERIFIED,
+                        "missing_markers": (),
+                        "ambiguous_markers": (),
+                        "upstream_artifact_ids": tuple(
+                            dict.fromkeys(
+                                (*requirement.upstream_artifact_ids, previous.artifact_id)
+                            )
+                        ),
+                        "acceptance_basis": payload.acceptance_basis,
+                        "acceptance_rationale": payload.rationale.strip(),
+                        "false_consequence": (
+                            payload.false_consequence.strip()
+                            if payload.false_consequence is not None
+                            else None
+                        ),
+                        "attributed_by": actor,
+                        "assertion_audit_reference": (
+                            command_id
+                            if payload.acceptance_basis == "manager_assertion"
+                            else None
+                        ),
+                        "independent_human_assertion": (
+                            payload.acceptance_basis == "manager_assertion"
+                        ),
+                        "conflict_resolution_rationale": (
+                            payload.conflict_resolution_rationale.strip()
+                            if payload.conflict_resolution_rationale is not None
+                            else None
+                        ),
+                    }
+                )
+            requirements.append(requirement)
+        if not found:
+            raise RequirementsReviewUnavailableError("Requirement is unavailable.")
+        changed_requirement_id = str(payload.requirement_id)
     else:
         review_state = (
             RequirementReviewState.REVIEWED
@@ -219,7 +311,19 @@ def _review_successor(
         "base_artifact_version": previous.artifact_version,
         "requirement_id": changed_requirement_id,
         "statement": statement,
-        "reason": payload.reason.strip(),
+        "reason": (
+            payload.rationale.strip()
+            if isinstance(payload, ReclassifyRequirementCommandV1)
+            else payload.reason.strip()
+        ),
+        "acceptance_basis": getattr(payload, "acceptance_basis", None),
+        "independence_attestation": getattr(
+            payload, "independence_attestation", None
+        ),
+        "false_consequence": getattr(payload, "false_consequence", None),
+        "conflict_resolution_rationale": getattr(
+            payload, "conflict_resolution_rationale", None
+        ),
     }
     digest = sha256(
         json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
@@ -233,10 +337,43 @@ def _review_successor(
             "requirements": tuple(requirements),
             "state": (
                 RequirementState.HUMAN_REVIEWED
-                if isinstance(payload, SaveRequirementsReviewCommandV1)
+                if isinstance(
+                    payload,
+                    (SaveRequirementsReviewCommandV1, ReclassifyRequirementCommandV1),
+                )
                 else previous.state
             ),
+            "schema_version": (
+                "requirements:v3"
+                if isinstance(payload, ReclassifyRequirementCommandV1)
+                else previous.schema_version
+            ),
         }
+    )
+
+
+def _normalized_statement(value: str) -> str:
+    return " ".join(
+        "".join(
+            character if not unicodedata.category(character).startswith("P") else " "
+            for character in value.casefold()
+        ).split()
+    )
+
+
+def looks_derived_from_protected_text(candidate: str, protected: str) -> bool:
+    candidate_tokens = set(_normalized_statement(candidate).split())
+    protected_tokens = set(_normalized_statement(protected).split())
+    if not candidate_tokens or not protected_tokens:
+        return True
+    overlap = len(candidate_tokens & protected_tokens)
+    return overlap / min(len(candidate_tokens), len(protected_tokens)) >= 0.6
+
+
+def _reclassified_requirement_id(command_id: UUID, requirement_id: UUID) -> UUID:
+    return uuid5(
+        command_id,
+        f"spine.requirement-reclassification:v1:{requirement_id}",
     )
 
 
@@ -245,4 +382,5 @@ __all__ = [
     "RequirementsReviewReceipt",
     "RequirementsReviewService",
     "RequirementsReviewUnavailableError",
+    "looks_derived_from_protected_text",
 ]

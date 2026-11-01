@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import Field, model_validator
@@ -14,6 +14,7 @@ from spine.application.transcript_publication import (
     TranscriptContextOutcome,
     TranscriptContextRequest,
     TranscriptAuthorizationSnapshot,
+    TranscriptAuthorizationSnapshotV2,
     TranscriptPublicationRepository,
 )
 from spine.application.parsed_content_inspection import ParsedContentInspectionRequester
@@ -83,6 +84,25 @@ class TranscriptInspectionResult(DefinitionModel):
                 raise ValueError("current transcript inspection requires exact evidence metadata")
         elif any(value is not None for value in protected):
             raise ValueError("unavailable transcript inspection cannot disclose metadata")
+        return self
+
+
+class TranscriptInspectionResultV2(TranscriptInspectionResult):
+    """Current transcript evidence with persisted authorization lineage."""
+
+    schema_version: Literal["transcript-inspection-result:v2"] = (
+        "transcript-inspection-result:v2"
+    )
+    authorization_decision_reference: UUID
+    audit_reference: UUID
+
+    @model_validator(mode="after")
+    def validate_authorization_lineage(self) -> "TranscriptInspectionResultV2":
+        if (
+            self.authorization_decision_reference.int == 0
+            or self.audit_reference.int == 0
+        ):
+            raise ValueError("transcript inspection lineage must be non-zero")
         return self
 
 
@@ -174,39 +194,39 @@ class TranscriptEvidenceInspector:
             transcript_artifact_id=locator.transcript_artifact_id,
         )
         if not authorization.allowed:
-            return TranscriptInspectionResult(
-                status=TranscriptInspectionStatus.PERMISSION_DENIED
+            return _authorized_result(
+                TranscriptInspectionStatus.PERMISSION_DENIED, authorization
             )
         if (
             authorization.workspace_id != workspace_id
             or authorization.environment_id != environment_id
             or authorization.source_object_id != locator.source_object_id
         ):
-            return TranscriptInspectionResult(status=TranscriptInspectionStatus.DEGRADED)
+            return _authorized_result(TranscriptInspectionStatus.DEGRADED, authorization)
         if (
             authorization.current_revision_id != locator.source_revision_id
             or authorization.current_revision_digest != locator.source_revision_digest
         ):
-            return TranscriptInspectionResult(status=TranscriptInspectionStatus.STALE)
+            return _authorized_result(TranscriptInspectionStatus.STALE, authorization)
         publication = await self._publications.get_publication(
             workspace_id=workspace_id,
             environment_id=environment_id,
             transcript_artifact_id=locator.transcript_artifact_id,
         )
         if publication is None:
-            return TranscriptInspectionResult(
-                status=TranscriptInspectionStatus.REVIEW_REQUIRED
+            return _authorized_result(
+                TranscriptInspectionStatus.REVIEW_REQUIRED, authorization
             )
         if publication.state is TranscriptPublicationState.SUPERSEDED:
-            return TranscriptInspectionResult(status=TranscriptInspectionStatus.SUPERSEDED)
+            return _authorized_result(TranscriptInspectionStatus.SUPERSEDED, authorization)
         if publication.state is TranscriptPublicationState.STALE:
-            return TranscriptInspectionResult(status=TranscriptInspectionStatus.STALE)
+            return _authorized_result(TranscriptInspectionStatus.STALE, authorization)
         if publication.state is not TranscriptPublicationState.ACTIVE:
-            return TranscriptInspectionResult(status=TranscriptInspectionStatus.DEGRADED)
+            return _authorized_result(TranscriptInspectionStatus.DEGRADED, authorization)
         if publication.projection_state is not TranscriptProjectionState.CURRENT:
-            return TranscriptInspectionResult(status=TranscriptInspectionStatus.DEGRADED)
+            return _authorized_result(TranscriptInspectionStatus.DEGRADED, authorization)
         if not _publication_matches_locator(publication, workspace_id, environment_id, locator):
-            return TranscriptInspectionResult(status=TranscriptInspectionStatus.STALE)
+            return _authorized_result(TranscriptInspectionStatus.STALE, authorization)
 
         artifact = await self._publications.get_artifact(
             workspace_id=workspace_id,
@@ -214,7 +234,7 @@ class TranscriptEvidenceInspector:
             artifact_id=locator.transcript_artifact_id,
         )
         if artifact is None:
-            return TranscriptInspectionResult(status=TranscriptInspectionStatus.DEGRADED)
+            return _authorized_result(TranscriptInspectionStatus.DEGRADED, authorization)
         if (
             artifact.workspace_id != workspace_id
             or artifact.environment_id != environment_id
@@ -222,14 +242,14 @@ class TranscriptEvidenceInspector:
             or artifact.source_revision_id != locator.source_revision_id
             or artifact.source_revision_digest != locator.source_revision_digest
         ):
-            return TranscriptInspectionResult(status=TranscriptInspectionStatus.STALE)
+            return _authorized_result(TranscriptInspectionStatus.STALE, authorization)
         try:
             validate_transcript_artifact_locator(artifact, locator)
         except ValueError:
-            return TranscriptInspectionResult(status=TranscriptInspectionStatus.STALE)
+            return _authorized_result(TranscriptInspectionStatus.STALE, authorization)
         partial = artifact.outcome is TranscriptionArtifactOutcome.PARTIAL
         if partial and not publication.partial_allowed:
-            return TranscriptInspectionResult(status=TranscriptInspectionStatus.PARTIAL)
+            return _authorized_result(TranscriptInspectionStatus.PARTIAL, authorization)
 
         broker = TranscriptContextBroker(
             repository=self._publications,
@@ -249,15 +269,20 @@ class TranscriptEvidenceInspector:
             )
         )
         if context_result.outcome is TranscriptContextOutcome.DENIED:
-            return TranscriptInspectionResult(
-                status=TranscriptInspectionStatus.PERMISSION_DENIED
+            return _authorized_result(
+                TranscriptInspectionStatus.PERMISSION_DENIED, authorization
             )
         if context_result.outcome is not TranscriptContextOutcome.ALLOWED:
-            return TranscriptInspectionResult(status=TranscriptInspectionStatus.STALE)
+            return _authorized_result(TranscriptInspectionStatus.STALE, authorization)
         if len(context_result.segments) != 1:
-            return TranscriptInspectionResult(status=TranscriptInspectionStatus.DEGRADED)
+            return _authorized_result(TranscriptInspectionStatus.DEGRADED, authorization)
 
-        return TranscriptInspectionResult(
+        result_type = (
+            TranscriptInspectionResultV2
+            if isinstance(authorization, TranscriptAuthorizationSnapshotV2)
+            else TranscriptInspectionResult
+        )
+        return result_type(
             status=TranscriptInspectionStatus.CURRENT,
             locator=locator,
             source_object_id=publication.source_object_id,
@@ -275,6 +300,16 @@ class TranscriptEvidenceInspector:
             partial=partial,
             recording_duration_ms=artifact.recording_duration_ms,
             text=context_result.segments[0].text,
+            **(
+                {
+                    "authorization_decision_reference": (
+                        authorization.authorization_decision_reference
+                    ),
+                    "audit_reference": authorization.audit_reference,
+                }
+                if isinstance(authorization, TranscriptAuthorizationSnapshotV2)
+                else {}
+            ),
         )
 
 
@@ -298,10 +333,26 @@ def _publication_matches_locator(
     )
 
 
+def _authorized_result(
+    status: TranscriptInspectionStatus,
+    authorization: TranscriptAuthorizationSnapshot,
+) -> TranscriptInspectionResult:
+    if isinstance(authorization, TranscriptAuthorizationSnapshotV2):
+        return TranscriptInspectionResultV2(
+            status=status,
+            authorization_decision_reference=(
+                authorization.authorization_decision_reference
+            ),
+            audit_reference=authorization.audit_reference,
+        )
+    return TranscriptInspectionResult(status=status)
+
+
 __all__ = [
     "TranscriptEvidenceAuthorization",
     "TranscriptEvidenceInspector",
     "TranscriptInspectionResult",
+    "TranscriptInspectionResultV2",
     "TranscriptInspectionStatus",
     "TranscriptReviewState",
 ]

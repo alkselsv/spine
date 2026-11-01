@@ -207,6 +207,7 @@ async def test_inspect_returns_exact_text_after_current_authorization() -> None:
     assert result.status is RequirementsEvidenceInspectionStatus.AVAILABLE
     assert result.evidence is not None
     assert result.evidence.text == "secret"
+    assert result.evidence.validation_reference == UUID(int=20)
     assert result.evidence.authorization_decision_reference == DECISION_ID
 
 
@@ -324,6 +325,7 @@ async def test_validate_artifact_records_current_validation_lineage() -> None:
     assert artifact.requirements[0].evidence_refs[0].validation is None
     assert updated.validation is not None
     assert updated.validation.status is RequirementEvidenceValidationStatus.VALID
+    assert updated.validation.validation_reference == UUID(int=20)
     assert updated.validation.authorization_decision_reference == DECISION_ID
     assert validated.requirements[0].evidence_status is RequirementEvidenceStatus.REFERENCED
 

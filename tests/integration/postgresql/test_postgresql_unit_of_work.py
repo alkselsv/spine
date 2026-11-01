@@ -8043,3 +8043,174 @@ async def test_requirements_artifacts_replay_successor_and_isolate_workspaces(
         await uow.commit()
     other_context = postgresql_adapter.ingestion_context(other_workspace, other_environment, "workflow.run.read")
     assert await artifacts.get(context=other_context, artifact_id=first.artifact_id) is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_requirements_acceptance_is_replay_safe_and_concurrent_decisions_have_one_effect(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    from spine.application.parsed_content_inspection import ParsedContentInspectionRequester
+    from spine.application.requirements_acceptance import (
+        RequirementsAcceptanceAuthority,
+        RequirementsAcceptanceService,
+    )
+    from spine.application.workflow_runs import (
+        AcceptRequirementsCommandV1,
+        WorkflowArtifactRef,
+    )
+    from spine.application.persistence.errors import (
+        ConstraintConflictError,
+        OptimisticConflictError,
+    )
+    from spine.domain.workflows import (
+        RequirementV3,
+        RequirementAcceptanceBasis,
+        RequirementReviewState,
+        RequirementState,
+        RequirementsArtifact,
+    )
+
+    class PassThroughEvidence:
+        async def validate_artifact(self, *, context, requester, artifact):
+            return artifact
+
+    workspace_id = synthetic_uuid(64500)
+    environment_id = synthetic_uuid(64501)
+    actor_id = synthetic_uuid(64502)
+    version_id = synthetic_uuid(64503)
+    start_id = synthetic_uuid(64504)
+    async with postgresql_adapter.uow_factory(
+        postgresql_adapter.workspace_context(workspace_id)
+    ) as uow:
+        await uow.workspaces.add(Workspace(
+            id=workspace_id, slug="issue-645-acceptance", display_name="Issue 645",
+        ))
+        await uow.environments.add(Environment(
+            id=environment_id, workspace_id=workspace_id,
+            kind=EnvironmentKind.PRODUCTION, display_name="Issue 645 environment",
+        ))
+        await uow.commit()
+
+    assert postgresql_adapter.ingestion_context is not None
+    start_context = postgresql_adapter.ingestion_context(
+        workspace_id, environment_id, "workflow.run.start"
+    )
+    run_service = PersistedWorkflowRunAdmissionService(postgresql_adapter.uow_factory)
+    started = await run_service.start(context=start_context, command=StartWorkflowCommand(
+        command_id=start_id,
+        idempotency_key="issue-645-start",
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        actor=ActorRef(kind=ActorKind.SERVICE, id=synthetic_uuid(959)),
+        environment=EnvironmentKind.PRODUCTION,
+        workflow_key="commercial.requirements",
+        workflow_version_id=version_id,
+        workflow_version="1.0.0",
+        work_item_key="issue-645-work-item",
+        client_request=ClientRequestV1(message="Accept exact requirements"),
+        trace_id=start_context.trace_id,
+        correlation_id=start_id,
+        causation_id=start_id,
+    ))
+    artifact = RequirementsArtifact(
+        artifact_id=synthetic_uuid(64505),
+        artifact_version=1,
+        schema_version="requirements:v3",
+        production_identity="issue-645-reviewed-v1",
+        production_digest="a" * 64,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        work_item_id=started.work_item_id,
+        run_id=started.run_id,
+        requirements=(RequirementV3(
+            requirement_id=synthetic_uuid(64506),
+            category="constraint",
+            statement="Use the approved customer terminology",
+            state=RequirementState.HUMAN_REVIEWED,
+            review_state=RequirementReviewState.REVIEWED,
+            acceptance_basis=RequirementAcceptanceBasis.MANAGER_ASSERTION,
+            acceptance_rationale="Confirmed by the account manager.",
+            attributed_by=ActorRef(kind=ActorKind.HUMAN, id=actor_id),
+            assertion_audit_reference=synthetic_uuid(64507),
+            independent_human_assertion=True,
+        ),),
+        state=RequirementState.HUMAN_REVIEWED,
+    )
+    async with postgresql_adapter.uow_factory(start_context) as uow:
+        await uow.requirements_artifacts.persist_candidate(artifact)
+        await uow.commit()
+
+    assert postgresql_adapter.governance_context is not None
+    command_context = postgresql_adapter.governance_context(
+        workspace_id, environment_id, actor_id, "workflow.run.command"
+    )
+    authority = RequirementsAcceptanceAuthority(
+        actor_id=actor_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        permission="requirements_artifact.accept",
+        policy_version="requirements-artifact-acceptance:v1",
+        authentication_configuration_version="test-auth:v1",
+        authorization_generation=1,
+        allowed=True,
+    )
+    requester = ParsedContentInspectionRequester(subject_id=actor_id)
+    service = RequirementsAcceptanceService(
+        postgresql_adapter.uow_factory, evidence_validator=PassThroughEvidence()
+    )
+
+    def command(number: int, key: str) -> WorkflowCommand:
+        return WorkflowCommand(
+            command_id=synthetic_uuid(number),
+            idempotency_key=key,
+            run_id=started.run_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            actor=ActorRef(kind=ActorKind.HUMAN, id=actor_id),
+            command_type="accept_requirements",
+            command_schema_version=1,
+            expected_run_version=1,
+            payload=AcceptRequirementsCommandV1(
+                artifact_digest=artifact.production_digest,
+                acknowledged_assertion_count=1,
+                acknowledged_assumption_count=0,
+            ),
+            artifact_refs=(WorkflowArtifactRef(
+                artifact_id=artifact.artifact_id,
+                schema_name="requirements",
+                schema_version=artifact.schema_version,
+                artifact_version=artifact.artifact_version,
+            ),),
+            trace_id=command_context.trace_id,
+            correlation_id=synthetic_uuid(64510),
+            causation_id=synthetic_uuid(64511),
+        )
+
+    first_command = command(64512, "issue-645-accept")
+    first = await service.dispatch(
+        context=command_context, command=first_command,
+        authority=authority, requester=requester,
+    )
+    replay = await service.dispatch(
+        context=command_context, command=first_command,
+        authority=authority, requester=requester,
+    )
+    assert first is not None and replay is not None
+    assert replay.command_receipt.admission == "replayed"
+    assert replay.accepted_artifact_ref == first.accepted_artifact_ref
+
+    with pytest.raises((ConstraintConflictError, OptimisticConflictError)):
+        await service.dispatch(
+            context=command_context,
+            command=command(64513, "issue-645-concurrent-loser"),
+            authority=authority,
+            requester=requester,
+        )
+
+    async with postgresql_adapter.uow_factory(command_context) as uow:
+        stored = await uow.requirements_acceptances.get(
+            command_id=first_command.command_id
+        )
+        loser = await uow.requirements_acceptances.get(command_id=synthetic_uuid(64513))
+    assert stored is not None
+    assert loser is None

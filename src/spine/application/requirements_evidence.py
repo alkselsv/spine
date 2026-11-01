@@ -185,7 +185,7 @@ class RequirementsEvidenceValidationService:
                 source_object_id=evidence.source_ref.source_object_id,
                 source_revision_id=evidence.source_ref.source_revision_id,
             )
-            await self._record_decision(
+            validation_reference = await self._record_decision(
                 context=context,
                 decision=decision,
                 requested_source_revision_id=evidence.source_ref.source_revision_id,
@@ -195,9 +195,6 @@ class RequirementsEvidenceValidationService:
         if not _decision_matches(decision, context, evidence):
             return self._safe(_authorization_status(decision))
 
-        validation_reference = self.validation_reference_factory()
-        if validation_reference.int == 0:
-            return self._safe(RequirementsEvidenceInspectionStatus.DEGRADED)
         return RequirementsEvidenceInspectionResult(
             status=RequirementsEvidenceInspectionStatus.AVAILABLE,
             evidence=RequirementsEvidenceInspectionEvidence(
@@ -219,7 +216,7 @@ class RequirementsEvidenceValidationService:
         context: TrustedPersistenceContext,
         decision: ContentAuthorizationDecision,
         requested_source_revision_id: UUID,
-    ) -> None:
+    ) -> UUID:
         if self.decision_audit is None:
             raise RuntimeError("requirements evidence decision audit is unavailable")
         audit_reference = await self.decision_audit.record_decision(
@@ -229,6 +226,7 @@ class RequirementsEvidenceValidationService:
         )
         if not isinstance(audit_reference, UUID) or audit_reference.int == 0:
             raise RuntimeError("requirements evidence decision audit is invalid")
+        return audit_reference
 
     async def _validate_requirement(
         self,
@@ -303,7 +301,7 @@ class RequirementsEvidenceValidationService:
                     source_object_id=evidence.source_ref.source_object_id,
                     source_revision_id=evidence.source_ref.source_revision_id,
                 )
-                await self._record_decision(
+                reference = await self._record_decision(
                     context=context,
                     decision=decision,
                     requested_source_revision_id=evidence.source_ref.source_revision_id,

@@ -268,6 +268,49 @@ requirements_artifact_versions = Table(
                     name=conv("ck_requirements_artifact_predecessor")),
 )
 
+requirements_acceptance_decisions = Table(
+    "requirements_acceptance_decisions",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("command_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("run_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("artifact_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("artifact_version", Integer, nullable=False),
+    Column("artifact_digest", String(64), nullable=False),
+    Column("actor_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("policy_version", Text, nullable=False),
+    Column("receipt", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "command_id",
+        name="pk_requirements_acceptance_decisions",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "command_id"],
+        [
+            "spine.workflow_command_receipts.workspace_id",
+            "spine.workflow_command_receipts.environment_id",
+            "spine.workflow_command_receipts.command_id",
+        ],
+        name="fk_requirements_acceptance_command",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "artifact_id", "artifact_version"],
+        [
+            "spine.requirements_artifact_versions.workspace_id",
+            "spine.requirements_artifact_versions.environment_id",
+            "spine.requirements_artifact_versions.artifact_id",
+            "spine.requirements_artifact_versions.artifact_version",
+        ],
+        name="fk_requirements_acceptance_artifact",
+    ),
+    CheckConstraint(
+        "artifact_version >= 1 AND artifact_digest ~ '^[0-9a-f]{64}$'",
+        name="ck_requirements_acceptance_artifact",
+    ),
+)
+
 answer_question_attempts = Table(
     "answer_question_attempts",
     metadata,
@@ -2290,6 +2333,7 @@ __all__ = [
     "workspaces",
     "work_items",
     "workflow_runs",
+    "requirements_acceptance_decisions",
     "source_objects",
     "source_revisions",
     "source_revision_provenance",

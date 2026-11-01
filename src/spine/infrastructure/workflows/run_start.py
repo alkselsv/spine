@@ -7,6 +7,7 @@ from spine.application.persistence.workflow_runs import (
     START_WORKFLOW_EVENT_SCHEMA_VERSION,
     START_WORKFLOW_EVENT_TYPE,
     WORKFLOW_CANCELLED_EVENT_TYPE,
+    REQUIREMENTS_ACCEPTED_EVENT_TYPE,
     WORKFLOW_SIGNAL_EVENT_SCHEMA_VERSION,
 )
 from spine.application.workflows.requirements_clarification_dispatch import (
@@ -36,6 +37,7 @@ def register_workflow_run_start_delivery_route(
         CLARIFICATION_REQUESTED_EVENT_TYPE,
         CLARIFICATION_ANSWERED_EVENT_TYPE,
         WORKFLOW_CANCELLED_EVENT_TYPE,
+        REQUIREMENTS_ACCEPTED_EVENT_TYPE,
     ):
         routes.register(
             event_type=event_type,

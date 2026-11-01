@@ -103,6 +103,7 @@ from spine.application.persisted_workflow_runs import (
 )
 from spine.application.requirements_artifacts import PersistedRequirementsArtifactService
 from spine.application.requirements_review import RequirementsReviewService
+from spine.application.requirements_acceptance import RequirementsAcceptanceService
 from spine.application.requirements_evidence import RequirementsEvidenceValidationService
 from spine.application.connections.management import ProviderConnectionManager
 from spine.application.workflow_runs import WorkflowVersionResolver
@@ -271,6 +272,7 @@ def create_app(
     workflow_run_admission_service: PersistedWorkflowRunAdmissionService | None = None,
     requirements_artifact_service: PersistedRequirementsArtifactService | None = None,
     requirements_review_service: RequirementsReviewService | None = None,
+    requirements_acceptance_service: RequirementsAcceptanceService | None = None,
     requirements_evidence_service: RequirementsEvidenceValidationService | None = None,
     transcript_evidence_inspector_service: TranscriptEvidenceInspectorService | None = None,
     transcript_review_service: TranscriptReviewCommandService | None = None,
@@ -571,6 +573,7 @@ def create_app(
             cursor_secret=workflow_run_cursor_secret,
             requirements_artifact_service=requirements_artifact_service,
             requirements_review_service=requirements_review_service,
+            requirements_acceptance_service=requirements_acceptance_service,
         )
     if requirements_artifact_service is not None:
         if type(authorization_runtime) is not ApiAuthorizationRuntime:

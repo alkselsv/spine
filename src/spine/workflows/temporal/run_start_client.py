@@ -16,6 +16,7 @@ from spine.application.persistence.workflow_runs import (
     ClarificationAnsweredDispatchPayload,
     ClarificationRequestedDispatchPayload,
     WorkflowCancelledDispatchPayload,
+    RequirementsAcceptedDispatchPayload,
 )
 from spine.workflows.temporal.client import TemporalSdkClient
 
@@ -88,6 +89,15 @@ class TemporalSdkWorkflowRunClient(WorkflowRunStartClient):
         await self._signal(
             run_id=payload.run_id,
             signal="run_cancelled",
+            payload=payload.model_dump(mode="json"),
+        )
+
+    async def signal_requirements_accepted(
+        self, payload: RequirementsAcceptedDispatchPayload
+    ) -> None:
+        await self._signal(
+            run_id=payload.run_id,
+            signal="requirements_accepted",
             payload=payload.model_dump(mode="json"),
         )
 

@@ -34,6 +34,9 @@ class TemporalFake:
     async def signal_run_cancelled(self, payload):
         raise AssertionError(payload)
 
+    async def signal_requirements_accepted(self, payload):
+        raise AssertionError(payload)
+
 
 def answer_intent():
     registry = OutboxEventRegistry()

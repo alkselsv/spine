@@ -164,8 +164,10 @@ class WorkflowRunSnapshot(DefinitionModel):
         Literal[
             "add_context",
             "edit_requirement",
+            "reclassify_requirement",
             "save_review",
             "request_rework",
+            "accept_requirements",
             "answer_clarification",
             "cancel",
         ],

@@ -1,6 +1,108 @@
 {
   "components": {
     "schemas": {
+      "AcceptRequirementsPayloadRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "acknowledged_assertion_count": {
+            "minimum": 0.0,
+            "title": "Acknowledged Assertion Count",
+            "type": "integer"
+          },
+          "acknowledged_assumption_count": {
+            "minimum": 0.0,
+            "title": "Acknowledged Assumption Count",
+            "type": "integer"
+          },
+          "artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Artifact Digest",
+            "type": "string"
+          },
+          "policy_version": {
+            "const": "requirements-artifact-acceptance:v1",
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "artifact_digest",
+          "policy_version",
+          "acknowledged_assertion_count",
+          "acknowledged_assumption_count"
+        ],
+        "title": "AcceptRequirementsPayloadRequestV1",
+        "type": "object"
+      },
+      "AcceptRequirementsWorkflowCommandRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_refs": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowArtifactRefRequestV1"
+            },
+            "title": "Artifact Refs",
+            "type": "array"
+          },
+          "causation_id": {
+            "format": "uuid",
+            "title": "Causation Id",
+            "type": "string"
+          },
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "command_schema_version": {
+            "const": 1,
+            "title": "Command Schema Version",
+            "type": "integer"
+          },
+          "command_type": {
+            "const": "accept_requirements",
+            "title": "Command Type",
+            "type": "string"
+          },
+          "correlation_id": {
+            "format": "uuid",
+            "title": "Correlation Id",
+            "type": "string"
+          },
+          "expected_run_version": {
+            "minimum": 1.0,
+            "title": "Expected Run Version",
+            "type": "integer"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/AcceptRequirementsPayloadRequestV1"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command_id",
+          "command_type",
+          "command_schema_version",
+          "expected_run_version",
+          "payload",
+          "artifact_refs",
+          "correlation_id",
+          "causation_id"
+        ],
+        "title": "AcceptRequirementsWorkflowCommandRequestV1",
+        "type": "object"
+      },
       "AcceptedAnswerClaimPresentation": {
         "additionalProperties": false,
         "description": "An authoritative claim identity, kind and code-point span.",
@@ -9181,6 +9283,143 @@
         "title": "ReadinessResponse",
         "type": "object"
       },
+      "ReclassifyRequirementPayloadRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance_basis": {
+            "enum": [
+              "manager_assertion",
+              "explicit_assumption"
+            ],
+            "title": "Acceptance Basis",
+            "type": "string"
+          },
+          "conflict_resolution_rationale": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conflict Resolution Rationale"
+          },
+          "false_consequence": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "False Consequence"
+          },
+          "independence_attestation": {
+            "const": "authored_from_independent_knowledge_without_protected_text",
+            "title": "Independence Attestation",
+            "type": "string"
+          },
+          "rationale": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Rationale",
+            "type": "string"
+          },
+          "requirement_id": {
+            "format": "uuid",
+            "title": "Requirement Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "statement": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "title": "Statement",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requirement_id",
+          "statement",
+          "acceptance_basis",
+          "rationale",
+          "independence_attestation"
+        ],
+        "title": "ReclassifyRequirementPayloadRequestV1",
+        "type": "object"
+      },
+      "ReclassifyRequirementWorkflowCommandRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_refs": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowArtifactRefRequestV1"
+            },
+            "title": "Artifact Refs",
+            "type": "array"
+          },
+          "causation_id": {
+            "format": "uuid",
+            "title": "Causation Id",
+            "type": "string"
+          },
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "command_schema_version": {
+            "const": 1,
+            "title": "Command Schema Version",
+            "type": "integer"
+          },
+          "command_type": {
+            "const": "reclassify_requirement",
+            "title": "Command Type",
+            "type": "string"
+          },
+          "correlation_id": {
+            "format": "uuid",
+            "title": "Correlation Id",
+            "type": "string"
+          },
+          "expected_run_version": {
+            "minimum": 1.0,
+            "title": "Expected Run Version",
+            "type": "integer"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/ReclassifyRequirementPayloadRequestV1"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command_id",
+          "command_type",
+          "command_schema_version",
+          "expected_run_version",
+          "payload",
+          "artifact_refs",
+          "correlation_id",
+          "causation_id"
+        ],
+        "title": "ReclassifyRequirementWorkflowCommandRequestV1",
+        "type": "object"
+      },
       "ReplaceDocumentRequest": {
         "additionalProperties": false,
         "properties": {
@@ -9428,6 +9667,15 @@
         ],
         "title": "Requirement",
         "type": "object"
+      },
+      "RequirementAcceptanceBasis": {
+        "enum": [
+          "source_validated",
+          "manager_assertion",
+          "explicit_assumption"
+        ],
+        "title": "RequirementAcceptanceBasis",
+        "type": "string"
       },
       "RequirementCategory": {
         "enum": [
@@ -9783,6 +10031,310 @@
         "title": "RequirementV2",
         "type": "object"
       },
+      "RequirementV3": {
+        "additionalProperties": false,
+        "description": "Acceptance-aware requirement contract with explicit human bases.",
+        "properties": {
+          "acceptance_basis": {
+            "$ref": "#/components/schemas/RequirementAcceptanceBasis",
+            "default": "source_validated"
+          },
+          "acceptance_rationale": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acceptance Rationale"
+          },
+          "ambiguous_markers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Ambiguous Markers",
+            "type": "array"
+          },
+          "assertion_audit_reference": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assertion Audit Reference"
+          },
+          "attributed_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActorRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "category": {
+            "$ref": "#/components/schemas/RequirementCategory"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "conflict_resolution_rationale": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conflict Resolution Rationale"
+          },
+          "constraints": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Constraints",
+            "type": "array"
+          },
+          "evidence_refs": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RequirementEvidenceRef"
+            },
+            "title": "Evidence Refs",
+            "type": "array"
+          },
+          "evidence_status": {
+            "$ref": "#/components/schemas/RequirementEvidenceStatus",
+            "default": "unverified"
+          },
+          "false_consequence": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "False Consequence"
+          },
+          "independent_human_assertion": {
+            "default": false,
+            "title": "Independent Human Assertion",
+            "type": "boolean"
+          },
+          "missing_markers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing Markers",
+            "type": "array"
+          },
+          "requirement_id": {
+            "format": "uuid",
+            "title": "Requirement Id",
+            "type": "string"
+          },
+          "review_state": {
+            "$ref": "#/components/schemas/RequirementReviewState",
+            "default": "needs_review"
+          },
+          "schema_version": {
+            "const": "requirement:v3",
+            "default": "requirement:v3",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_refs": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AcceptedSourceRevisionRef"
+            },
+            "title": "Source Refs",
+            "type": "array"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RequirementState",
+            "default": "candidate"
+          },
+          "statement": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "title": "Statement",
+            "type": "string"
+          },
+          "uncertainty": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uncertainty"
+          },
+          "upstream_artifact_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Upstream Artifact Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "requirement_id",
+          "category",
+          "statement"
+        ],
+        "title": "RequirementV3",
+        "type": "object"
+      },
+      "RequirementsAcceptanceReceiptResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted_artifact_digest": {
+            "title": "Accepted Artifact Digest",
+            "type": "string"
+          },
+          "accepted_artifact_ref": {
+            "$ref": "#/components/schemas/WorkflowArtifactRef"
+          },
+          "actor": {
+            "$ref": "#/components/schemas/ActorRef"
+          },
+          "admission": {
+            "enum": [
+              "accepted",
+              "replayed"
+            ],
+            "title": "Admission",
+            "type": "string"
+          },
+          "assertion_count": {
+            "title": "Assertion Count",
+            "type": "integer"
+          },
+          "assumption_count": {
+            "title": "Assumption Count",
+            "type": "integer"
+          },
+          "authentication_configuration_version": {
+            "title": "Authentication Configuration Version",
+            "type": "string"
+          },
+          "authorization_generation": {
+            "title": "Authorization Generation",
+            "type": "integer"
+          },
+          "causation_id": {
+            "format": "uuid",
+            "title": "Causation Id",
+            "type": "string"
+          },
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "correlation_id": {
+            "format": "uuid",
+            "title": "Correlation Id",
+            "type": "string"
+          },
+          "evidence_validation_references": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Evidence Validation References",
+            "type": "array"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_version": {
+            "minimum": 1.0,
+            "title": "Run Version",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "work_item_id": {
+            "format": "uuid",
+            "title": "Work Item Id",
+            "type": "string"
+          },
+          "workflow_version_id": {
+            "format": "uuid",
+            "title": "Workflow Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command_id",
+          "work_item_id",
+          "run_id",
+          "workflow_version_id",
+          "state",
+          "run_version",
+          "admission",
+          "accepted_artifact_ref",
+          "accepted_artifact_digest",
+          "actor",
+          "policy_version",
+          "authentication_configuration_version",
+          "authorization_generation",
+          "evidence_validation_references",
+          "correlation_id",
+          "causation_id",
+          "assertion_count",
+          "assumption_count"
+        ],
+        "title": "RequirementsAcceptanceReceiptResponse",
+        "type": "object"
+      },
       "RequirementsArtifact": {
         "additionalProperties": false,
         "description": "Immutable, explicitly versioned requirements candidate for one run.",
@@ -9838,7 +10390,8 @@
               "discriminator": {
                 "mapping": {
                   "requirement:v1": "#/components/schemas/Requirement",
-                  "requirement:v2": "#/components/schemas/RequirementV2"
+                  "requirement:v2": "#/components/schemas/RequirementV2",
+                  "requirement:v3": "#/components/schemas/RequirementV3"
                 },
                 "propertyName": "schema_version"
               },
@@ -9848,6 +10401,9 @@
                 },
                 {
                   "$ref": "#/components/schemas/RequirementV2"
+                },
+                {
+                  "$ref": "#/components/schemas/RequirementV3"
                 }
               ]
             },
@@ -10095,6 +10651,7 @@
           "action": {
             "enum": [
               "edit_requirement",
+              "reclassify_requirement",
               "save_review",
               "request_rework"
             ],
@@ -12256,8 +12813,10 @@
               "enum": [
                 "add_context",
                 "edit_requirement",
+                "reclassify_requirement",
                 "save_review",
                 "request_rework",
+                "accept_requirements",
                 "answer_clarification",
                 "cancel"
               ],
@@ -19609,10 +20168,16 @@
                     "$ref": "#/components/schemas/EditRequirementWorkflowCommandRequestV1"
                   },
                   {
+                    "$ref": "#/components/schemas/ReclassifyRequirementWorkflowCommandRequestV1"
+                  },
+                  {
                     "$ref": "#/components/schemas/SaveRequirementsReviewWorkflowCommandRequestV1"
                   },
                   {
                     "$ref": "#/components/schemas/RequestRequirementsReworkWorkflowCommandRequestV1"
+                  },
+                  {
+                    "$ref": "#/components/schemas/AcceptRequirementsWorkflowCommandRequestV1"
                   },
                   {
                     "$ref": "#/components/schemas/AnswerClarificationWorkflowCommandRequestV1"
@@ -19638,6 +20203,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/RequirementsReviewReceiptResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequirementsAcceptanceReceiptResponse"
                     }
                   ],
                   "title": "Response Workflow.Runs.Commands.Create"

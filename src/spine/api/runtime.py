@@ -56,6 +56,10 @@ from spine.application.requirements_artifacts import (
     RequirementsExtractionClarificationRevalidator,
 )
 from spine.application.requirements_review import RequirementsReviewService
+from spine.application.requirements_acceptance import (
+    CurrentRequirementsAcceptanceEvidenceValidator,
+    RequirementsAcceptanceService,
+)
 from spine.application.requirements_evidence import (
     PersistedRequirementsEvidenceResolver,
     RequirementsEvidenceValidationService,
@@ -511,6 +515,13 @@ def create_production_app(
         ),
         requirements_review_service=RequirementsReviewService(
             persistence.uow_factory
+        ),
+        requirements_acceptance_service=RequirementsAcceptanceService(
+            persistence.uow_factory,
+            evidence_validator=CurrentRequirementsAcceptanceEvidenceValidator(
+                parsed=requirements_evidence_service,
+                transcripts=transcript_evidence_inspector,
+            ),
         ),
         requirements_evidence_service=requirements_evidence_service,
         transcript_evidence_inspector_service=transcript_evidence_inspector,

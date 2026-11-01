@@ -1520,6 +1520,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "workflow_command_receipts",
         "workflow_run_events",
         "requirements_artifact_versions",
+        "requirements_acceptance_decisions",
         "transcription_jobs",
         "transcription_artifacts",
         "transcript_segments",
@@ -2333,6 +2334,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "alembic_version_pkc",
         "ix_environments_workspace_id",
         "ix_google_sheets_identity_disposition_scope",
+        "pk_requirements_acceptance_decisions",
         "pk_requirements_artifact_versions",
         "uq_requirements_artifact_production",
         "pk_environments",
@@ -2597,6 +2599,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "workflow_command_receipts": (True, True),
         "workflow_run_events": (True, True),
         "requirements_artifact_versions": (True, True),
+        "requirements_acceptance_decisions": (True, True),
         "transcription_jobs": (True, True),
         "transcription_artifacts": (True, True),
         "transcript_segments": (True, True),
@@ -2759,6 +2762,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "workflow_command_receipts": (True, True, False, False),
         "workflow_run_events": (True, True, False, False),
         "requirements_artifact_versions": (True, True, False, False),
+        "requirements_acceptance_decisions": (True, True, False, False),
         "transcription_jobs": (True, True, False, False),
         "transcription_artifacts": (True, True, False, False),
         "transcript_segments": (True, True, False, False),
@@ -2978,8 +2982,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "SELECT conname FROM pg_constraint AS constraint_record "
                         "JOIN pg_namespace AS namespace "
                         "ON namespace.oid = constraint_record.connamespace "
-                        "WHERE namespace.nspname = 'spine' "
-                        "AND constraint_record.conname NOT LIKE '%source_canonical%' "
+                            "WHERE namespace.nspname = 'spine' "
+                            "AND constraint_record.conname NOT LIKE '%source_canonical%' "
+                            "AND constraint_record.conrelid <> COALESCE(to_regclass('spine.requirements_acceptance_decisions'), 0) "
                         "AND constraint_record.conrelid NOT IN ("
                         "SELECT relation.oid FROM pg_class AS relation "
                         "JOIN pg_namespace AS source_namespace "
@@ -3027,8 +3032,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                     text(
                         "SELECT table_name, column_name, data_type, is_nullable, "
                         "column_default FROM information_schema.columns "
-                        "WHERE table_schema = 'spine' "
-                        "AND table_name NOT LIKE 'source_canonical%' "
+                            "WHERE table_schema = 'spine' "
+                            "AND table_name NOT LIKE 'source_canonical%' "
+                            "AND table_name <> 'requirements_acceptance_decisions' "
                             "AND table_name NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                             "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
@@ -3064,8 +3070,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                 await connection.execute(
                     text(
                         "SELECT indexname FROM pg_indexes "
-                        "WHERE schemaname = 'spine' "
-                        "AND indexname NOT LIKE 'pk_source_canonical%' "
+                            "WHERE schemaname = 'spine' "
+                            "AND indexname NOT LIKE 'pk_source_canonical%' "
+                            "AND tablename <> 'requirements_acceptance_decisions' "
                         "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                          "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
@@ -3100,8 +3107,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
             (
                 await connection.execute(
                     text(
-                        "SELECT tablename FROM pg_tables WHERE schemaname = 'spine' "
-                        "AND tablename NOT LIKE 'source_canonical%' "
+                            "SELECT tablename FROM pg_tables WHERE schemaname = 'spine' "
+                            "AND tablename NOT LIKE 'source_canonical%' "
+                            "AND tablename <> 'requirements_acceptance_decisions' "
                             "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                          "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
@@ -3136,8 +3144,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
             (
                 await connection.execute(
                     text(
-                        "SELECT tableowner FROM pg_tables WHERE schemaname = 'spine' "
-                        "AND tablename NOT LIKE 'source_canonical%' "
+                            "SELECT tableowner FROM pg_tables WHERE schemaname = 'spine' "
+                            "AND tablename NOT LIKE 'source_canonical%' "
+                            "AND tablename <> 'requirements_acceptance_decisions' "
                             "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                          "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
@@ -3805,7 +3814,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "ON namespace.oid = relation.relnamespace "
                         "WHERE namespace.nspname = 'spine' "
                         "AND relation.relname IN "
-                        "('workspaces', 'environments', 'work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'idempotency_receipts', "
+                        "('workspaces', 'environments', 'work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'requirements_acceptance_decisions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'idempotency_receipts', "
                             "'context_profiles', 'context_bundles', "
                             "'answer_question_runs', 'answer_question_attempts', "
                             "'qa_session_versions', 'qa_message_versions', "
@@ -3896,6 +3905,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "workflow_command_receipts": (True, True),
         "workflow_run_events": (True, True),
         "requirements_artifact_versions": (True, True),
+        "requirements_acceptance_decisions": (True, True),
         "transcription_jobs": (True, True),
         "transcription_artifacts": (True, True),
         "transcript_segments": (True, True),
@@ -5363,13 +5373,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261221_89_bitrix24_disk_root_policies.py",
         "20261222_90_retention_applicability.py",
         "20261223_91_disclosure_holds.py",
+        "20261224_92_requirements_acceptance.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261224_92_injected_failure.py").write_text(
+    (target / "versions" / "20261225_93_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261224_92'\n"
-        "down_revision = '20261223_91'\n"
+        "revision = '20261225_93'\n"
+        "down_revision = '20261224_92'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

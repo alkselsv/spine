@@ -15,10 +15,12 @@ from spine.application.persistence.workflow_runs import (
     CLARIFICATION_ANSWERED_EVENT_TYPE,
     CLARIFICATION_REQUESTED_EVENT_TYPE,
     WORKFLOW_CANCELLED_EVENT_TYPE,
+    REQUIREMENTS_ACCEPTED_EVENT_TYPE,
     WORKFLOW_SIGNAL_EVENT_SCHEMA_VERSION,
     ClarificationAnsweredDispatchPayload,
     ClarificationRequestedDispatchPayload,
     WorkflowCancelledDispatchPayload,
+    RequirementsAcceptedDispatchPayload,
 )
 
 
@@ -33,6 +35,10 @@ class RequirementsWorkflowSignalClient(Protocol):
 
     async def signal_run_cancelled(
         self, payload: WorkflowCancelledDispatchPayload
+    ) -> None: ...
+
+    async def signal_requirements_accepted(
+        self, payload: RequirementsAcceptedDispatchPayload
     ) -> None: ...
 
 
@@ -78,6 +84,11 @@ class RequirementsWorkflowSignalDispatchConsumer:
                 and type(intent.payload) is WorkflowCancelledDispatchPayload
             ):
                 await self._client.signal_run_cancelled(intent.payload)
+            elif (
+                intent.event_type == REQUIREMENTS_ACCEPTED_EVENT_TYPE
+                and type(intent.payload) is RequirementsAcceptedDispatchPayload
+            ):
+                await self._client.signal_requirements_accepted(intent.payload)
             else:
                 raise TerminalOutboxConsumerFailure("workflow.signal.invalid_intent")
         except TerminalOutboxConsumerFailure:

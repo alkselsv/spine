@@ -301,6 +301,16 @@ artifact version, привязанный к точным `WorkItem` и `Workflow
 авторизуется, а conversational card восстанавливается из PostgreSQL. См.
 ADR-0047.
 
+Принятие требований является отдельным append-only human decision для одного
+точного human-reviewed `RequirementsArtifact` version и digest. Перед первым
+эффектом сервер повторно проверяет текущую human authority и disclosure каждого
+source/transcript evidence; assertion и assumption сохраняют собственную
+категорию и не получают source authority. Decision, command receipt и terminal
+`WorkflowRun` outcome коммитятся атомарно. Exact replay читает сохранённое
+решение без повторного бизнес-эффекта, а stale version, изменённая команда,
+revocation или конкурентный terminal transition не меняют canonical outcome.
+См. ADR-0048 и ADR-0058.
+
 PostgreSQL использует три раздельных credential surface: migration owner,
 tenant-scoped runtime и узкий cross-tenant dispatcher. Dispatcher может читать
 неизменяемые outbox intents и изменять только operational delivery state; у
@@ -2577,6 +2587,11 @@ detectors без специальных обходов в platform core.
 - [ADR-047](adr/0047-immutable-requirements-artifact-versions.md): PostgreSQL-canonical
   immutable, versioned requirements candidates with replay-safe production
   identity, predecessor lineage, workspace isolation and authorized readback.
+- [ADR-048](adr/0048-requirements-evidence-current-authorization.md): exact
+  requirements evidence locators with current disclosure authorization and
+  fail-closed validation.
+- [ADR-058](adr/0058-exact-requirements-acceptance.md): atomic exact-version
+  human requirements acceptance, immutable replay and terminal run outcome.
 - [ADR-053](adr/0053-governed-bitrix24-crm-material-associations.md): conditional
   Bitrix24 CRM capability, exact activity-to-Disk revision association,
   fail-closed current-revision/access checks and visible revocation without
