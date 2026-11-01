@@ -506,9 +506,7 @@ class PersistenceCanonicalProjectionRequestResolver:
                     source_revision_id=source.source_revision_id,
                 )
                 if not processing.eligible:
-                    await uow.rollback()
                     self._reject()
-            await uow.commit()
 
     @staticmethod
     def _reject() -> None:
