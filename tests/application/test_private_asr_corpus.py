@@ -212,23 +212,23 @@ class FakeContent:
 
 class FakeStaging:
     def __init__(self): self.started = 0; self.parts = []; self.discarded = []; self.finalized = []
-    async def begin(self, admitted): self.started += 1; return private_ref(801, "stage")
-    async def append(self, staging_ref, chunk): self.parts.append(chunk)
-    async def finalize(self, staging_ref, *, sha256, byte_length):
+    async def begin(self, admitted, *, context): self.started += 1; return private_ref(801, "stage")
+    async def append(self, staging_ref, chunk, *, context): self.parts.append(chunk)
+    async def finalize(self, staging_ref, *, sha256, byte_length, context):
         self.finalized.append((sha256, byte_length)); return private_ref(802, "stage")
-    async def discard(self, staging_ref): self.discarded.append(staging_ref)
+    async def discard(self, staging_ref, *, context): self.discarded.append(staging_ref)
 
 
 class FakeOriginals:
     def __init__(self): self.bound = []
-    async def bind_immutable_original(self, admitted, *, sha256, byte_length):
+    async def bind_immutable_original(self, admitted, *, sha256, byte_length, context):
         self.bound.append((admitted.source_revision.revision_id, sha256, byte_length))
         return private_ref(803, "original")
 
 
 class FakeAudit:
     def __init__(self): self.events = []
-    async def receipt(self, *, operation, source_revision_id, outcome):
+    async def receipt(self, *, operation, source_revision_id, outcome, context):
         self.events.append((operation, source_revision_id, outcome))
         return private_ref(850 + len(self.events), "audit")
 

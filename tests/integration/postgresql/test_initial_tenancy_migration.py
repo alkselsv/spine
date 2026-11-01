@@ -1409,6 +1409,10 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "crm_relationship_v2_state",
         "trusted_canonical_acceptance_selector_versions",
         "current_trusted_canonical_acceptance_selectors",
+        "private_asr_artifacts",
+        "private_asr_source_fences",
+        "private_asr_report_sources",
+        "private_asr_aggregate_exports",
     }
     tables = set(
         (
@@ -1445,7 +1449,9 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
                     "'crm_relationship_identities','crm_relationship_profiles','crm_relationship_authority_heads',"
                     "'crm_relationship_claims','crm_relationship_receipts','crm_relationship_eligibility',"
                     "'crm_relationship_lifecycle_events','crm_relationship_eligibility_heads',"
-                    "'crm_relationship_idempotency','crm_relationship_v2_state'))"
+                    "'crm_relationship_idempotency','crm_relationship_v2_state',"
+                    "'private_asr_artifacts','private_asr_source_fences',"
+                    "'private_asr_report_sources','private_asr_aggregate_exports'))"
                 )
             )
         ).scalars()
@@ -1471,7 +1477,9 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
                      "'crm_relationship_identities','crm_relationship_profiles','crm_relationship_authority_heads',"
                      "'crm_relationship_claims','crm_relationship_receipts','crm_relationship_eligibility',"
                      "'crm_relationship_lifecycle_events','crm_relationship_eligibility_heads',"
-                     "'crm_relationship_idempotency','crm_relationship_v2_state')")
+                     "'crm_relationship_idempotency','crm_relationship_v2_state',"
+                     "'private_asr_artifacts','private_asr_source_fences',"
+                     "'private_asr_report_sources','private_asr_aggregate_exports')")
             )
         ).scalars()
     )
@@ -3329,7 +3337,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                                 "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'yandex_disk_reconciliation_runs', 'mounted_fs_reconciliation_runs', 'mounted_fs_removal_policies', 'mounted_fs_removal_authorities', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'google_sheets_absence_candidates', 'google_sheets_removal_decisions', 'register_link_claims', 'register_association_acceptances', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records'))"
+                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records', 'private_asr_artifacts', 'private_asr_source_fences', 'private_asr_report_sources', 'private_asr_aggregate_exports'))"
                     )
                 )
             ).scalars()
@@ -3373,7 +3381,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                             "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'yandex_disk_reconciliation_runs', 'mounted_fs_reconciliation_runs', 'mounted_fs_removal_policies', 'mounted_fs_removal_authorities', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'google_sheets_absence_candidates', 'google_sheets_removal_decisions', 'register_link_claims', 'register_association_acceptances', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records')"
+                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records', 'private_asr_artifacts', 'private_asr_source_fences', 'private_asr_report_sources', 'private_asr_aggregate_exports')"
                     )
                 )
             ).mappings()
@@ -3411,7 +3419,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                             "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'yandex_disk_reconciliation_runs', 'mounted_fs_reconciliation_runs', 'mounted_fs_removal_policies', 'mounted_fs_removal_authorities', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'google_sheets_absence_candidates', 'google_sheets_removal_decisions', 'register_link_claims', 'register_association_acceptances', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                            "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records')"
+                            "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records', 'private_asr_artifacts', 'private_asr_source_fences', 'private_asr_report_sources', 'private_asr_aggregate_exports')"
                     )
                 )
             ).scalars()
@@ -3448,7 +3456,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                             "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'yandex_disk_reconciliation_runs', 'mounted_fs_reconciliation_runs', 'mounted_fs_removal_policies', 'mounted_fs_removal_authorities', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'google_sheets_absence_candidates', 'google_sheets_removal_decisions', 'register_link_claims', 'register_association_acceptances', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records')"
+                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records', 'private_asr_artifacts', 'private_asr_source_fences', 'private_asr_report_sources', 'private_asr_aggregate_exports')"
                     )
                 )
             ).scalars()
@@ -3484,7 +3492,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                             "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'yandex_disk_reconciliation_runs', 'mounted_fs_reconciliation_runs', 'mounted_fs_removal_policies', 'mounted_fs_removal_authorities', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records')"
+                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records', 'private_asr_artifacts', 'private_asr_source_fences', 'private_asr_report_sources', 'private_asr_aggregate_exports')"
                     )
                 )
             ).scalars()
@@ -4274,6 +4282,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                         "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'yandex_disk_reconciliation_runs', 'mounted_fs_reconciliation_runs', 'mounted_fs_removal_policies', 'mounted_fs_removal_authorities', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'google_sheets_absence_candidates', 'google_sheets_removal_decisions', 'register_link_claims', 'register_association_acceptances', 'original_upload_records', "
                         "'qa_agent_artifacts', 'qa_agent_results', 'email_sync_attempts', 'email_sync_pages', 'email_sync_effect_receipts', 'email_message_artifacts', 'email_attachment_artifacts')"
+                        "'qa_agent_artifacts', 'qa_agent_results', 'email_sync_attempts', 'email_sync_pages', 'email_sync_effect_receipts', "
+                        "'email_message_artifacts', 'email_attachment_artifacts', 'private_asr_artifacts', 'private_asr_source_fences', 'private_asr_report_sources', 'private_asr_aggregate_exports')"
                     )
                 )
             )
@@ -4425,6 +4435,10 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "google_sheets_sync_runs": (True, True),
             "google_sheets_identity_dispositions": (True, True),
             "drive_lifecycle_decisions": (True, True),
+        "private_asr_artifacts": (True, True),
+        "private_asr_source_fences": (True, True),
+        "private_asr_report_sources": (True, True),
+        "private_asr_aggregate_exports": (True, True),
         "google_sheets_absence_candidates": (True, True),
         "google_sheets_removal_decisions": (True, True),
         "bitrix24_crm_material_claims": (True, True),
@@ -5877,6 +5891,7 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261231_99_mailbox_connection_status.py",
         "20270101_100_email_revision_metadata.py",
         "20270102_101_email_attachment_artifacts.py",
+        "20261227_95_private_asr_storage.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "transactional_failure_probe.py").write_text(

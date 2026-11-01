@@ -465,7 +465,8 @@ class FakeReports:
         self.before_commit = None
 
     async def store_private_report(
-        self, payload, *, retention_profile_ref, audit_receipt_ref, authorize_commit,
+        self, payload, *, report_id, idempotency_key, source_bindings,
+        retention_profile_ref, audit_receipt_ref, context, authorize_commit,
     ):
         self.calls += 1
         self.events.append("prepare_write")
@@ -502,7 +503,9 @@ class FakeSanitizedReport:
 
 class FakeAggregateExport:
     def __init__(self): self.calls = 0
-    async def export_sanitized(self, payload, *, context): self.calls += 1
+    async def export_sanitized(self, payload, *, context, authorize_export):
+        await authorize_export()
+        self.calls += 1
 
 
 class FakeClock:

@@ -161,6 +161,13 @@ class PrivateReportReceipt(PrivateASRApplicationContract):
     retention_profile_ref: PrivateReference
 
 
+class PrivateReportSourceBinding(PrivateASRApplicationContract):
+    """Exact private report case to immutable source-revision lineage."""
+
+    record_id: UUID
+    source_revision_id: UUID
+
+
 class AggregateMeasurement(PrivateASRApplicationContract):
     """Closed aggregate input; deliberately has no row, locator or text fields."""
 
@@ -226,21 +233,54 @@ class OriginalReferencePort(Protocol):
     ) -> PrivateReference: ...
 
 
-class DerivedStagingPort(Protocol):
-    async def begin(self, admitted: AdmittedSourceRevision) -> PrivateReference: ...
-
-    async def append(self, staging_ref: PrivateReference, chunk: bytes) -> None: ...
-
-    async def finalize(
-        self, staging_ref: PrivateReference, *, sha256: str, byte_length: int
+class ScopedOriginalReferencePort(Protocol):
+    async def bind_immutable_original(
+        self, admitted: AdmittedSourceRevision, *, sha256: str, byte_length: int,
+        context: TrustedPersistenceContext,
     ) -> PrivateReference: ...
 
+
+class DerivedStagingPort(Protocol):
+    async def begin(self, admitted: AdmittedSourceRevision) -> PrivateReference: ...
+    async def append(self, staging_ref: PrivateReference, chunk: bytes) -> None: ...
+    async def finalize(self, staging_ref: PrivateReference, *, sha256: str,
+                       byte_length: int) -> PrivateReference: ...
     async def discard(self, staging_ref: PrivateReference) -> None: ...
+
+
+class ScopedDerivedStagingPort(Protocol):
+    async def begin(
+        self, admitted: AdmittedSourceRevision, *, context: TrustedPersistenceContext
+    ) -> PrivateReference: ...
+
+    async def append(
+        self, staging_ref: PrivateReference, chunk: bytes, *,
+        context: TrustedPersistenceContext,
+    ) -> None: ...
+
+    async def finalize(
+        self, staging_ref: PrivateReference, *, sha256: str, byte_length: int,
+        context: TrustedPersistenceContext,
+    ) -> PrivateReference: ...
+
+    async def discard(
+        self, staging_ref: PrivateReference, *, context: TrustedPersistenceContext
+    ) -> None: ...
 
 
 class PrivateAnnotationStoragePort(Protocol):
     async def store_immutable_annotation(
         self, record_id: UUID, annotation_version: int, payload: bytes
+    ) -> PrivateReference: ...
+
+
+class ScopedPrivateAnnotationStoragePort(Protocol):
+    async def store_immutable_annotation(
+        self, admitted: AdmittedSourceRevision, record_id: UUID,
+        annotation_version: int, payload: bytes, *,
+        retention_profile_ref: PrivateReference,
+        audit_receipt_ref: PrivateReference,
+        context: TrustedPersistenceContext,
     ) -> PrivateReference: ...
 
 
@@ -262,16 +302,81 @@ class PrivateReportStoragePort(Protocol):
     ) -> PrivateReportReceipt: ...
 
 
+class ScopedPrivateReportStoragePort(Protocol):
+    """Context-aware report port; callback runs inside atomic commit transaction."""
+
+    async def store_private_report(
+        self,
+        payload: bytes,
+        *,
+        report_id: UUID,
+        idempotency_key: str,
+        source_bindings: tuple[PrivateReportSourceBinding, ...],
+        retention_profile_ref: PrivateReference,
+        audit_receipt_ref: PrivateReference,
+        context: TrustedPersistenceContext,
+        authorize_commit: Callable[[], Awaitable[None]],
+    ) -> PrivateReportReceipt: ...
+
+
 class CleanupPort(Protocol):
     async def delete_private_reference(self, reference: PrivateReference) -> None: ...
+
+
+class ScopedCleanupPort(Protocol):
+    async def delete_private_reference(
+        self, reference: PrivateReference, *, context: TrustedPersistenceContext
+    ) -> None: ...
 
 
 class RevocationFencePort(Protocol):
     async def fence(self, source_revision_id: UUID, *, reason: VersionIdentifier) -> None: ...
 
 
+class ScopedRevocationFencePort(Protocol):
+    async def fence(
+        self, source_revision_id: UUID, *, reason: VersionIdentifier,
+        context: TrustedPersistenceContext,
+    ) -> None: ...
+
+
 class RetentionExpirationPort(Protocol):
     async def expire(self, reference: PrivateReference, *, policy_ref: PrivateReference) -> None: ...
+
+
+class ScopedRetentionExpirationPort(Protocol):
+    async def expire(
+        self, reference: PrivateReference, *, policy_ref: PrivateReference,
+        context: TrustedPersistenceContext,
+    ) -> None: ...
+
+
+class CurrentPrivateASRRetentionProfile(DefinitionModel):
+    """Current approval result for one exact, scope-bound ASR retention profile."""
+
+    schema_version: Literal["private-asr-retention-profile:v1"] = "private-asr-retention-profile:v1"
+    profile_ref: PrivateReference
+    workspace_id: UUID
+    environment_id: UUID
+    purpose: Literal["asr_model_evaluation"]
+    approved: bool
+    current: bool
+    revoked: bool
+    expires_at: datetime
+
+    @model_validator(mode="after")
+    def validate_expiry(self) -> "CurrentPrivateASRRetentionProfile":
+        if self.expires_at.tzinfo is None or self.expires_at.utcoffset() is None:
+            raise ValueError("retention expiry must be timezone-aware")
+        return self
+
+
+class PrivateASRRetentionProfileReader(Protocol):
+    async def resolve_current(
+        self, profile_ref: PrivateReference, *, workspace_id: UUID,
+        environment_id: UUID, context: TrustedPersistenceContext,
+        evaluated_at: datetime,
+    ) -> CurrentPrivateASRRetentionProfile | None: ...
 
 
 class AuditReceiptPort(Protocol):
@@ -281,6 +386,17 @@ class AuditReceiptPort(Protocol):
         operation: VersionIdentifier,
         source_revision_id: UUID | None,
         outcome: VersionIdentifier,
+    ) -> PrivateReference: ...
+
+
+class ScopedAuditReceiptPort(Protocol):
+    async def receipt(
+        self,
+        *,
+        operation: VersionIdentifier,
+        source_revision_id: UUID | None,
+        outcome: VersionIdentifier,
+        context: TrustedPersistenceContext,
     ) -> PrivateReference: ...
 
 
@@ -356,11 +472,11 @@ class TwoStageSourceAdmission:
         policies: AccessPolicyPort,
         authority: AdmissionAuthorityPort,
         contexts: TrustedContextVerifier,
-        audit: AuditReceiptPort,
+        audit: ScopedAuditReceiptPort,
         revisions: SourceRevisionIdentityPort,
         content: AdmittedRevisionContentPort,
-        staging: DerivedStagingPort,
-        originals: OriginalReferencePort,
+        staging: ScopedDerivedStagingPort,
+        originals: ScopedOriginalReferencePort,
         clock: ClockPort,
     ) -> None:
         self._policies = policies
@@ -440,6 +556,7 @@ class TwoStageSourceAdmission:
             operation="private_asr_source_admission",
             source_revision_id=revision.revision_id,
             outcome="allowed",
+            context=trusted_context,
         )
         return AdmittedSourceRevision(
             source_object=source,
@@ -484,7 +601,7 @@ class TwoStageSourceAdmission:
         revision = admitted.source_revision
         if not await self._authority.recheck(admitted, evaluated_at=self._now()):
             raise CorpusAdmissionDenied("admission was revoked before staging")
-        staging_ref = await self._staging.begin(admitted)
+        staging_ref = await self._staging.begin(admitted, context=trusted_context)
         digest = hashlib.sha256()
         byte_length = 0
         try:
@@ -507,7 +624,9 @@ class TwoStageSourceAdmission:
                     raise CorpusVerificationError("source stream returned invalid data")
                 digest.update(chunk)
                 byte_length += len(chunk)
-                await self._staging.append(staging_ref, chunk)
+                await self._staging.append(
+                    staging_ref, chunk, context=trusted_context
+                )
             actual_digest = digest.hexdigest()
             if byte_length != revision.byte_length:
                 raise CorpusVerificationError("source revision byte length changed")
@@ -533,12 +652,15 @@ class TwoStageSourceAdmission:
                 operation="private_asr_content_verification",
                 source_revision_id=revision.revision_id,
                 outcome="verified",
+                context=trusted_context,
             )
             staged_ref = await self._staging.finalize(
-                staging_ref, sha256=actual_digest, byte_length=byte_length
+                staging_ref, sha256=actual_digest, byte_length=byte_length,
+                context=trusted_context,
             )
             original_ref = await self._originals.bind_immutable_original(
-                admitted, sha256=actual_digest, byte_length=byte_length
+                admitted, sha256=actual_digest, byte_length=byte_length,
+                context=trusted_context,
             )
             return ContentVerificationResult(
                 admitted=admitted,
@@ -554,7 +676,7 @@ class TwoStageSourceAdmission:
                 original_ref=original_ref,
             )
         except BaseException:
-            await self._staging.discard(staging_ref)
+            await self._staging.discard(staging_ref, context=trusted_context)
             raise
 
     async def recheck_current(
@@ -753,10 +875,13 @@ __all__ = [
     "AccessPolicyPort", "AdmittedRevisionContentPort", "AdmittedSourceRevision",
     "AdmissionAuthorityPort", "AggregateMeasurement", "AuditReceiptPort",
     "CleanupPort", "ClockPort", "ContentVerificationResult", "CorpusAdmissionDenied",
-    "CorpusVerificationError", "DerivedStagingPort", "MetadataInventoryEntry",
+    "CorpusVerificationError", "CurrentPrivateASRRetentionProfile", "DerivedStagingPort", "MetadataInventoryEntry",
     "MetadataInventoryPort", "OriginalReferencePort", "PrivacyPolicyApprovalPort", "PrivacySanitizationError",
-    "PrivateAnnotationStoragePort", "PrivateReportReceipt", "PrivateReportStoragePort",
+    "PrivateAnnotationStoragePort", "PrivateASRRetentionProfileReader", "PrivateReportReceipt", "PrivateReportSourceBinding", "PrivateReportStoragePort",
     "PurposeAdmissionRequest", "RetentionExpirationPort", "RevocationFencePort",
+    "ScopedAuditReceiptPort", "ScopedCleanupPort", "ScopedDerivedStagingPort",
+    "ScopedOriginalReferencePort", "ScopedPrivateAnnotationStoragePort",
+    "ScopedPrivateReportStoragePort", "ScopedRetentionExpirationPort", "ScopedRevocationFencePort",
     "SanitizedReportBuilder", "SourceRevisionIdentityPort", "TrustedMetadataInventory",
     "TwoStageSourceAdmission", "VerifiedAuthority",
 ]

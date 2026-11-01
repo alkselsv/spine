@@ -28,7 +28,8 @@ from spine.application.private_asr_corpus import (
     CorpusRecheckUnavailable,
     CorpusVerificationError,
     PrivateReportReceipt,
-    PrivateReportStoragePort,
+    PrivateReportSourceBinding,
+    ScopedPrivateReportStoragePort,
     PrivacySanitizationError,
     PurposeAdmissionRequest,
     SanitizedReportBuilder,
@@ -256,6 +257,13 @@ class PrivateAggregateExportPort(Protocol):
     ) -> None: ...
 
 
+class ScopedPrivateAggregateExportPort(Protocol):
+    async def export_sanitized(
+        self, payload: bytes, *, context: TrustedPersistenceContext,
+        authorize_export: Callable[[], Any],
+    ) -> None: ...
+
+
 class GovernedPrivateDatasetResolver:
     """Binds records from a validated manifest; it never accepts paths or URLs."""
 
@@ -294,10 +302,10 @@ class PrivateRealASREvaluationRunner:
         audio_preparation: GovernedPrivateAudioPreparationPort,
         processing_profile: TranscriptionProcessingProfile,
         runtime_factory: PrivateCandidateRuntimeFactory,
-        reports: PrivateReportStoragePort,
+        reports: ScopedPrivateReportStoragePort,
         report_audit: PrivateReportAuditPort,
         aggregate_builder: SanitizedReportBuilder,
-        aggregate_export: PrivateAggregateExportPort,
+        aggregate_export: ScopedPrivateAggregateExportPort,
         clock: Callable[[], datetime],
         candidate_id: str,
         configuration: PrivateCandidateConfiguration,
@@ -704,9 +712,14 @@ class PrivateRealASREvaluationRunner:
         except Exception:
             raise PrivacySanitizationError("aggregate release authorization is unavailable") from None
         try:
+            async def authorize_export() -> None:
+                if not await self._admission.current_release_authorized(report, context=trusted):
+                    raise PrivacySanitizationError("aggregate release is not currently authorized")
+
             await self._aggregate_export.export_sanitized(
                 sanitized.model_dump_json(exclude={"privacy_policy_approval", "workspace_id", "environment_id"}).encode(),
                 context=trusted,
+                authorize_export=authorize_export,
             )
         except Exception:
             raise PrivacySanitizationError("aggregate export failed") from None
@@ -1025,8 +1038,22 @@ class PrivateRealASREvaluationRunner:
         try:
             receipt = await self._reports.store_private_report(
                 report.model_dump_json().encode(),
+                report_id=report.report_id,
+                idempotency_key=f"private-asr-report:{report.report_id}",
+                source_bindings=tuple(sorted((
+                    PrivateReportSourceBinding(
+                        record_id=outcome.record_ref.reference_id,
+                        source_revision_id=next(
+                            record.source_binding.source_revision_id
+                            for record in manifest.records
+                            if record.record_id == outcome.record_ref.reference_id
+                        ),
+                    )
+                    for outcome in report.outcomes
+                ), key=lambda item: str(item.record_id))),
                 retention_profile_ref=report.retention_profile_ref,
                 audit_receipt_ref=report.audit_receipt_ref,
+                context=context,
                 authorize_commit=authorize_commit,
             )
             if receipt.retention_profile_ref != report.retention_profile_ref:
