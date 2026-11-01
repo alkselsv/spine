@@ -993,6 +993,9 @@ async def test_source_observation_catalog_and_runtime_security_contract(
             ("source_revision_provenance", "event_identity"): "text",
             ("source_revision_provenance", "event_digest"): "text",
             ("source_revision_provenance", "connection_id"): "uuid",
+            ("source_revision_provenance", "source_contract_id"): "text",
+            ("source_revision_provenance", "source_contract_version"): "text",
+            ("source_revision_provenance", "resource_scope_reference"): "uuid",
             ("source_revision_provenance", "upload_command_reference"): "text",
             ("source_revision_provenance", "origin_locator_kind"): "text",
             ("source_revision_provenance", "origin_locator_value"): "text",
@@ -1035,6 +1038,7 @@ async def test_source_observation_catalog_and_runtime_security_contract(
             "fk_source_revision_provenance_revision", "uq_source_revision_provenance_event",
             "ck_source_revision_provenance_order_pair", "ck_source_revision_provenance_digest",
             "ck_source_revision_provenance_fields",
+            "ck_source_revision_provenance_selector_contract_pair",
             "ck_source_provenance_b24_membership_record",
         }
         missing_source_constraints = {
@@ -1049,6 +1053,7 @@ async def test_source_observation_catalog_and_runtime_security_contract(
                     "ck_source_revision_provenance_order_pair",
                     "ck_source_revision_provenance_digest",
                     "ck_source_revision_provenance_fields",
+                    "ck_source_revision_provenance_selector_contract_pair",
                     "ck_source_provenance_b24_membership_record",
                 }
                 and any(
@@ -1064,7 +1069,7 @@ async def test_source_observation_catalog_and_runtime_security_contract(
                 for name in constraints
                 if name.startswith("ck_source_revision_provenance_")
             ]
-        ) == 4
+        ) == 5
 
         indexes = set(
             (

@@ -892,6 +892,8 @@ async def test_google_v1_and_provider_v2_produce_equivalent_canonical_outcomes(
     assert v2_result.source == legacy_result.source
     assert v2_result.revision == legacy_result.revision
     assert v2_result.provenance == legacy_result.provenance
+    assert legacy_result.provenance.source_contract_id == "connector-observation"
+    assert legacy_result.provenance.source_contract_version == "v1"
     assert v2_result.processing_receipt == legacy_result.processing_receipt
     assert v2_uow.events == legacy_uow.events
     assert provider_v2.external_identity.external_object_id == (
