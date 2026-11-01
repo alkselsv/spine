@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from datetime import datetime
 import hashlib
 from typing import Literal, Protocol
@@ -245,12 +245,20 @@ class PrivateAnnotationStoragePort(Protocol):
 
 
 class PrivateReportStoragePort(Protocol):
+    """Restricted report store with an authorization fence at its commit point.
+
+    The implementation must invoke ``authorize_commit`` after preparing the
+    write and immediately before its atomic commit; a refusal must leave no
+    report visible.
+    """
+
     async def store_private_report(
         self,
         payload: bytes,
         *,
         retention_profile_ref: PrivateReference,
         audit_receipt_ref: PrivateReference,
+        authorize_commit: Callable[[], Awaitable[None]],
     ) -> PrivateReportReceipt: ...
 
 
