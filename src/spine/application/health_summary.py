@@ -56,6 +56,7 @@ SAFE_HEALTH_CODES = frozenset(
         "ingestion.stale",
         "publication.ready",
         "publication.degraded",
+        "publication.unpublished",
         "publication.unavailable",
         "publication.stale",
     })
@@ -199,7 +200,7 @@ class CanonicalHealthStatusServices:
         if snapshot.publication_status == "unpublished":
             return HealthComponentSnapshot(
                 status=HealthStatus.DEGRADED,
-                code="publication.degraded",
+                code="publication.unpublished",
                 provider_name=None,
             )
         if snapshot.freshness is ProjectionFreshness.STALE:

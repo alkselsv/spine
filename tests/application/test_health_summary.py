@@ -183,7 +183,7 @@ def _services(
         (
             _unpublished_projection(),
             HealthStatus.DEGRADED,
-            "publication.degraded",
+            "publication.unpublished",
         ),
         (
             ProjectionStatusSnapshot.unavailable(

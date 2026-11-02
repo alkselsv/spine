@@ -7,13 +7,21 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
-from typing import Callable, Mapping, Protocol
+from typing import Callable, Literal, Mapping, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from dotenv import dotenv_values
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from spine.application.health_summary import (
+    HealthStatus,
+    SAFE_HEALTH_CODES,
+    SAFE_OPERATION_NAMES,
+    SAFE_OPERATION_STATUSES,
+    SAFE_PROVIDER_NAMES,
+)
 from spine.domain.common import EnvironmentKind
 from spine.domain.evaluations.r2_deployment_qualification import (
     R2CanaryObservation,
@@ -83,6 +91,129 @@ class HttpProbeResponse:
 
 class HttpProbe(Protocol):
     def get(self, *, url: str, headers: Mapping[str, str]) -> HttpProbeResponse: ...
+
+
+class _HealthComponent(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: HealthStatus
+    code: str
+    provider_name: str | None = None
+
+    @field_validator("code")
+    @classmethod
+    def _allowlisted_code(cls, value: str) -> str:
+        if value not in SAFE_HEALTH_CODES:
+            raise ValueError("health code is not allowlisted")
+        return value
+
+    @field_validator("provider_name")
+    @classmethod
+    def _allowlisted_provider(cls, value: str | None) -> str | None:
+        if value is not None and value not in SAFE_PROVIDER_NAMES:
+            raise ValueError("provider name is not allowlisted")
+        return value
+
+
+class _HealthProviders(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    authentication: str | None = None
+    publication: str | None = None
+    ingestion: str | None = None
+
+    @field_validator("authentication", "publication", "ingestion")
+    @classmethod
+    def _allowlisted_provider(cls, value: str | None) -> str | None:
+        if value is not None and value not in SAFE_PROVIDER_NAMES:
+            raise ValueError("provider name is not allowlisted")
+        return value
+
+
+class _HealthOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    operation: str
+    status: str
+    completed_at: str | None = None
+
+    @field_validator("operation")
+    @classmethod
+    def _allowlisted_operation(cls, value: str) -> str:
+        if value not in SAFE_OPERATION_NAMES:
+            raise ValueError("operation name is not allowlisted")
+        return value
+
+    @field_validator("status")
+    @classmethod
+    def _allowlisted_status(cls, value: str) -> str:
+        if value not in SAFE_OPERATION_STATUSES:
+            raise ValueError("operation status is not allowlisted")
+        return value
+
+
+class _HealthSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: HealthStatus
+    build_version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+    authentication_mode: Literal["local", "oidc"] | None = None
+    configuration_version: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+    )
+    authorization: _HealthComponent
+    publication: _HealthComponent
+    ingestion: _HealthComponent
+    providers: _HealthProviders
+    last_operation: _HealthOperation | None = None
+
+    def qualifies_r2_deployment(self) -> bool:
+        if (
+            self.providers.authentication != self.authorization.provider_name
+            or self.providers.publication != self.publication.provider_name
+            or self.providers.ingestion != self.ingestion.provider_name
+        ):
+            return False
+        authorization_ready = (
+            self.authorization.status is HealthStatus.READY
+            and self.authorization.code
+            in {"authorization.ready", "local.ready", "oidc.ready"}
+        )
+        ingestion_ready = (
+            self.ingestion.status is HealthStatus.READY
+            and self.ingestion.code == "ingestion.ready"
+        )
+        publication_ready = (
+            self.status is HealthStatus.READY
+            and self.publication.status is HealthStatus.READY
+            and self.publication.code == "publication.ready"
+        )
+        publication_unpublished = (
+            self.status is HealthStatus.DEGRADED
+            and self.publication.status is HealthStatus.DEGRADED
+            and self.publication.code == "publication.unpublished"
+        )
+        return authorization_ready and ingestion_ready and (
+            publication_ready or publication_unpublished
+        )
+
+
+class _HealthSummaryEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1]
+    workspace_id: UUID
+    environment_id: UUID
+    trace_id: UUID
+    data: _HealthSummary
+
+    @field_validator("workspace_id", "environment_id", "trace_id")
+    @classmethod
+    def _non_zero_identity(cls, value: UUID) -> UUID:
+        if value.int == 0:
+            raise ValueError("scope and trace identities must be non-zero")
+        return value
 
 
 class UrllibHttpProbe:
@@ -312,15 +443,16 @@ class DockerComposeR2EvidenceCollector:
                 "X-Environment-ID": environment_id,
             },
         )
+        if response.status_code != 200:
+            return {"ready": False, "scope_verified": False}
         try:
-            body = json.loads(response.body)
+            body = _HealthSummaryEnvelope.model_validate_json(response.body)
             scope_verified = (
-                body["workspace_id"] == workspace_id
-                and body["environment_id"] == environment_id
+                body.workspace_id == UUID(workspace_id)
+                and body.environment_id == UUID(environment_id)
             )
-            data = body["data"]
-            ready = response.status_code == 200 and data["status"] == "ready"
-        except (KeyError, TypeError, ValueError):
+            ready = body.data.qualifies_r2_deployment()
+        except (ValidationError, ValueError):
             raise R2CollectionError("authenticated_canary_invalid") from None
         return {"ready": ready, "scope_verified": scope_verified}
 
