@@ -111,7 +111,7 @@ canonical audit together. Raw byte export remains fail-closed. Production
 publication remains disabled until canonical privacy/release authority and
 external revocation fencing are available.
 
-Latest executed evidence on HEAD `32145f5ae6f58f25bdbcd130e9ef47b929af05ad`,
+Latest implementation evidence on HEAD `32145f5ae6f58f25bdbcd130e9ef47b929af05ad`,
 base `151ebe89287a934b44bd7d23c934482ae9313063`:
 
 - PostgreSQL private-ASR storage: `58 passed`, isolated PostgreSQL 17 and
@@ -120,25 +120,33 @@ base `151ebe89287a934b44bd7d23c934482ae9313063`:
   forgery negatives.
 - Source/lifecycle/AccessPolicy/retention/private-ASR domain and application
   regressions: `199 passed`.
-- The focused forced-RLS catalog assertion for the added restrictive aggregate
-  policy passed on the previous base; exact rebased run is pending.
-- The full initial-tenancy migration suite on the previous base produced
-  `56 passed, 1 failed`; the single failure was its exact policy inventory,
-  which did not yet include the new aggregate visibility policy. The expected
-  policy entry was added and the focused inventory test passed. Full suite on
-  this exact rebased head is pending.
+- The forced-RLS catalog assertion for the restrictive aggregate visibility
+  policy passed on the rebased head.
+- The full initial-tenancy migration suite before the inventory assertion was
+  updated produced `56 passed, 1 failed`; the failure was that assertion
+  omitting the new aggregate visibility policy. The expected policy entry was
+  added and the focused inventory test passed on the rebased head.
 - `compileall`, `git diff --check`, and Alembic single head `20261230_98` pass.
-- Full repository pytest and exact-head GitHub CI have not completed on this
-  hardening commit. Earlier full-suite baseline runs had unrelated Google
-  OAuth loopback and #680 wizard failures, with the nested #68 gate reporting
-  those same failures; they are not current-head results.
+- Full repository `pytest -q` completed on this implementation head:
+  `6013 passed, 7 skipped, 4 failed, 1 warning` in `1903.89s`. Failures were
+  Google OAuth loopback, #680 wizard, their nested #68 gate, and
+  `test_runtime_is_ready_at_exact_supported_head`. The readiness failure came
+  from its checker requiring table-wide UPDATE while #795 grants only selected
+  artifact columns. Readiness now checks the exact column allowlist; its test
+  passed (`1 passed`) after that fix. The new column-grant integration test also
+  passed (`1 passed`). Full pytest has not been rerun after the readiness fix.
+  The OAuth and #680 failures were reproduced on the earlier exact-main
+  baseline; #68 embeds those two failures.
+- Exact-head CI run `41523115024` on the previous pushed head passed Python
+  3.10–3.14 and Web; R1/PostgreSQL acceptance was still pending. A new exact-head
+  run is required for the readiness update.
 
 Production manifest authority (#811), deletion authority (#812), and external
 approval/revocation fencing (#813) remain shared production dependencies.
 Synthetic process-kill/restart recovery and aggregate publication now have
 focused PostgreSQL evidence. Bounded deadlock retry/reauthorization, post-
 publication external approval revocation, aggregate physical cleanup, and
-exact-head full/CI qualification remain. #683 remains blocked for real
+full-suite requalification after the readiness fix remain. #683 remains blocked for real
 qualification; the production dependencies do not authorize real-data access.
 
 Required remaining gates include production-approved terms and manifest

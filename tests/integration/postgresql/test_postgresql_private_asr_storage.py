@@ -764,6 +764,32 @@ async def test_postgresql_private_asr_runtime_role_enforces_forced_rls(
 
 
 @pytest.mark.asyncio
+async def test_postgresql_private_asr_runtime_has_only_artifact_update_columns(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=797451)
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        table_update = await session.scalar(text(
+            "SELECT has_table_privilege(current_user, "
+            "'spine.private_asr_artifacts', 'UPDATE')"
+        ))
+        update_columns = set((await session.execute(text(
+            "SELECT attribute.attname "
+            "FROM pg_attribute AS attribute "
+            "WHERE attribute.attrelid = 'spine.private_asr_artifacts'::regclass "
+            "AND attribute.attnum > 0 AND NOT attribute.attisdropped "
+            "AND has_column_privilege(current_user, "
+            "'spine.private_asr_artifacts', attribute.attname, 'UPDATE')"
+        ))).scalars())
+    assert table_update is False
+    assert update_columns == {
+        "status", "payload", "byte_length", "content_sha256", "expires_at",
+        "tombstoned_at", "audit_receipt_ref",
+    }
+
+
+@pytest.mark.asyncio
 async def test_postgresql_private_asr_read_denial_has_no_existence_oracle_or_payload_select(
     private_asr_database: _Database,
 ) -> None:

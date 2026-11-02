@@ -206,9 +206,10 @@ classes and legal/data approvals; runtime database grants in a named
 environment; backup deletion, encryption, physical erasure and restart/restore
 qualification. No actual retention duration or approval is invented here.
 
-Qualification evidence is for HEAD
+Storage implementation evidence is from HEAD
 `32145f5ae6f58f25bdbcd130e9ef47b929af05ad`, based on
-`151ebe89287a934b44bd7d23c934482ae9313063`:
+`151ebe89287a934b44bd7d23c934482ae9313063`. The later readiness-only change
+updates shared privilege verification for the least-privilege column grants.
 
 - PostgreSQL private-ASR module: `58 passed` on PostgreSQL 17 with
   `spine_runtime`, including process restart, aggregate revocation visibility,
@@ -217,12 +218,18 @@ Qualification evidence is for HEAD
   `199 passed`.
 - `python -m compileall -q src tests`: PASS; `git diff --check`: PASS;
   Alembic has one head, `20261230_98`.
+- The shared readiness check now requires no table-wide artifact UPDATE and
+  exactly seven allowed artifact-column UPDATE grants. The exact-head readiness
+  integration test passed after this adjustment.
 - Initial-tenancy migration suite on the previous base: `56 passed, 1 failed`
   because its expected RLS policy inventory omitted the new restrictive
   aggregate policy. The policy inventory was updated; its focused assertion
   passed before the rebase. Full suite on this exact base is pending.
 - Full repository pytest and exact-head GitHub CI have not completed on this
-  head. Earlier baseline failures are not represented as current-head results.
+  final readiness adjustment. The preceding full suite completed with 6013
+  passed, 7 skipped, 4 failed and 1 warning; one failure was the readiness
+  mismatch fixed above, and the other three were OAuth/#680 plus the nested #68
+  gate. Earlier baseline failures are not represented as #795 regressions.
 
 PR #797 remains OPEN/DRAFT and Issue #795 remains OPEN. Source-head replacement,
 AccessPolicy activation, canonical lifecycle withdrawal, retention CAS and
