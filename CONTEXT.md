@@ -83,6 +83,25 @@ revision-bearing source metadata, regardless of its later admission disposition.
 Operational metadata changes do not create one.
 _Avoid_: Mutable document, projection version, ingestion attempt
 
+**Email Provider Identity**:
+A provider-qualified mailbox message identity. Gmail uses the Gmail message ID
+within its exact connection and approved mailbox binding; IMAP uses the approved
+folder binding, `UIDVALIDITY` and UID within that connection and mailbox. It is
+distinct from RFC `Message-ID` and conversation evidence.
+_Avoid_: Message-ID, subject, IMAP sequence number
+
+**Email Conversation Evidence**:
+A provider thread reference or message-header relationship retained with its
+source and evidence kind. It does not establish canonical message identity or a
+business/customer association.
+_Avoid_: Verified customer conversation, participant identity, source key
+
+**Email Sync Checkpoint**:
+An opaque, versioned cursor bound to one provider connection, approved mailbox
+scope and cursor generation. It advances only after all covered canonical and
+outbox effects are durable; it is not source identity or publication authority.
+_Avoid_: Highest timestamp, public provider cursor, proof of ingestion
+
 **Provider Connection**:
 A versioned, tenant-scoped authorization reference that binds one trusted
 service principal to approved external resource scopes without containing
