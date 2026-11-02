@@ -135,22 +135,18 @@ classes and legal/data approvals; runtime database grants in a named
 environment; backup deletion, encryption, physical erasure and restart/restore
 qualification. No actual retention duration or approval is invented here.
 
-Latest local verification on head `98bae3c`:
+Latest local verification on head `f796882`:
 
-- Focused ASR/corpus/retention/readiness/PostgreSQL suite before disposition
-  persistence: `135 passed` in `13.04s`. The focused positive PostgreSQL test
-  was rerun after the disposition change and passed (`1 passed`).
+- Focused ASR/corpus/retention/readiness/PostgreSQL/migration suite:
+  `137 passed` in `20.79s`, including the synthetic report commit, full stored
+  retention disposition comparison and migration downgrade/rollback checks.
 - Full `pytest -q`: `5768 passed, 7 skipped, 3 failed, 1 warning` in
-  `1190.88s`; no errors. The failures were the Google loopback test, Issue #680
+  `1192.82s`; no errors. The failures were the Google loopback test, Issue #680
   operator wizard test, and the nested Issue #68 offline gate that reports
   those same failures. The first two were reproduced on exact main base
   `ddf676bad8e9f56e9e001ea122b19dba57ab4a97`.
-- PostgreSQL ASR/retention plus migration downgrade/re-upgrade focused checks:
-  `6 passed`; the migration rollback injection test also passed individually
-  after assigning its synthetic revision a unique ID.
 - `python -m compileall -q src tests`, `git diff --check`, and
-  `alembic heads` passed before the disposition migration; migration head is
-  now `20261230_98` and requires a fresh PostgreSQL run.
+  `alembic heads` passed; current migration head is `20261230_98`.
 - GitHub CI for this head: Python compatibility 3.10–3.14 and Web passed;
   R1 regression was pending at the last check.
 
