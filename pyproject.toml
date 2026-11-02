@@ -62,6 +62,8 @@ spine-yandex-identity-preflight = "spine.scripts.yandex_identity_preflight:main"
 spine-yandex-live-inventory = "spine.scripts.yandex_live_inventory:main"
 spine-yandex-qualification-connection = "spine.scripts.yandex_qualification_connection:main"
 spine-final-qualification = "spine.scripts.final_qualification:main"
+spine-r1-repository-evidence = "spine.scripts.r1_repository_evidence:main"
+spine-r1-repository-verify = "spine.scripts.r1_repository_qualification:main"
 
 [build-system]
 requires = ["hatchling"]

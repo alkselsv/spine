@@ -15,7 +15,6 @@ from spine.infrastructure.db.test_harness import (
     provision_test_database,
 )
 
-
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def postgresql_provision() -> TestDatabaseProvision:
     settings = TestDatabaseSettings()
@@ -29,7 +28,6 @@ async def postgresql_provision() -> TestDatabaseProvision:
         failure = str(error)
     if failure is not None:
         pytest.fail(failure, pytrace=False)
-
     try:
         yield provision
     finally:
