@@ -21,11 +21,12 @@ from spine.infrastructure.db.test_harness import (
     provision_test_database,
 )
 
+_r1_target_provision: TestDatabaseProvision | None = None
+
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def postgresql_provision(
-    request: pytest.FixtureRequest,
-) -> TestDatabaseProvision:
+async def postgresql_provision() -> TestDatabaseProvision:
+    global _r1_target_provision
     settings = TestDatabaseSettings()
     run_id = f"{os.getenv('PYTEST_XDIST_WORKER', 'local')}-{uuid.uuid4().hex[:12]}"
     failure: str | None = None
@@ -37,17 +38,23 @@ async def postgresql_provision(
         failure = str(error)
     if failure is not None:
         pytest.fail(failure, pytrace=False)
+    if os.getenv("SPINE_R1_TARGET_ROLE") is not None:
+        _r1_target_provision = provision
 
     try:
         yield provision
     finally:
-        _write_r1_target_receipt(request, provision)
         if provision.container is not None:
             provision.container.stop()
 
 
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    if _r1_target_provision is not None:
+        _write_r1_target_receipt(session, _r1_target_provision)
+
+
 def _write_r1_target_receipt(
-    request: pytest.FixtureRequest,
+    session: pytest.Session,
     provision: TestDatabaseProvision,
 ) -> None:
     role = os.getenv("SPINE_R1_TARGET_ROLE")
@@ -67,12 +74,12 @@ def _write_r1_target_receipt(
             "test_every_retained_revision_upgrades_to_one_final_head"
         ),
     }[role]
-    selected_nodeids = {item.nodeid for item in request.session.items}
+    selected_nodeids = {item.nodeid for item in session.items}
     inventory = load_migration_inventory()
     selected_expected_test = selected_nodeids == {expected_nodeid}
     status = (
         "passed"
-        if request.session.testsfailed == 0 and selected_expected_test
+        if session.testsfailed == 0 and selected_expected_test
         else "failed"
     )
     identity = (

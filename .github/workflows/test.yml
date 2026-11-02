@@ -115,7 +115,8 @@ jobs:
         run: |
           set +e
           pytest_log="$RUNNER_TEMP/r1-gate-pytest.log"
-          uv run pytest -q --junitxml="$RUNNER_TEMP/r1-repository-tests.xml" > "$pytest_log" 2>&1
+          export PYTEST_ADDOPTS="--junitxml=$RUNNER_TEMP/r1-repository-tests.xml"
+          uv run pytest -q > "$pytest_log" 2>&1
           pytest_status=$?
           cat "$pytest_log"
           gate_status=$(PYTEST_STATUS="$pytest_status" PYTEST_LOG="$pytest_log" uv run python -c 'import os; from pathlib import Path; from tests.qualification.gate_runner import classify_result; result = classify_result(("uv", "run", "pytest", "-q"), returncode=int(os.environ["PYTEST_STATUS"]), output=Path(os.environ["PYTEST_LOG"]).read_text()); print(result.status)')
