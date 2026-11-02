@@ -150,8 +150,10 @@ Latest local verification:
   The nested Issue #68 gate was interrupted; its result is not counted in this
   run. Historical full-suite results on `f796882` remain in the prior section
   of the ticket evidence, not as evidence for the rebased head.
-- Current-head Python/Web/R1 CI has not run because the rebased branch has not
-  been pushed. The prior GitHub run belongs to the old PR head.
+- GitHub run `41443617136` for head `c3621d5`: Python compatibility 3.10–3.14,
+  R1 regression and Web all **PASS**. These checks do not resolve the
+  authoritative manifest, cancellation, concurrency-matrix or crash-recovery
+  acceptance gaps.
 
 PR #797 must remain OPEN/DRAFT and Issue #795 OPEN until the unresolved
 acceptance criteria are satisfied. This runbook does not alter #690
