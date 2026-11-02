@@ -23,7 +23,7 @@ class MigrationTargetReceipt(DefinitionModel):
     postgresql_major: Literal[17]
     head_revision: VersionIdentifier
     retained_revision_count: int = Field(ge=1)
-    tested_revision_count: int = Field(ge=1)
+    tested_revision_count: int = Field(ge=0)
     status: Literal["passed", "failed"]
 
 

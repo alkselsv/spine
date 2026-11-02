@@ -346,3 +346,67 @@ def test_missing_trusted_attestation_fails_qualification(tmp_path: Path) -> None
 
     assert result.status == "fail"
     assert result.reason_codes == ("artifact_attestation_untrusted",)
+
+
+def test_stale_unobserved_skip_policy_entry_fails_qualification(tmp_path: Path) -> None:
+    policy_path, policy_digest = _write_policy(
+        tmp_path,
+        entries=(
+            R1SkipPolicyEntry(
+                test_id="tests/provider/test_removed.py::test_removed",
+                expected_reason="removed provider test",
+                reason_code="removed-provider-opt-in",
+                applicability="optional",
+            ),
+        ),
+    )
+    artifact_path, digest = _write_artifact(
+        tmp_path, _evidence(skip_policy_digest=policy_digest)
+    )
+
+    result = qualify_r1_repository_artifact(
+        artifact_path=artifact_path,
+        expected_digest=digest,
+        expected_head_sha=HEAD_SHA,
+        skip_policy_path=policy_path,
+        attestation_verifier=RecordingAttestationVerifier(),
+    )
+
+    assert result.status == "fail"
+    assert result.reason_codes == ("skip_policy_stale",)
+
+
+def test_tampered_artifact_digest_fails_qualification(tmp_path: Path) -> None:
+    policy_path, policy_digest = _write_policy(tmp_path)
+    artifact_path, _ = _write_artifact(
+        tmp_path, _evidence(skip_policy_digest=policy_digest)
+    )
+
+    result = qualify_r1_repository_artifact(
+        artifact_path=artifact_path,
+        expected_digest="f" * 64,
+        expected_head_sha=HEAD_SHA,
+        skip_policy_path=policy_path,
+        attestation_verifier=RecordingAttestationVerifier(),
+    )
+
+    assert result.status == "fail"
+    assert result.reason_codes == ("artifact_digest_mismatch",)
+
+
+def test_attestation_for_wrong_commit_fails_qualification(tmp_path: Path) -> None:
+    policy_path, policy_digest = _write_policy(tmp_path)
+    artifact_path, digest = _write_artifact(
+        tmp_path, _evidence(skip_policy_digest=policy_digest)
+    )
+
+    result = qualify_r1_repository_artifact(
+        artifact_path=artifact_path,
+        expected_digest=digest,
+        expected_head_sha=HEAD_SHA,
+        skip_policy_path=policy_path,
+        attestation_verifier=RecordingAttestationVerifier(head_sha="b" * 40),
+    )
+
+    assert result.status == "fail"
+    assert result.reason_codes == ("head_sha_mismatch",)

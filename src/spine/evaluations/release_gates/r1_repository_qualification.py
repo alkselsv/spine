@@ -89,6 +89,11 @@ def qualify_r1_repository_artifact(
         if skip_policy.policy_version != evidence.skip_policy_version:
             reasons.append("skip_policy_version_mismatch")
         policy_by_test_id = {item.test_id: item for item in skip_policy.entries}
+        observed_skip_ids = {
+            item.test_id for item in evidence.repository_tests.skip_dispositions
+        }
+        if set(policy_by_test_id) - observed_skip_ids:
+            reasons.append("skip_policy_stale")
         for disposition in evidence.repository_tests.skip_dispositions:
             policy_entry = policy_by_test_id.get(disposition.test_id)
             if disposition.applicability == "unclassified":

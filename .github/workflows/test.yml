@@ -70,6 +70,11 @@ jobs:
 
   r1-regression-gate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
 
     steps:
       - uses: actions/checkout@v5
@@ -89,6 +94,20 @@ jobs:
           ffprobe -version
       - run: uv sync --extra dev --locked
       - run: uv run python -m compileall -q src tests
+      - name: Qualify clean PostgreSQL migration target
+        env:
+          SPINE_R1_TARGET_ROLE: clean
+          SPINE_R1_TARGET_RECEIPT: ${{ runner.temp }}/r1-clean-target.json
+        run: >-
+          uv run pytest -q
+          tests/integration/postgresql/test_r1_migration_targets.py::test_current_graph_applies_to_clean_target
+      - name: Qualify retained-revision PostgreSQL migration target
+        env:
+          SPINE_R1_TARGET_ROLE: upgrade
+          SPINE_R1_TARGET_RECEIPT: ${{ runner.temp }}/r1-upgrade-target.json
+        run: >-
+          uv run pytest -q
+          tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head
       - name: Run mandatory repository and PostgreSQL suite
         id: repository-tests
         continue-on-error: true
@@ -96,7 +115,7 @@ jobs:
         run: |
           set +e
           pytest_log="$RUNNER_TEMP/r1-gate-pytest.log"
-          uv run pytest -q > "$pytest_log" 2>&1
+          uv run pytest -q --junitxml="$RUNNER_TEMP/r1-repository-tests.xml" > "$pytest_log" 2>&1
           pytest_status=$?
           cat "$pytest_log"
           gate_status=$(PYTEST_STATUS="$pytest_status" PYTEST_LOG="$pytest_log" uv run python -c 'import os; from pathlib import Path; from tests.qualification.gate_runner import classify_result; result = classify_result(("uv", "run", "pytest", "-q"), returncode=int(os.environ["PYTEST_STATUS"]), output=Path(os.environ["PYTEST_LOG"]).read_text()); print(result.status)')
@@ -107,6 +126,29 @@ jobs:
           else
             echo "gate_flag=--repository-tests-failed" >> "$GITHUB_OUTPUT"
           fi
+      - name: Collect canonical R1 repository evidence
+        if: always() && steps.repository-tests.outcome == 'success'
+        run: >-
+          uv run spine-r1-repository-evidence
+          --head-sha "$GITHUB_SHA"
+          --clean-target "$RUNNER_TEMP/r1-clean-target.json"
+          --upgrade-target "$RUNNER_TEMP/r1-upgrade-target.json"
+          --junit "$RUNNER_TEMP/r1-repository-tests.xml"
+          --skip-policy docs/qualification/r1-repository-skip-policy-v1.json
+          --output r1-repository-evidence.json
+      - name: Attest R1 repository evidence from main
+        if: >-
+          github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+          steps.repository-tests.outcome == 'success'
+        uses: actions/attest@v4
+        with:
+          subject-path: r1-repository-evidence.json
+      - name: Upload metadata-only R1 repository evidence
+        if: always() && steps.repository-tests.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: r1-repository-evidence
+          path: r1-repository-evidence.json
       - name: Run deterministic offline R1 regression gate
         if: always()
         run: >-
