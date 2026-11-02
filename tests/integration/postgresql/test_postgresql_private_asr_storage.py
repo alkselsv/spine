@@ -871,7 +871,7 @@ async def _prepare_synthetic_report_case(
     raw = b"synthetic ASR source bytes for restricted storage integration"
     lifecycle_source_object = (
         connector_source(
-            synthetic_uuid(seed + 110), synthetic_uuid(seed + 111), "private-asr-fixture1",
+            synthetic_uuid(seed + 110), synthetic_uuid(seed + 111), "private-asr-fixture9",
         )
         if lifecycle_source else None
     )
