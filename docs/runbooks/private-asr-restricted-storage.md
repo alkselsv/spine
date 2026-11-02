@@ -89,7 +89,10 @@ The migration grants only required artifact update columns and a database
 trigger freezes committed non-staging rows. A committed artifact may only move
 to a terminal tombstone that clears payload bytes while preserving its identity,
 lineage, digest, retention disposition and audit reference. Tombstoned rows
-cannot be changed again.
+cannot be changed again. Staging rows remain in `staging` status through content
+verification; only after the application verifies their bytes against the exact
+source digest can it create the immutable original. A database check rejects
+staging rows inserted as committed, and the update trigger rejects promotion.
 
 The lock order is:
 
@@ -203,11 +206,23 @@ classes and legal/data approvals; runtime database grants in a named
 environment; backup deletion, encryption, physical erasure and restart/restore
 qualification. No actual retention duration or approval is invented here.
 
-Qualification evidence must be read against the exact code revision recorded
-in the PR and test log. The current branch is based on
-`6171f290a403f9c183298fd483044437c8ac9c78`; the PostgreSQL module and other
-gates are being rerun after aggregate visibility and staging-trigger hardening.
-Earlier results on the pre-hardening branch do not qualify this diff.
+Qualification evidence is for HEAD
+`32145f5ae6f58f25bdbcd130e9ef47b929af05ad`, based on
+`151ebe89287a934b44bd7d23c934482ae9313063`:
+
+- PostgreSQL private-ASR module: `58 passed` on PostgreSQL 17 with
+  `spine_runtime`, including process restart, aggregate revocation visibility,
+  and staging forgery checks.
+- Source/lifecycle/AccessPolicy/retention/private-ASR app/domain regressions:
+  `199 passed`.
+- `python -m compileall -q src tests`: PASS; `git diff --check`: PASS;
+  Alembic has one head, `20261230_98`.
+- Initial-tenancy migration suite on the previous base: `56 passed, 1 failed`
+  because its expected RLS policy inventory omitted the new restrictive
+  aggregate policy. The policy inventory was updated; its focused assertion
+  passed before the rebase. Full suite on this exact base is pending.
+- Full repository pytest and exact-head GitHub CI have not completed on this
+  head. Earlier baseline failures are not represented as current-head results.
 
 PR #797 remains OPEN/DRAFT and Issue #795 remains OPEN. Source-head replacement,
 AccessPolicy activation, canonical lifecycle withdrawal, retention CAS and
