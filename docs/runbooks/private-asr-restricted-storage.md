@@ -65,7 +65,9 @@ The source lock identity now comes from the shared
 lifecycle mutation, and the private ASR adapter. ASR orders locks as lifecycle
 shared lock, workspace/environment generation counter, exact revision
 admission lock, current source head, current lifecycle authority, and current
-AccessPolicy pointer. Canonical lifecycle mutation uses the matching exclusive
+AccessPolicy pointer. Source revocation uses the same lifecycle/generation/
+revision lock path, so a report commit and a source fence serialize on the exact
+canonical admission lock. Canonical lifecycle mutation uses the matching exclusive
 lifecycle lock. A report operation must also lock the current retention
 applicability pointer between source head and AccessPolicy once the retention
 resolver exists. This source locking change has not been exercised against

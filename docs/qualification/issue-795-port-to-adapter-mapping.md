@@ -42,7 +42,10 @@ implementation shares canonical source lifecycle and revision lock helpers in
 `postgresql_source_locks.py`. Canonical admission and lifecycle mutation use
 these helpers. ASR locks the lifecycle shared key, generation counter, exact
 revision key, current source head, current lifecycle authority when present,
-and current AccessPolicy pointer; a missing or stale content head is denied.
+and current AccessPolicy pointer; its source revocation fence uses the same
+lifecycle/generation/revision serialization path. Payload and source metadata
+rows are read before obtaining row locks to avoid reversing the canonical
+source-lock order. A missing or stale content head is denied.
 The intended order is lifecycle shared lock, workspace/environment generation
 counter, exact revision admission lock, current source head, current retention
 applicability pointer, then current AccessPolicy pointer. D1 source-lock code is

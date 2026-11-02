@@ -214,9 +214,15 @@ class PostgreSQLPrivateASRStorage:
         # all ASR data operations fail closed.
         raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
 
-    async def _locked_source(self, session: AsyncSession, admitted: AdmittedSourceRevision) -> None:
-        source = admitted.source_object
-        revision = admitted.source_revision
+    async def _lock_source_admission_path(
+        self,
+        session: AsyncSession,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        source_object_id: UUID,
+        revision_id: UUID,
+    ) -> None:
         # Match canonical source order: lifecycle shared lock,
         # workspace/environment generation row, exact revision admission lock,
         # source head, then current AccessPolicy pointer. Lifecycle writers
@@ -225,20 +231,31 @@ class PostgreSQLPrivateASRStorage:
         # callers fail closed before relying on this path for publication.
         await lock_source_lifecycle_shared(
             session.execute,
-            workspace_id=source.workspace_id,
-            environment_id=source.environment_id,
-            source_object_id=source.source_object_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            source_object_id=source_object_id,
         )
         counter = (await session.execute(select(
             canonical_generation_counters.c.workspace_id,
         ).where(
-            canonical_generation_counters.c.workspace_id == source.workspace_id,
-            canonical_generation_counters.c.environment_id == source.environment_id,
+            canonical_generation_counters.c.workspace_id == workspace_id,
+            canonical_generation_counters.c.environment_id == environment_id,
         ).with_for_update())).scalar_one_or_none()
         if counter is None:
             raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
         await lock_admission_revision(
             session.execute,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            source_object_id=source_object_id,
+            revision_id=revision_id,
+        )
+
+    async def _locked_source(self, session: AsyncSession, admitted: AdmittedSourceRevision) -> None:
+        source = admitted.source_object
+        revision = admitted.source_revision
+        await self._lock_source_admission_path(
+            session,
             workspace_id=source.workspace_id,
             environment_id=source.environment_id,
             source_object_id=source.source_object_id,
@@ -538,15 +555,6 @@ class PostgreSQLPrivateASRStorage:
             # Lock the approved source and policy pointers before the callback.
             admitted_records: list[AdmittedSourceRevision] = []
             for revision_id in sorted(set(source_revision_ids), key=str):
-                lock_key = f"{workspace_id}:{environment_id}:{revision_id}"
-                await session.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(lock_key, 0))))
-                fence = (await session.execute(select(private_asr_source_fences).where(
-                    private_asr_source_fences.c.workspace_id == workspace_id,
-                    private_asr_source_fences.c.environment_id == environment_id,
-                    private_asr_source_fences.c.source_revision_id == revision_id,
-                ).with_for_update())).mappings().one_or_none()
-                if fence is not None and fence["revoked"]:
-                    raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 original = (await session.execute(select(
                     private_asr_artifacts.c.retention_profile_ref,
                     private_asr_artifacts.c.expires_at,
@@ -559,7 +567,7 @@ class PostgreSQLPrivateASRStorage:
                     private_asr_artifacts.c.status == "committed",
                     private_asr_artifacts.c.tombstoned_at.is_(None),
                     private_asr_artifacts.c.expires_at > now,
-                ).with_for_update())).mappings().first()
+                ))).mappings().first()
                 if original is None or original["retention_profile_ref"] != retention_profile_ref.reference_id:
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 admitted = _admitted_from_jsonb(original["admitted_record"])
@@ -757,8 +765,22 @@ class PostgreSQLPrivateASRStorage:
             raise PrivateASRStorageDenied("Private ASR revocation rejected.")
         async with self._sessions() as session, session.begin():
             await self._set_scope(session, context)
-            lock_key = f"{workspace_id}:{environment_id}:{source_revision_id}"
-            await session.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(lock_key, 0))))
+            source_object_id = (await session.execute(select(
+                source_revisions.c.source_object_id,
+            ).where(
+                source_revisions.c.workspace_id == workspace_id,
+                source_revisions.c.environment_id == environment_id,
+                source_revisions.c.revision_id == source_revision_id,
+            ))).scalar_one_or_none()
+            if source_object_id is None:
+                raise PrivateASRStorageDenied("Private ASR revocation rejected.")
+            await self._lock_source_admission_path(
+                session,
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                source_object_id=source_object_id,
+                revision_id=source_revision_id,
+            )
             statement = pg_insert(private_asr_source_fences).values(
                 workspace_id=workspace_id, environment_id=environment_id,
                 purpose="asr_model_evaluation",
@@ -841,7 +863,7 @@ class PostgreSQLPrivateASRStorage:
                 private_asr_artifacts.c.status == "committed",
                 private_asr_artifacts.c.tombstoned_at.is_(None),
                 private_asr_artifacts.c.expires_at > self._clock(),
-            ).with_for_update())).mappings().one_or_none()
+            ))).mappings().one_or_none()
             valid_reference_kinds = {f"private_asr_{row['kind']}", "private_asr_manifest"} if row and row["kind"] == "report" else ({f"private_asr_{row['kind']}"} if row else set())
             if row is None or reference.reference_kind not in valid_reference_kinds:
                 raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
@@ -890,8 +912,6 @@ class PostgreSQLPrivateASRStorage:
                 await self._locked_source(session, admitted)
                 await self._check_admitted(admitted, context)
             if row["source_revision_id"] is not None:
-                lock_key = f"{workspace_id}:{environment_id}:{row['source_revision_id']}"
-                await session.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(lock_key, 0))))
                 fence = (await session.execute(select(private_asr_source_fences.c.revoked).where(
                     private_asr_source_fences.c.workspace_id == workspace_id,
                     private_asr_source_fences.c.environment_id == environment_id,
