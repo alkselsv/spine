@@ -86,12 +86,14 @@ Historical full-suite evidence on `f796882`: `5768 passed, 7 skipped, 3 failed,
 1 warning` in `1192.82s`. On rebased head `3cbd68f`, the focused ASR,
 retention and lifecycle PostgreSQL/application command passed (`94 passed`),
 and the migration head is `20261230_98`. The full `pytest -q` was interrupted
-after `4698 passed, 6 skipped, 1 failed, 1 warning` in `308.14s`; it did not
-complete. The Google desktop OAuth loopback test and Issue #680
-missing-prerequisite wizard test failed individually on both the rebased
-branch and exact current main `10d7f60`. The nested Issue #68 gate was
-interrupted and is not reported as a completed reproduction in this run.
-Current-head CI has not run because the rebased branch has not been pushed.
+inside the nested Issue #68 offline gate after `5642 passed, 7 skipped, 2
+failed, 1 warning` in `1126.72s`, ending with `KeyboardInterrupt`; it did not
+complete. The two failures were the Google desktop OAuth loopback test and
+Issue #680 missing-prerequisite wizard test. Both were reproduced individually
+on exact current main `10d7f60`. The nested gate itself has no completed result.
+GitHub run `41443617136` on parent head `c3621d5` passed Python 3.10–3.14, R1
+and Web; run `41446379302` for current documentation head was still in progress
+at the last check.
 
 Production manifest authority, full AccessPolicy/source race matrix, aggregate
 publication, explicit storage cancellation matrix, process crash and restore

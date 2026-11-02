@@ -141,19 +141,17 @@ Latest local verification:
   `10d7f60dd4407f7295340db1388abd25c5d20a57`: focused ASR/corpus/retention/
   lifecycle/PostgreSQL/application suite `94 passed` in `16.25s`.
 - Migration head: `20261230_98`.
-- A new full `pytest -q` execution was interrupted after `4698 passed, 6
-  skipped, 1 failed, 1 warning` in `308.14s`; it is not counted as complete.
-  The Google failure appeared in that run. The two known unrelated failures
-  were also reproduced individually on both the rebased branch and exact current main:
+- Full `pytest -q` on the same implementation tree was interrupted inside the
+  nested Issue #68 gate after `5642 passed, 7 skipped, 2 failed, 1 warning` in
+  `1126.72s`, ending with `KeyboardInterrupt`; it is not complete. The failures
+  were the Google loopback and Issue #680 wizard tests, each reproduced
+  individually on the rebased branch and exact current main:
   `test_desktop_consent_uses_loopback_and_fake_token_exchange` and
   `test_operator_wizard_writes_not_verified_report_when_prerequisite_is_missing`.
-  The nested Issue #68 gate was interrupted; its result is not counted in this
-  run. Historical full-suite results on `f796882` remain in the prior section
-  of the ticket evidence, not as evidence for the rebased head.
-- GitHub run `41443617136` for head `c3621d5`: Python compatibility 3.10–3.14,
-  R1 regression and Web all **PASS**. These checks do not resolve the
-  authoritative manifest, cancellation, concurrency-matrix or crash-recovery
-  acceptance gaps.
+  The nested Issue #68 gate has no completed result. GitHub run `41443617136`
+  for parent head `c3621d5` passed Python compatibility 3.10–3.14, R1
+  regression and Web. These checks do not resolve the authoritative manifest,
+  cancellation, concurrency-matrix or crash-recovery acceptance gaps.
 
 PR #797 must remain OPEN/DRAFT and Issue #795 OPEN until the unresolved
 acceptance criteria are satisfied. This runbook does not alter #690
