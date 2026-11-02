@@ -1,0 +1,46 @@
+{
+  "schema_version": "r1-remediation-evidence:v1",
+  "evidence_id": "issue-511:r1-remediation:v2",
+  "target_commit": "5acb97d4a5d47f8d85a91f66c7c6b471b086a91e",
+  "boundary": "repository",
+  "captured_at": "2026-11-02T10:24:21Z",
+  "github_actions": {
+    "run_id": "41426510703",
+    "job_id": "125214309891",
+    "run_url": "https://github.com/alkselsv/spine/actions/runs/41426510703",
+    "conclusion": "success"
+  },
+  "repository_gate": {
+    "command": "uv run pytest -q",
+    "passed": 5773,
+    "skipped": 7,
+    "warnings": 1,
+    "failed": 0,
+    "duration_seconds": 817.77,
+    "compileall": "passed"
+  },
+  "migration_graph": {
+    "postgresql_major": 17,
+    "clean_target": "runner-managed-disposable-postgresql-17",
+    "upgrade_target": "runner-managed-disposable-postgresql-17-per-retained-revision",
+    "clean_head_test": "tests/integration/postgresql/test_initial_tenancy_migration.py",
+    "upgrade_test": "tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head",
+    "status": "passed"
+  },
+  "gate_artifact": {
+    "artifact_id": "13132524492",
+    "name": "r1-gate-status",
+    "url": "https://github.com/alkselsv/spine/actions/runs/41426510703/artifacts/13132524492",
+    "size_bytes": 10972,
+    "zip_sha256": "dc19b2cda4743cc7fac71d39d3d2365db81b91134c7be5f7d9d5d99738fc5e51",
+    "report_schema_version": "r1-gate-status:v1",
+    "repository_pytest_status": "passed",
+    "postgresql_acceptance_status": "passed",
+    "failures": []
+  },
+  "scope": {
+    "production_approval": false,
+    "qualification_scope": "repository-migration-and-test-gates",
+    "provider_profiles": "not_exercised"
+  }
+}

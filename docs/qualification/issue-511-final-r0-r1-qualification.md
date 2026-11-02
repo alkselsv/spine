@@ -91,6 +91,29 @@ compatible target commit, deployment fingerprint and approved policy generation;
 rerun R1-R16 at their named boundaries; retain full evidence digests and capture
 times; and recompute R17. Do not edit this historical decision in place.
 
+## R1 remediation record
+
+The historical decision above remains unchanged. A second immutable package,
+`issue-511-final-qualification-input-v2.json`, records the repository-bound R1
+remediation for integrated commit
+`5acb97d4a5d47f8d85a91f66c7c6b471b086a91e`.
+
+GitHub Actions run `41426510703` completed successfully on that exact commit.
+Its mandatory repository and PostgreSQL suite reported 5773 passed, 7 skipped,
+0 failed and 1 warning. The runner-managed PostgreSQL 17 boundary exercised a
+clean migration target and every retained revision's upgrade to the single
+current head. The uploaded `r1-gate-status` artifact records both repository
+pytest and PostgreSQL acceptance as passed with an empty failure list.
+
+The source evidence and external artifact binding are recorded in
+`issue-511-r1-remediation-evidence.json`; its SHA-256 digest is
+`01dffa29e5a1a1a2485d41cfbfcf5f4dc4b1064f48ee3a824f53aef6cae56630`.
+The independently recomputed
+`issue-511-final-qualification-report-v2.json` therefore records **R1: PASS**.
+The aggregate remains **NO-GO**: R17 is still FAIL with 3 BLOCKED and 12
+NOT_VERIFIED criteria, plus 1 not_applicable metric. This repository evidence
+does not claim production approval and did not exercise provider profiles.
+
 ## Documentation reconciliation
 
 No ROADMAP checkbox or architecture claim is changed. The evidence does not
