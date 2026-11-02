@@ -34,6 +34,7 @@ class ProviderKind(str, Enum):
     YANDEX_DISK = "yandex_disk"
     BITRIX24 = "bitrix24"
     MOUNTED_FILESYSTEM = "mounted_filesystem"
+    YANDEX_MAIL = "yandex_mail"
 
 
 class OpaqueProviderReference(DefinitionModel):
@@ -83,6 +84,10 @@ class ProviderCapabilityKind(str, Enum):
     LIFECYCLE_EVIDENCE = "lifecycle_evidence"
     HEALTH_DIAGNOSTICS = "health_diagnostics"
     CRM = "crm"
+    MAILBOX_ENUMERATION = "mailbox_enumeration"
+    MESSAGE_METADATA_READ = "message_metadata_read"
+    RAW_MESSAGE_READ = "raw_message_read"
+    ATTACHMENT_READ = "attachment_read"
 
 
 class ProviderCapabilityStatus(str, Enum):
