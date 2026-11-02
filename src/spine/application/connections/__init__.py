@@ -50,6 +50,13 @@ from spine.application.connections.provider import (
     ProviderReadDeniedError,
     ProviderReadError,
 )
+from spine.application.connections.email_read import (
+    MailboxProviderReader,
+    MailboxReadAdmission,
+    MailboxReadCommand,
+    MailboxReadDeniedError,
+    MailboxScopeRepository,
+)
 from spine.application.connections.management import (
     InvalidProviderConnectionRequest,
     ProviderConnectionConfigurationAdmission,
@@ -113,4 +120,9 @@ __all__ = [
     "ProviderReadCommand",
     "ProviderReadDeniedError",
     "ProviderReadError",
+    "MailboxProviderReader",
+    "MailboxReadAdmission",
+    "MailboxReadCommand",
+    "MailboxReadDeniedError",
+    "MailboxScopeRepository",
 ]

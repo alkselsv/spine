@@ -22,6 +22,11 @@ from spine.domain.connections.google import (
     GoogleConnectionStatus,
     OpaqueGoogleReference,
 )
+from spine.domain.connections.email_scope import (
+    EmailOperation,
+    EmailProviderOperation,
+    MailboxReadScope,
+)
 from spine.domain.connections.provider import (
     OpaqueProviderReference,
     ProviderCapability,
@@ -52,6 +57,9 @@ __all__ = [
     "GoogleConnectionApproval",
     "GoogleConnectionStatus",
     "OpaqueGoogleReference",
+    "EmailOperation",
+    "EmailProviderOperation",
+    "MailboxReadScope",
     "OpaqueProviderReference",
     "ProviderCapability",
     "ProviderCapabilityKind",
