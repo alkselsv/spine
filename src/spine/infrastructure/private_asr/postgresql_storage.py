@@ -15,7 +15,7 @@ import re
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, LargeBinary, MetaData, String, Table, Text, func, insert, select, text, update
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Index, LargeBinary, MetaData, String, Table, Text, func, insert, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -29,12 +29,17 @@ from spine.application.private_asr_corpus import (
     PrivateArtifactDeletionAuthorization,
     PrivateArtifactDeletionRequest,
     PrivateArtifactSourceLineage,
+    PrivateAggregatePublicationAuthorityPort,
     PrivateASRManifestLineageVerifier,
     ScopedAuditReceiptPort,
     PrivateReportReceipt,
     PrivateReportSourceBinding,
 )
-from spine.domain.evaluations.private_asr_corpus import CorpusSplit, PrivateReference
+from spine.domain.evaluations.private_asr_corpus import (
+    CorpusSplit,
+    PrivateReference,
+    SanitizedCorpusReport,
+)
 from spine.domain.sources.models import SourceObject
 from spine.domain.sources.retention import RetentionArtifactClass
 from spine.application.retention import RetentionStartingEvent
@@ -105,10 +110,25 @@ private_asr_aggregate_exports = Table(
     Column("workspace_id", PGUUID(as_uuid=True), primary_key=True),
     Column("environment_id", PGUUID(as_uuid=True), primary_key=True),
     Column("purpose", Text, nullable=False),
+    Column("report_artifact_id", PGUUID(as_uuid=True), nullable=False),
+    Column("report_id", PGUUID(as_uuid=True), nullable=False),
+    Column("idempotency_key", Text, nullable=False),
     Column("privacy_policy_version", Text, nullable=False),
+    Column("privacy_policy_approval_version", Text, nullable=False),
+    Column("retention_profile_ref", PGUUID(as_uuid=True), nullable=False),
+    Column("retention_disposition", JSONB, nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("payload_sha256", String(64), nullable=False),
     Column("audit_receipt_id", PGUUID(as_uuid=True), nullable=False),
     Column("payload", JSONB, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
+)
+Index(
+    "uq_private_asr_aggregate_exports_idempotency",
+    private_asr_aggregate_exports.c.workspace_id,
+    private_asr_aggregate_exports.c.environment_id,
+    private_asr_aggregate_exports.c.idempotency_key,
+    unique=True,
 )
 
 
@@ -153,6 +173,7 @@ class PostgreSQLPrivateASRStorage:
         retention_resolver: PostgreSQLPrivateASRRetentionResolver | None = None,
         manifest_lineage: PrivateASRManifestLineageVerifier | None = None,
         deletion_authority: PrivateArtifactDeletionAuthority | None = None,
+        aggregate_authority: PrivateAggregatePublicationAuthorityPort | None = None,
         uow_factory: UnitOfWorkFactory | None = None,
         clock: Callable[[], datetime] | None = None,
         id_factory: Callable[[], UUID] = uuid4,
@@ -168,6 +189,7 @@ class PostgreSQLPrivateASRStorage:
         self._retention_resolver = retention_resolver
         self._manifest_lineage = manifest_lineage
         self._deletion_authority = deletion_authority
+        self._aggregate_authority = aggregate_authority
         self._uow_factory = uow_factory
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory
@@ -953,6 +975,380 @@ class PostgreSQLPrivateASRStorage:
         del payload, authorize_export
         self._scope(context)
         raise PrivateASRStorageDenied("Sanitized aggregate export is not enabled.")
+
+    async def publish_sanitized_aggregate(
+        self,
+        sanitized_report: SanitizedCorpusReport,
+        *,
+        report_id: UUID,
+        idempotency_key: str,
+        context: TrustedPersistenceContext,
+        authorize_export: Callable[[], Any],
+    ) -> PrivateReference:
+        """Commit a validated aggregate and its canonical audit in one UoW.
+
+        Production remains disabled without a current authority implementation
+        that participates in this transaction. The synthetic integration suite
+        supplies a fixture-only authority; it is never production wiring.
+        """
+        from spine.application.private_asr_corpus import _sanitize_aggregate_report
+        from spine.application.private_asr_qualification import (
+            PrivateRealASREvaluationReport,
+            _aggregate_measurements,
+        )
+
+        workspace_id, environment_id = self._scope(context)
+        if (
+            self._uow_factory is None
+            or self._manifest_lineage is None
+            or self._retention_resolver is None
+            or self._aggregate_authority is None
+            or context.operation.value != "sanitize_private_asr_report"
+            or not idempotency_key
+            or len(idempotency_key) > 256
+        ):
+            raise PrivateASRStorageDenied("Private ASR aggregate authorization denied.")
+        try:
+            sanitized = SanitizedCorpusReport(
+                schema_version=sanitized_report.schema_version,
+                privacy_policy_version=sanitized_report.privacy_policy_version,
+                privacy_policy_approval_version=sanitized_report.privacy_policy_approval_version,
+                generated_at=sanitized_report.generated_at,
+                privacy_policy_approval=sanitized_report.privacy_policy_approval,
+                workspace_id=sanitized_report.workspace_id,
+                environment_id=sanitized_report.environment_id,
+                privacy_policy=sanitized_report.privacy_policy,
+                status=sanitized_report.status,
+                sufficiency=sanitized_report.sufficiency,
+                aggregates=sanitized_report.aggregates,
+                metric_names=sanitized_report.metric_names,
+            )
+        except Exception:
+            raise PrivateASRStorageDenied("Private ASR aggregate rejected.") from None
+        approval = sanitized.privacy_policy_approval
+        if (
+            sanitized.workspace_id != workspace_id
+            or sanitized.environment_id != environment_id
+            or approval.workspace_id != workspace_id
+            or approval.environment_id != environment_id
+            or approval.policy.policy_version != sanitized.privacy_policy_version
+        ):
+            raise PrivateASRStorageDenied("Private ASR aggregate authorization denied.")
+
+        public_payload = json.loads(sanitized.model_dump_json())
+        payload_bytes = json.dumps(
+            public_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        ).encode()
+        payload_digest = hashlib.sha256(payload_bytes).hexdigest()
+        export_id = uuid5(
+            NAMESPACE_URL,
+            f"spine:private-asr-aggregate:v1:{workspace_id}:{environment_id}:{idempotency_key}",
+        )
+        audit_receipt_id = uuid5(
+            NAMESPACE_URL,
+            f"spine:private-asr-aggregate-audit:v1:{workspace_id}:{environment_id}:{export_id}",
+        )
+        now = self._clock()
+        async with self._uow_factory(context) as session:
+            await self._set_scope(session, context)
+            await self._execute(session, select(func.pg_advisory_xact_lock(func.hashtextextended(
+                f"aggregate:{workspace_id}:{environment_id}:{idempotency_key}", 0
+            ))))
+            reports = (await self._execute(session, select(
+                private_asr_artifacts.c.artifact_id,
+                private_asr_artifacts.c.report_id,
+                private_asr_artifacts.c.status,
+                private_asr_artifacts.c.content_sha256,
+                private_asr_artifacts.c.expires_at,
+                private_asr_artifacts.c.retention_profile_ref,
+                private_asr_artifacts.c.retention_disposition,
+                private_asr_artifacts.c.audit_receipt_ref,
+                private_asr_artifacts.c.created_at,
+                private_asr_artifacts.c.dataset_id,
+                private_asr_artifacts.c.manifest_version,
+                private_asr_artifacts.c.manifest_sha256,
+                private_asr_artifacts.c.tombstoned_at,
+            ).where(
+                private_asr_artifacts.c.workspace_id == workspace_id,
+                private_asr_artifacts.c.environment_id == environment_id,
+                private_asr_artifacts.c.purpose == "asr_model_evaluation",
+                private_asr_artifacts.c.kind == "report",
+                private_asr_artifacts.c.report_id == report_id,
+                private_asr_artifacts.c.status == "committed",
+                private_asr_artifacts.c.tombstoned_at.is_(None),
+                private_asr_artifacts.c.expires_at > now,
+            ).with_for_update())).mappings().all()
+            if len(reports) != 1:
+                raise PrivateASRStorageDenied("Private ASR aggregate authorization denied.")
+            report_row = reports[0]
+            retention_profile_ref = PrivateReference(
+                reference_id=report_row["retention_profile_ref"],
+                reference_kind="retention_applicability",
+            )
+            source_rows = (await self._execute(session, select(
+                private_asr_report_sources.c.source_record_id,
+                private_asr_report_sources.c.source_revision_id,
+                private_asr_report_sources.c.source_object_id,
+                private_asr_report_sources.c.source_revision_digest,
+                private_asr_report_sources.c.split,
+            ).where(
+                private_asr_report_sources.c.workspace_id == workspace_id,
+                private_asr_report_sources.c.environment_id == environment_id,
+                private_asr_report_sources.c.purpose == "asr_model_evaluation",
+                private_asr_report_sources.c.report_id == report_id,
+            ))).mappings().all()
+            if not source_rows or len({row["source_record_id"] for row in source_rows}) != len(source_rows):
+                raise PrivateASRStorageDenied("Private ASR aggregate lineage denied.")
+            bindings = tuple(sorted((
+                PrivateReportSourceBinding(
+                    record_id=row["source_record_id"],
+                    dataset_id=report_row["dataset_id"],
+                    source_object_id=row["source_object_id"],
+                    source_revision_id=row["source_revision_id"],
+                    source_revision_digest=row["source_revision_digest"],
+                    split=CorpusSplit(row["split"]),
+                )
+                for row in source_rows
+            ), key=lambda item: str(item.record_id)))
+            if any(
+                item.source_object_id is None or item.source_revision_digest is None
+                for item in bindings
+            ):
+                raise PrivateASRStorageDenied("Private ASR aggregate lineage denied.")
+
+            originals_by_revision: dict[UUID, Any] = {}
+            admitted_by_revision: dict[UUID, AdmittedSourceRevision] = {}
+            source_paths: list[tuple[UUID, UUID, UUID, UUID]] = []
+            for binding in bindings:
+                originals = (await self._execute(session, select(
+                    private_asr_artifacts.c.admitted_record,
+                    private_asr_artifacts.c.source_object_id,
+                    private_asr_artifacts.c.source_revision_digest,
+                    private_asr_artifacts.c.retention_profile_ref,
+                    private_asr_artifacts.c.expires_at,
+                ).where(
+                    private_asr_artifacts.c.workspace_id == workspace_id,
+                    private_asr_artifacts.c.environment_id == environment_id,
+                    private_asr_artifacts.c.source_revision_id == binding.source_revision_id,
+                    private_asr_artifacts.c.kind == "original",
+                    private_asr_artifacts.c.status == "committed",
+                    private_asr_artifacts.c.tombstoned_at.is_(None),
+                    private_asr_artifacts.c.expires_at > now,
+                ))).mappings().all()
+                if len(originals) != 1:
+                    raise PrivateASRStorageDenied("Private ASR aggregate authorization denied.")
+                original = originals[0]
+                admitted = _admitted_from_jsonb(original["admitted_record"])
+                if (
+                    original["source_object_id"] != binding.source_object_id
+                    or original["source_revision_digest"] != binding.source_revision_digest
+                    or original["retention_profile_ref"] != retention_profile_ref.reference_id
+                    or admitted.source_revision.revision_id != binding.source_revision_id
+                    or admitted.source_object.source_object_id != binding.source_object_id
+                    or admitted.source_revision.revision_digest != binding.source_revision_digest
+                ):
+                    raise PrivateASRStorageDenied("Private ASR aggregate lineage denied.")
+                originals_by_revision[binding.source_revision_id] = original
+                admitted_by_revision[binding.source_revision_id] = admitted
+                source_paths.append((
+                    workspace_id, environment_id, binding.source_object_id,
+                    binding.source_revision_id,
+                ))
+            await self._lock_source_admission_paths(session, tuple(source_paths))
+
+            stored_report_dispositions = {
+                UUID(item["source_revision_id"]): item["disposition"]
+                for item in report_row["retention_disposition"]
+            }
+            aggregate_dispositions: list[dict[str, object]] = []
+            aggregate_expiries: list[datetime] = []
+            for admitted in sorted(
+                admitted_by_revision.values(),
+                key=lambda item: (
+                    str(item.source_object.source_object_id),
+                    str(item.source_revision.revision_id),
+                ),
+            ):
+                revision_id = admitted.source_revision.revision_id
+                if originals_by_revision[revision_id]["expires_at"] <= now:
+                    raise PrivateASRStorageDenied("Private ASR aggregate authorization denied.")
+                report_disposition = await self._locked_source(
+                    session,
+                    admitted,
+                    retention_profile_ref=retention_profile_ref,
+                    artifact_class=RetentionArtifactClass.PRIVATE_ASR_DETAILED_REPORT,
+                    starting_event=RetentionStartingEvent.REPORT_GENERATED,
+                    starting_at=report_row["created_at"],
+                    context=context,
+                    admission_path_locked=True,
+                )
+                if (
+                    report_disposition is None
+                    or report_row["expires_at"] <= now
+                    or stored_report_dispositions.get(revision_id)
+                    != report_disposition.model_dump(mode="json")
+                    or not await self._authority.recheck(admitted, evaluated_at=now)
+                ):
+                    raise PrivateASRStorageDenied("Private ASR aggregate authorization denied.")
+                aggregate_disposition = await self._current_retention(
+                    session,
+                    retention_profile_ref,
+                    context=context,
+                    admitted=admitted,
+                    artifact_class=RetentionArtifactClass.PRIVATE_ASR_SANITIZED_AGGREGATE,
+                    starting_event=RetentionStartingEvent.ARTIFACT_CREATED,
+                    starting_at=now,
+                    allow_expired=False,
+                )
+                if aggregate_disposition.expires_at <= now:
+                    raise PrivateASRStorageDenied("Private ASR aggregate authorization denied.")
+                aggregate_expiries.append(aggregate_disposition.expires_at)
+                aggregate_dispositions.append({
+                    "source_revision_id": str(revision_id),
+                    "disposition": aggregate_disposition.model_dump(mode="json"),
+                })
+
+            if not await self._manifest_lineage.verify_current(
+                transaction=session,
+                context=context,
+                dataset_id=report_row["dataset_id"],
+                manifest_version=report_row["manifest_version"],
+                manifest_sha256=report_row["manifest_sha256"],
+                retention_profile_ref=retention_profile_ref,
+                source_bindings=bindings,
+            ):
+                raise PrivateASRStorageDenied("Private ASR aggregate lineage denied.")
+
+            report_payload = (await self._execute(session, select(
+                private_asr_artifacts.c.payload,
+            ).where(
+                private_asr_artifacts.c.workspace_id == workspace_id,
+                private_asr_artifacts.c.environment_id == environment_id,
+                private_asr_artifacts.c.artifact_id == report_row["artifact_id"],
+            ))).scalar_one()
+            if hashlib.sha256(bytes(report_payload)).hexdigest() != report_row["content_sha256"]:
+                raise PrivateASRStorageDenied("Private ASR aggregate lineage denied.")
+            try:
+                report = PrivateRealASREvaluationReport.model_validate_json(bytes(report_payload))
+                expected_sanitized = _sanitize_aggregate_report(
+                    policy=sanitized.privacy_policy,
+                    approval=approval,
+                    approval_version=sanitized.privacy_policy_approval_version,
+                    generated_at=sanitized.generated_at,
+                    measurements=_aggregate_measurements(report),
+                )
+            except Exception:
+                raise PrivateASRStorageDenied("Private ASR aggregate rejected.") from None
+            if (
+                report.report_id != report_id
+                or report.workspace_id != workspace_id
+                or report.environment_id != environment_id
+                or report.dataset_id != report_row["dataset_id"]
+                or report.manifest_version != report_row["manifest_version"]
+                or report.manifest_sha256 != report_row["manifest_sha256"]
+                or report.audit_receipt_ref.reference_id != report_row["audit_receipt_ref"]
+                or report.retention_profile_ref.reference_id != retention_profile_ref.reference_id
+                or {item.record_ref.reference_id for item in report.outcomes}
+                != {item.record_id for item in bindings}
+                or expected_sanitized != sanitized
+            ):
+                raise PrivateASRStorageDenied("Private ASR aggregate lineage denied.")
+
+            try:
+                approved = await self._aggregate_authority.verify_current_publication(
+                    session,
+                    report_id=report_id,
+                    sanitized_report=sanitized,
+                    context=context,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                raise PrivateASRStorageDenied("Private ASR aggregate authorization unavailable.") from None
+            if not approved:
+                raise PrivateASRStorageDenied("Private ASR aggregate authorization denied.")
+
+            existing = (await self._execute(session, select(
+                private_asr_aggregate_exports.c.export_id,
+                private_asr_aggregate_exports.c.report_id,
+                private_asr_aggregate_exports.c.privacy_policy_version,
+                private_asr_aggregate_exports.c.privacy_policy_approval_version,
+                private_asr_aggregate_exports.c.payload_sha256,
+                private_asr_aggregate_exports.c.audit_receipt_id,
+            ).where(
+                private_asr_aggregate_exports.c.workspace_id == workspace_id,
+                private_asr_aggregate_exports.c.environment_id == environment_id,
+                private_asr_aggregate_exports.c.idempotency_key == idempotency_key,
+            ))).mappings().one_or_none()
+            if existing is not None and (
+                existing["export_id"] != export_id
+                or existing["report_id"] != report_id
+                or existing["privacy_policy_version"] != sanitized.privacy_policy_version
+                or existing["privacy_policy_approval_version"]
+                != sanitized.privacy_policy_approval_version
+                or existing["payload_sha256"] != payload_digest
+                or existing["audit_receipt_id"] != audit_receipt_id
+            ):
+                raise PrivateASRStorageDenied("Private ASR aggregate idempotency conflict.")
+
+            try:
+                await authorize_export()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                raise PrivateASRStorageDenied("Private ASR aggregate authorization denied.") from None
+
+            if existing is None:
+                append_aggregate = getattr(
+                    self._audit_receipts, "append_aggregate_publication", None,
+                )
+                if append_aggregate is None:
+                    raise PrivateASRStorageDenied("Private ASR aggregate audit unavailable.")
+                try:
+                    await append_aggregate(
+                        session,
+                        export_id=export_id,
+                        report_id=report_id,
+                        receipt_id=audit_receipt_id,
+                        context=context,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    raise PrivateASRStorageDenied("Private ASR aggregate audit unavailable.") from None
+                await self._execute(session, insert(private_asr_aggregate_exports).values(
+                    export_id=export_id,
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                    purpose="asr_model_evaluation",
+                    report_artifact_id=report_row["artifact_id"],
+                    report_id=report_id,
+                    idempotency_key=idempotency_key,
+                    privacy_policy_version=sanitized.privacy_policy_version,
+                    privacy_policy_approval_version=sanitized.privacy_policy_approval_version,
+                    retention_profile_ref=retention_profile_ref.reference_id,
+                    retention_disposition=aggregate_dispositions,
+                    expires_at=min(aggregate_expiries),
+                    payload_sha256=payload_digest,
+                    audit_receipt_id=audit_receipt_id,
+                    payload=public_payload,
+                    created_at=now,
+                ))
+            else:
+                audit = (await self._execute(session, select(
+                    audit_events.c.audit_event_id,
+                ).where(
+                    audit_events.c.workspace_id == workspace_id,
+                    audit_events.c.environment_id == environment_id,
+                    audit_events.c.audit_event_id == audit_receipt_id,
+                ))).scalar_one_or_none()
+                if audit != audit_receipt_id:
+                    raise PrivateASRStorageDenied("Private ASR aggregate audit unavailable.")
+            await session.commit()
+        return PrivateReference(
+            reference_id=export_id,
+            reference_kind="private_asr_aggregate",
+        )
 
     async def fence(self, source_revision_id: UUID, *, reason: str,
                     context: TrustedPersistenceContext) -> None:

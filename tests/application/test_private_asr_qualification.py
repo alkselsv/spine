@@ -501,6 +501,11 @@ class FakeSanitizedReport:
         return '{"schema_version":"synthetic-sanitized:v1","status":"NOT_VERIFIED"}'
 
 
+class FakeTypedSanitizedReport(FakeSanitizedReport):
+    privacy_policy_version = "synthetic-privacy:v1"
+    privacy_policy_approval_version = "synthetic-approval:v1"
+
+
 class FakeAggregateExport:
     def __init__(self): self.calls = 0
     async def export_sanitized(self, payload, *, context, authorize_export):
@@ -1442,6 +1447,56 @@ async def test_complementary_disclosure_risk_refusal_prevents_public_export():
         await subject.export_aggregate(report, privacy_policy_version="privacy:v1", context=export_context)
 
     assert aggregate_export.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_runner_uses_transactional_aggregate_port_and_rechecks_release_before_publish():
+    from dataclasses import replace
+
+    manifest, _, _, _ = corpus()
+    admission, source_admission = FakeAdmission(), FakeSourceAdmission()
+    subject, _, _, aggregate_export = runner(admission, source_admission)
+    sanitized = FakeTypedSanitizedReport()
+
+    async def build_synthetic(**kwargs):
+        del kwargs
+        return sanitized
+
+    subject._aggregate_builder.build = build_synthetic
+    publications = []
+
+    async def publish_sanitized_aggregate(
+        sanitized_report, *, report_id, idempotency_key, context, authorize_export,
+    ):
+        publications.append((sanitized_report, report_id, idempotency_key, context))
+        await authorize_export()
+        return ref(991, "private_asr_aggregate")
+
+    aggregate_export.publish_sanitized_aggregate = publish_sanitized_aggregate
+    report, _ = await subject.run(
+        manifest, requested_split=CorpusSplit.QUALIFICATION, context=trusted_context(),
+    )
+    release_checks_before_export = admission.release_checks
+    export_context = replace(
+        trusted_context(), operation=PersistenceOperation("sanitize_private_asr_report"),
+    )
+    await subject.export_aggregate(
+        report, privacy_policy_version="synthetic-privacy:v1", context=export_context,
+    )
+
+    assert aggregate_export.calls == 0
+    assert len(publications) == 1
+    assert publications[0][0] is sanitized
+    assert publications[0][1] == report.report_id
+    assert publications[0][2] == (
+        f"private-asr-aggregate:v1:{report.report_id}:"
+        "synthetic-privacy:v1:synthetic-approval:v1"
+    )
+    assert admission.release_checks == release_checks_before_export + 2
+    assert admission.events[-4:] == [
+        "complementary_risk", "release_authorized",
+        "complementary_risk", "release_authorized",
+    ]
 
 
 @pytest.mark.asyncio

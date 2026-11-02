@@ -138,6 +138,47 @@ class PostgreSQLPrivateASRAuditReceipts(ScopedAuditReceiptPort):
         await transaction.audit.append(event)  # type: ignore[attr-defined]
         await transaction.flush_audit_events()  # type: ignore[attr-defined]
 
+    async def append_aggregate_publication(
+        self,
+        transaction: object,
+        *,
+        export_id: UUID,
+        report_id: UUID,
+        receipt_id: UUID,
+        context: TrustedPersistenceContext,
+    ) -> None:
+        """Append sanitized publication evidence in the aggregate UoW."""
+        if not isinstance(context.scope, EnvironmentScope):
+            raise ValueError("ASR aggregate receipt scope is invalid.")
+        expected_id = uuid5(
+            NAMESPACE_URL,
+            f"spine:private-asr-aggregate-audit:v1:{context.scope.workspace_id}:"
+            f"{context.scope.environment_id}:{export_id}",
+        )
+        if receipt_id != expected_id:
+            raise ValueError("ASR aggregate receipt identity is invalid.")
+        event = self._events.build_event(
+            audit_event_id=receipt_id,
+            workspace_id=context.scope.workspace_id,
+            environment_id=context.scope.environment_id,
+            target=AuditObjectReference(
+                object_type="private_asr_aggregate", object_id=export_id, schema_version=1,
+            ),
+            event_type="command.outcome",
+            schema_version=1,
+            payload=CommandAuditPayload(command_type="private_asr_aggregate_publication"),
+            origin=context.origin,
+            acting_subject_id=context.acting_subject_id,
+            service_principal_id=context.service_principal_id,
+            trace_id=context.trace_id,
+            occurred_at=self._clock(),
+            outcome=AuditOutcome.COMPLETED,
+            reason="private_asr_aggregate_published",
+            producer_deduplication_id=f"private-asr-aggregate:{report_id}:{export_id}",
+        )
+        await transaction.audit.append(event)  # type: ignore[attr-defined]
+        await transaction.flush_audit_events()  # type: ignore[attr-defined]
+
     async def append_artifact_deletion(
         self,
         transaction: object,

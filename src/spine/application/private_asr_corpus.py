@@ -535,6 +535,23 @@ class PrivacyPolicyApprovalPort(Protocol):
     ) -> ApprovedPrivacyPolicy | None: ...
 
 
+class PrivateAggregatePublicationAuthorityPort(Protocol):
+    """Resolves current privacy and release authority in the export transaction.
+
+    A production implementation must use the canonical approval owners and
+    their revocation fence. Fixture-only implementations belong in tests.
+    """
+
+    async def verify_current_publication(
+        self,
+        transaction: object,
+        *,
+        report_id: UUID,
+        sanitized_report: SanitizedCorpusReport,
+        context: TrustedPersistenceContext,
+    ) -> bool: ...
+
+
 class TrustedMetadataInventory:
     """Inventory service intentionally has no content or hashing dependency."""
 
@@ -996,7 +1013,8 @@ __all__ = [
     "AdmissionAuthorityPort", "AggregateMeasurement", "AuditReceiptPort",
     "CleanupPort", "ClockPort", "ContentVerificationResult", "CorpusAdmissionDenied",
     "CorpusVerificationError", "DerivedStagingPort", "MetadataInventoryEntry",
-    "MetadataInventoryPort", "OriginalReferencePort", "PrivacyPolicyApprovalPort", "PrivacySanitizationError",
+    "MetadataInventoryPort", "OriginalReferencePort", "PrivacyPolicyApprovalPort",
+    "PrivateAggregatePublicationAuthorityPort", "PrivacySanitizationError",
     "PrivateAnnotationStoragePort", "PrivateReportReceipt", "PrivateReportSourceBinding", "PrivateReportStoragePort",
     "PurposeAdmissionRequest", "RetentionExpirationPort", "RevocationFencePort",
     "ScopedAuditReceiptPort", "ScopedCleanupPort", "ScopedDerivedStagingPort",

@@ -55,6 +55,7 @@ from spine.domain.evaluations.private_asr_corpus import (
     PrivateCorpusManifest,
     PrivateCorpusRecord,
     PrivateReference,
+    SanitizedCorpusReport,
     calculate_coverage,
     qualification_sufficiency,
     validate_split_isolation,
@@ -264,6 +265,20 @@ class ScopedPrivateAggregateExportPort(Protocol):
     ) -> None: ...
 
 
+class TransactionalPrivateAggregateExportPort(Protocol):
+    """Publishes a typed sanitized result through an atomic restricted adapter."""
+
+    async def publish_sanitized_aggregate(
+        self,
+        sanitized_report: SanitizedCorpusReport,
+        *,
+        report_id: UUID,
+        idempotency_key: str,
+        context: TrustedPersistenceContext,
+        authorize_export: Callable[[], Any],
+    ) -> PrivateReference: ...
+
+
 class GovernedPrivateDatasetResolver:
     """Binds records from a validated manifest; it never accepts paths or URLs."""
 
@@ -305,7 +320,7 @@ class PrivateRealASREvaluationRunner:
         reports: ScopedPrivateReportStoragePort,
         report_audit: PrivateReportAuditPort,
         aggregate_builder: SanitizedReportBuilder,
-        aggregate_export: ScopedPrivateAggregateExportPort,
+        aggregate_export: ScopedPrivateAggregateExportPort | TransactionalPrivateAggregateExportPort,
         clock: Callable[[], datetime],
         candidate_id: str,
         configuration: PrivateCandidateConfiguration,
@@ -713,14 +728,34 @@ class PrivateRealASREvaluationRunner:
             raise PrivacySanitizationError("aggregate release authorization is unavailable") from None
         try:
             async def authorize_export() -> None:
+                if not await self._admission.verify_complementary_disclosure_risk(
+                    report, sanitized, context=trusted
+                ):
+                    raise PrivacySanitizationError("aggregate disclosure risk denied")
                 if not await self._admission.current_release_authorized(report, context=trusted):
                     raise PrivacySanitizationError("aggregate release is not currently authorized")
 
-            await self._aggregate_export.export_sanitized(
-                sanitized.model_dump_json(exclude={"privacy_policy_approval", "workspace_id", "environment_id"}).encode(),
-                context=trusted,
-                authorize_export=authorize_export,
-            )
+            publish = getattr(self._aggregate_export, "publish_sanitized_aggregate", None)
+            if callable(publish):
+                await publish(
+                    sanitized,
+                    report_id=report.report_id,
+                    idempotency_key=(
+                        f"private-asr-aggregate:v1:{report.report_id}:"
+                        f"{sanitized.privacy_policy_version}:"
+                        f"{sanitized.privacy_policy_approval_version}"
+                    ),
+                    context=trusted,
+                    authorize_export=authorize_export,
+                )
+            else:
+                await self._aggregate_export.export_sanitized(
+                    sanitized.model_dump_json(exclude={
+                        "privacy_policy_approval", "workspace_id", "environment_id",
+                    }).encode(),
+                    context=trusted,
+                    authorize_export=authorize_export,
+                )
         except Exception:
             raise PrivacySanitizationError("aggregate export failed") from None
 
@@ -1164,6 +1199,7 @@ def _aggregate_measurements(report: PrivateRealASREvaluationReport):
 __all__ = [
     "ApprovedPrivateAnnotation", "EvaluationDataAdmissionPort", "GovernedPrivateDatasetResolver",
     "PrivateAggregateExportPort", "PrivateCandidateRuntime",
+    "TransactionalPrivateAggregateExportPort",
     "PrivateCandidateRuntimeFactory", "PrivateEvaluationUnavailable",
     "PrivateRealASREvaluationRunner",
     "SpeechToTextCandidateRuntime",

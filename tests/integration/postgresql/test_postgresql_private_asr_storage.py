@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import subprocess
+import sys
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -28,12 +33,18 @@ from spine.application.retention import (
 from spine.application.private_asr_corpus import (
     AdmittedSourceRevision, PrivateArtifactDeletionAuthorization,
     PrivateArtifactDeletionRequest, PrivateReportSourceBinding,
+    SanitizedReportBuilder,
 )
+from spine.application.private_asr_corpus import AggregateMeasurement
 from spine.domain.sources.retention import (
     RetentionApplicability, RetentionArtifactClass, RetentionAuthorityKind,
     RetentionTargetKind,
 )
-from spine.domain.evaluations.private_asr_corpus import AnnotationStatus, CorpusSplit, GroundTruthAnnotation
+from spine.domain.evaluations.private_asr_corpus import (
+    AggregateCategory, AggregateMetric, AnnotationStatus, CorpusSplit,
+    GroundTruthAnnotation, PrivacyPolicy, ApprovedPrivacyPolicy,
+    SanitizedCorpusReport,
+)
 from spine.domain.evaluations.private_asr_qualification import (
     PrivateCaseDisposition, PrivateCaseOutcome, PrivateEvaluationDenominators,
     PrivateRealASREvaluationReport,
@@ -64,7 +75,7 @@ from spine.infrastructure.persistence.postgresql_lifecycle import (
 )
 from spine.infrastructure.private_asr.postgresql_storage import (
     PostgreSQLPrivateASRStorage, PrivateASRStorageDenied, private_asr_artifacts,
-    private_asr_source_fences,
+    private_asr_aggregate_exports, private_asr_source_fences,
 )
 from spine.infrastructure.private_asr.audit import PostgreSQLPrivateASRAuditReceipts
 from spine.infrastructure.private_asr.retention import PostgreSQLPrivateASRRetentionResolver
@@ -222,6 +233,52 @@ class _SyntheticArtifactDeletionAuthority:
             valid_until=NOW + timedelta(days=1),
             authorized=allowed,
         )
+
+
+class _SyntheticAggregatePublicationAuthority:
+    """Test-only exact approval/release authority; never production registered."""
+
+    def __init__(self) -> None:
+        self.report_id = None
+        self.approval = None
+        self.current = True
+        self.calls = 0
+
+    async def verify_current_publication(
+        self, transaction, *, report_id, sanitized_report, context,
+    ) -> bool:
+        self.calls += 1
+        approval = sanitized_report.privacy_policy_approval
+        scope = context.scope
+        return bool(
+            transaction is not None
+            and self.current
+            and report_id == self.report_id
+            and approval == self.approval
+            and scope.workspace_id == approval.workspace_id
+            and scope.environment_id == approval.environment_id
+            and sanitized_report.privacy_policy == approval.policy
+            and approval.approval_reference.reference_kind == "privacy_policy_approval"
+        )
+
+
+class _SyntheticPrivacyApprovalReader:
+    def __init__(self, approval: ApprovedPrivacyPolicy) -> None:
+        self.approval = approval
+
+    async def resolve_current_approved(
+        self, policy_version, *, workspace_id, environment_id, context,
+    ):
+        del context
+        approval = self.approval
+        if (
+            policy_version != approval.policy.policy_version
+            or workspace_id != approval.workspace_id
+            or environment_id != approval.environment_id
+            or approval.revoked
+        ):
+            return None
+        return approval
 
 
 @pytest.mark.asyncio
@@ -802,10 +859,37 @@ async def test_postgresql_private_asr_runtime_rls_hides_payload_for_wrong_purpos
     assert payload is None
 
 
+async def test_postgresql_private_asr_raw_aggregate_export_denies_without_callback_or_row(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=798714)
+    callback_called = False
+
+    async def authorize_export() -> None:
+        nonlocal callback_called
+        callback_called = True
+
+    with pytest.raises(PrivateASRStorageDenied) as denied:
+        await prepared.store.export_sanitized(
+            b"synthetic detailed report payload that must never be exported",
+            context=prepared.context,
+            authorize_export=authorize_export,
+        )
+
+    assert str(denied.value) == "Sanitized aggregate export is not enabled."
+    assert callback_called is False
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        rows = (await session.execute(select(func.count()).select_from(
+            private_asr_aggregate_exports
+        ))).scalar_one()
+    assert rows == 0
+
+
 async def _prepare_synthetic_report_case(
     private_asr_database: _Database, *, seed: int = 795000,
     deletion_authority=None, clock=None, leave_staging: bool = False,
-    lifecycle_source: bool = False,
+    lifecycle_source: bool = False, aggregate_authority=None,
 ) -> SimpleNamespace:
     clock = clock or (lambda: NOW)
     runtime_sessions = async_sessionmaker(
@@ -901,6 +985,7 @@ async def _prepare_synthetic_report_case(
             RetentionArtifactClass.PRIVATE_ASR_SOURCE_ORIGINAL,
             RetentionArtifactClass.PRIVATE_ASR_ANNOTATION,
             RetentionArtifactClass.PRIVATE_ASR_DETAILED_REPORT,
+            RetentionArtifactClass.PRIVATE_ASR_SANITIZED_AGGREGATE,
         ),
         retention_policy_id=policy_id,
         retention_policy_version_id=policy_version_id,
@@ -999,6 +1084,7 @@ async def _prepare_synthetic_report_case(
         retention_resolver=resolver,
         manifest_lineage=manifest_lineage,
         deletion_authority=deletion_authority,
+        aggregate_authority=aggregate_authority,
         uow_factory=persistence.uow_factory,
         clock=clock,
     )
@@ -1172,6 +1258,297 @@ async def _allow_commit() -> None:
     return None
 
 
+async def _prepare_sanitized_aggregate(prepared, authority):
+    record_id = prepared.bindings[0].record_id
+    report_values = prepared.report.model_dump(mode="python")
+    report_values["outcomes"] = (PrivateCaseOutcome(
+        record_ref=PrivateReference(
+            reference_id=record_id, reference_kind="private_asr_record",
+        ),
+        split=CorpusSplit.DEVELOPMENT,
+        disposition=PrivateCaseDisposition.MEASURED,
+        word_errors=6,
+        reference_words=20,
+        character_errors=10,
+        reference_characters=100,
+    ),)
+    report_values["denominators"] = PrivateEvaluationDenominators(
+        eligible=1, admitted=1, verified=1, annotated=1, scorable=1,
+        measured=1, independent_lineages=1, denied=0, revoked=0, unavailable=0,
+    )
+    prepared.report = PrivateRealASREvaluationReport.model_validate(report_values)
+    authority.report_id = prepared.report_id
+    export_context = prepared.boundary.interactive(
+        scope=prepared.context.scope,
+        acting_subject_id=prepared.context.acting_subject_id,
+        purpose=PersistencePurpose("asr_model_evaluation"),
+        operation=PersistenceOperation("sanitize_private_asr_report"),
+        trace_id=synthetic_uuid(prepared.seed + 180),
+    )
+    policy = PrivacyPolicy(
+        policy_version="synthetic-privacy:v1",
+        minimum_cell_size=5,
+        approved_categories=(AggregateCategory.OVERALL,),
+        approved_metric_names=(AggregateMetric.WER,),
+        allow_rates=True,
+        allow_sufficiency=False,
+    )
+    approval = ApprovedPrivacyPolicy(
+        policy=policy,
+        approval_reference=PrivateReference(
+            reference_id=synthetic_uuid(prepared.seed + 181),
+            reference_kind="privacy_policy_approval",
+        ),
+        approval_version="synthetic-privacy-approval:v1",
+        workspace_id=prepared.case.source.workspace_id,
+        environment_id=prepared.case.source.environment_id,
+        approved_by=synthetic_uuid(prepared.seed + 182),
+        approved_at=NOW - timedelta(minutes=1),
+        expires_at=NOW + timedelta(days=1),
+    )
+    authority.approval = approval
+    builder = SanitizedReportBuilder(
+        approvals=_SyntheticPrivacyApprovalReader(approval),
+        contexts=prepared.boundary,
+        clock=SimpleNamespace(now=lambda: NOW),
+    )
+    sanitized = await builder.build(
+        policy_version=policy.policy_version,
+        measurements=(AggregateMeasurement(
+            category=AggregateCategory.OVERALL,
+            metric_name=AggregateMetric.WER,
+            numerator=6,
+            denominator=20,
+        ),),
+        context=export_context,
+    )
+    return sanitized, export_context
+
+
+async def _run_private_asr_recovery_worker(
+    spec, mode: str, emit, wait_for_release,
+) -> None:
+    """Run an exec-style worker using only serialized synthetic fixture state."""
+
+    async def run() -> None:
+        from spine.domain.sources.models import SourceObject
+        from spine.domain.evaluations.private_asr_qualification import (
+            PrivateRealASREvaluationReport,
+        )
+
+        engine = create_async_engine(
+            spec["runtime_url"],
+            pool_size=2,
+            max_overflow=0,
+            pool_reset_on_return="rollback",
+            hide_parameters=True,
+            connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+        )
+        sessions = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+        seed = spec["seed"]
+        boundary = TrustedContextBoundary.for_testing(
+            issuer_id=synthetic_uuid(seed + 100),
+            secret=b"synthetic-private-asr-positive-path-context-secret",
+        )
+        source = SourceObject.model_validate_json(spec["source_json"])
+        context = boundary.interactive(
+            scope=EnvironmentScope(
+                workspace_id=source.workspace_id,
+                environment_id=source.environment_id,
+            ),
+            acting_subject_id=UUID(int=11),
+            purpose=PersistencePurpose("asr_model_evaluation"),
+            operation=PersistenceOperation("run_private_asr_evaluation"),
+            trace_id=synthetic_uuid(seed + 128),
+        )
+        request, _, authority, policies, *_ = service(
+            now=NOW,
+            expires=NOW + timedelta(hours=2),
+            policy_id=UUID(spec["access_policy_id"]),
+        )
+        del request
+        persistence = PostgreSQLPersistence(
+            session_factory=sessions,
+            context_verifier=boundary,
+            outbox_events=create_outbox_event_registry(),
+        )
+        audit_receipts = PostgreSQLPrivateASRAuditReceipts(
+            uow_factory=persistence.uow_factory,
+            events=AuditEventRegistry.with_default_families(),
+            clock=lambda: NOW,
+        )
+        applicability_ref = PrivateReference(
+            reference_id=UUID(spec["applicability_id"]),
+            reference_kind="retention_applicability",
+        )
+        bindings = tuple(
+            PrivateReportSourceBinding.model_validate_json(item)
+            for item in spec["bindings_json"]
+        )
+        report = PrivateRealASREvaluationReport.model_validate_json(spec["report_json"])
+        report_receipt_ref = report.audit_receipt_ref
+        manifest_lineage = _SyntheticManifestLineage(
+            dataset_id=report.dataset_id,
+            manifest_version=report.manifest_version,
+            manifest_sha256=report.manifest_sha256,
+            workspace_id=source.workspace_id,
+            environment_id=source.environment_id,
+            retention_profile_ref=applicability_ref,
+            bindings=bindings,
+        )
+        terms_authority = _SyntheticRetentionTerms(
+            UUID(spec["retention_policy_id"]),
+            UUID(spec["retention_policy_version_id"]),
+            spec["retention_policy_digest"],
+        )
+        if spec.get("terms_digest"):
+            terms_authority.terms_digest = spec["terms_digest"]
+        resolver = PostgreSQLPrivateASRRetentionResolver(
+            approvals=_SyntheticRetentionApproval(), terms=terms_authority,
+        )
+        store = PostgreSQLPrivateASRStorage(
+            sessions=sessions,
+            contexts=boundary,
+            authority=authority,
+            access_policies=policies,
+            audit_receipts=audit_receipts,
+            retention_resolver=resolver,
+            manifest_lineage=manifest_lineage,
+            uow_factory=persistence.uow_factory,
+            clock=lambda: NOW,
+        )
+        try:
+            async def publish(callback=None, payload=None):
+                return await store.store_private_report(
+                    payload or spec["report_json"].encode(),
+                    report_id=report.report_id,
+                    idempotency_key="process-recovery-report",
+                    source_bindings=bindings,
+                    retention_profile_ref=applicability_ref,
+                    audit_receipt_ref=report_receipt_ref,
+                    context=context,
+                    authorize_commit=callback or _allow_commit,
+                )
+
+            if mode == "kill_before_commit":
+                async def wait_at_authorization() -> None:
+                    emit("authorization_reached")
+                    await asyncio.to_thread(wait_for_release)
+
+                await publish(callback=wait_at_authorization)
+                emit("unexpected_commit")
+                return
+            if mode == "commit_then_die_without_receipt":
+                await publish()
+                await engine.dispose()
+                emit("commit_durable_response_lost")
+                os._exit(91)
+            if mode == "replay":
+                receipt = await publish()
+                emit(("receipt", str(receipt.report_ref.reference_id)))
+                return
+            if mode == "conflicting_replay":
+                changed = report.model_copy(update={
+                    "candidate_id": "synthetic-candidate:conflicting-restart-retry",
+                })
+                try:
+                    await publish(payload=changed.model_dump_json().encode())
+                except Exception:
+                    emit("conflict_denied")
+                    return
+                emit("conflict_unexpectedly_accepted")
+                return
+            if mode == "stale_replay":
+                try:
+                    await publish()
+                except Exception:
+                    emit("stale_authority_denied")
+                    return
+                emit("stale_authority_unexpectedly_accepted")
+                return
+            raise AssertionError("unknown recovery worker mode")
+        finally:
+            await engine.dispose()
+
+    await run()
+
+
+def _private_asr_recovery_worker_cli() -> None:
+    spec = json.loads(sys.stdin.readline())
+    mode = sys.argv[2]
+
+    def emit(value) -> None:
+        print(json.dumps(value), flush=True)
+
+    def wait_for_release() -> None:
+        sys.stdin.readline()
+
+    try:
+        asyncio.run(_run_private_asr_recovery_worker(
+            spec, mode, emit, wait_for_release,
+        ))
+    except BaseException:
+        emit("worker_failed")
+        raise
+
+
+async def _store_synthetic_report(
+    store,
+    prepared,
+    *,
+    idempotency_key: str,
+    callback=None,
+    payload: bytes | None = None,
+):
+    return await store.store_private_report(
+        payload or prepared.report.model_dump_json().encode(),
+        report_id=prepared.report_id,
+        idempotency_key=idempotency_key,
+        source_bindings=prepared.bindings,
+        retention_profile_ref=prepared.applicability_ref,
+        audit_receipt_ref=prepared.report_receipt_ref,
+        context=prepared.context,
+        authorize_commit=callback or _allow_commit,
+    )
+
+
+def _recovery_worker_spec(prepared) -> dict[str, object]:
+    return {
+        "runtime_url": prepared.runtime_sessions.kw["bind"].url.render_as_string(
+            hide_password=False,
+        ),
+        "seed": prepared.seed,
+        "source_json": prepared.case.source.model_dump_json(),
+        "access_policy_id": str(prepared.case.policy_id),
+        "report_json": prepared.report.model_dump_json(),
+        "bindings_json": [item.model_dump_json() for item in prepared.bindings],
+        "applicability_id": str(prepared.applicability.applicability_id),
+        "retention_policy_id": str(prepared.policy_id),
+        "retention_policy_version_id": str(prepared.policy_version_id),
+        "retention_policy_digest": "a" * 64,
+    }
+
+
+def _start_recovery_worker(spec, mode: str) -> subprocess.Popen[str]:
+    worker_code = (
+        "import runpy, sys; "
+        "worker = runpy.run_path(sys.argv[1]); "
+        "worker['_private_asr_recovery_worker_cli']()"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", worker_code, str(Path(__file__).resolve()), mode],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=Path(__file__).resolve().parents[3],
+    )
+    assert process.stdin is not None
+    process.stdin.write(json.dumps(spec) + "\n")
+    process.stdin.flush()
+    return process
+
+
 def _storage_for_transaction_probe(prepared, *, uow_factory, sessions=None, audit_receipts=None):
     return PostgreSQLPrivateASRStorage(
         sessions=sessions or prepared.runtime_sessions,
@@ -1182,6 +1559,7 @@ def _storage_for_transaction_probe(prepared, *, uow_factory, sessions=None, audi
         retention_resolver=prepared.resolver,
         manifest_lineage=prepared.manifest_lineage,
         uow_factory=uow_factory,
+        aggregate_authority=getattr(prepared, "aggregate_authority", None),
         clock=prepared.clock,
     )
 
@@ -2076,6 +2454,366 @@ async def test_postgresql_private_asr_authorized_synthetic_report_commit(
     assert report_count == receipt_count == 1
 
 
+async def test_postgresql_private_asr_synthetic_aggregate_commits_with_canonical_audit(
+    private_asr_database: _Database,
+) -> None:
+    publication_authority = _SyntheticAggregatePublicationAuthority()
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database,
+        seed=799710,
+        aggregate_authority=publication_authority,
+    )
+    sanitized, export_context = await _prepare_sanitized_aggregate(
+        prepared, publication_authority,
+    )
+    await _commit_synthetic_report(prepared, idempotency_key="aggregate-source-report")
+    release_checks = 0
+
+    async def authorize_export() -> None:
+        nonlocal release_checks
+        release_checks += 1
+        if not publication_authority.current:
+            raise RuntimeError("synthetic release revoked")
+
+    async def publish() -> PrivateReference:
+        return await prepared.store.publish_sanitized_aggregate(
+            sanitized,
+            report_id=prepared.report_id,
+            idempotency_key="synthetic-aggregate-export:v1",
+            context=export_context,
+            authorize_export=authorize_export,
+        )
+
+    export_ref, replay = await asyncio.gather(publish(), publish())
+    assert replay == export_ref
+    assert publication_authority.calls == 2
+    assert release_checks == 2
+
+    expected_receipt_id = uuid5(
+        NAMESPACE_URL,
+        f"spine:private-asr-aggregate-audit:v1:"
+        f"{prepared.case.source.workspace_id}:{prepared.case.source.environment_id}:"
+        f"{export_ref.reference_id}",
+    )
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, export_context)
+        row = (await session.execute(select(
+            private_asr_aggregate_exports.c.report_artifact_id,
+            private_asr_aggregate_exports.c.report_id,
+            private_asr_aggregate_exports.c.privacy_policy_version,
+            private_asr_aggregate_exports.c.privacy_policy_approval_version,
+            private_asr_aggregate_exports.c.payload_sha256,
+            private_asr_aggregate_exports.c.audit_receipt_id,
+            private_asr_aggregate_exports.c.payload,
+        ).where(
+            private_asr_aggregate_exports.c.export_id == export_ref.reference_id,
+        ))).one()
+        count = (await session.execute(select(func.count()).select_from(
+            private_asr_aggregate_exports
+        ).where(
+            private_asr_aggregate_exports.c.idempotency_key == "synthetic-aggregate-export:v1",
+        ))).scalar_one()
+        audit_count = (await session.execute(select(func.count()).select_from(audit_events).where(
+            audit_events.c.audit_event_id == expected_receipt_id,
+        ))).scalar_one()
+    assert row.report_id == prepared.report_id
+    assert row.privacy_policy_version == sanitized.privacy_policy_version
+    assert row.privacy_policy_approval_version == sanitized.privacy_policy_approval_version
+    assert row.audit_receipt_id == expected_receipt_id
+    assert count == audit_count == 1
+    assert row.payload["aggregates"] == json.loads(
+        sanitized.model_dump_json()
+    )["aggregates"]
+    exported_text = json.dumps(row.payload, sort_keys=True)
+    assert str(prepared.case.source.source_object_id) not in exported_text
+    assert str(prepared.case.revision.revision_id) not in exported_text
+    assert prepared.case.revision.revision_digest not in exported_text
+    assert b"synthetic ASR source bytes".decode() not in exported_text
+
+
+async def test_postgresql_private_asr_aggregate_denies_revoked_synthetic_approval(
+    private_asr_database: _Database,
+) -> None:
+    publication_authority = _SyntheticAggregatePublicationAuthority()
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database,
+        seed=799220,
+        aggregate_authority=publication_authority,
+    )
+    sanitized, export_context = await _prepare_sanitized_aggregate(
+        prepared, publication_authority,
+    )
+    await _commit_synthetic_report(prepared, idempotency_key="revoked-aggregate-report")
+    publication_authority.current = False
+    callback_called = False
+
+    async def authorize_export() -> None:
+        nonlocal callback_called
+        callback_called = True
+
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.publish_sanitized_aggregate(
+            sanitized,
+            report_id=prepared.report_id,
+            idempotency_key="revoked-synthetic-aggregate:v1",
+            context=export_context,
+            authorize_export=authorize_export,
+        )
+    assert callback_called is False
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, export_context)
+        count = (await session.execute(select(func.count()).select_from(
+            private_asr_aggregate_exports
+        ))).scalar_one()
+    assert count == 0
+
+
+async def test_postgresql_private_asr_aggregate_requires_commit_authority(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database, seed=799222,
+    )
+    fixture_authority = _SyntheticAggregatePublicationAuthority()
+    sanitized, export_context = await _prepare_sanitized_aggregate(
+        prepared, fixture_authority,
+    )
+    await _commit_synthetic_report(prepared, idempotency_key="no-aggregate-authority-report")
+    callback_called = False
+
+    async def authorize_export() -> None:
+        nonlocal callback_called
+        callback_called = True
+
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.publish_sanitized_aggregate(
+            sanitized,
+            report_id=prepared.report_id,
+            idempotency_key="missing-aggregate-authority:v1",
+            context=export_context,
+            authorize_export=authorize_export,
+        )
+    assert callback_called is False
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, export_context)
+        rows = (await session.execute(select(func.count()).select_from(
+            private_asr_aggregate_exports
+        ))).scalar_one()
+    assert rows == 0
+
+
+async def test_postgresql_private_asr_aggregate_small_cell_is_rejected_before_write(
+    private_asr_database: _Database,
+) -> None:
+    publication_authority = _SyntheticAggregatePublicationAuthority()
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database,
+        seed=799225,
+        aggregate_authority=publication_authority,
+    )
+    sanitized, export_context = await _prepare_sanitized_aggregate(
+        prepared, publication_authority,
+    )
+    small_cell = sanitized.aggregates[0].model_copy(update={
+        "denominator": 4,
+        "numerator": 2,
+        "rate_millionths": 500_000,
+    })
+    forged_sanitized = sanitized.model_copy(update={"aggregates": (small_cell,)})
+    await _commit_synthetic_report(prepared, idempotency_key="small-cell-aggregate-report")
+    callback_called = False
+
+    async def authorize_export() -> None:
+        nonlocal callback_called
+        callback_called = True
+
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.publish_sanitized_aggregate(
+            forged_sanitized,
+            report_id=prepared.report_id,
+            idempotency_key="small-cell-aggregate:v1",
+            context=export_context,
+            authorize_export=authorize_export,
+        )
+    assert callback_called is False
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, export_context)
+        rows = (await session.execute(select(func.count()).select_from(
+            private_asr_aggregate_exports
+        ))).scalar_one()
+    assert rows == 0
+
+
+async def test_postgresql_private_asr_aggregate_callback_cancellation_rolls_back(
+    private_asr_database: _Database,
+) -> None:
+    publication_authority = _SyntheticAggregatePublicationAuthority()
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database,
+        seed=799227,
+        aggregate_authority=publication_authority,
+    )
+    sanitized, export_context = await _prepare_sanitized_aggregate(
+        prepared, publication_authority,
+    )
+    await _commit_synthetic_report(prepared, idempotency_key="cancelled-aggregate-report")
+    entered_callback, release_callback = asyncio.Event(), asyncio.Event()
+
+    async def held_authorization() -> None:
+        entered_callback.set()
+        await release_callback.wait()
+
+    publication = asyncio.create_task(prepared.store.publish_sanitized_aggregate(
+        sanitized,
+        report_id=prepared.report_id,
+        idempotency_key="cancelled-synthetic-aggregate:v1",
+        context=export_context,
+        authorize_export=held_authorization,
+    ))
+    await asyncio.wait_for(entered_callback.wait(), timeout=10)
+    publication.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await publication
+    release_callback.set()
+
+    export_id = uuid5(
+        NAMESPACE_URL,
+        f"spine:private-asr-aggregate:v1:"
+        f"{prepared.case.source.workspace_id}:{prepared.case.source.environment_id}:"
+        "cancelled-synthetic-aggregate:v1",
+    )
+    receipt_id = uuid5(
+        NAMESPACE_URL,
+        f"spine:private-asr-aggregate-audit:v1:"
+        f"{prepared.case.source.workspace_id}:{prepared.case.source.environment_id}:"
+        f"{export_id}",
+    )
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, export_context)
+        exports = (await session.execute(select(func.count()).select_from(
+            private_asr_aggregate_exports
+        ).where(private_asr_aggregate_exports.c.export_id == export_id))).scalar_one()
+        receipts = (await session.execute(select(func.count()).select_from(audit_events).where(
+            audit_events.c.audit_event_id == receipt_id,
+        ))).scalar_one()
+    assert exports == receipts == 0
+
+
+async def test_postgresql_private_asr_aggregate_audit_failure_rolls_back_export(
+    private_asr_database: _Database,
+) -> None:
+    publication_authority = _SyntheticAggregatePublicationAuthority()
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database,
+        seed=799720,
+        aggregate_authority=publication_authority,
+    )
+    sanitized, export_context = await _prepare_sanitized_aggregate(
+        prepared, publication_authority,
+    )
+    await _commit_synthetic_report(prepared, idempotency_key="audit-failure-aggregate-report")
+
+    async def fail_after_audit_flush(stage):
+        if stage is PostgreSQLTransactionStage.AFTER_AUDIT_FLUSH:
+            raise RuntimeError("synthetic aggregate audit failure")
+
+    failing_persistence = PostgreSQLPersistence(
+        session_factory=prepared.runtime_sessions,
+        context_verifier=prepared.boundary,
+        outbox_events=create_outbox_event_registry(),
+        transaction_probe=fail_after_audit_flush,
+    )
+    store = _storage_for_transaction_probe(
+        prepared, uow_factory=failing_persistence.uow_factory,
+    )
+    with pytest.raises(PrivateASRStorageDenied, match="aggregate audit unavailable"):
+        await store.publish_sanitized_aggregate(
+            sanitized,
+            report_id=prepared.report_id,
+            idempotency_key="audit-failed-synthetic-aggregate:v1",
+            context=export_context,
+            authorize_export=_allow_commit,
+        )
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, export_context)
+        rows = (await session.execute(select(func.count()).select_from(
+            private_asr_aggregate_exports
+        ))).scalar_one()
+        audit_rows = (await session.execute(select(func.count()).select_from(audit_events).where(
+            audit_events.c.target_id == uuid5(
+                NAMESPACE_URL,
+                f"spine:private-asr-aggregate:v1:"
+                f"{prepared.case.source.workspace_id}:{prepared.case.source.environment_id}:"
+                "audit-failed-synthetic-aggregate:v1",
+            ),
+        ))).scalar_one()
+    assert rows == audit_rows == 0
+
+
+async def test_postgresql_private_asr_aggregate_cancellation_after_audit_flush_rolls_back(
+    private_asr_database: _Database,
+) -> None:
+    publication_authority = _SyntheticAggregatePublicationAuthority()
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database,
+        seed=799235,
+        aggregate_authority=publication_authority,
+    )
+    sanitized, export_context = await _prepare_sanitized_aggregate(
+        prepared, publication_authority,
+    )
+    await _commit_synthetic_report(prepared, idempotency_key="cancel-audit-aggregate-report")
+    audit_flushed, hold_before_commit = asyncio.Event(), asyncio.Event()
+
+    async def hold_after_audit_flush(stage):
+        if stage is PostgreSQLTransactionStage.AFTER_AUDIT_FLUSH:
+            audit_flushed.set()
+            await hold_before_commit.wait()
+
+    cancellation_uow = PostgreSQLPersistence(
+        session_factory=prepared.runtime_sessions,
+        context_verifier=prepared.boundary,
+        outbox_events=create_outbox_event_registry(),
+        transaction_probe=hold_after_audit_flush,
+    )
+    store = _storage_for_transaction_probe(
+        prepared, uow_factory=cancellation_uow.uow_factory,
+    )
+    publication = asyncio.create_task(store.publish_sanitized_aggregate(
+        sanitized,
+        report_id=prepared.report_id,
+        idempotency_key="cancel-after-aggregate-audit-flush:v1",
+        context=export_context,
+        authorize_export=_allow_commit,
+    ))
+    await asyncio.wait_for(audit_flushed.wait(), timeout=10)
+    publication.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await publication
+    hold_before_commit.set()
+    export_id = uuid5(
+        NAMESPACE_URL,
+        f"spine:private-asr-aggregate:v1:"
+        f"{prepared.case.source.workspace_id}:{prepared.case.source.environment_id}:"
+        "cancel-after-aggregate-audit-flush:v1",
+    )
+    receipt_id = uuid5(
+        NAMESPACE_URL,
+        f"spine:private-asr-aggregate-audit:v1:"
+        f"{prepared.case.source.workspace_id}:{prepared.case.source.environment_id}:"
+        f"{export_id}",
+    )
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, export_context)
+        exports = (await session.execute(select(func.count()).select_from(
+            private_asr_aggregate_exports
+        ).where(private_asr_aggregate_exports.c.export_id == export_id))).scalar_one()
+        receipts = (await session.execute(select(func.count()).select_from(audit_events).where(
+            audit_events.c.audit_event_id == receipt_id,
+        ))).scalar_one()
+    assert exports == receipts == 0
+
+
 @pytest.mark.asyncio
 async def test_postgresql_private_asr_same_key_retry_returns_stable_identity(
     private_asr_database: _Database,
@@ -2106,6 +2844,153 @@ async def test_postgresql_private_asr_concurrent_same_key_commits_have_one_ident
             audit_events.c.audit_event_id == prepared.report_receipt_ref.reference_id,
         ))).scalar_one()
     assert reports == receipts == 1
+
+
+async def test_postgresql_private_asr_process_death_before_commit_rolls_back_visibility(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799330)
+    worker = _start_recovery_worker(
+        _recovery_worker_spec(prepared), "kill_before_commit",
+    )
+    assert worker.stdout is not None and worker.stdin is not None
+    try:
+        reached = await asyncio.to_thread(worker.stdout.readline)
+        worker_message = json.loads(reached)
+        if worker_message != "authorization_reached":
+            assert worker.stderr is not None
+            worker_error = await asyncio.to_thread(worker.stderr.read)
+            await asyncio.to_thread(worker.wait, 30)
+            pytest.fail(f"recovery worker failed before authorization: {worker_error[-2000:]}")
+        worker.kill()
+        await asyncio.to_thread(worker.wait, 30)
+        assert worker.returncode is not None and worker.returncode != 0
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+            await asyncio.to_thread(worker.wait, 30)
+        worker.stdin.close()
+        if worker.stdout is not None:
+            worker.stdout.close()
+        if worker.stderr is not None:
+            worker.stderr.close()
+
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        reports = (await session.execute(select(func.count()).select_from(
+            private_asr_artifacts
+        ).where(private_asr_artifacts.c.idempotency_key == "process-recovery-report"))).scalar_one()
+        receipts = (await session.execute(select(func.count()).select_from(audit_events).where(
+            audit_events.c.audit_event_id == prepared.report_receipt_ref.reference_id,
+        ))).scalar_one()
+    assert reports == receipts == 0
+
+    retry = await _commit_synthetic_report(
+        prepared, idempotency_key="process-recovery-report",
+    )
+    assert await prepared.store.read_private_reference(
+        retry.report_ref, context=prepared.context,
+    ) == prepared.report.model_dump_json().encode()
+
+
+async def test_postgresql_private_asr_process_restart_reconciles_lost_commit_response(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799340)
+
+    def start_worker(mode: str):
+        spec = _recovery_worker_spec(prepared)
+        if mode == "stale_replay":
+            spec["terms_digest"] = "f" * 64
+        return _start_recovery_worker(spec, mode)
+
+    worker = start_worker("commit_then_die_without_receipt")
+    try:
+        assert worker.stdout is not None
+        notified = await asyncio.to_thread(worker.stdout.readline)
+        assert json.loads(notified) == "commit_durable_response_lost"
+        await asyncio.to_thread(worker.wait, 30)
+        assert worker.returncode == 91
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+            await asyncio.to_thread(worker.wait, 30)
+        if worker.stdout is not None:
+            worker.stdout.close()
+        if worker.stderr is not None:
+            worker.stderr.close()
+
+    replay_worker = start_worker("replay")
+    try:
+        assert replay_worker.stdout is not None
+        replay_line = await asyncio.to_thread(replay_worker.stdout.readline)
+        replay = json.loads(replay_line)
+        await asyncio.to_thread(replay_worker.wait, 30)
+        assert replay_worker.returncode == 0
+    finally:
+        if replay_worker.poll() is None:
+            replay_worker.kill()
+            await asyncio.to_thread(replay_worker.wait, 30)
+        if replay_worker.stdout is not None:
+            replay_worker.stdout.close()
+        if replay_worker.stderr is not None:
+            replay_worker.stderr.close()
+
+    expected_reference = uuid5(
+        NAMESPACE_URL,
+        "spine-private-asr-report:v1:"
+        f"{prepared.case.source.workspace_id}:{prepared.case.source.environment_id}:"
+        "process-recovery-report",
+    )
+    assert replay == ["receipt", str(expected_reference)]
+
+    conflict_worker = start_worker("conflicting_replay")
+    try:
+        assert conflict_worker.stdout is not None
+        assert json.loads(await asyncio.to_thread(conflict_worker.stdout.readline)) == "conflict_denied"
+        await asyncio.to_thread(conflict_worker.wait, 30)
+        assert conflict_worker.returncode == 0
+    finally:
+        if conflict_worker.poll() is None:
+            conflict_worker.kill()
+            await asyncio.to_thread(conflict_worker.wait, 30)
+        if conflict_worker.stdout is not None:
+            conflict_worker.stdout.close()
+        if conflict_worker.stderr is not None:
+            conflict_worker.stderr.close()
+
+    prepared.terms_authority.terms_digest = "f" * 64
+    stale_worker = start_worker("stale_replay")
+    try:
+        assert stale_worker.stdout is not None
+        assert json.loads(await asyncio.to_thread(stale_worker.stdout.readline)) == "stale_authority_denied"
+        await asyncio.to_thread(stale_worker.wait, 30)
+        assert stale_worker.returncode == 0
+    finally:
+        if stale_worker.poll() is None:
+            stale_worker.kill()
+            await asyncio.to_thread(stale_worker.wait, 30)
+        if stale_worker.stdout is not None:
+            stale_worker.stdout.close()
+        if stale_worker.stderr is not None:
+            stale_worker.stderr.close()
+
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.read_private_reference(
+            PrivateReference(reference_id=expected_reference, reference_kind="private_asr_report"),
+            context=prepared.context,
+        )
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        reports = (await session.execute(select(func.count()).select_from(
+            private_asr_artifacts
+        ).where(private_asr_artifacts.c.idempotency_key == "process-recovery-report"))).scalar_one()
+        receipts = (await session.execute(select(func.count()).select_from(audit_events).where(
+            audit_events.c.audit_event_id == prepared.report_receipt_ref.reference_id,
+        ))).scalar_one()
+    assert reports == receipts == 1
+
+
 @pytest.mark.asyncio
 async def test_postgresql_private_asr_same_key_different_payload_is_rejected(
     private_asr_database: _Database,

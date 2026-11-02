@@ -126,17 +126,42 @@ def upgrade() -> None:
         sa.Column("workspace_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("environment_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("purpose", sa.Text(), nullable=False),
+        sa.Column("report_artifact_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("report_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("idempotency_key", sa.Text(), nullable=False),
         sa.Column("privacy_policy_version", sa.Text(), nullable=False),
+        sa.Column("privacy_policy_approval_version", sa.Text(), nullable=False),
+        sa.Column("retention_profile_ref", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("retention_disposition", postgresql.JSONB(), nullable=False),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("payload_sha256", sa.String(64), nullable=False),
         sa.Column("audit_receipt_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("payload", postgresql.JSONB(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("workspace_id", "environment_id", "export_id",
                                 name="pk_private_asr_aggregate_exports"),
+        sa.UniqueConstraint("workspace_id", "environment_id", "idempotency_key",
+                            name="uq_private_asr_aggregate_exports_idempotency"),
+        sa.ForeignKeyConstraint(
+            ["workspace_id", "environment_id", "report_artifact_id"],
+            [f"{SCHEMA}.private_asr_artifacts.workspace_id",
+             f"{SCHEMA}.private_asr_artifacts.environment_id",
+             f"{SCHEMA}.private_asr_artifacts.artifact_id"],
+            name="fk_private_asr_aggregate_export_report",
+        ),
         sa.ForeignKeyConstraint(["audit_receipt_id"], [f"{SCHEMA}.audit_events.audit_event_id"],
                                 name="fk_private_asr_aggregate_export_audit"),
         sa.CheckConstraint("purpose = 'asr_model_evaluation'",
                            name="ck_private_asr_aggregate_exports_purpose"),
         schema=SCHEMA,
+    )
+    op.create_index(
+        "uq_private_asr_report_identity",
+        "private_asr_artifacts",
+        ["workspace_id", "environment_id", "report_id"],
+        unique=True,
+        schema=SCHEMA,
+        postgresql_where=sa.text("kind = 'report' AND report_id IS NOT NULL"),
     )
     for table, mutable in (("private_asr_artifacts", True),
                            ("private_asr_source_fences", True),
@@ -147,6 +172,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_index("uq_private_asr_report_identity", table_name="private_asr_artifacts", schema=SCHEMA)
     for table in ("private_asr_aggregate_exports",
                   "private_asr_report_sources", "private_asr_source_fences",
                   "private_asr_artifacts"):
