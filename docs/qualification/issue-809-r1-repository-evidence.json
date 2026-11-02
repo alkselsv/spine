@@ -1,0 +1,142 @@
+{
+  "schema_version": "r1-repository-evidence:v1",
+  "head_sha": "bfd4887e62e543ccdabebd06c8fc7777e239bab3",
+  "workflow_execution": {
+    "workflow_name": "test",
+    "run_id": "41455426404",
+    "job_id": "r1-regression-gate",
+    "run_attempt": 1,
+    "started_at": "2026-11-02T13:43:30Z",
+    "completed_at": "2026-11-02T14:11:43Z"
+  },
+  "commands": [
+    {
+      "boundary": "clean_target",
+      "argv": [
+        "uv",
+        "run",
+        "pytest",
+        "-q",
+        "tests/integration/postgresql/test_r1_migration_targets.py::test_current_graph_applies_to_clean_target"
+      ]
+    },
+    {
+      "boundary": "upgrade_target",
+      "argv": [
+        "uv",
+        "run",
+        "pytest",
+        "-q",
+        "tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head"
+      ]
+    },
+    {
+      "boundary": "repository_tests",
+      "argv": [
+        "uv",
+        "run",
+        "pytest",
+        "-q"
+      ]
+    }
+  ],
+  "component_versions": [
+    {
+      "component": "python",
+      "version": "3.12.15"
+    },
+    {
+      "component": "pytest",
+      "version": "9.1.1"
+    },
+    {
+      "component": "alembic",
+      "version": "1.20.0"
+    },
+    {
+      "component": "postgresql",
+      "version": "17"
+    }
+  ],
+  "skip_policy_version": "r1-skip-policy:2026-11-02",
+  "skip_policy_digest": "4531fc7324dc1b66c5c61896f04f39686ad16e29d23172509b671c04c7e015b8",
+  "migration_targets": [
+    {
+      "schema_version": "r1-migration-target-receipt:v1",
+      "role": "clean",
+      "target_fingerprint": "7f30adf14acc224d6ba4a846cdd75c344d66dce5e743faea4a194fd4de6add86",
+      "postgresql_major": 17,
+      "head_revision": "20261227_95",
+      "retained_revision_count": 96,
+      "tested_revision_count": 1,
+      "status": "passed"
+    },
+    {
+      "schema_version": "r1-migration-target-receipt:v1",
+      "role": "upgrade",
+      "target_fingerprint": "3a77c0eac4b21af8143b7099ae5b9191ad49fd9c18c672e7fea9ae8dacba8901",
+      "postgresql_major": 17,
+      "head_revision": "20261227_95",
+      "retained_revision_count": 96,
+      "tested_revision_count": 96,
+      "status": "passed"
+    }
+  ],
+  "repository_tests": {
+    "passed": 5822,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 7,
+    "skip_dispositions": [
+      {
+        "test_id": "tests/evals/test_real_qa_r1.py::test_approved_real_r1_dataset_loads_from_local_private_corpus",
+        "reported_reason": "requires explicit opt-in and the local private approved R1 corpus",
+        "reason_code": "private-r1-corpus-opt-in",
+        "applicability": "optional",
+        "policy_version": "r1-skip-policy:2026-11-02"
+      },
+      {
+        "test_id": "tests/integration/cognee/test_production_profile.py::test_production_profile_preflight_requires_exact_backends",
+        "reported_reason": "set SPINE_COGNEE_PRODUCTION_QUALIFICATION=1 only in the isolated PostgreSQL + Neo4j + PGVector qualification environment",
+        "reason_code": "cognee-production-profile-opt-in",
+        "applicability": "optional",
+        "policy_version": "r1-skip-policy:2026-11-02"
+      },
+      {
+        "test_id": "tests/integration/cognee/test_production_profile.py::test_canonical_lifecycle_resolves_postgresql_before_physical_projection",
+        "reported_reason": "set only while developing the composed canonical lifecycle gate",
+        "reason_code": "cognee-canonical-gate-opt-in",
+        "applicability": "optional",
+        "policy_version": "r1-skip-policy:2026-11-02"
+      },
+      {
+        "test_id": "tests/integration/cognee/test_production_profile.py::test_production_qualification_records_one_coherent_run",
+        "reported_reason": "set SPINE_COGNEE_PRODUCTION_QUALIFICATION=1 only in the isolated PostgreSQL + Neo4j + PGVector qualification environment",
+        "reason_code": "cognee-production-run-opt-in",
+        "applicability": "optional",
+        "policy_version": "r1-skip-policy:2026-11-02"
+      },
+      {
+        "test_id": "tests/integration/cognee/test_public_sdk_smoke.py::test_public_cognee_154_local_smoke_matrix",
+        "reported_reason": "set SPINE_COGNEE_LIVE=1 to run the local Cognee qualification",
+        "reason_code": "cognee-live-opt-in",
+        "applicability": "optional",
+        "policy_version": "r1-skip-policy:2026-11-02"
+      },
+      {
+        "test_id": "tests/integration/oidc/test_live_provider.py::test_live_provider_accepts_qualified_rfc9068_access_token",
+        "reported_reason": "live OIDC qualification is opt-in (SPINE_RUN_LIVE_OIDC=1)",
+        "reason_code": "oidc-live-opt-in",
+        "applicability": "optional",
+        "policy_version": "r1-skip-policy:2026-11-02"
+      },
+      {
+        "test_id": "tests/live/test_google_live_provider.py::test_google_live_qualification_is_run_through_sanitized_cli_harness",
+        "reported_reason": "Google live qualification requires explicit SPINE_GOOGLE_LIVE_OPT_IN=1",
+        "reason_code": "google-live-opt-in",
+        "applicability": "optional",
+        "policy_version": "r1-skip-policy:2026-11-02"
+      }
+    ]
+  }
+}
