@@ -41,7 +41,12 @@ the verified starting event and approved duration. Applicability
 `effective_until` and processing-admission expiry are not artifact deadlines.
 A legal hold does not authorize reads or publication. Expiry does not itself
 authorize deletion. Missing, stale, ambiguous, revoked or unapproved evidence
-denies.
+denies. Report rows persist a sorted per-source disposition snapshot with the
+exact policy/version/digest, applicability ID/generation, terms ID/version/
+digest, artifact class, starting event/time, approval evidence and
+deletion/backup obligation references. Reads and retries compare this whole
+snapshot with the freshly resolved current authority, so a different terms
+version cannot pass merely because it yields the same expiry timestamp.
 
 The PostgreSQL positive test injects explicit deterministic synthetic terms
 and approval evidence. This is a test-only composition and cannot be used as a
@@ -132,8 +137,9 @@ qualification. No actual retention duration or approval is invented here.
 
 Latest local verification on head `98bae3c`:
 
-- Focused ASR/corpus/retention/readiness/PostgreSQL suite: `135 passed` in
-  `13.04s`.
+- Focused ASR/corpus/retention/readiness/PostgreSQL suite before disposition
+  persistence: `135 passed` in `13.04s`. The focused positive PostgreSQL test
+  was rerun after the disposition change and passed (`1 passed`).
 - Full `pytest -q`: `5768 passed, 7 skipped, 3 failed, 1 warning` in
   `1190.88s`; no errors. The failures were the Google loopback test, Issue #680
   operator wizard test, and the nested Issue #68 offline gate that reports
@@ -143,7 +149,8 @@ Latest local verification on head `98bae3c`:
   `6 passed`; the migration rollback injection test also passed individually
   after assigning its synthetic revision a unique ID.
 - `python -m compileall -q src tests`, `git diff --check`, and
-  `alembic heads` passed; current head is `20261229_97`.
+  `alembic heads` passed before the disposition migration; migration head is
+  now `20261230_98` and requires a fresh PostgreSQL run.
 - GitHub CI for this head: Python compatibility 3.10–3.14 and Web passed;
   R1 regression was pending at the last check.
 

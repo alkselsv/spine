@@ -57,6 +57,7 @@ from spine.infrastructure.private_asr.postgresql_storage import (
 )
 from spine.infrastructure.private_asr.audit import PostgreSQLPrivateASRAuditReceipts
 from spine.infrastructure.private_asr.retention import PostgreSQLPrivateASRRetentionResolver
+from spine.infrastructure.private_asr.retention import PrivateASRRetentionDisposition
 from tests.application.test_private_asr_corpus import service, source_revision
 from tests.contracts.persistence.ids import synthetic_uuid
 from tests.contracts.persistence.outbox_events import create_outbox_event_registry
@@ -100,6 +101,8 @@ class _SyntheticRetentionTerms:
         self.policy_id = policy_id
         self.version_id = version_id
         self.policy_digest = policy_digest
+        self.terms_digest = "d" * 64
+        self.duration_seconds = 1800
 
     async def resolve(self, binding, artifact_class, context, transaction):
         del context, transaction
@@ -116,13 +119,13 @@ class _SyntheticRetentionTerms:
             artifact_class=artifact_class,
             terms_id=synthetic_uuid(796001),
             terms_version="test-synthetic-retention:v1",
-            terms_digest="d" * 64,
+            terms_digest=self.terms_digest,
             starting_event=(
                 RetentionStartingEvent.REPORT_GENERATED
                 if artifact_class is RetentionArtifactClass.PRIVATE_ASR_DETAILED_REPORT
                 else RetentionStartingEvent.ARTIFACT_CREATED
             ),
-            duration_seconds=1800,
+            duration_seconds=self.duration_seconds,
             approval_evidence_reference=synthetic_uuid(796002),
             deletion_obligation_reference=synthetic_uuid(796003),
             backup_obligation_reference=synthetic_uuid(796004),
@@ -570,9 +573,10 @@ async def test_postgresql_private_asr_authorized_synthetic_report_commit(
         environment_id=case.source.environment_id,
         retention_profile_ref=applicability_ref, bindings=bindings,
     )
+    terms_authority = _SyntheticRetentionTerms(policy_id, policy_version_id, policy_digest)
     resolver = PostgreSQLPrivateASRRetentionResolver(
         approvals=_SyntheticRetentionApproval(),
-        terms=_SyntheticRetentionTerms(policy_id, policy_version_id, policy_digest),
+        terms=terms_authority,
     )
     store = PostgreSQLPrivateASRStorage(
         sessions=runtime_sessions,
@@ -732,6 +736,7 @@ async def test_postgresql_private_asr_authorized_synthetic_report_commit(
             private_asr_artifacts.c.status,
             private_asr_artifacts.c.retention_profile_ref,
             private_asr_artifacts.c.expires_at,
+            private_asr_artifacts.c.retention_disposition,
         ).where(
             private_asr_artifacts.c.artifact_id == stored.report_ref.reference_id,
             private_asr_artifacts.c.workspace_id == case.source.workspace_id,
@@ -767,11 +772,49 @@ async def test_postgresql_private_asr_authorized_synthetic_report_commit(
             audit_events.c.environment_id == case.source.environment_id,
             audit_events.c.audit_event_id == report_receipt_ref.reference_id,
         ))).scalar_one()
-    assert report_row == ("committed", applicability.applicability_id, NOW + timedelta(minutes=30))
+    assert report_row.status == "committed"
+    assert report_row.retention_profile_ref == applicability.applicability_id
+    assert report_row.expires_at == NOW + timedelta(minutes=30)
+    stored_disposition = PrivateASRRetentionDisposition.model_validate(
+        report_row.retention_disposition[0]["disposition"]
+    )
+    assert report_row.retention_disposition[0]["source_revision_id"] == str(
+        case.revision.revision_id
+    )
+    assert stored_disposition.applicability_id == applicability.applicability_id
+    assert stored_disposition.applicability_generation == 1
+    assert stored_disposition.policy_id == policy_id
+    assert stored_disposition.policy_version_id == policy_version_id
+    assert stored_disposition.policy_digest == policy_digest
+    assert stored_disposition.terms_id == synthetic_uuid(796001)
+    assert stored_disposition.terms_digest == "d" * 64
+    assert stored_disposition.expires_at == NOW + timedelta(minutes=30)
     assert report_audit == report_receipt_ref.reference_id
     assert binding_row == (applicability.applicability_id, 1)
     assert aggregate_count == 0
     assert report_count == receipt_count == 1
+
+    # A different approved terms identity with the same calculated expiry is
+    # stale for this report and must be denied before selecting report bytes.
+    terms_authority.terms_digest = "f" * 64
+    payload_selects: list[str] = []
+
+    def observe_payload_select(conn, cursor, statement, parameters, execution_context, executemany):
+        if "select spine.private_asr_artifacts.payload" in statement.lower():
+            payload_selects.append(statement)
+
+    event.listen(private_asr_database.runtime.sync_engine, "before_cursor_execute", observe_payload_select)
+    try:
+        with pytest.raises(PrivateASRStorageDenied):
+            await store.read_private_reference(stored.report_ref, context=context)
+    finally:
+        event.remove(
+            private_asr_database.runtime.sync_engine,
+            "before_cursor_execute",
+            observe_payload_select,
+        )
+        terms_authority.terms_digest = "d" * 64
+    assert payload_selects == []
 
     failed_report_id = synthetic_uuid(795145)
     failed_receipt_ref = await audit_receipts.create_report_receipt(

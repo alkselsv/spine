@@ -75,10 +75,14 @@ storage instance with missing approval/terms providers denies. The opaque
 the resolver then loads and verifies the canonical database binding. UUID
 equality is not proof of policy authority.
 
-The report manifest metadata migration is `20261229_97`, following the branch's
-supported predecessor chain. It adds report manifest identity and complete
-source binding fields; it does not create another manifest registry. Frozen
-dataset versions and #661 thresholds are unchanged.
+The report manifest metadata migration is `20261229_97`, followed by
+`20261230_98`, which persists the exact per-source retention disposition on
+report artifacts. Reads and idempotent retries compare the entire current
+disposition (policy and terms IDs/digests, generation, class, start event,
+approval and cleanup/backup evidence) as well as derived expiry. This prevents
+an equal-expiry but different terms version from authorizing a prior report.
+These migrations add metadata to the existing tables; they do not create a
+second registry. Frozen dataset versions and #661 thresholds are unchanged.
 
 Required remaining gates include the full restricted-role race matrix,
 production-approved terms and manifest authority composition, aggregate

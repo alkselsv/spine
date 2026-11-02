@@ -61,6 +61,7 @@ private_asr_artifacts = Table(
     Column("content_sha256", String(64)), Column("byte_length", BigInteger, nullable=False),
     Column("payload", LargeBinary, nullable=False),
     Column("retention_profile_ref", PGUUID(as_uuid=True), nullable=False),
+    Column("retention_disposition", JSONB),
     Column("audit_receipt_ref", PGUUID(as_uuid=True), nullable=False),
     Column("expires_at", DateTime(timezone=True), nullable=False),
     Column("dataset_id", PGUUID(as_uuid=True)), Column("manifest_version", Text),
@@ -625,6 +626,7 @@ class PostgreSQLPrivateASRStorage:
             # Lock the approved source and policy pointers before the callback.
             admitted_records: list[AdmittedSourceRevision] = []
             retention_expiries: list[datetime] = []
+            retention_dispositions: list[dict[str, object]] = []
             for revision_id in sorted(set(source_revision_ids), key=str):
                 original = (await self._execute(session, select(
                     private_asr_artifacts.c.retention_profile_ref,
@@ -670,9 +672,14 @@ class PostgreSQLPrivateASRStorage:
                 if retention_expiry <= now:
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 retention_expiries.append(retention_expiry)
+                retention_dispositions.append({
+                    "source_revision_id": str(admitted.source_revision.revision_id),
+                    "disposition": retention_disposition.model_dump(mode="json"),
+                })
                 admitted_records.append(admitted)
             if not source_revision_ids:
                 raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
+            retention_dispositions.sort(key=lambda item: str(item["source_revision_id"]))
             if not await self._manifest_lineage.verify_current(
                 transaction=session,
                 context=context,
@@ -687,6 +694,7 @@ class PostgreSQLPrivateASRStorage:
                 private_asr_artifacts.c.status,
                 private_asr_artifacts.c.content_sha256,
                 private_asr_artifacts.c.expires_at,
+                private_asr_artifacts.c.retention_disposition,
             ).where(
                 private_asr_artifacts.c.workspace_id == workspace_id,
                 private_asr_artifacts.c.environment_id == environment_id,
@@ -697,6 +705,7 @@ class PostgreSQLPrivateASRStorage:
                     existing["status"] != "committed"
                     or existing["content_sha256"] != digest
                     or existing["expires_at"] != min(retention_expiries)
+                    or existing["retention_disposition"] != retention_dispositions
                 ):
                     raise PrivateASRStorageDenied("Private ASR idempotency conflict.")
                 linked = {
@@ -730,6 +739,7 @@ class PostgreSQLPrivateASRStorage:
                     idempotency_key=idempotency_key, content_sha256=digest,
                     byte_length=len(payload), payload=payload,
                     retention_profile_ref=retention_profile_ref.reference_id,
+                    retention_disposition=retention_dispositions,
                     audit_receipt_ref=admitted_records[0].audit_receipt_ref.reference_id,
                     expires_at=min(retention_expiries, default=now),
                     dataset_id=report.dataset_id,
@@ -962,6 +972,7 @@ class PostgreSQLPrivateASRStorage:
                 private_asr_artifacts.c.source_object_id,
                 private_asr_artifacts.c.source_revision_id,
                 private_asr_artifacts.c.retention_profile_ref,
+                private_asr_artifacts.c.retention_disposition,
                 private_asr_artifacts.c.audit_receipt_ref,
                 private_asr_artifacts.c.expires_at,
                 private_asr_artifacts.c.admitted_record,
@@ -1068,6 +1079,7 @@ class PostgreSQLPrivateASRStorage:
             else:
                 raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
             current_retention_expiries: list[datetime] = []
+            current_retention_dispositions: list[dict[str, object]] = []
             for value in admitted_values:
                 admitted = _admitted_from_jsonb(value)
                 artifact_class = {
@@ -1095,9 +1107,19 @@ class PostgreSQLPrivateASRStorage:
                 if disposition is None:
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 current_retention_expiries.append(disposition.expires_at)
+                current_retention_dispositions.append({
+                    "source_revision_id": str(admitted.source_revision.revision_id),
+                    "disposition": disposition.model_dump(mode="json"),
+                })
                 await self._check_admitted(admitted, context)
             if min(current_retention_expiries) != row["expires_at"]:
                 raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
+            if row["kind"] == "report":
+                current_retention_dispositions.sort(
+                    key=lambda item: str(item["source_revision_id"])
+                )
+                if row["retention_disposition"] != current_retention_dispositions:
+                    raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
             if row["source_revision_id"] is not None:
                 fence = (await session.execute(select(private_asr_source_fences.c.revoked).where(
                     private_asr_source_fences.c.workspace_id == workspace_id,

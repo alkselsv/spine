@@ -5893,6 +5893,7 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261227_95_private_asr_storage.py",
         "20261228_96_private_asr_storage.py",
         "20261229_97_private_asr_manifest_lineage.py",
+        "20261230_98_private_asr_retention_disposition.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "transactional_failure_probe.py").write_text(
