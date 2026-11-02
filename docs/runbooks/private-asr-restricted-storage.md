@@ -12,8 +12,9 @@ and detailed reports in the existing Spine PostgreSQL database under forced
 RLS. Runtime transactions set workspace, environment and purpose; private ASR
 operations require the `asr_model_evaluation` purpose and a verified
 `TrustedPersistenceContext`. Opaque references are identifiers only. No public
-URL or filesystem export is created. The adapter does not publish sanitized
-aggregates; that path fails closed.
+URL or filesystem export is created. Sanitized aggregates use a separate typed
+publication method bound to an exact committed report. Raw byte export remains
+fail-closed.
 
 The adapter uses existing Spine source lifecycle/admission locks, current
 source head and AccessPolicy storage, canonical `RetentionApplicability` and
@@ -83,10 +84,17 @@ An external approval authority is not atomically fenced unless its revocation
 protocol participates in this database transaction or supplies an established
 coordinated version fence.
 
-Detailed report content is never part of aggregate output. Aggregate export
-remains blocked until sanitized payload, small-cell/privacy checks, current
-release authorization and canonical audit share a demonstrable visibility
-boundary.
+Detailed report content is never part of aggregate output. The synthetic
+aggregate path revalidates the strict sanitizer model, derives the expected
+aggregate again from the exact committed report, checks source/retention/
+AccessPolicy and fixture-only current publication authority, and calls release
+and disclosure-risk checks immediately before commit. Only the allowlisted
+`SanitizedCorpusReport` JSON is persisted. The aggregate row and canonical
+success audit share one PostgreSQL UoW; its commit is the visibility point.
+Duplicate identity is serialized and returns the same export reference after
+fresh authorization. Raw caller-provided bytes are denied. Production aggregate
+publication remains disabled until canonical privacy/release authority and
+the shared external revocation fence (#813) are composed.
 
 ## Manifest and lineage
 
@@ -156,32 +164,34 @@ classes and legal/data approvals; runtime database grants in a named
 environment; backup deletion, encryption, physical erasure and restart/restore
 qualification. No actual retention duration or approval is invented here.
 
-Latest executed focused verification on branch head `e16d8ce` based on main
-`597b8025f528ec1d186ceb40e275e0d73abae4bf`:
+Latest executed focused verification before rebase to main
+`526c8117aba264c678d88fc313c36c18de31cb17`:
 
-- PostgreSQL private-ASR storage module: `36 passed`, using isolated PostgreSQL
-  17 and the restricted `spine_runtime` role.
+- PostgreSQL private-ASR storage module: `46 passed`, using isolated PostgreSQL
+  17 and the restricted `spine_runtime` role, including aggregate commit and
+  subprocess crash/restart cases.
 - Source, lifecycle, AccessPolicy, retention and private-ASR application/domain
-  regressions: `173 passed`.
+  regressions: `130 passed`.
 - `/home/dima55279/project/spine/.venv/bin/python -m compileall -q src tests`:
   PASS; `git diff --check`: PASS.
 - Alembic: one head, `20261230_98`.
-- Full `pytest -q` completed on a pre-final-lock-order worktree: `5892 passed,
+- Full `pytest -q` completed on an earlier baseline worktree: `5892 passed,
   7 skipped, 3 failed, 1 warning` in `1836.01s`. The two direct failures were
   Google OAuth loopback and the Issue #680 operator wizard; both reproduced on
   detached exact current main `597b8025f528ec1d186ceb40e275e0d73abae4bf`
   (`2 failed in 4.04s`). The third failure was the nested #68 gate embedding
-  those two. This full run predates the final lock-order refinement and does not
-  qualify the full suite on `e16d8ce`.
-- GitHub run `41466111887` passed on predecessor head `ed58285`, not this
-  rebased branch. Exact-head CI is pending.
+  those two. This run predates the current implementation and does not qualify
+  the full suite on the rebased head.
+- GitHub run `41499036549` passed on predecessor head `25c18ee`; it is not
+  exact-head CI evidence. New exact-head CI is pending.
 
 PR #797 remains OPEN/DRAFT and Issue #795 remains OPEN. Source-head replacement,
 AccessPolicy activation, canonical lifecycle withdrawal, retention CAS and
-multi-source lock ordering now have focused PostgreSQL evidence. The complete
-canonical-writer/deadlock-retry matrix, process termination/restart recovery,
-production manifest/deletion/approval authorities, aggregate publication and
-named-environment qualification remain unresolved. This runbook does not alter #690
+multi-source lock ordering now have focused PostgreSQL evidence. Process
+termination/restart recovery and synthetic aggregate publication also have
+focused PostgreSQL evidence. Bounded deadlock retry/reauthorization, production
+manifest/deletion/approval authorities and named-environment qualification
+remain unresolved. This runbook does not alter #690
 `NO-GO / NOT_VERIFIED` or any human approval state.
 
 ## Operator qualification checklist
