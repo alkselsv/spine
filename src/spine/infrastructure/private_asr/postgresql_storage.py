@@ -31,7 +31,13 @@ from spine.application.private_asr_corpus import (
 from spine.domain.evaluations.private_asr_corpus import PrivateReference
 from spine.domain.sources.models import SourceObject
 from spine.infrastructure.persistence.postgresql_mappings import (
-    audit_events, current_access_policies, source_objects, source_revisions,
+    audit_events, canonical_generation_counters, current_access_policies,
+    current_lifecycle_authorities, current_source_heads, lifecycle_decisions,
+    source_objects, source_revisions,
+)
+from spine.infrastructure.persistence.postgresql_source_locks import (
+    lock_admission_revision,
+    lock_source_lifecycle_shared,
 )
 
 
@@ -210,14 +216,38 @@ class PostgreSQLPrivateASRStorage:
 
     async def _locked_source(self, session: AsyncSession, admitted: AdmittedSourceRevision) -> None:
         source = admitted.source_object
-        lock_key = f"{source.workspace_id}:{source.environment_id}:{admitted.source_revision.revision_id}"
-        await session.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(lock_key, 0))))
+        revision = admitted.source_revision
+        # Match canonical order: lifecycle shared lock, workspace/environment
+        # generation row, exact revision admission lock, source head, then
+        # retention and AccessPolicy pointers. Lifecycle writers take the same
+        # first lock exclusively; canonical head writers take these locks in
+        # this order as well.
+        await lock_source_lifecycle_shared(
+            session.execute,
+            workspace_id=source.workspace_id,
+            environment_id=source.environment_id,
+            source_object_id=source.source_object_id,
+        )
+        counter = (await session.execute(select(
+            canonical_generation_counters.c.workspace_id,
+        ).where(
+            canonical_generation_counters.c.workspace_id == source.workspace_id,
+            canonical_generation_counters.c.environment_id == source.environment_id,
+        ).with_for_update())).scalar_one_or_none()
+        if counter is None:
+            raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
+        await lock_admission_revision(
+            session.execute,
+            workspace_id=source.workspace_id,
+            environment_id=source.environment_id,
+            source_object_id=source.source_object_id,
+            revision_id=revision.revision_id,
+        )
         source_result = await session.execute(select(source_objects.c.source_object_id).where(
             source_objects.c.workspace_id == source.workspace_id,
             source_objects.c.environment_id == source.environment_id,
             source_objects.c.source_object_id == source.source_object_id,
         ))
-        revision = admitted.source_revision
         revision_result = await session.execute(select(
             source_revisions.c.revision_id,
         ).where(
@@ -230,6 +260,28 @@ class PostgreSQLPrivateASRStorage:
             source_revisions.c.original_sha256 == revision.original_sha256,
             source_revisions.c.byte_length == revision.byte_length,
         ))
+        head = (await session.execute(select(
+            current_source_heads.c.current_revision_id,
+            current_source_heads.c.current_revision_kind,
+        ).where(
+            current_source_heads.c.workspace_id == source.workspace_id,
+            current_source_heads.c.environment_id == source.environment_id,
+            current_source_heads.c.source_object_id == source.source_object_id,
+        ).with_for_update())).mappings().one_or_none()
+        lifecycle = (await session.execute(select(
+            lifecycle_decisions.c.status,
+        ).select_from(current_lifecycle_authorities.join(
+            lifecycle_decisions,
+            (lifecycle_decisions.c.workspace_id == current_lifecycle_authorities.c.workspace_id)
+            & (lifecycle_decisions.c.environment_id == current_lifecycle_authorities.c.environment_id)
+            & (lifecycle_decisions.c.source_object_id == current_lifecycle_authorities.c.source_object_id)
+            & (lifecycle_decisions.c.decision_id == current_lifecycle_authorities.c.current_decision_id)
+            & (lifecycle_decisions.c.generation == current_lifecycle_authorities.c.generation),
+        )).where(
+            current_lifecycle_authorities.c.workspace_id == source.workspace_id,
+            current_lifecycle_authorities.c.environment_id == source.environment_id,
+            current_lifecycle_authorities.c.source_object_id == source.source_object_id,
+        ).with_for_update(of=current_lifecycle_authorities))).scalar_one_or_none()
         policy_result = await session.execute(select(current_access_policies.c.access_policy_version_id).where(
             current_access_policies.c.workspace_id == source.workspace_id,
             current_access_policies.c.environment_id == source.environment_id,
@@ -239,6 +291,10 @@ class PostgreSQLPrivateASRStorage:
         if (
             source_result.scalar_one_or_none() is None
             or revision_result.scalar_one_or_none() is None
+            or head is None
+            or head["current_revision_id"] != revision.revision_id
+            or head["current_revision_kind"] != "content"
+            or lifecycle not in (None, "eligible")
             or current_policy_id != admitted.access_policy_version
         ):
             raise PrivateASRStorageDenied("Private ASR storage authorization denied.")

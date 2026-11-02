@@ -60,27 +60,32 @@ inside the transaction, awaits `authorize_commit` while locks remain held, then
 changes the row to `committed`. This describes a former tested adapter shape,
 not a currently available report-write capability.
 
-Storage-level ASR revocation takes the same private-ASR per-revision advisory
-lock. That orders ASR fence updates with ASR report writes only. The canonical
-source replacement path in #800 instead locks a workspace/environment
-generation counter, `_lock_admission_revision`, and `current_source_heads`;
-its key differs from the private-ASR key. A source-head replacement can
-therefore race a report commit. AccessPolicy activation serializes on
+The source lock identity now comes from the shared
+`postgresql_source_locks.py` infrastructure used by canonical admission,
+lifecycle mutation, and the private ASR adapter. ASR orders locks as lifecycle
+shared lock, workspace/environment generation counter, exact revision
+admission lock, current source head, current lifecycle authority, and current
+AccessPolicy pointer. Canonical lifecycle mutation uses the matching exclusive
+lifecycle lock. A report operation must also lock the current retention
+applicability pointer between source head and AccessPolicy once the retention
+resolver exists. This source locking change has not been exercised against
+live PostgreSQL in this environment, so it is implemented but not
+integration-verified. AccessPolicy activation serializes on
 `current_access_policies`, which the ASR adapter locks. The canonical retention
 repository writes the current applicability pointer with row lock + CAS in its
-UoW, but the reader used by ASR has no transaction participant or fence token;
-the ASR transaction never locks that pointer. Its `profile_ref` UUID is not
-mapped to applicability ID/generation or policy ID/version/digest. Also, no
-approved policy-terms source computes an artifact expiry. `effective_until`
-only defines applicability validity and is not an artifact deletion deadline.
+UoW, but ASR has no transaction-aware reader/fence token and does not yet lock
+that pointer. Its `profile_ref` UUID is not mapped to applicability
+ID/generation or policy ID/version/digest. Also, no approved policy-terms
+source computes an artifact expiry. `effective_until` only defines
+applicability validity and is not an artifact deletion deadline.
 The ASR original's stored expiry had been set from
 `admitted.authority.expires_at`, conflating two clocks; that profile-based
 expiry path has been removed rather than replacing it with an unauthoritative
-timestamp. An earlier focused PostgreSQL test substituted a no-op for
-`_locked_source`; that test was removed. The current test denies on missing
-retention authority before reaching any source lock, so it does not prove
-actual source/head/policy lock access under the runtime role. These are blocking
-transaction and authority gaps, not operator-only qualifications.
+timestamp. The current test denies on missing retention authority before
+reaching any source lock, so it does not prove actual source/head/policy lock
+access under the runtime role. The source lock code is implemented; its
+PostgreSQL concurrency and runtime role behavior remain `NOT_VERIFIED`. Missing
+retention terms and atomic audit participation remain blocking contract gaps.
 
 ## Data lifecycle and retry
 
@@ -166,8 +171,9 @@ For each named environment, record evidence for:
 ## Evidence boundary
 
 Implementation status: **NEEDS INFO; Issue #795 acceptance is incomplete**.
-The latent former report path has a PostgreSQL transaction, but source-head and
-retention authority are not transactionally fenced. The storage boundary does
+The report path has a PostgreSQL transaction and now uses shared canonical
+source lock identities, but neither lock interleavings nor retention authority
+are transactionally verified. The storage boundary does
 not resolve an authoritative dataset manifest; record-to-revision bindings
 come from the runner and are checked only against report outcome IDs and stored
 admitted originals. Aggregate publication is explicitly blocked until its
