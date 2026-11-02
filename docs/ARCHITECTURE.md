@@ -206,6 +206,17 @@ envelope хранится tenant-scoped в PostgreSQL; исходные bytes и
 его состоянием. Canonical deletion authority и scan-generation fence закреплены
 в ADR-0018.
 
+Governed email reuses the provider-neutral source and publication boundaries.
+Gmail message IDs and IMAP folder/`UIDVALIDITY`/UID identify provider messages;
+RFC `Message-ID` and thread/reply headers remain evidence, not canonical identity
+or business association. Label, folder and flag changes are state observations,
+while raw MIME and attachment artifacts retain immutable Source Revision lineage.
+Opaque generation-bound checkpoints advance only after all covered canonical
+acceptance and outbox effects are durable; partial scans and stale generations
+hold the cursor for retry or reconciliation. The offline-only decision and its
+relationship to existing source, access, locator, connection and retention
+contracts are recorded in [ADR-0059](adr/0059-governed-email-identity-and-checkpoints.md).
+
 Mounted-filesystem adapter сохраняет ту же canonical deletion authority, но не
 переносит provider semantics на локальные inode или checksum. Baseline identity
 остаётся path-scoped: rename означает подтверждённое отсутствие старого пути и
@@ -2599,6 +2610,10 @@ detectors без специальных обходов в platform core.
 - [ADR-054](adr/0054-immutable-transcript-review-and-correction.md): exact-version
   human decisions, idempotent review records, immutable correction successors and
   policy-controlled publication eligibility.
+- [ADR-059](adr/0059-governed-email-identity-and-checkpoints.md): provider-qualified
+  email identity, content-versus-state semantics, MIME/attachment lineage and
+  generation-bound no-gap checkpoint publication; offline-only, with live and
+  production gates remaining separate.
 - ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.
