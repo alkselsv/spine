@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from pathlib import Path
 import platform
 import subprocess
@@ -45,6 +44,9 @@ from spine.evals.transcription_russian_v2 import (
     TRANSCRIPTION_V1_SHA256,
     transcription_dataset_v2_sha256,
 )
+
+
+_SYNTHETIC_NETWORK_NAMESPACE_INODE = 7_000_001
 
 
 def _sha(data: bytes) -> str:
@@ -91,7 +93,7 @@ def _runtime_manifest(tmp_path: Path) -> CandidateRuntimeManifest:
         boundary_reference="isolated-test-boundary:v1",
         enforcement="network_namespace",
         network_egress_disabled=True,
-        network_namespace_inode=os.stat("/proc/self/ns/net").st_ino,
+        network_namespace_inode=_SYNTHETIC_NETWORK_NAMESPACE_INODE,
         default_route_absent=True,
         non_loopback_interfaces_absent=True,
     )
@@ -454,6 +456,41 @@ def test_preflight_does_not_trust_unobservable_firewall_attestation(tmp_path: Pa
     assert _network_boundary_mismatches(manifest.model_copy(update={"no_egress": firewall_evidence})) == (
         "no_egress_boundary_not_independently_observable",
     )
+
+
+def test_network_namespace_evidence_requires_observable_identity() -> None:
+    with pytest.raises(
+        ValueError,
+        match="network namespace evidence must record namespace inode",
+    ):
+        NoEgressEvidence(
+            schema_version="asr-no-egress-attestation:v1",
+            boundary_reference="missing-namespace-identity:v1",
+            enforcement="network_namespace",
+            network_egress_disabled=True,
+            network_namespace_inode=None,
+            default_route_absent=True,
+            non_loopback_interfaces_absent=True,
+        )
+
+
+def test_preflight_reports_unobservable_network_namespace(tmp_path: Path) -> None:
+    manifest = _runtime_manifest(tmp_path)
+    dataset = load_russian_transcription_v2_dataset()
+    data_root = Path(__file__).parents[2] / "src/spine/evals/data"
+
+    def unavailable_namespace() -> int:
+        raise FileNotFoundError
+
+    report, ready = preflight_candidate(
+        manifest,
+        dataset,
+        asset_root=data_root,
+        network_namespace_inode_reader=unavailable_namespace,
+    )
+
+    assert not ready
+    assert "network_namespace_identity_unavailable" in report.limitations[0]
 
 
 def test_qualification_preflight_preserves_not_verified_for_missing_coverage(tmp_path: Path) -> None:
