@@ -331,5 +331,3 @@ class QualificationCounts(DefinitionModel):
     blocked: int = Field(ge=0)
     not_verified: int = Field(ge=0)
     not_applicable: int = Field(ge=0)
-
-
