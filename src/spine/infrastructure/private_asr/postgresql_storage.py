@@ -217,11 +217,12 @@ class PostgreSQLPrivateASRStorage:
     async def _locked_source(self, session: AsyncSession, admitted: AdmittedSourceRevision) -> None:
         source = admitted.source_object
         revision = admitted.source_revision
-        # Match canonical order: lifecycle shared lock, workspace/environment
-        # generation row, exact revision admission lock, source head, then
-        # retention and AccessPolicy pointers. Lifecycle writers take the same
-        # first lock exclusively; canonical head writers take these locks in
-        # this order as well.
+        # Match canonical source order: lifecycle shared lock,
+        # workspace/environment generation row, exact revision admission lock,
+        # source head, then current AccessPolicy pointer. Lifecycle writers
+        # take the same first lock exclusively; canonical head writers take
+        # these locks in this order. Retention is not resolved/locked yet, so
+        # callers fail closed before relying on this path for publication.
         await lock_source_lifecycle_shared(
             session.execute,
             workspace_id=source.workspace_id,
