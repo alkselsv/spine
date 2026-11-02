@@ -274,19 +274,32 @@ class PostgreSQLPrivateASRStorage:
         source_object_id: UUID,
         revision_id: UUID,
     ) -> None:
-        # Match canonical source order: lifecycle shared lock,
-        # workspace/environment generation row, exact revision admission lock,
-        # source head, then current AccessPolicy pointer. Lifecycle writers
-        # take the same first lock exclusively; canonical head writers take
-        # these locks in this order. Retention is not resolved/locked yet, so
-        # callers fail closed before relying on this path for publication.
-        execute = lambda statement, parameters=None: self._execute(session, statement, parameters)
-        await lock_source_lifecycle_shared(
-            execute,
-            workspace_id=workspace_id,
-            environment_id=environment_id,
-            source_object_id=source_object_id,
+        await self._lock_source_admission_paths(
+            session,
+            ((workspace_id, environment_id, source_object_id, revision_id),),
         )
+
+    async def _lock_source_admission_paths(
+        self,
+        session: object,
+        source_paths: tuple[tuple[UUID, UUID, UUID, UUID], ...],
+    ) -> None:
+        """Acquire lifecycle, generation, and exact-revision locks in canonical order."""
+        if not source_paths:
+            raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
+        scopes = {(workspace_id, environment_id) for workspace_id, environment_id, _, _ in source_paths}
+        if len(scopes) != 1:
+            raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
+        workspace_id, environment_id = next(iter(scopes))
+        source_ids = sorted({source_id for _, _, source_id, _ in source_paths}, key=str)
+        execute = lambda statement, parameters=None: self._execute(session, statement, parameters)
+        for source_object_id in source_ids:
+            await lock_source_lifecycle_shared(
+                execute,
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                source_object_id=source_object_id,
+            )
         counter = (await self._execute(session, select(
             canonical_generation_counters.c.workspace_id,
         ).where(
@@ -295,13 +308,16 @@ class PostgreSQLPrivateASRStorage:
         ).with_for_update())).scalar_one_or_none()
         if counter is None:
             raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
-        await lock_admission_revision(
-            execute,
-            workspace_id=workspace_id,
-            environment_id=environment_id,
-            source_object_id=source_object_id,
-            revision_id=revision_id,
-        )
+        for _, _, source_object_id, revision_id in sorted(
+            set(source_paths), key=lambda item: (str(item[2]), str(item[3])),
+        ):
+            await lock_admission_revision(
+                execute,
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                source_object_id=source_object_id,
+                revision_id=revision_id,
+            )
 
     async def _locked_source(
         self, session: object, admitted: AdmittedSourceRevision, *,
@@ -311,16 +327,18 @@ class PostgreSQLPrivateASRStorage:
         starting_at: datetime | None = None,
         retention_allow_expired: bool = False,
         context: TrustedPersistenceContext | None = None,
+        admission_path_locked: bool = False,
     ):
         source = admitted.source_object
         revision = admitted.source_revision
-        await self._lock_source_admission_path(
-            session,
-            workspace_id=source.workspace_id,
-            environment_id=source.environment_id,
-            source_object_id=source.source_object_id,
-            revision_id=revision.revision_id,
-        )
+        if not admission_path_locked:
+            await self._lock_source_admission_path(
+                session,
+                workspace_id=source.workspace_id,
+                environment_id=source.environment_id,
+                source_object_id=source.source_object_id,
+                revision_id=revision.revision_id,
+            )
         source_result = await self._execute(session, select(source_objects.c.source_object_id).where(
             source_objects.c.workspace_id == source.workspace_id,
             source_objects.c.environment_id == source.environment_id,
@@ -654,6 +672,8 @@ class PostgreSQLPrivateASRStorage:
             admitted_records: list[AdmittedSourceRevision] = []
             retention_expiries: list[datetime] = []
             retention_dispositions: list[dict[str, object]] = []
+            originals_by_revision: dict[UUID, Any] = {}
+            admitted_by_revision: dict[UUID, AdmittedSourceRevision] = {}
             for revision_id in sorted(set(source_revision_ids), key=str):
                 original = (await self._execute(session, select(
                     private_asr_artifacts.c.retention_profile_ref,
@@ -673,11 +693,44 @@ class PostgreSQLPrivateASRStorage:
                 if original is None or original["retention_profile_ref"] != retention_profile_ref.reference_id:
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 admitted = _admitted_from_jsonb(original["admitted_record"])
+                if (
+                    admitted.source_object.workspace_id != workspace_id
+                    or admitted.source_object.environment_id != environment_id
+                    or admitted.source_revision.revision_id != revision_id
+                ):
+                    raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
+                originals_by_revision[revision_id] = original
+                admitted_by_revision[revision_id] = admitted
+
+            if not source_revision_ids:
+                raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
+            await self._lock_source_admission_paths(
+                session,
+                tuple(
+                    (
+                        workspace_id,
+                        environment_id,
+                        admitted.source_object.source_object_id,
+                        admitted.source_revision.revision_id,
+                    )
+                    for admitted in admitted_by_revision.values()
+                ),
+            )
+            ordered_admissions = sorted(
+                admitted_by_revision.values(),
+                key=lambda item: (
+                    str(item.source_object.source_object_id),
+                    str(item.source_revision.revision_id),
+                ),
+            )
+            for admitted in ordered_admissions:
+                original = originals_by_revision[admitted.source_revision.revision_id]
                 retention_disposition = await self._locked_source(
                     session, admitted, retention_profile_ref=retention_profile_ref,
                     artifact_class=RetentionArtifactClass.PRIVATE_ASR_DETAILED_REPORT,
                     starting_event=RetentionStartingEvent.REPORT_GENERATED,
                     starting_at=report.generated_at, context=context,
+                    admission_path_locked=True,
                 )
                 await self._check_admitted(admitted, context)
                 if admitted.retention_profile_ref != retention_profile_ref:
@@ -704,8 +757,6 @@ class PostgreSQLPrivateASRStorage:
                     "disposition": retention_disposition.model_dump(mode="json"),
                 })
                 admitted_records.append(admitted)
-            if not source_revision_ids:
-                raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
             retention_dispositions.sort(key=lambda item: str(item["source_revision_id"]))
             if not await self._manifest_lineage.verify_current(
                 transaction=session,
@@ -1115,6 +1166,18 @@ class PostgreSQLPrivateASRStorage:
 
             source_lineage: list[PrivateArtifactSourceLineage] = []
             dispositions = []
+            await self._lock_source_admission_paths(
+                transaction,
+                tuple(
+                    (
+                        workspace_id,
+                        environment_id,
+                        admitted.source_object.source_object_id,
+                        revision_id,
+                    )
+                    for revision_id, admitted in admitted_by_revision.items()
+                ),
+            )
             for revision_id, admitted in sorted(
                 admitted_by_revision.items(),
                 key=lambda pair: (str(pair[1].source_object.source_object_id), str(pair[0])),
@@ -1132,6 +1195,7 @@ class PostgreSQLPrivateASRStorage:
                     starting_at=initial["created_at"],
                     retention_allow_expired=True,
                     context=context,
+                    admission_path_locked=True,
                 )
                 assert disposition is not None
                 dispositions.append(disposition)
@@ -1371,6 +1435,18 @@ class PostgreSQLPrivateASRStorage:
                     str(item.source_revision.revision_id),
                 ),
             )
+            await self._lock_source_admission_paths(
+                session,
+                tuple(
+                    (
+                        workspace_id,
+                        environment_id,
+                        admitted.source_object.source_object_id,
+                        admitted.source_revision.revision_id,
+                    )
+                    for admitted in admitted_records
+                ),
+            )
             for admitted in admitted_records:
                 artifact_class = _retention_class_for_kind(row["kind"])
                 if artifact_class is None:
@@ -1384,6 +1460,7 @@ class PostgreSQLPrivateASRStorage:
                     artifact_class=artifact_class,
                     starting_event=_retention_starting_event_for_kind(row["kind"]),
                     starting_at=row["created_at"], context=context,
+                    admission_path_locked=True,
                 )
                 if disposition is None:
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")

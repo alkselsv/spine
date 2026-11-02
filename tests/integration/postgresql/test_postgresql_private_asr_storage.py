@@ -12,12 +12,15 @@ import pytest_asyncio
 from pydantic import SecretStr
 from sqlalchemy import event, func, insert, select, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from spine.application.persistence.context import (
     EnvironmentScope, PersistenceOperation, PersistencePurpose, WorkspaceScope,
     TrustedPersistenceContext,
 )
+from spine.application.persistence.canonical import CanonicalAcceptanceCommand
+from spine.application.persistence.idempotency import IdempotencyKey
+from spine.application.persistence.repositories import SourceObservationCommand
 from spine.application.diagnostics.audit import AuditEventRegistry
 from spine.application.retention import (
     ApprovedRetentionTerms, RetentionStartingEvent,
@@ -35,6 +38,7 @@ from spine.domain.evaluations.private_asr_qualification import (
     PrivateCaseDisposition, PrivateCaseOutcome, PrivateEvaluationDenominators,
     PrivateRealASREvaluationReport,
 )
+from spine.domain.sources import AdmissionDecision, AdmissionDisposition, content_revision
 from spine.domain.evaluations.private_asr_corpus import PrivateReference
 from spine.infrastructure.db.migrations import upgrade_database
 from spine.infrastructure.db.operator import bootstrap_database_roles
@@ -52,7 +56,12 @@ from spine.infrastructure.persistence.postgresql import (
     PostgreSQLPersistence, PostgreSQLTransactionStage,
 )
 from spine.infrastructure.persistence.postgresql_retention import PostgreSQLRetentionApplicabilityRepository
-from spine.infrastructure.persistence.postgresql_source_locks import lock_source_lifecycle_exclusive
+from spine.infrastructure.persistence.postgresql_source_locks import (
+    admission_serialization_key,
+)
+from spine.infrastructure.persistence.postgresql_lifecycle import (
+    PostgreSQLLifecycleAuthorityRepository,
+)
 from spine.infrastructure.private_asr.postgresql_storage import (
     PostgreSQLPrivateASRStorage, PrivateASRStorageDenied, private_asr_artifacts,
     private_asr_source_fences,
@@ -63,8 +72,27 @@ from spine.infrastructure.private_asr.retention import PrivateASRRetentionDispos
 from tests.application.test_private_asr_corpus import service, source_revision
 from tests.contracts.persistence.ids import synthetic_uuid
 from tests.contracts.persistence.outbox_events import create_outbox_event_registry
-from tests.contracts.persistence.test_canonical_acceptance_contract import prepare_case
-from tests.contracts.persistence.test_source_observation_contract import NOW as CANONICAL_NOW
+from tests.contracts.persistence.test_canonical_acceptance_contract import (
+    _audit as canonical_audit,
+    _canonical_outbox as canonical_outbox,
+    _original_receipt as canonical_original_receipt,
+    _receipt_association as canonical_receipt_association,
+    _activate_policy as activate_canonical_policy,
+    prepare_case,
+)
+from tests.contracts.persistence.test_source_observation_contract import (
+    NOW as CANONICAL_NOW,
+    connector_source,
+    provenance as source_provenance,
+    revision as source_revision_factory,
+)
+from tests.integration.postgresql.test_postgresql_lifecycle_authority import (
+    _AllowAuthority as _AllowLifecycleDecision,
+    _AllowObservationAuthority,
+    _DecisionEffects,
+    _decision as lifecycle_decision,
+    _observation as lifecycle_observation,
+)
 
 
 pytestmark = [pytest.mark.postgresql, pytest.mark.asyncio(loop_scope="session")]
@@ -703,9 +731,81 @@ async def test_postgresql_private_asr_read_denial_has_no_existence_oracle_or_pay
     assert not any("select spine.private_asr_artifacts.payload" in statement for statement in statements)
 
 
+@pytest.mark.parametrize("scope_mismatch", ["workspace", "environment"])
+async def test_postgresql_private_asr_read_rejects_cross_scope_before_payload_select(
+    private_asr_database: _Database,
+    scope_mismatch: str,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database, seed=798710 + ("workspace", "environment", "purpose").index(scope_mismatch),
+    )
+    stored = await _commit_synthetic_report(
+        prepared, idempotency_key=f"scope-denial-{scope_mismatch}",
+    )
+    workspace_id = prepared.case.source.workspace_id
+    environment_id = prepared.case.source.environment_id
+    if scope_mismatch == "workspace":
+        workspace_id = synthetic_uuid(798720)
+    elif scope_mismatch == "environment":
+        environment_id = synthetic_uuid(798721)
+    denied_context = prepared.boundary.worker(
+        scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id),
+        service_principal_id=synthetic_uuid(798722),
+        purpose=PersistencePurpose("asr_model_evaluation"),
+        operation=PersistenceOperation("run_private_asr_evaluation"),
+        trace_id=synthetic_uuid(798723),
+    )
+    statements: list[str] = []
+
+    def capture_statement(conn, cursor, statement, parameters, execution_context, executemany):
+        statements.append(statement.lower())
+
+    event.listen(private_asr_database.runtime.sync_engine, "before_cursor_execute", capture_statement)
+    try:
+        with pytest.raises(PrivateASRStorageDenied) as denial:
+            await prepared.store.read_private_reference(
+                stored.report_ref,
+                context=denied_context,
+            )
+    finally:
+        event.remove(private_asr_database.runtime.sync_engine, "before_cursor_execute", capture_statement)
+    assert str(denial.value) == "Private ASR storage authorization denied."
+    assert not any("select spine.private_asr_artifacts.payload" in statement for statement in statements)
+
+
+async def test_postgresql_private_asr_runtime_rls_hides_payload_for_wrong_purpose(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=798713)
+    stored = await _commit_synthetic_report(prepared, idempotency_key="wrong-purpose-rls")
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        allowed_payload = (await session.execute(select(private_asr_artifacts.c.payload).where(
+            private_asr_artifacts.c.artifact_id == stored.report_ref.reference_id,
+        ))).scalar_one()
+    assert allowed_payload == prepared.report.model_dump_json().encode()
+    async with prepared.runtime_sessions() as session, session.begin():
+        await session.execute(text(
+            "select set_config('spine.workspace_id', :workspace_id, true)"
+        ), {"workspace_id": str(prepared.case.source.workspace_id)})
+        await session.execute(text(
+            "select set_config('spine.environment_id', :environment_id, true)"
+        ), {"environment_id": str(prepared.case.source.environment_id)})
+        await session.execute(text(
+            "select set_config('spine.purpose', 'billing', true)"
+        ))
+        payload = (await session.execute(select(private_asr_artifacts.c.payload).where(
+            private_asr_artifacts.c.workspace_id == prepared.case.source.workspace_id,
+            private_asr_artifacts.c.environment_id == prepared.case.source.environment_id,
+            private_asr_artifacts.c.artifact_id == stored.report_ref.reference_id,
+        ))).scalar_one_or_none()
+    assert payload is None
+
+
 async def _prepare_synthetic_report_case(
     private_asr_database: _Database, *, seed: int = 795000,
     deletion_authority=None, clock=None, leave_staging: bool = False,
+    lifecycle_source: bool = False,
 ) -> SimpleNamespace:
     clock = clock or (lambda: NOW)
     runtime_sessions = async_sessionmaker(
@@ -769,7 +869,18 @@ async def _prepare_synthetic_report_case(
     from tests.contracts.persistence.test_canonical_acceptance_contract import prepare_case
 
     raw = b"synthetic ASR source bytes for restricted storage integration"
-    case = await prepare_case(adapter, seed + 110, original_content=raw)
+    lifecycle_source_object = (
+        connector_source(
+            synthetic_uuid(seed + 110), synthetic_uuid(seed + 111), "private-asr-fixture1",
+        )
+        if lifecycle_source else None
+    )
+    case = await prepare_case(
+        adapter,
+        seed + 110,
+        source_object=lifecycle_source_object,
+        original_content=raw,
+    )
     async with persistence.uow_factory(case.context) as uow:
         await uow.canonical.accept(case.command)
         await uow.commit()
@@ -941,6 +1052,108 @@ async def _prepare_synthetic_report_case(
     return SimpleNamespace(**locals())
 
 
+async def _prepare_canonical_head_replacement(prepared, *, seed: int):
+    source = prepared.case.source
+    revision = source_revision_factory(source, synthetic_uuid(seed + 1))
+    replacement_audio = f"synthetic replacement audio {seed}".encode()
+    digest = sha256(replacement_audio).hexdigest()
+    revision_fields = revision.model_dump(mode="python", exclude={"revision_digest"})
+    original_reference = revision.original_reference
+    assert original_reference is not None
+    revision_fields.update(
+        original_reference=original_reference.model_copy(update={
+            "digest_hex": digest,
+            "byte_length": len(replacement_audio),
+        }),
+        original_sha256=digest,
+        byte_length=len(replacement_audio),
+    )
+    revision = content_revision(**revision_fields)
+    provenance = source_provenance(source, revision.revision_id, f"head-replacement-{seed}")
+    source_context = prepared.adapter.source_context(
+        source.workspace_id, source.environment_id,
+    )
+    receipt_id = await canonical_original_receipt(prepared.adapter, source_context, seed)
+    association = canonical_receipt_association(
+        source,
+        revision,
+        provenance,
+        receipt_id=receipt_id,
+        number=seed,
+    )
+    observation = SourceObservationCommand.create(
+        source=source,
+        revision=revision,
+        provenance=provenance,
+        idempotency_key=IdempotencyKey(f"asr-head-replacement-observation-{seed}"),
+        receipt_association=association,
+    )
+    async with prepared.persistence.uow_factory(source_context) as uow:
+        await uow.sources.record_observation(observation)
+        await uow.commit()
+
+    context = prepared.adapter.ingestion_context(
+        source.workspace_id, source.environment_id, "canonical_acceptance",
+    )
+    admission_id = synthetic_uuid(seed + 2)
+    admission_audit_id = synthetic_uuid(seed + 3)
+    async with prepared.persistence.uow_factory(context) as uow:
+        await uow.admissions.append_decision(AdmissionDecision(
+            decision_id=admission_id,
+            source_object_id=source.source_object_id,
+            revision_id=revision.revision_id,
+            workspace_id=source.workspace_id,
+            environment_id=source.environment_id,
+            decision_version=1,
+            disposition=AdmissionDisposition.ADMITTED,
+            validator_profile_version="admission:r1",
+            reason_schema_version="reason.v1",
+            reason_codes=("clean",),
+            authority_reference={
+                "reference_type": "validator",
+                "reference_id": synthetic_uuid(seed + 4),
+                "schema_version": 1,
+            },
+            trace_id=context.trace_id,
+            audit_event_id=admission_audit_id,
+            decided_at=NOW,
+        ))
+        await uow.commit()
+
+    acceptance_id = synthetic_uuid(seed + 5)
+    audit_id, outbox_id = synthetic_uuid(seed + 6), synthetic_uuid(seed + 7)
+    command = CanonicalAcceptanceCommand.create(
+        source=source,
+        revision=revision,
+        provenance=provenance,
+        admission_decision_id=admission_id,
+        access_policy_version_id=prepared.case.policy_id,
+        expected_current_revision_id=prepared.case.revision.revision_id,
+        idempotency_key=IdempotencyKey(f"asr-head-replacement-acceptance-{seed}"),
+        canonical_acceptance_id=acceptance_id,
+        audit_event_id=audit_id,
+        outbox_event_id=outbox_id,
+        accepted_at=NOW,
+        audit_event=canonical_audit(
+            context=context,
+            source_revision_id=revision.revision_id,
+            event_id=audit_id,
+            reason="source_accepted",
+        ),
+        outbox_intent=canonical_outbox(
+            prepared.adapter,
+            context=context,
+            source_object_id=source.source_object_id,
+            source_revision_id=revision.revision_id,
+            acceptance_id=acceptance_id,
+            generation=2,
+            audit_event_id=audit_id,
+            event_id=outbox_id,
+        ),
+    )
+    return context, command
+
+
 async def _commit_synthetic_report(prepared, *, idempotency_key, callback=None):
     callback = callback or _allow_commit
     return await prepared.store.store_private_report(
@@ -959,13 +1172,13 @@ async def _allow_commit() -> None:
     return None
 
 
-def _storage_for_transaction_probe(prepared, *, uow_factory):
+def _storage_for_transaction_probe(prepared, *, uow_factory, sessions=None, audit_receipts=None):
     return PostgreSQLPrivateASRStorage(
-        sessions=prepared.runtime_sessions,
+        sessions=sessions or prepared.runtime_sessions,
         contexts=prepared.boundary,
         authority=prepared.authority,
         access_policies=prepared.policies,
-        audit_receipts=prepared.audit_receipts,
+        audit_receipts=audit_receipts or prepared.audit_receipts,
         retention_resolver=prepared.resolver,
         manifest_lineage=prepared.manifest_lineage,
         uow_factory=uow_factory,
@@ -1028,20 +1241,29 @@ async def test_postgresql_private_asr_cancellation_during_authorization_rolls_ba
 
 
 @pytest.mark.asyncio
-async def test_postgresql_private_asr_cancellation_after_audit_flush_rolls_back(
+@pytest.mark.parametrize(
+    "cancel_stage",
+    [
+        PostgreSQLTransactionStage.AFTER_AUDIT_FLUSH,
+        PostgreSQLTransactionStage.BEFORE_COMMIT,
+    ],
+)
+async def test_postgresql_private_asr_cancellation_before_commit_rolls_back(
     private_asr_database: _Database,
+    cancel_stage: PostgreSQLTransactionStage,
 ) -> None:
-    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799060)
+    stage_seed = 799060 + tuple(PostgreSQLTransactionStage).index(cancel_stage)
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=stage_seed)
 
-    async def cancel_after_audit_flush(stage):
-        if stage is PostgreSQLTransactionStage.AFTER_AUDIT_FLUSH:
+    async def cancel_at_transaction_boundary(stage):
+        if stage is cancel_stage:
             raise asyncio.CancelledError
 
     persistence = PostgreSQLPersistence(
         session_factory=prepared.runtime_sessions,
         context_verifier=prepared.boundary,
         outbox_events=create_outbox_event_registry(),
-        transaction_probe=cancel_after_audit_flush,
+        transaction_probe=cancel_at_transaction_boundary,
     )
     probed_store = _storage_for_transaction_probe(
         prepared, uow_factory=persistence.uow_factory,
@@ -1050,7 +1272,7 @@ async def test_postgresql_private_asr_cancellation_after_audit_flush_rolls_back(
         await probed_store.store_private_report(
             prepared.report.model_dump_json().encode(),
             report_id=prepared.report_id,
-            idempotency_key="cancel-after-audit",
+            idempotency_key=f"cancel-before-commit-{cancel_stage.name.lower()}",
             source_bindings=prepared.bindings,
             retention_profile_ref=prepared.applicability_ref,
             audit_receipt_ref=prepared.report_receipt_ref,
@@ -1070,48 +1292,745 @@ async def test_postgresql_private_asr_cancellation_after_audit_flush_rolls_back(
 
 
 @pytest.mark.asyncio
+async def test_postgresql_private_asr_cancellation_after_authorization_before_audit_rolls_back(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799065)
+
+    async def cancel_authorized_publication() -> None:
+        asyncio.current_task().cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await _commit_synthetic_report(
+            prepared,
+            idempotency_key="cancel-after-authorization",
+            callback=cancel_authorized_publication,
+        )
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        report = (await session.execute(select(private_asr_artifacts.c.artifact_id).where(
+            private_asr_artifacts.c.idempotency_key == "cancel-after-authorization",
+        ))).scalar_one_or_none()
+        receipt = (await session.execute(select(audit_events.c.audit_event_id).where(
+            audit_events.c.audit_event_id == prepared.report_receipt_ref.reference_id,
+        ))).scalar_one_or_none()
+    assert report is None
+    assert receipt is None
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_cancellation_during_audit_append_rolls_back(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799067)
+    append_entered, never_release = asyncio.Event(), asyncio.Event()
+
+    class SuspendedAuditAppend:
+        async def append_report_publication(self, *args, **kwargs):
+            append_entered.set()
+            await never_release.wait()
+
+    store = _storage_for_transaction_probe(
+        prepared,
+        uow_factory=prepared.persistence.uow_factory,
+        audit_receipts=SuspendedAuditAppend(),
+    )
+    publication = asyncio.create_task(store.store_private_report(
+        prepared.report.model_dump_json().encode(),
+        report_id=prepared.report_id,
+        idempotency_key="cancel-during-audit-append",
+        source_bindings=prepared.bindings,
+        retention_profile_ref=prepared.applicability_ref,
+        audit_receipt_ref=prepared.report_receipt_ref,
+        context=prepared.context,
+        authorize_commit=_allow_commit,
+    ))
+    await asyncio.wait_for(append_entered.wait(), timeout=10)
+    publication.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await publication
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        report = (await session.execute(select(private_asr_artifacts.c.artifact_id).where(
+            private_asr_artifacts.c.idempotency_key == "cancel-during-audit-append",
+        ))).scalar_one_or_none()
+        receipt = (await session.execute(select(audit_events.c.audit_event_id).where(
+            audit_events.c.audit_event_id == prepared.report_receipt_ref.reference_id,
+        ))).scalar_one_or_none()
+    assert report is None
+    assert receipt is None
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_cancellation_during_staging_retry_update_preserves_state(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database, seed=799070, leave_staging=True,
+    )
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        staging_before = (await session.execute(select(
+            private_asr_artifacts.c.status,
+            private_asr_artifacts.c.byte_length,
+            private_asr_artifacts.c.content_sha256,
+            private_asr_artifacts.c.payload,
+        ).where(
+            private_asr_artifacts.c.kind == "staging",
+            private_asr_artifacts.c.source_revision_id == prepared.case.revision.revision_id,
+        ))).all()
+    assert staging_before == [("staging", 0, None, b"")]
+    staging_update_entered, never_release = asyncio.Event(), asyncio.Event()
+
+    class SuspendedStagingRetrySession(AsyncSession):
+        async def execute(self, statement, *args, **kwargs):
+            if (
+                str(statement).lower().startswith("update spine.private_asr_artifacts")
+            ):
+                staging_update_entered.set()
+                await never_release.wait()
+            return await super().execute(statement, *args, **kwargs)
+
+    sessions = async_sessionmaker(
+        private_asr_database.runtime,
+        expire_on_commit=False,
+        autoflush=False,
+        class_=SuspendedStagingRetrySession,
+    )
+    store = PostgreSQLPrivateASRStorage(
+        sessions=sessions,
+        contexts=prepared.boundary,
+        authority=prepared.authority,
+        access_policies=prepared.policies,
+        audit_receipts=prepared.audit_receipts,
+        retention_resolver=prepared.resolver,
+        manifest_lineage=prepared.manifest_lineage,
+        deletion_authority=prepared.store._deletion_authority,
+        uow_factory=prepared.persistence.uow_factory,
+        clock=prepared.clock,
+    )
+    begin = asyncio.create_task(store.begin(prepared.admitted, context=prepared.context))
+    await asyncio.wait_for(staging_update_entered.wait(), timeout=10)
+    begin.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await begin
+
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        staging_rows = (await session.execute(select(
+            private_asr_artifacts.c.status,
+            private_asr_artifacts.c.byte_length,
+            private_asr_artifacts.c.content_sha256,
+            private_asr_artifacts.c.payload,
+        ).where(
+            private_asr_artifacts.c.kind == "staging",
+            private_asr_artifacts.c.source_revision_id == prepared.case.revision.revision_id,
+        ))).all()
+    assert staging_rows == staging_before
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_cancellation_after_commit_reconciles_by_idempotency_key(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799080)
+
+    class CancelAfterCommitSession(AsyncSession):
+        async def commit(self) -> None:
+            await super().commit()
+            raise asyncio.CancelledError
+
+    sessions = async_sessionmaker(
+        private_asr_database.runtime,
+        expire_on_commit=False,
+        autoflush=False,
+        class_=CancelAfterCommitSession,
+    )
+    persistence = PostgreSQLPersistence(
+        session_factory=sessions,
+        context_verifier=prepared.boundary,
+        outbox_events=prepared.adapter.outbox_events,
+    )
+    store = _storage_for_transaction_probe(
+        prepared,
+        sessions=sessions,
+        uow_factory=persistence.uow_factory,
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await store.store_private_report(
+            prepared.report.model_dump_json().encode(),
+            report_id=prepared.report_id,
+            idempotency_key="commit-then-cancel",
+            source_bindings=prepared.bindings,
+            retention_profile_ref=prepared.applicability_ref,
+            audit_receipt_ref=prepared.report_receipt_ref,
+            context=prepared.context,
+            authorize_commit=_allow_commit,
+        )
+
+    replay = await _commit_synthetic_report(
+        prepared, idempotency_key="commit-then-cancel",
+    )
+    expected_report_id = uuid5(
+        NAMESPACE_URL,
+        f"spine-private-asr-report:v1:{prepared.context.scope.workspace_id}:"
+        f"{prepared.context.scope.environment_id}:commit-then-cancel",
+    )
+    assert replay.report_ref.reference_id == expected_report_id
+    assert await prepared.store.read_private_reference(
+        replay.report_ref, context=prepared.context,
+    ) == prepared.report.model_dump_json().encode()
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        report_count = (await session.execute(select(func.count()).select_from(
+            private_asr_artifacts
+        ).where(private_asr_artifacts.c.idempotency_key == "commit-then-cancel"))).scalar_one()
+        receipt_count = (await session.execute(select(func.count()).select_from(
+            audit_events
+        ).where(
+            audit_events.c.audit_event_id == prepared.report_receipt_ref.reference_id,
+        ))).scalar_one()
+    assert report_count == receipt_count == 1
+
+
+@pytest.mark.asyncio
 async def test_postgresql_private_asr_lifecycle_lock_fences_report_commit(
     private_asr_database: _Database,
 ) -> None:
-    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799100)
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database, seed=799100, lifecycle_source=True,
+    )
+    callback_called = False
+    withdrawal_lock_requested = asyncio.Event()
+
+    lifecycle_context = prepared.adapter.ingestion_context(
+        prepared.case.source.workspace_id,
+        prepared.case.source.environment_id,
+        "lifecycle_decision",
+    )
+    lifecycle_repository = PostgreSQLLifecycleAuthorityRepository(
+        uow_factory=prepared.persistence.uow_factory,
+        observation_authority=_AllowObservationAuthority(),
+        decision_authority=_AllowLifecycleDecision(),
+        decision_effects=_DecisionEffects(),
+    )
+    observation = lifecycle_observation(prepared.case, 2_799_100)
+    decision = lifecycle_decision(
+        prepared.case, observation, lifecycle_context, 2_799_110,
+    )
+    await lifecycle_repository.record_observation(observation, lifecycle_context)
+
+    async def authorize_commit() -> None:
+        nonlocal callback_called
+        callback_called = True
+
+    async def publish_after_withdrawal() -> None:
+        with pytest.raises(PrivateASRStorageDenied):
+            await _commit_synthetic_report(
+                prepared,
+                idempotency_key="lifecycle-withdrawal-wins",
+                callback=authorize_commit,
+            )
+
+    def observe_lifecycle_wait(conn, cursor, statement, parameters, execution_context, executemany):
+        if (
+            "pg_advisory_xact_lock(hashtextextended" in statement.lower()
+            and parameters.get("key", "").endswith(str(prepared.case.source.source_object_id))
+        ):
+            withdrawal_lock_requested.set()
+
+    event.listen(
+        private_asr_database.runtime.sync_engine,
+        "before_cursor_execute", observe_lifecycle_wait,
+    )
+    publication_entered, release_publication = asyncio.Event(), asyncio.Event()
+
+    async def held_authorization() -> None:
+        publication_entered.set()
+        await release_publication.wait()
+
+    publication = asyncio.create_task(_commit_synthetic_report(
+        prepared, idempotency_key="report-before-lifecycle-withdrawal",
+        callback=held_authorization,
+    ))
+    await asyncio.wait_for(publication_entered.wait(), timeout=10)
+    withdrawal = asyncio.create_task(
+        lifecycle_repository.record_decision(decision, lifecycle_context)
+    )
+    try:
+        await asyncio.wait_for(withdrawal_lock_requested.wait(), timeout=10)
+        assert withdrawal.done() is False
+        assert callback_called is False
+        release_publication.set()
+        stored = await publication
+        await withdrawal
+    finally:
+        release_publication.set()
+        event.remove(
+            private_asr_database.runtime.sync_engine,
+            "before_cursor_execute", observe_lifecycle_wait,
+        )
+        for task in (withdrawal, publication):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(withdrawal, publication, return_exceptions=True)
+    assert callback_called is False
+    assert stored.report_ref.reference_kind == "private_asr_report"
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.read_private_reference(
+            stored.report_ref, context=prepared.context,
+        )
+    await publish_after_withdrawal()
+    assert callback_called is False
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_policy_activation_before_commit_denies_report(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799150)
+    policy_locked, release_policy = asyncio.Event(), asyncio.Event()
+
+    async def hold_policy_commit(stage):
+        if stage is PostgreSQLTransactionStage.BEFORE_COMMIT:
+            policy_locked.set()
+            await release_policy.wait()
+
+    probed_persistence = PostgreSQLPersistence(
+        session_factory=prepared.runtime_sessions,
+        context_verifier=prepared.boundary,
+        outbox_events=prepared.adapter.outbox_events,
+        transaction_probe=hold_policy_commit,
+    )
+    activation_adapter = SimpleNamespace(**vars(prepared.adapter))
+    activation_adapter.uow_factory = probed_persistence.uow_factory
+    policy_context = prepared.adapter.ingestion_context(
+        prepared.case.source.workspace_id,
+        prepared.case.source.environment_id,
+        "access_policy_activation",
+    )
+    activation = asyncio.create_task(activate_canonical_policy(
+        activation_adapter,
+        context=policy_context,
+        source_object=prepared.case.source,
+        number=799151,
+        expected_policy_id=prepared.case.policy_id,
+        expected_generation=1,
+        expected_cas=1,
+    ))
+    await asyncio.wait_for(policy_locked.wait(), timeout=10)
+
+    policy_lock_requested = asyncio.Event()
     callback_called = False
 
     async def authorize_commit() -> None:
         nonlocal callback_called
         callback_called = True
 
-    lifecycle_lock_requested = asyncio.Event()
-
-    def observe_lifecycle_wait(conn, cursor, statement, parameters, execution_context, executemany):
-        if "pg_advisory_xact_lock_shared" in statement.lower():
-            lifecycle_lock_requested.set()
+    def observe_policy_lock(conn, cursor, statement, parameters, execution_context, executemany):
+        if "current_access_policies" in statement.lower() and "for update" in statement.lower():
+            policy_lock_requested.set()
 
     event.listen(
         private_asr_database.runtime.sync_engine,
-        "before_cursor_execute", observe_lifecycle_wait,
+        "before_cursor_execute",
+        observe_policy_lock,
+    )
+    publication = asyncio.create_task(_commit_synthetic_report(
+        prepared,
+        idempotency_key="policy-activation-wins",
+        callback=authorize_commit,
+    ))
+    try:
+        await asyncio.wait_for(policy_lock_requested.wait(), timeout=10)
+        assert activation.done() is False
+        assert publication.done() is False
+        release_policy.set()
+        await activation
+        with pytest.raises(PrivateASRStorageDenied):
+            await publication
+    finally:
+        release_policy.set()
+        event.remove(
+            private_asr_database.runtime.sync_engine,
+            "before_cursor_execute",
+            observe_policy_lock,
+        )
+        for task in (activation, publication):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(activation, publication, return_exceptions=True)
+
+    assert callback_called is False
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        report = (await session.execute(select(private_asr_artifacts.c.artifact_id).where(
+            private_asr_artifacts.c.idempotency_key == "policy-activation-wins",
+        ))).scalar_one_or_none()
+        receipt = (await session.execute(select(audit_events.c.audit_event_id).where(
+            audit_events.c.audit_event_id == prepared.report_receipt_ref.reference_id,
+        ))).scalar_one_or_none()
+    assert report is None
+    assert receipt is None
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_report_commit_precedes_policy_activation(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799170)
+    callback_entered, release_callback = asyncio.Event(), asyncio.Event()
+
+    async def held_authorization() -> None:
+        callback_entered.set()
+        await release_callback.wait()
+
+    publication = asyncio.create_task(_commit_synthetic_report(
+        prepared,
+        idempotency_key="report-before-policy-activation",
+        callback=held_authorization,
+    ))
+    await asyncio.wait_for(callback_entered.wait(), timeout=10)
+    policy_lock_requested = asyncio.Event()
+
+    def observe_policy_lock(conn, cursor, statement, parameters, execution_context, executemany):
+        if "current_access_policies" in statement.lower() and "for update" in statement.lower():
+            policy_lock_requested.set()
+
+    event.listen(
+        private_asr_database.runtime.sync_engine,
+        "before_cursor_execute",
+        observe_policy_lock,
+    )
+    policy_context = prepared.adapter.ingestion_context(
+        prepared.case.source.workspace_id,
+        prepared.case.source.environment_id,
+        "access_policy_activation",
+    )
+    activation = asyncio.create_task(activate_canonical_policy(
+        prepared.adapter,
+        context=policy_context,
+        source_object=prepared.case.source,
+        number=899171,
+        expected_policy_id=prepared.case.policy_id,
+        expected_generation=1,
+        expected_cas=1,
+    ))
+    try:
+        await asyncio.wait_for(policy_lock_requested.wait(), timeout=10)
+        assert activation.done() is False
+        release_callback.set()
+        stored = await publication
+        await activation
+    finally:
+        release_callback.set()
+        event.remove(
+            private_asr_database.runtime.sync_engine,
+            "before_cursor_execute",
+            observe_policy_lock,
+        )
+        for task in (activation, publication):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(activation, publication, return_exceptions=True)
+
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.read_private_reference(stored.report_ref, context=prepared.context)
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_report_commit_precedes_source_head_replacement(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799190)
+    replacement_context, replacement_command = await _prepare_canonical_head_replacement(
+        prepared, seed=799192,
+    )
+    callback_entered, release_callback = asyncio.Event(), asyncio.Event()
+    replacement_ready, release_replacement = asyncio.Event(), asyncio.Event()
+    counter_lock_requested = asyncio.Event()
+
+    async def held_authorization() -> None:
+        callback_entered.set()
+        await release_callback.wait()
+
+    async def hold_replacement_commit(stage):
+        if stage is PostgreSQLTransactionStage.BEFORE_COMMIT:
+            replacement_ready.set()
+            await release_replacement.wait()
+
+    replacement_persistence = PostgreSQLPersistence(
+        session_factory=prepared.runtime_sessions,
+        context_verifier=prepared.boundary,
+        outbox_events=prepared.adapter.outbox_events,
+        transaction_probe=hold_replacement_commit,
+    )
+    publication = asyncio.create_task(_commit_synthetic_report(
+        prepared,
+        idempotency_key="report-before-source-head-replacement",
+        callback=held_authorization,
+    ))
+    await asyncio.wait_for(callback_entered.wait(), timeout=10)
+
+    def observe_generation_lock(conn, cursor, statement, parameters, execution_context, executemany):
+        statement_lower = statement.lower()
+        if "canonical_generation_counters" in statement_lower and "for update" in statement_lower:
+            counter_lock_requested.set()
+
+    event.listen(
+        private_asr_database.runtime.sync_engine,
+        "before_cursor_execute",
+        observe_generation_lock,
+    )
+
+    async def replace_head() -> None:
+        async with replacement_persistence.uow_factory(replacement_context) as uow:
+            await uow.canonical.accept(replacement_command)
+            await uow.commit()
+
+    replacement = asyncio.create_task(replace_head())
+    try:
+        await asyncio.wait_for(counter_lock_requested.wait(), timeout=10)
+        assert replacement.done() is False
+        release_callback.set()
+        stored = await publication
+        await asyncio.wait_for(replacement_ready.wait(), timeout=10)
+        release_replacement.set()
+        await replacement
+    finally:
+        release_callback.set()
+        release_replacement.set()
+        event.remove(
+            private_asr_database.runtime.sync_engine,
+            "before_cursor_execute",
+            observe_generation_lock,
+        )
+        for task in (replacement, publication):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(replacement, publication, return_exceptions=True)
+
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.read_private_reference(stored.report_ref, context=prepared.context)
+
+
+async def test_postgresql_private_asr_multi_source_lock_order_is_stable(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799230)
+    source_ids = (synthetic_uuid(799232), synthetic_uuid(799231))
+    revision_ids = (synthetic_uuid(799234), synthetic_uuid(799233))
+    observed: list[tuple[str, object]] = []
+
+    def observe_lock_order(conn, cursor, statement, parameters, execution_context, executemany):
+        lowered = statement.lower()
+        if "pg_advisory_xact_lock_shared" in lowered:
+            observed.append(("lifecycle", parameters["key"].rsplit(":", 1)[-1]))
+        elif "canonical_generation_counters" in lowered and "for update" in lowered:
+            observed.append(("generation", None))
+        elif "pg_advisory_xact_lock(" in lowered:
+            observed.append(("revision", parameters))
+
+    event.listen(
+        private_asr_database.runtime.sync_engine,
+        "before_cursor_execute",
+        observe_lock_order,
     )
     try:
-        async with prepared.runtime_sessions() as lifecycle_session:
-            async with lifecycle_session.begin():
-                await lock_source_lifecycle_exclusive(
-                    lifecycle_session.execute,
-                    workspace_id=prepared.case.source.workspace_id,
-                    environment_id=prepared.case.source.environment_id,
-                    source_object_id=prepared.case.source.source_object_id,
-                )
-                pending_commit = asyncio.create_task(_commit_synthetic_report(
-                    prepared, idempotency_key="lifecycle-race", callback=authorize_commit,
-                ))
-                await asyncio.wait_for(lifecycle_lock_requested.wait(), timeout=10)
-                assert callback_called is False
-        stored = await pending_commit
+        async with prepared.runtime_sessions() as session, session.begin():
+            await prepared.store._set_scope(session, prepared.context)
+            await prepared.store._lock_source_admission_paths(
+                session,
+                tuple(
+                    (
+                        prepared.case.source.workspace_id,
+                        prepared.case.source.environment_id,
+                        source_id,
+                        revision_id,
+                    )
+                    for source_id, revision_id in zip(source_ids, revision_ids, strict=True)
+                ),
+            )
     finally:
         event.remove(
             private_asr_database.runtime.sync_engine,
-            "before_cursor_execute", observe_lifecycle_wait,
+            "before_cursor_execute",
+            observe_lock_order,
         )
-    assert callback_called is True
-    assert stored.report_ref.reference_kind == "private_asr_report"
+
+    assert [kind for kind, _ in observed] == [
+        "lifecycle", "lifecycle", "generation", "revision", "revision",
+    ]
+    assert [value for kind, value in observed if kind == "lifecycle"] == sorted(
+        (str(item) for item in source_ids)
+    )
+    expected_revisions = [
+        admission_serialization_key(
+            workspace_id=prepared.case.source.workspace_id,
+            environment_id=prepared.case.source.environment_id,
+            source_object_id=source_id,
+            revision_id=revision_id,
+        )
+        for source_id, revision_id in sorted(
+            zip(source_ids, revision_ids, strict=True), key=lambda pair: (str(pair[0]), str(pair[1])),
+        )
+    ]
+    observed_revisions = [value for kind, value in observed if kind == "revision"]
+    assert [tuple(value.values()) for value in observed_revisions] == [
+        tuple(expected) for expected in expected_revisions
+    ]
+
+
+async def test_postgresql_private_asr_opposite_source_order_serializes_without_deadlock(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799240)
+    source_ids = (synthetic_uuid(799242), synthetic_uuid(799241))
+    revision_ids = (synthetic_uuid(799244), synthetic_uuid(799243))
+    reverse_paths = tuple(
+        (
+            prepared.case.source.workspace_id,
+            prepared.case.source.environment_id,
+            source_id,
+            revision_id,
+        )
+        for source_id, revision_id in zip(source_ids, revision_ids, strict=True)
+    )
+    forward_paths = tuple(reversed(reverse_paths))
+    first_locked, release_first = asyncio.Event(), asyncio.Event()
+    second_generation_requested = asyncio.Event()
+    generation_requests = 0
+
+    def observe_generation_lock(conn, cursor, statement, parameters, execution_context, executemany):
+        nonlocal generation_requests
+        if "canonical_generation_counters" in statement.lower() and "for update" in statement.lower():
+            generation_requests += 1
+            if generation_requests == 2:
+                second_generation_requested.set()
+
+    event.listen(
+        private_asr_database.runtime.sync_engine,
+        "before_cursor_execute",
+        observe_generation_lock,
+    )
+
+    async def hold_first_lock_set() -> None:
+        async with prepared.runtime_sessions() as session, session.begin():
+            await prepared.store._set_scope(session, prepared.context)
+            await prepared.store._lock_source_admission_paths(session, reverse_paths)
+            first_locked.set()
+            await release_first.wait()
+
+    async def acquire_opposite_lock_set() -> None:
+        async with prepared.runtime_sessions() as session, session.begin():
+            await prepared.store._set_scope(session, prepared.context)
+            await prepared.store._lock_source_admission_paths(session, forward_paths)
+
+    first = asyncio.create_task(hold_first_lock_set())
+    second = None
+    try:
+        await asyncio.wait_for(first_locked.wait(), timeout=10)
+        second = asyncio.create_task(acquire_opposite_lock_set())
+        await asyncio.wait_for(second_generation_requested.wait(), timeout=10)
+        assert second.done() is False
+        release_first.set()
+        await asyncio.wait_for(asyncio.gather(first, second), timeout=10)
+    finally:
+        release_first.set()
+        event.remove(
+            private_asr_database.runtime.sync_engine,
+            "before_cursor_execute",
+            observe_generation_lock,
+        )
+        pending = tuple(task for task in (first, second) if task is not None and not task.done())
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_source_head_replacement_before_report_denies(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799210)
+    replacement_context, replacement_command = await _prepare_canonical_head_replacement(
+        prepared, seed=799212,
+    )
+    replacement_ready, release_replacement = asyncio.Event(), asyncio.Event()
+    report_lock_requested = asyncio.Event()
+    callback_called = False
+
+    async def hold_replacement_commit(stage):
+        if stage is PostgreSQLTransactionStage.BEFORE_COMMIT:
+            replacement_ready.set()
+            await release_replacement.wait()
+
+    replacement_persistence = PostgreSQLPersistence(
+        session_factory=prepared.runtime_sessions,
+        context_verifier=prepared.boundary,
+        outbox_events=prepared.adapter.outbox_events,
+        transaction_probe=hold_replacement_commit,
+    )
+
+    async def replace_head() -> None:
+        async with replacement_persistence.uow_factory(replacement_context) as uow:
+            await uow.canonical.accept(replacement_command)
+            await uow.commit()
+
+    replacement = asyncio.create_task(replace_head())
+    await asyncio.wait_for(replacement_ready.wait(), timeout=10)
+
+    def observe_generation_lock(conn, cursor, statement, parameters, execution_context, executemany):
+        statement_lower = statement.lower()
+        if "canonical_generation_counters" in statement_lower and "for update" in statement_lower:
+            report_lock_requested.set()
+
+    event.listen(
+        private_asr_database.runtime.sync_engine,
+        "before_cursor_execute",
+        observe_generation_lock,
+    )
+
+    async def authorize_commit() -> None:
+        nonlocal callback_called
+        callback_called = True
+
+    publication = asyncio.create_task(_commit_synthetic_report(
+        prepared,
+        idempotency_key="source-head-replacement-wins",
+        callback=authorize_commit,
+    ))
+    try:
+        await asyncio.wait_for(report_lock_requested.wait(), timeout=10)
+        assert replacement.done() is False
+        release_replacement.set()
+        await replacement
+        with pytest.raises(PrivateASRStorageDenied):
+            await publication
+    finally:
+        release_replacement.set()
+        event.remove(
+            private_asr_database.runtime.sync_engine,
+            "before_cursor_execute",
+            observe_generation_lock,
+        )
+        for task in (replacement, publication):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(replacement, publication, return_exceptions=True)
+
+    assert callback_called is False
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        report = (await session.execute(select(private_asr_artifacts.c.artifact_id).where(
+            private_asr_artifacts.c.idempotency_key == "source-head-replacement-wins",
+        ))).scalar_one_or_none()
+        receipt = (await session.execute(select(audit_events.c.audit_event_id).where(
+            audit_events.c.audit_event_id == prepared.report_receipt_ref.reference_id,
+        ))).scalar_one_or_none()
+    assert report is None
+    assert receipt is None
 
 
 @pytest.mark.asyncio
