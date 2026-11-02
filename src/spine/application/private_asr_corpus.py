@@ -5,10 +5,11 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from datetime import datetime
 import hashlib
+import json
 from typing import Literal, Protocol
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, StrictInt, model_validator
+from pydantic import ConfigDict, Field, StrictBool, StrictInt, model_validator
 
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -171,6 +172,132 @@ class PrivateReportSourceBinding(PrivateASRApplicationContract):
     source_revision_id: UUID
     source_revision_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     split: CorpusSplit
+
+
+class PrivateArtifactSourceLineage(PrivateASRApplicationContract):
+    """Source lineage resolved from persisted artifact/source rows for deletion."""
+
+    source_object_id: UUID
+    source_revision_id: UUID
+    source_revision_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    record_id: UUID | None = None
+    dataset_id: UUID | None = None
+    split: CorpusSplit | None = None
+
+    @model_validator(mode="after")
+    def validate_manifest_binding(self) -> "PrivateArtifactSourceLineage":
+        manifest_fields = (self.record_id, self.dataset_id, self.split)
+        if any(value is not None for value in manifest_fields) and any(
+            value is None for value in manifest_fields
+        ):
+            raise ValueError("artifact source manifest lineage must be complete")
+        if self.source_object_id.int == 0 or self.source_revision_id.int == 0:
+            raise ValueError("artifact source lineage identifiers must be non-zero")
+        return self
+
+
+class PrivateArtifactDeletionRequest(PrivateASRApplicationContract):
+    """Transaction-scoped request to expire or discard one persisted artifact.
+
+    The storage adapter constructs this only after resolving exact scoped rows.
+    The authority must resolve current retention/deletion rules and holds using
+    the supplied transaction; caller references alone never authorize deletion.
+    """
+
+    schema_version: Literal["private-asr-artifact-deletion-request:v1"] = (
+        "private-asr-artifact-deletion-request:v1"
+    )
+    artifact_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    artifact_kind: Literal["staging", "original", "annotation", "report"]
+    action: Literal["retention_expiration", "staging_cleanup"]
+    expected_state_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    retention_profile_ref: PrivateReference
+    retention_deadline: datetime
+    requested_at: datetime
+    source_lineage: tuple[PrivateArtifactSourceLineage, ...]
+    manifest_version: str | None = None
+    manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_request(self) -> "PrivateArtifactDeletionRequest":
+        if any(
+            value.int == 0
+            for value in (self.artifact_id, self.workspace_id, self.environment_id)
+        ) or not self.source_lineage:
+            raise ValueError("artifact deletion request requires exact lineage")
+        if any(
+            value.tzinfo is None or value.utcoffset() is None
+            for value in (self.retention_deadline, self.requested_at)
+        ):
+            raise ValueError("artifact deletion timestamps must be timezone-aware")
+        if self.action == "staging_cleanup" and self.artifact_kind != "staging":
+            raise ValueError("staging cleanup applies only to staging artifacts")
+        if (self.manifest_version is None) != (self.manifest_sha256 is None):
+            raise ValueError("artifact manifest lineage must be complete")
+        return self
+
+    def calculate_digest(self) -> str:
+        payload = self.model_dump(mode="json")
+        return hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+
+class PrivateArtifactDeletionAuthorization(PrivateASRApplicationContract):
+    """Current authority result fenced to one exact deletion request."""
+
+    schema_version: Literal["private-asr-artifact-deletion-authorization:v1"] = (
+        "private-asr-artifact-deletion-authorization:v1"
+    )
+    request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    authorization_ref: PrivateReference
+    authority_version: str = Field(pattern=r"^[a-z][a-z0-9_.:-]{0,63}$")
+    revocation_epoch: StrictInt = Field(ge=0)
+    valid_until: datetime
+    authorized: StrictBool
+
+    @model_validator(mode="after")
+    def validate_authorization(self) -> "PrivateArtifactDeletionAuthorization":
+        if (
+            self.authorization_ref.reference_kind != "private_asr_deletion_authorization"
+            or self.authorization_ref.reference_id.int == 0
+            or self.valid_until.tzinfo is None
+            or self.valid_until.utcoffset() is None
+        ):
+            raise ValueError("artifact deletion authorization is invalid")
+        return self
+
+
+class PrivateArtifactDeletionAuthority(Protocol):
+    """Resolve current deletion authority inside the artifact transaction.
+
+    Implementations must bind the decision to the supplied request digest and
+    keep its approval/revocation epoch valid through the transaction commit.
+    External authorities need a coordinated fence or bounded commit lease.
+    """
+
+    async def authorize_deletion(
+        self,
+        request: PrivateArtifactDeletionRequest,
+        *,
+        context: TrustedPersistenceContext,
+        transaction: object,
+    ) -> PrivateArtifactDeletionAuthorization: ...
+
+
+class ScopedPrivateArtifactDeletionAuditPort(Protocol):
+    """Append content-free deletion evidence in the artifact transaction."""
+
+    async def append_artifact_deletion(
+        self,
+        transaction: object,
+        *,
+        request: PrivateArtifactDeletionRequest,
+        authorization: PrivateArtifactDeletionAuthorization,
+        context: TrustedPersistenceContext,
+    ) -> PrivateReference: ...
 
 
 class PrivateASRManifestLineageVerifier(Protocol):

@@ -116,45 +116,70 @@ define and verify backup/replica deletion and restore-time tombstone/receipt
 reconciliation. Encryption-at-rest, physical erasure and production recovery
 are `NOT_VERIFIED` absent named-environment evidence.
 
+Retention expiration now has a synthetic authorized PostgreSQL path. It
+re-resolves current applicability and approved terms inside the deletion UoW,
+verifies exact persisted source/revision lineage and scope, checks the derived
+deadline, obtains an action-specific deletion grant bound to the artifact-state
+digest, appends minimal audit evidence, and tombstones/clears primary payload
+visibility in the same transaction. Staging cleanup is restricted to exact
+staging artifacts and also requires deletion authority. Missing authority, a
+future deadline, wrong artifact type, mismatched profile, forged reference or
+audit failure leaves the artifact unchanged. These fixture authorities are
+test-only; production wiring remains denied until #812 exists. Clearing a
+PostgreSQL payload and writing a tombstone do not prove physical erasure from
+WAL, replicas or backups.
+
+Private reads acquire canonical source/retention/AccessPolicy fences before
+share-locking exact original/report artifact rows through payload selection.
+Deletion acquires source and authority locks before its exclusive artifact row
+lock, preserving source-lock order while serializing reads and tombstones.
+
 ## Current verification boundary
 
 Implemented and tested: canonical applicability pointer resolution in the
 storage transaction; test-only exact versioned terms; deterministic expiry;
 restricted-role synthetic report publication and authorized read; report plus
 canonical success audit atomic commit; callback and audit-failure rollback;
-idempotent/concurrent duplicate behavior; lifecycle and retention CAS
-interleavings; manifest binding checks via the test verifier; RLS role flags.
+idempotent/concurrent duplicate behavior; callback and audit-flush cancellation
+rollback; lifecycle and retention CAS interleavings; manifest binding checks
+via the test verifier; RLS role flags; authorized expiration/tombstone/audit;
+deadline and missing-authority denial; exact staging cleanup and generic
+cleanup denials.
 
 Specified but not implemented for production: approved policy terms and
-approval authority composition; authoritative frozen-manifest resolver;
-coordination of any external revocation authority; aggregate privacy/audit
-publication.
+approval authority composition; authoritative frozen-manifest resolver
+(#811); canonical artifact-deletion authority (#812); coordination of any
+external revocation authority (#813); aggregate privacy/audit publication.
 
 Needs human or operator evidence: approved policy terms, applicable artifact
 classes and legal/data approvals; runtime database grants in a named
 environment; backup deletion, encryption, physical erasure and restart/restore
 qualification. No actual retention duration or approval is invented here.
 
-Latest local verification:
+Latest local verification on the implementation diff based on
+`da65f7e839d039630ef4c5453b8ce5c47fefa30e` (base
+`10d7f60dd4407f7295340db1388abd25c5d20a57`):
 
-- Rebased branch head `3cbd68f76364b4be4443a283035dd3b5ac127714`, base
-  `10d7f60dd4407f7295340db1388abd25c5d20a57`: focused ASR/corpus/retention/
-  lifecycle/PostgreSQL/application suite `94 passed` in `16.25s`.
-- Migration head: `20261230_98`.
-- Full `pytest -q` on the same implementation tree was interrupted inside the
-  nested Issue #68 gate after `5642 passed, 7 skipped, 2 failed, 1 warning` in
-  `1126.72s`, ending with `KeyboardInterrupt`; it is not complete. The failures
-  were the Google loopback and Issue #680 wizard tests, each reproduced
-  individually on the rebased branch and exact current main:
-  `test_desktop_consent_uses_loopback_and_fake_token_exchange` and
-  `test_operator_wizard_writes_not_verified_report_when_prerequisite_is_missing`.
-  The nested Issue #68 gate has no completed result. GitHub run `41443617136`
-  for parent head `c3621d5` passed Python compatibility 3.10–3.14, R1
-  regression and Web. These checks do not resolve the authoritative manifest,
-  cancellation, concurrency-matrix or crash-recovery acceptance gaps.
+- Focused ASR/corpus/retention/lifecycle/PostgreSQL/application suites:
+  `140 passed` in `18.24s`.
+- Focused PostgreSQL private-ASR module: `17 passed` (included in the focused
+  command above).
+- `python -m compileall -q src tests`: PASS.
+- `git diff --check`: PASS.
+- Alembic heads: single head `20261230_98`.
+- Full `/home/dima55279/project/spine/.venv/bin/pytest -q`: `5814 passed,
+  7 skipped, 3 failed, 1 warning` in `1206.97s`. Independent baseline failures:
+  Google loopback and Issue #680 wizard. Both exact test IDs were rerun on
+  detached exact main `10d7f60dd4407f7295340db1388abd25c5d20a57` in the same
+  environment and reproduced (`2 failed in 2.47s`). The third failure was the
+  nested Issue #68 gate embedding those same two failures. No #795 test failed.
+- Existing GitHub run `41443617136` predates these code changes and is not
+  evidence for this head. A new PR CI run is required after push.
 
-PR #797 must remain OPEN/DRAFT and Issue #795 OPEN until the unresolved
-acceptance criteria are satisfied. This runbook does not alter #690
+PR #797 remains OPEN/DRAFT and Issue #795 remains OPEN. Full source/policy
+concurrency qualification, process termination/restart recovery, production
+manifest/deletion/approval authorities, aggregate publication and named
+environment qualification remain unresolved. This runbook does not alter #690
 `NO-GO / NOT_VERIFIED` or any human approval state.
 
 ## Operator qualification checklist

@@ -9,7 +9,11 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from spine.application.diagnostics.audit import AuditEventRegistry
 from spine.application.persistence.context import EnvironmentScope, TrustedPersistenceContext
 from spine.application.persistence.unit_of_work import UnitOfWorkFactory
-from spine.application.private_asr_corpus import ScopedAuditReceiptPort
+from spine.application.private_asr_corpus import (
+    PrivateArtifactDeletionAuthorization,
+    PrivateArtifactDeletionRequest,
+    ScopedAuditReceiptPort,
+)
 from spine.domain.audit import AuditObjectReference, AuditOutcome, CommandAuditPayload
 from spine.domain.evaluations.private_asr_corpus import PrivateReference
 
@@ -133,6 +137,59 @@ class PostgreSQLPrivateASRAuditReceipts(ScopedAuditReceiptPort):
         )
         await transaction.audit.append(event)  # type: ignore[attr-defined]
         await transaction.flush_audit_events()  # type: ignore[attr-defined]
+
+    async def append_artifact_deletion(
+        self,
+        transaction: object,
+        *,
+        request: PrivateArtifactDeletionRequest,
+        authorization: PrivateArtifactDeletionAuthorization,
+        context: TrustedPersistenceContext,
+    ) -> PrivateReference:
+        """Append minimal deletion evidence in the artifact's commit UoW."""
+        if (
+            not isinstance(context.scope, EnvironmentScope)
+            or (context.scope.workspace_id, context.scope.environment_id)
+            != (request.workspace_id, request.environment_id)
+            or authorization.request_digest != request.calculate_digest()
+            or not authorization.authorized
+        ):
+            raise ValueError("ASR artifact deletion receipt is invalid.")
+        event_id = uuid5(
+            NAMESPACE_URL,
+            f"spine:private-asr-artifact-deletion:v1:{request.workspace_id}:"
+            f"{request.environment_id}:{request.artifact_id}:{request.action}",
+        )
+        event = self._events.build_event(
+            audit_event_id=event_id,
+            workspace_id=request.workspace_id,
+            environment_id=request.environment_id,
+            target=AuditObjectReference(
+                object_type="private_asr_artifact",
+                object_id=request.artifact_id,
+                schema_version=1,
+            ),
+            event_type="command.outcome",
+            schema_version=1,
+            payload=CommandAuditPayload(command_type="private_asr_artifact_deletion"),
+            origin=context.origin,
+            acting_subject_id=context.acting_subject_id,
+            service_principal_id=context.service_principal_id,
+            trace_id=context.trace_id,
+            occurred_at=request.requested_at,
+            outcome=AuditOutcome.COMPLETED,
+            reason=(
+                "private_asr_artifact_expired"
+                if request.action == "retention_expiration"
+                else "private_asr_staging_discarded"
+            ),
+            producer_deduplication_id=(
+                f"private-asr-artifact-deletion:{request.artifact_id}:{request.action}"
+            ),
+        )
+        await transaction.audit.append(event)  # type: ignore[attr-defined]
+        await transaction.flush_audit_events()  # type: ignore[attr-defined]
+        return PrivateReference(reference_id=event_id, reference_kind="private_asr_audit")
 
 
 def _report_publication_id(workspace_id: UUID, environment_id: UUID, report_id: UUID) -> UUID:

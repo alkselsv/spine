@@ -103,6 +103,7 @@ class PostgreSQLPrivateASRRetentionResolver:
         starting_event: RetentionStartingEvent,
         starting_at: datetime,
         evaluated_at: datetime,
+        allow_expired: bool = False,
     ) -> PrivateASRRetentionDisposition:
         try:
             return await self._resolve(
@@ -115,6 +116,7 @@ class PostgreSQLPrivateASRRetentionResolver:
                 starting_event=starting_event,
                 starting_at=starting_at,
                 evaluated_at=evaluated_at,
+                allow_expired=allow_expired,
             )
         except PrivateASRRetentionDenied:
             raise
@@ -133,6 +135,7 @@ class PostgreSQLPrivateASRRetentionResolver:
         starting_event: RetentionStartingEvent,
         starting_at: datetime,
         evaluated_at: datetime,
+        allow_expired: bool,
     ) -> PrivateASRRetentionDisposition:
         scope = context.scope
         if (
@@ -266,7 +269,7 @@ class PostgreSQLPrivateASRRetentionResolver:
         ):
             raise PrivateASRRetentionDenied()
         expires_at = starting_at + timedelta(seconds=terms.duration_seconds)
-        if expires_at <= evaluated_at:
+        if expires_at <= evaluated_at and not allow_expired:
             raise PrivateASRRetentionDenied()
         return PrivateASRRetentionDisposition(
             applicability_id=binding.applicability_id,
