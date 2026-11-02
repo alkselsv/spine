@@ -118,6 +118,11 @@ both were rerun on exact main `10d7f60` in the same environment and failed
 there as well. The third failure was the nested Issue #68 gate, which embeds a
 run reproducing those two baseline failures. No #795 test failed.
 
+Current-head GitHub run `41463270780` passed the full repository/PostgreSQL
+suite (`5845 passed, 7 skipped`), clean and retained-revision migration
+acceptance, Python compatibility 3.10–3.14, Web CI, and the R1 regression gate.
+The CI pytest environment did not reproduce the two unrelated local failures.
+
 Production manifest authority, production artifact-deletion authority,
 external approval revocation fencing, full AccessPolicy/source race matrix,
 aggregate publication, cancellation at every transaction phase, process crash

@@ -173,8 +173,11 @@ Latest local verification on the implementation diff based on
   detached exact main `10d7f60dd4407f7295340db1388abd25c5d20a57` in the same
   environment and reproduced (`2 failed in 2.47s`). The third failure was the
   nested Issue #68 gate embedding those same two failures. No #795 test failed.
-- Existing GitHub run `41443617136` predates these code changes and is not
-  evidence for this head. A new PR CI run is required after push.
+- Current-head GitHub run `41463270780` passed: full pytest `5845 passed,
+  7 skipped`; clean and retained-revision PostgreSQL migration acceptance;
+  Python compatibility 3.10–3.14; Web; and R1 regression gate. Its repository
+  tests, PostgreSQL acceptance and aggregate R1 status were all recorded as
+  passed. The local OAuth/#680 failures above were not reproduced in CI.
 
 PR #797 remains OPEN/DRAFT and Issue #795 remains OPEN. Full source/policy
 concurrency qualification, process termination/restart recovery, production
