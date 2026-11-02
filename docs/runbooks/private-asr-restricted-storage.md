@@ -135,20 +135,23 @@ classes and legal/data approvals; runtime database grants in a named
 environment; backup deletion, encryption, physical erasure and restart/restore
 qualification. No actual retention duration or approval is invented here.
 
-Latest local verification on head `f796882`:
+Latest local verification:
 
-- Focused ASR/corpus/retention/readiness/PostgreSQL/migration suite:
-  `137 passed` in `20.79s`, including the synthetic report commit, full stored
-  retention disposition comparison and migration downgrade/rollback checks.
-- Full `pytest -q`: `5768 passed, 7 skipped, 3 failed, 1 warning` in
-  `1192.82s`; no errors. The failures were the Google loopback test, Issue #680
-  operator wizard test, and the nested Issue #68 offline gate that reports
-  those same failures. The first two were reproduced on exact main base
-  `ddf676bad8e9f56e9e001ea122b19dba57ab4a97`.
-- `python -m compileall -q src tests`, `git diff --check`, and
-  `alembic heads` passed; current migration head is `20261230_98`.
-- GitHub CI for this head: Python compatibility 3.10–3.14 and Web passed;
-  R1 regression was pending at the last check.
+- Rebased branch head `3cbd68f76364b4be4443a283035dd3b5ac127714`, base
+  `10d7f60dd4407f7295340db1388abd25c5d20a57`: focused ASR/corpus/retention/
+  lifecycle/PostgreSQL/application suite `94 passed` in `16.25s`.
+- Migration head: `20261230_98`.
+- A new full `pytest -q` execution was interrupted after `4698 passed, 6
+  skipped, 1 failed, 1 warning` in `308.14s`; it is not counted as complete.
+  The Google failure appeared in that run. The two known unrelated failures
+  were also reproduced individually on both the rebased branch and exact current main:
+  `test_desktop_consent_uses_loopback_and_fake_token_exchange` and
+  `test_operator_wizard_writes_not_verified_report_when_prerequisite_is_missing`.
+  The nested Issue #68 gate was interrupted; its result is not counted in this
+  run. Historical full-suite results on `f796882` remain in the prior section
+  of the ticket evidence, not as evidence for the rebased head.
+- Current-head Python/Web/R1 CI has not run because the rebased branch has not
+  been pushed. The prior GitHub run belongs to the old PR head.
 
 PR #797 must remain OPEN/DRAFT and Issue #795 OPEN until the unresolved
 acceptance criteria are satisfied. This runbook does not alter #690
