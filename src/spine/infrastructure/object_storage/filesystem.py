@@ -2771,7 +2771,9 @@ class FilesystemOriginalObjectStore:
                 raise StorageConfigurationError()
             if any(component in {"", ".", ".."} for component in root.parts[1:]):
                 raise StorageConfigurationError()
-            return root
+            if root.is_symlink():
+                raise StorageConfigurationError()
+            return root.resolve(strict=False)
         except StorageError:
             raise
         except (TypeError, NotImplementedError, ValueError, OSError):
