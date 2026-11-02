@@ -14,9 +14,21 @@ from spine.application.production_qa_deployment import (
     ProductionQAAProfileMismatch,
 )
 from spine.application.diagnostics import AuditEventRegistry, DiagnosticEventRegistry
-from spine.application.ingestion_history import IngestionHistoryPage
-from spine.application.projection_control import ProjectionStatusSnapshot
-from spine.auth import InMemoryAuthorizationDirectory, RoutePolicyRegistry
+from spine.application.ingestion_history import (
+    DocumentProcessingHistorySnapshot,
+    IngestionHistoryPage,
+    IngestionRunHistorySnapshot,
+)
+from spine.application.projection_control import (
+    ProjectionAsOfSnapshot,
+    ProjectionStatusSnapshot,
+)
+from spine.auth import (
+    InMemoryAuthorizationDirectory,
+    InMemoryAuthorizationEntry,
+    RoutePolicyRegistry,
+)
+from spine.domain.ingestion import IngestionItemState, IngestionRunState
 from spine.infrastructure.auth import (
     InteractiveClientQualification,
     LocalAuthenticationSettings,
@@ -30,6 +42,8 @@ from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from tests.api.test_authorization import (
     ENVIRONMENT_ID,
     NOW,
+    OTHER_ENVIRONMENT_ID,
+    OTHER_WORKSPACE_ID,
     PERSISTENCE_ISSUER_ID,
     REQUEST_ISSUER_ID,
     WORKSPACE_ID,
@@ -56,14 +70,89 @@ class EmptyIngestionHistoryService:
         return IngestionHistoryPage(items=(), has_more=False)
 
 
-class UnpublishedProjectionStatusService:
+class ScopedIngestionHistoryService(EmptyIngestionHistoryService):
+    def __init__(self) -> None:
+        self.observed_scopes: list[tuple[UUID, UUID]] = []
+
+    async def list_runs(self, *, context: object, limit: int, after: object | None):
+        del limit, after
+        scope = context.scope  # type: ignore[attr-defined]
+        observed_scope = (scope.workspace_id, scope.environment_id)
+        self.observed_scopes.append(observed_scope)
+        if observed_scope == (WORKSPACE_ID, ENVIRONMENT_ID):
+            state = IngestionRunState.SUCCEEDED
+            input_identity = "protected-primary-source"
+            run_id = UUID("86700000-0000-4000-8000-000000000020")
+            item_id = UUID("86700000-0000-4000-8000-000000000021")
+        else:
+            state = IngestionRunState.FAILED
+            input_identity = "protected-secondary-source"
+            run_id = UUID("86700000-0000-4000-8000-000000000022")
+            item_id = UUID("86700000-0000-4000-8000-000000000023")
+        item = DocumentProcessingHistorySnapshot(
+            run_id=run_id,
+            run_state=state,
+            item_id=item_id,
+            input_ordinal=0,
+            input_identity=input_identity,
+            item_state=(
+                IngestionItemState.PROCESSED
+                if state is IngestionRunState.SUCCEEDED
+                else IngestionItemState.PROCESSING_FAILED
+            ),
+            attempt=1,
+            retryable=False,
+            source_object_id=None,
+            source_revision_id=None,
+            binding_id=None,
+            processing_receipt_id=None,
+            processing_coverage=None,
+            parser_name=None,
+            artifact_id=None,
+            artifact_digest=None,
+            warning_ids=(),
+            failure_ids=(),
+            warnings=(),
+            failures=(),
+            occurred_at=NOW,
+        )
+        return IngestionHistoryPage(
+            items=(
+                IngestionRunHistorySnapshot(
+                    run_id=run_id,
+                    requested_at=NOW,
+                    run_state=state,
+                    items=(item,),
+                ),
+            ),
+            has_more=False,
+        )
+
+class HealthyProjectionStatusService:
     async def status(self, *, context: object, projection_kind: str):
         scope = context.scope  # type: ignore[attr-defined]
+        boundary_id = UUID("86700000-0000-4000-8000-000000000010")
         return ProjectionStatusSnapshot(
             workspace_id=scope.workspace_id,
             environment_id=scope.environment_id,
             projection_kind=projection_kind,
-            publication_status="unpublished",
+            publication_status="published",
+            snapshot_id=UUID("86700000-0000-4000-8000-000000000011"),
+            activation_id=UUID("86700000-0000-4000-8000-000000000012"),
+            canonical_boundary_id=boundary_id,
+            as_of=ProjectionAsOfSnapshot(
+                canonical_boundary_id=boundary_id,
+                accepted_through_generation=1,
+                boundary_time=NOW,
+            ),
+            activation_generation=1,
+            projection_config_version_id=UUID(
+                "86700000-0000-4000-8000-000000000013"
+            ),
+            projection_config_version=1,
+            freshness="current",
+            health="healthy",
+            drift_count=0,
         )
 
 
@@ -133,7 +222,9 @@ def _deployment_profile(**overrides: object) -> ProductionQAADeploymentProfile:
     return ProductionQAADeploymentProfile.model_validate(values)
 
 
-def _authorization_runtime() -> ApiAuthorizationRuntime:
+def _authorization_runtime(
+    entries: tuple[InMemoryAuthorizationEntry, ...] | None = None,
+) -> ApiAuthorizationRuntime:
     diagnostic_registry = DiagnosticEventRegistry.with_default_families()
     diagnostic_sink = RecordingDiagnosticSink(diagnostic_registry)
     persistence_boundary = TrustedContextBoundary.for_testing(
@@ -149,7 +240,7 @@ def _authorization_runtime() -> ApiAuthorizationRuntime:
     composer = RequestAuthorizationComposer(
         authentication=StaticAuthentication(),
         authorization_directory=InMemoryAuthorizationDirectory(
-            entries=(authorization_entry(),)
+            entries=entries or (authorization_entry(),)
         ),
         route_policies=route_policies,
         request_boundary=request_boundary,
@@ -288,7 +379,7 @@ def _production_app_with_ready_operational_stores(
     monkeypatch.setattr(
         runtime_module,
         "CanonicalProjectionStatusService",
-        lambda _uow_factory: UnpublishedProjectionStatusService(),
+        lambda _uow_factory: HealthyProjectionStatusService(),
     )
     return _production_app()
 
@@ -324,7 +415,7 @@ async def test_production_app_reports_ready_when_operational_stores_are_availabl
         "publication": {
             "status": "ready",
             "code": "publication.ready",
-            "provider_name": "cognee",
+            "provider_name": None,
         },
         "ingestion": {
             "status": "ready",
@@ -333,11 +424,80 @@ async def test_production_app_reports_ready_when_operational_stores_are_availabl
         },
         "providers": {
             "authentication": None,
-            "publication": "cognee",
+            "publication": None,
             "ingestion": "postgresql",
         },
         "last_operation": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_production_health_summary_isolates_two_authorized_scopes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary_entry = authorization_entry()
+    secondary_entry = InMemoryAuthorizationEntry.model_validate(
+        {
+            **primary_entry.model_dump(mode="python"),
+            "workspace_id": OTHER_WORKSPACE_ID,
+            "environment_id": OTHER_ENVIRONMENT_ID,
+            "environment_workspace_id": OTHER_WORKSPACE_ID,
+        }
+    )
+    authorization = _authorization_runtime((primary_entry, secondary_entry))
+    ingestion_history = ScopedIngestionHistoryService()
+    monkeypatch.setattr(
+        runtime_module,
+        "compose_local_api_authorization",
+        lambda **_: authorization,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "OrchestratedIngestionHistoryService",
+        lambda _uow_factory: ingestion_history,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "CanonicalProjectionStatusService",
+        lambda _uow_factory: HealthyProjectionStatusService(),
+    )
+    application = _production_app()
+    transport = httpx.ASGITransport(app=application)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        primary = await client.get(
+            "/api/v1/health/summary",
+            headers={
+                "Authorization": "Bearer opaque-provider-token",
+                "X-Workspace-ID": str(WORKSPACE_ID),
+                "X-Environment-ID": str(ENVIRONMENT_ID),
+            },
+        )
+        secondary = await client.get(
+            "/api/v1/health/summary",
+            headers={
+                "Authorization": "Bearer opaque-provider-token",
+                "X-Workspace-ID": str(OTHER_WORKSPACE_ID),
+                "X-Environment-ID": str(OTHER_ENVIRONMENT_ID),
+            },
+        )
+
+    assert primary.status_code == 200, primary.text
+    assert secondary.status_code == 200, secondary.text
+    assert primary.json()["data"]["status"] == "ready"
+    assert primary.json()["data"]["last_operation"]["status"] == "completed"
+    assert secondary.json()["data"]["status"] == "degraded"
+    assert secondary.json()["data"]["last_operation"]["status"] == "failed"
+    assert primary.json()["workspace_id"] == str(WORKSPACE_ID)
+    assert secondary.json()["workspace_id"] == str(OTHER_WORKSPACE_ID)
+    assert "protected" not in primary.text
+    assert "protected" not in secondary.text
+    assert ingestion_history.observed_scopes.count(
+        (WORKSPACE_ID, ENVIRONMENT_ID)
+    ) == 2
+    assert ingestion_history.observed_scopes.count(
+        (OTHER_WORKSPACE_ID, OTHER_ENVIRONMENT_ID)
+    ) == 2
 
 
 def test_production_app_exposes_protected_canonical_document_surface() -> None:

@@ -449,11 +449,8 @@ def create_production_app(
     health_status_services = CanonicalHealthStatusServices(
         projection_status_service=projection_status,
         ingestion_history_service=ingestion_history,
-        context_factory=lambda workspace_id, environment_id: persistence_boundary.worker(
-            scope=EnvironmentScope(
-                workspace_id=workspace_id,
-                environment_id=environment_id,
-            ),
+        context_factory=lambda scope: persistence_boundary.worker(
+            scope=scope,
             service_principal_id=resolved_api.qa_service_principal_id,
             purpose=PersistencePurpose("health_summary"),
             operation=PersistenceOperation("inspect_health_summary"),
