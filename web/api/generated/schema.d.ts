@@ -4394,7 +4394,7 @@ export interface components {
          * ProviderCapabilityKind
          * @enum {string}
          */
-        ProviderCapabilityKind: "enumeration" | "metadata_read" | "binary_read" | "tabular_read" | "structured_read" | "stable_identity" | "incremental_change_discovery" | "full_reconciliation" | "lifecycle_evidence" | "health_diagnostics" | "crm";
+        ProviderCapabilityKind: "enumeration" | "metadata_read" | "binary_read" | "tabular_read" | "structured_read" | "stable_identity" | "incremental_change_discovery" | "full_reconciliation" | "lifecycle_evidence" | "health_diagnostics" | "crm" | "mailbox_enumeration" | "message_metadata_read" | "raw_message_read" | "attachment_read";
         /** ProviderCapabilityResponse */
         ProviderCapabilityResponse: {
             kind: components["schemas"]["ProviderCapabilityKind"];
@@ -4497,7 +4497,7 @@ export interface components {
          * @description Provider families approved by the bounded R2 source specification.
          * @enum {string}
          */
-        ProviderKind: "google" | "yandex_disk" | "bitrix24" | "mounted_filesystem";
+        ProviderKind: "google" | "yandex_disk" | "bitrix24" | "mounted_filesystem" | "yandex_mail";
         /**
          * PublicAcceptanceStatus
          * @enum {string}
