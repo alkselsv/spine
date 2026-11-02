@@ -40,6 +40,20 @@ from spine.evaluations.release_gates.projection_publication import (
     evaluate_projection_publication_gate,
     required_projection_publication_scenarios,
 )
+from spine.evaluations.release_gates.final_qualification import (
+    CriterionEvidence,
+    CriterionInput,
+    CriterionResult,
+    EvidenceArtifact,
+    EvidenceIndex,
+    FinalQualificationPackage,
+    FinalQualificationReport,
+    QualificationCounts,
+    ReleaseBlocker,
+    VerifiedEvidenceIndex,
+    evaluate_final_qualification,
+    verify_evidence_index,
+)
 
 __all__ = [
     "ApplicabilityFailure",
@@ -74,4 +88,16 @@ __all__ = [
     "ProviderCompatibilityEvidence",
     "evaluate_projection_publication_gate",
     "required_projection_publication_scenarios",
+    "CriterionEvidence",
+    "CriterionInput",
+    "CriterionResult",
+    "EvidenceArtifact",
+    "EvidenceIndex",
+    "FinalQualificationPackage",
+    "FinalQualificationReport",
+    "QualificationCounts",
+    "ReleaseBlocker",
+    "VerifiedEvidenceIndex",
+    "evaluate_final_qualification",
+    "verify_evidence_index",
 ]
