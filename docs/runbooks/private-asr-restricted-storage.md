@@ -130,6 +130,23 @@ classes and legal/data approvals; runtime database grants in a named
 environment; backup deletion, encryption, physical erasure and restart/restore
 qualification. No actual retention duration or approval is invented here.
 
+Latest local verification on head `98bae3c`:
+
+- Focused ASR/corpus/retention/readiness/PostgreSQL suite: `135 passed` in
+  `13.04s`.
+- Full `pytest -q`: `5768 passed, 7 skipped, 3 failed, 1 warning` in
+  `1190.88s`; no errors. The failures were the Google loopback test, Issue #680
+  operator wizard test, and the nested Issue #68 offline gate that reports
+  those same failures. The first two were reproduced on exact main base
+  `ddf676bad8e9f56e9e001ea122b19dba57ab4a97`.
+- PostgreSQL ASR/retention plus migration downgrade/re-upgrade focused checks:
+  `6 passed`; the migration rollback injection test also passed individually
+  after assigning its synthetic revision a unique ID.
+- `python -m compileall -q src tests`, `git diff --check`, and
+  `alembic heads` passed; current head is `20261229_97`.
+- GitHub CI for this head: Python compatibility 3.10–3.14 and Web passed;
+  R1 regression was pending at the last check.
+
 PR #797 must remain OPEN/DRAFT and Issue #795 OPEN until the unresolved
 acceptance criteria are satisfied. This runbook does not alter #690
 `NO-GO / NOT_VERIFIED` or any human approval state.
