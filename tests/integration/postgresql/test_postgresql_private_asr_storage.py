@@ -200,13 +200,15 @@ class _SyntheticArtifactDeletionAuthority:
 async def test_postgresql_private_asr_expired_original_is_tombstoned_with_audit(
     private_asr_database: _Database,
 ) -> None:
-    deletion_clock = NOW + timedelta(minutes=31)
+    clock = _ControlledClock(NOW)
     prepared = await _prepare_synthetic_report_case(
         private_asr_database,
         seed=798000,
         deletion_authority=_SyntheticArtifactDeletionAuthority(),
+        clock=clock,
     )
-    prepared.store._clock = lambda: deletion_clock
+    deletion_clock = NOW + timedelta(minutes=31)
+    clock.current = deletion_clock
     cleanup_context = prepared.boundary.worker(
         scope=EnvironmentScope(
             workspace_id=prepared.case.source.workspace_id,
@@ -255,6 +257,54 @@ async def test_postgresql_private_asr_expired_original_is_tombstoned_with_audit(
 
 
 @pytest.mark.asyncio
+async def test_postgresql_private_asr_report_expires_after_original_tombstone(
+    private_asr_database: _Database,
+) -> None:
+    clock = _ControlledClock(NOW)
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database,
+        seed=798050,
+        deletion_authority=_SyntheticArtifactDeletionAuthority(),
+        clock=clock,
+    )
+    report = await _commit_synthetic_report(prepared, idempotency_key="report-expiry-order")
+    clock.current = NOW + timedelta(minutes=31)
+    cleanup_context = prepared.boundary.worker(
+        scope=EnvironmentScope(
+            workspace_id=prepared.case.source.workspace_id,
+            environment_id=prepared.case.source.environment_id,
+        ),
+        service_principal_id=synthetic_uuid(798070),
+        purpose=PersistencePurpose("asr_model_evaluation"),
+        operation=PersistenceOperation("private_asr_retention_expiration"),
+        trace_id=synthetic_uuid(798071),
+    )
+    await prepared.store.expire(
+        prepared.original_ref,
+        policy_ref=prepared.applicability_ref,
+        context=cleanup_context,
+    )
+    await prepared.store.expire(
+        report.report_ref,
+        policy_ref=prepared.applicability_ref,
+        context=cleanup_context,
+    )
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, cleanup_context)
+        rows = (await session.execute(select(
+            private_asr_artifacts.c.kind,
+            private_asr_artifacts.c.status,
+            private_asr_artifacts.c.payload,
+        ).where(
+            private_asr_artifacts.c.artifact_id.in_(
+                (prepared.original_ref.reference_id, report.report_ref.reference_id)
+            ),
+        ))).all()
+    assert len(rows) == 2
+    assert all(row.status == "tombstoned" and row.payload == b"" for row in rows)
+
+
+@pytest.mark.asyncio
 async def test_postgresql_private_asr_expiration_denies_before_deadline(
     private_asr_database: _Database,
 ) -> None:
@@ -292,8 +342,11 @@ async def test_postgresql_private_asr_expiration_denies_before_deadline(
 async def test_postgresql_private_asr_expiration_denies_without_deletion_authority(
     private_asr_database: _Database,
 ) -> None:
-    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=798200)
-    prepared.store._clock = lambda: NOW + timedelta(minutes=31)
+    clock = _ControlledClock(NOW)
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database, seed=798200, clock=clock,
+    )
+    clock.current = NOW + timedelta(minutes=31)
     cleanup_context = prepared.boundary.worker(
         scope=EnvironmentScope(
             workspace_id=prepared.case.source.workspace_id,
@@ -516,6 +569,14 @@ class _Database:
         self.runtime = runtime
 
 
+class _ControlledClock:
+    def __init__(self, current: datetime) -> None:
+        self.current = current
+
+    def __call__(self) -> datetime:
+        return self.current
+
+
 @pytest_asyncio.fixture(scope="module", loop_scope="session")
 async def private_asr_database(
     postgresql_provision: TestDatabaseProvision,
@@ -547,144 +608,58 @@ async def private_asr_database(
 
 
 @pytest.mark.asyncio
-async def test_postgresql_private_asr_store_fails_closed_without_canonical_retention_terms(
+async def test_postgresql_private_asr_missing_retention_terms_deny_report_publication(
     private_asr_database: _Database,
 ) -> None:
-    request, admission, authority, policies, _, _, _, _ = service()
-    source, revision = source_revision()
-    workspace_id, environment_id = uuid4(), uuid4()
-    source = source.model_copy(update={
-        "source_object_id": uuid4(), "workspace_id": workspace_id,
-        "environment_id": environment_id,
-    })
-    revision = revision.model_copy(update={
-        "revision_id": uuid4(), "source_object_id": source.source_object_id,
-        "workspace_id": workspace_id, "environment_id": environment_id,
-    })
-    request = request.model_copy(update={
-        "source_object": source, "source_revision": revision,
-        "workspace_id": workspace_id, "environment_id": environment_id,
-        "allowed_environment_id": environment_id,
-    })
-    boundary = TrustedContextBoundary.for_testing(
-        issuer_id=uuid4(), secret=b"synthetic-private-asr-storage-context-key",
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=798500)
+    store_without_retention = PostgreSQLPrivateASRStorage(
+        sessions=prepared.runtime_sessions,
+        contexts=prepared.boundary,
+        authority=prepared.authority,
+        access_policies=prepared.policies,
+        audit_receipts=prepared.audit_receipts,
+        retention_resolver=None,
+        manifest_lineage=prepared.manifest_lineage,
+        uow_factory=prepared.persistence.uow_factory,
+        clock=prepared.clock,
     )
-    context: TrustedPersistenceContext = boundary.interactive(
-        scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id),
-        acting_subject_id=UUID(int=11),
-        purpose=PersistencePurpose("asr_model_evaluation"),
-        operation=PersistenceOperation("run_private_asr_evaluation"),
-        trace_id=uuid4(),
-    )
-    admitted = await admission.admit(request, context=context)
-    store = PostgreSQLPrivateASRStorage(
-        sessions=async_sessionmaker(
-            private_asr_database.runtime, expire_on_commit=False, autoflush=False,
-        ),
-        contexts=boundary, authority=authority, access_policies=policies,
-        audit_receipts=object(), clock=lambda: NOW,
-    )
+    callback_called = False
+
+    async def authorize_commit() -> None:
+        nonlocal callback_called
+        callback_called = True
 
     with pytest.raises(PrivateASRStorageDenied, match="storage authorization denied"):
-        await store.begin(admitted, context=context)
-    async with async_sessionmaker(private_asr_database.runtime)() as session, session.begin():
-        await store._set_scope(session, context)
-        assert (await session.execute(select(private_asr_artifacts.c.artifact_id).where(
-            private_asr_artifacts.c.workspace_id == workspace_id,
-            private_asr_artifacts.c.environment_id == environment_id,
-        ))).scalars().all() == []
-
-    cleanup_context = boundary.worker(
-        scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id),
-        service_principal_id=UUID(int=12),
-        purpose=PersistencePurpose("asr_model_evaluation"),
-        operation=PersistenceOperation("private_asr_retention_expiration"),
-        trace_id=uuid4(),
-    )
-    opaque_ref = PrivateReference(reference_id=uuid4(), reference_kind="private_asr_report")
-    with pytest.raises(PrivateASRStorageDenied, match="deletion authorization denied"):
-        await store.expire(opaque_ref, policy_ref=admitted.retention_profile_ref, context=cleanup_context)
-
-    artifact_id, audit_id, trace_id = uuid4(), uuid4(), uuid4()
-    async with private_asr_database.migration.begin() as connection:
-        await connection.execute(insert(workspaces).values(
-            id=workspace_id, slug=f"asr-{workspace_id.hex[:12]}",
-            display_name="Synthetic ASR test",
-        ))
-        await connection.execute(insert(environments).values(
-            id=environment_id, workspace_id=workspace_id, kind="development",
-            display_name="Synthetic ASR test environment",
-        ))
-        await connection.execute(insert(audit_events).values(
-            audit_event_id=audit_id, workspace_id=workspace_id,
-            environment_id=environment_id, event_type="command.outcome",
-            schema_version=1, origin="interactive", acting_subject_id=UUID(int=11),
-            service_principal_id=None, trace_id=trace_id, correlation_id=None,
-            causation_id=None, occurred_at=NOW, appended_at=NOW, target_type=None,
-            target_id=None, target_schema_version=None, outcome="recorded",
-            reason="synthetic_private_asr_storage_test",
-            producer_deduplication_id=None,
-            payload={"command_type": "synthetic_private_asr_storage"},
-        ))
-        await connection.execute(insert(private_asr_artifacts).values(
-            artifact_id=artifact_id, workspace_id=workspace_id,
-            environment_id=environment_id, purpose="asr_model_evaluation",
-            kind="original", status="committed",
-            byte_length=len(b"synthetic private bytes"),
-            payload=b"synthetic private bytes",
-            retention_profile_ref=admitted.retention_profile_ref.reference_id,
-            audit_receipt_ref=audit_id,
-            expires_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
-            admitted_record=None, created_at=NOW,
-        ))
-
-    statements: list[str] = []
-
-    def capture_statement(conn, cursor, statement, parameters, execution_context, executemany):
-        statements.append(statement.lower())
-
-    event.listen(private_asr_database.runtime.sync_engine, "before_cursor_execute", capture_statement)
-    try:
-        callback_called = False
-
-        async def authorize_report_commit() -> None:
-            nonlocal callback_called
-            callback_called = True
-
-        with pytest.raises(PrivateASRStorageDenied, match="storage authorization denied"):
-            await store.store_private_report(
-                b"synthetic private report payload", report_id=uuid4(),
-                idempotency_key="synthetic-private-report-key", source_bindings=(),
-                retention_profile_ref=admitted.retention_profile_ref,
-                audit_receipt_ref=admitted.audit_receipt_ref,
-                context=context, authorize_commit=authorize_report_commit,
-            )
-        assert not callback_called
-
-        denial_messages = []
-        for reference_id in (artifact_id, uuid4()):
-            reference = PrivateReference(
-                reference_id=reference_id, reference_kind="private_asr_original",
-            )
-            with pytest.raises(PrivateASRStorageDenied) as denial:
-                await store.read_private_reference(reference, context=context)
-            denial_messages.append(str(denial.value))
-    finally:
-        event.remove(
-            private_asr_database.runtime.sync_engine,
-            "before_cursor_execute", capture_statement,
+        await store_without_retention.store_private_report(
+            prepared.report.model_dump_json().encode(),
+            report_id=prepared.report_id,
+            idempotency_key="missing-retention-terms",
+            source_bindings=prepared.bindings,
+            retention_profile_ref=prepared.applicability_ref,
+            audit_receipt_ref=prepared.report_receipt_ref,
+            context=prepared.context,
+            authorize_commit=authorize_commit,
         )
-    assert denial_messages[0] == denial_messages[1]
-    assert str(artifact_id) not in denial_messages[0]
-    assert str(admitted.source_revision.revision_id) not in denial_messages[0]
-    assert not any(
-        "select spine.private_asr_artifacts.payload" in statement
-        for statement in statements
-    )
+    assert callback_called is False
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        assert (await session.execute(select(private_asr_artifacts.c.artifact_id).where(
+            private_asr_artifacts.c.idempotency_key == "missing-retention-terms",
+        ))).scalar_one_or_none() is None
+        assert (await session.execute(select(audit_events.c.audit_event_id).where(
+            audit_events.c.audit_event_id == prepared.report_receipt_ref.reference_id,
+        ))).scalar_one_or_none() is None
 
-    async with async_sessionmaker(private_asr_database.runtime)() as session, session.begin():
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_runtime_role_enforces_forced_rls(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=798600)
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
         rls = (await session.execute(text(
-            """SELECT role.rolbypassrls, relation.relrowsecurity,
+            """SELECT role.rolsuper, role.rolbypassrls, relation.relrowsecurity,
                       relation.relforcerowsecurity
                  FROM pg_roles AS role
                  CROSS JOIN pg_class AS relation
@@ -693,13 +668,39 @@ async def test_postgresql_private_asr_store_fails_closed_without_canonical_reten
                   AND namespace.nspname = 'spine'
                   AND relation.relname = 'private_asr_artifacts'"""
         ))).one()
-        assert tuple(rls) == (False, True, True)
-        await store._set_scope(session, context)
-        rows = (await session.execute(select(private_asr_artifacts.c.artifact_id).where(
-            private_asr_artifacts.c.workspace_id == workspace_id,
-            private_asr_artifacts.c.environment_id == environment_id,
+        own_rows = (await session.execute(select(private_asr_artifacts.c.artifact_id).where(
+            private_asr_artifacts.c.artifact_id == prepared.original_ref.reference_id,
         ))).scalars().all()
-    assert rows == [artifact_id]
+    assert tuple(rls) == (False, False, True, True)
+    assert own_rows == [prepared.original_ref.reference_id]
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_read_denial_has_no_existence_oracle_or_payload_select(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=798700)
+    statements: list[str] = []
+
+    def capture_statement(conn, cursor, statement, parameters, execution_context, executemany):
+        statements.append(statement.lower())
+
+    event.listen(private_asr_database.runtime.sync_engine, "before_cursor_execute", capture_statement)
+    messages = []
+    try:
+        for reference_id in (prepared.original_ref.reference_id, synthetic_uuid(798701)):
+            reference = PrivateReference(
+                reference_id=reference_id, reference_kind="private_asr_report",
+            )
+            with pytest.raises(PrivateASRStorageDenied) as denial:
+                await prepared.store.read_private_reference(reference, context=prepared.context)
+            messages.append(str(denial.value))
+    finally:
+        event.remove(
+            private_asr_database.runtime.sync_engine, "before_cursor_execute", capture_statement,
+        )
+    assert messages[0] == messages[1]
+    assert not any("select spine.private_asr_artifacts.payload" in statement for statement in statements)
 
 
 async def _prepare_synthetic_report_case(
@@ -958,6 +959,20 @@ async def _allow_commit() -> None:
     return None
 
 
+def _storage_for_transaction_probe(prepared, *, uow_factory):
+    return PostgreSQLPrivateASRStorage(
+        sessions=prepared.runtime_sessions,
+        contexts=prepared.boundary,
+        authority=prepared.authority,
+        access_policies=prepared.policies,
+        audit_receipts=prepared.audit_receipts,
+        retention_resolver=prepared.resolver,
+        manifest_lineage=prepared.manifest_lineage,
+        uow_factory=uow_factory,
+        clock=prepared.clock,
+    )
+
+
 @pytest.mark.asyncio
 async def test_postgresql_private_asr_callback_denial_rolls_back_report_and_receipt(
     private_asr_database: _Database,
@@ -1028,9 +1043,20 @@ async def test_postgresql_private_asr_cancellation_after_audit_flush_rolls_back(
         outbox_events=create_outbox_event_registry(),
         transaction_probe=cancel_after_audit_flush,
     )
-    prepared.store._uow_factory = persistence.uow_factory
+    probed_store = _storage_for_transaction_probe(
+        prepared, uow_factory=persistence.uow_factory,
+    )
     with pytest.raises(asyncio.CancelledError):
-        await _commit_synthetic_report(prepared, idempotency_key="cancel-after-audit")
+        await probed_store.store_private_report(
+            prepared.report.model_dump_json().encode(),
+            report_id=prepared.report_id,
+            idempotency_key="cancel-after-audit",
+            source_bindings=prepared.bindings,
+            retention_profile_ref=prepared.applicability_ref,
+            audit_receipt_ref=prepared.report_receipt_ref,
+            context=prepared.context,
+            authorize_commit=_allow_commit,
+        )
     async with prepared.runtime_sessions() as session, session.begin():
         await prepared.store._set_scope(session, prepared.context)
         report = (await session.execute(select(private_asr_artifacts.c.artifact_id).where(
@@ -1132,7 +1158,7 @@ async def test_postgresql_private_asr_authorized_synthetic_report_commit(
 
 
 @pytest.mark.asyncio
-async def test_postgresql_private_asr_same_key_retry_is_stable_and_concurrent(
+async def test_postgresql_private_asr_same_key_retry_returns_stable_identity(
     private_asr_database: _Database,
 ) -> None:
     prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799300)
@@ -1140,11 +1166,33 @@ async def test_postgresql_private_asr_same_key_retry_is_stable_and_concurrent(
     replay = await _commit_synthetic_report(prepared, idempotency_key="idempotent-report")
     assert replay.report_ref == first.report_ref
     assert replay.audit_receipt_ref == first.audit_receipt_ref
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_concurrent_same_key_commits_have_one_identity(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799310)
     concurrent = await asyncio.gather(*(
-        _commit_synthetic_report(prepared, idempotency_key="idempotent-report")
+        _commit_synthetic_report(prepared, idempotency_key="concurrent-report")
         for _ in range(2)
     ))
-    assert concurrent[0].report_ref == concurrent[1].report_ref == first.report_ref
+    assert concurrent[0].report_ref == concurrent[1].report_ref
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        reports = (await session.execute(select(func.count()).select_from(
+            private_asr_artifacts
+        ).where(private_asr_artifacts.c.idempotency_key == "concurrent-report"))).scalar_one()
+        receipts = (await session.execute(select(func.count()).select_from(audit_events).where(
+            audit_events.c.audit_event_id == prepared.report_receipt_ref.reference_id,
+        ))).scalar_one()
+    assert reports == receipts == 1
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_same_key_different_payload_is_rejected(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799320)
+    await _commit_synthetic_report(prepared, idempotency_key="conflicting-report")
     changed = prepared.report.model_copy(update={
         "candidate_id": "synthetic-candidate:v2",
     })
@@ -1152,7 +1200,7 @@ async def test_postgresql_private_asr_same_key_retry_is_stable_and_concurrent(
         await prepared.store.store_private_report(
             changed.model_dump_json().encode(),
             report_id=prepared.report_id,
-            idempotency_key="idempotent-report",
+            idempotency_key="conflicting-report",
             source_bindings=prepared.bindings,
             retention_profile_ref=prepared.applicability_ref,
             audit_receipt_ref=prepared.report_receipt_ref,
@@ -1203,9 +1251,20 @@ async def test_postgresql_private_asr_audit_failure_rolls_back_report_and_receip
         outbox_events=create_outbox_event_registry(),
         transaction_probe=fail_after_audit_flush,
     )
-    prepared.store._uow_factory = failing_persistence.uow_factory
+    failing_store = _storage_for_transaction_probe(
+        prepared, uow_factory=failing_persistence.uow_factory,
+    )
     with pytest.raises(PrivateASRStorageDenied, match="audit authorization unavailable"):
-        await _commit_synthetic_report(prepared, idempotency_key="audit-failure")
+        await failing_store.store_private_report(
+            prepared.report.model_dump_json().encode(),
+            report_id=prepared.report_id,
+            idempotency_key="audit-failure",
+            source_bindings=prepared.bindings,
+            retention_profile_ref=prepared.applicability_ref,
+            audit_receipt_ref=prepared.report_receipt_ref,
+            context=prepared.context,
+            authorize_commit=_allow_commit,
+        )
     async with prepared.runtime_sessions() as session, session.begin():
         await prepared.store._set_scope(session, prepared.context)
         assert (await session.execute(select(private_asr_artifacts.c.artifact_id).where(

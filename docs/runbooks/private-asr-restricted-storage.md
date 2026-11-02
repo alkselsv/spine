@@ -161,14 +161,14 @@ Latest local verification on the implementation diff based on
 `10d7f60dd4407f7295340db1388abd25c5d20a57`):
 
 - Focused ASR/corpus/retention/lifecycle/PostgreSQL/application suites:
-  `140 passed` in `18.24s`.
-- Focused PostgreSQL private-ASR module: `17 passed` (included in the focused
+  `145 passed` in `19.88s`.
+- Focused PostgreSQL private-ASR module: `22 passed` (included in the focused
   command above).
 - `python -m compileall -q src tests`: PASS.
 - `git diff --check`: PASS.
 - Alembic heads: single head `20261230_98`.
-- Full `/home/dima55279/project/spine/.venv/bin/pytest -q`: `5814 passed,
-  7 skipped, 3 failed, 1 warning` in `1206.97s`. Independent baseline failures:
+- Full `/home/dima55279/project/spine/.venv/bin/pytest -q`: `5819 passed,
+  7 skipped, 3 failed, 1 warning` in `1201.87s`. Independent baseline failures:
   Google loopback and Issue #680 wizard. Both exact test IDs were rerun on
   detached exact main `10d7f60dd4407f7295340db1388abd25c5d20a57` in the same
   environment and reproduced (`2 failed in 2.47s`). The third failure was the

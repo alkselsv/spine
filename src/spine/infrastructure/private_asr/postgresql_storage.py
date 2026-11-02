@@ -52,6 +52,12 @@ from spine.infrastructure.private_asr.retention import PostgreSQLPrivateASRReten
 
 _SCHEMA = "spine"
 _SAFE_REASON = re.compile(r"^[a-z][a-z0-9_.:-]{0,63}$")
+_RETENTION_CLASS_BY_KIND = {
+    "staging": RetentionArtifactClass.PRIVATE_ASR_STAGING,
+    "original": RetentionArtifactClass.PRIVATE_ASR_SOURCE_ORIGINAL,
+    "annotation": RetentionArtifactClass.PRIVATE_ASR_ANNOTATION,
+    "report": RetentionArtifactClass.PRIVATE_ASR_DETAILED_REPORT,
+}
 _ASR_METADATA = MetaData(schema=_SCHEMA)
 private_asr_artifacts = Table(
     "private_asr_artifacts", _ASR_METADATA,
@@ -108,6 +114,18 @@ private_asr_aggregate_exports = Table(
 
 class PrivateASRStorageDenied(Exception):
     """Generic denial that never includes private source metadata."""
+
+
+def _retention_class_for_kind(kind: str) -> RetentionArtifactClass | None:
+    return _RETENTION_CLASS_BY_KIND.get(kind)
+
+
+def _retention_starting_event_for_kind(kind: str) -> RetentionStartingEvent:
+    return (
+        RetentionStartingEvent.REPORT_GENERATED
+        if kind == "report"
+        else RetentionStartingEvent.ARTIFACT_CREATED
+    )
 
 
 def _admitted_from_jsonb(value: object) -> AdmittedSourceRevision:
@@ -1066,8 +1084,7 @@ class PostgreSQLPrivateASRStorage:
                         private_asr_artifacts.c.environment_id == environment_id,
                         private_asr_artifacts.c.source_revision_id == link["source_revision_id"],
                         private_asr_artifacts.c.kind == "original",
-                        private_asr_artifacts.c.status == "committed",
-                        private_asr_artifacts.c.tombstoned_at.is_(None),
+                        private_asr_artifacts.c.status.in_(("committed", "tombstoned")),
                     ))).mappings().one_or_none()
                     if original is None:
                         raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
@@ -1102,16 +1119,10 @@ class PostgreSQLPrivateASRStorage:
                 admitted_by_revision.items(),
                 key=lambda pair: (str(pair[1].source_object.source_object_id), str(pair[0])),
             ):
-                artifact_class = {
-                    "staging": RetentionArtifactClass.PRIVATE_ASR_STAGING,
-                    "original": RetentionArtifactClass.PRIVATE_ASR_SOURCE_ORIGINAL,
-                    "annotation": RetentionArtifactClass.PRIVATE_ASR_ANNOTATION,
-                    "report": RetentionArtifactClass.PRIVATE_ASR_DETAILED_REPORT,
-                }[kind]
-                starting_event = (
-                    RetentionStartingEvent.REPORT_GENERATED
-                    if kind == "report" else RetentionStartingEvent.ARTIFACT_CREATED
-                )
+                artifact_class = _retention_class_for_kind(kind)
+                if artifact_class is None:
+                    raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+                starting_event = _retention_starting_event_for_kind(kind)
                 disposition = await self._locked_source(
                     transaction,
                     admitted,
@@ -1361,12 +1372,7 @@ class PostgreSQLPrivateASRStorage:
                 ),
             )
             for admitted in admitted_records:
-                artifact_class = {
-                    "staging": RetentionArtifactClass.PRIVATE_ASR_STAGING,
-                    "original": RetentionArtifactClass.PRIVATE_ASR_SOURCE_ORIGINAL,
-                    "annotation": RetentionArtifactClass.PRIVATE_ASR_ANNOTATION,
-                    "report": RetentionArtifactClass.PRIVATE_ASR_DETAILED_REPORT,
-                }.get(row["kind"])
+                artifact_class = _retention_class_for_kind(row["kind"])
                 if artifact_class is None:
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 disposition = await self._locked_source(
@@ -1376,11 +1382,7 @@ class PostgreSQLPrivateASRStorage:
                         reference_kind="retention_applicability",
                     ),
                     artifact_class=artifact_class,
-                    starting_event=(
-                        RetentionStartingEvent.REPORT_GENERATED
-                        if row["kind"] == "report"
-                        else RetentionStartingEvent.ARTIFACT_CREATED
-                    ),
+                    starting_event=_retention_starting_event_for_kind(row["kind"]),
                     starting_at=row["created_at"], context=context,
                 )
                 if disposition is None:

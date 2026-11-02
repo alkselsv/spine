@@ -108,10 +108,10 @@ privacy/small-cell/audit publication boundary remains a #795 technical gap.
 
 Historical full-suite evidence on `f796882`: `5768 passed, 7 skipped, 3 failed,
 1 warning` in `1192.82s`. On this implementation tree, focused ASR,
-retention, lifecycle and PostgreSQL tests passed (`140 passed`); the latest
-focused PostgreSQL module passed (`17 passed`). The migration head is
-`20261230_98`. The completed full `pytest -q` reported `5814 passed, 7
-skipped, 3 failed, 1 warning` in `1206.97s`. The independent failures were
+retention, lifecycle and PostgreSQL tests passed (`145 passed`); the latest
+focused PostgreSQL module passed (`22 passed`). The migration head is
+`20261230_98`. The completed full `pytest -q` reported `5819 passed, 7
+skipped, 3 failed, 1 warning` in `1201.87s`. The independent failures were
 `test_desktop_consent_uses_loopback_and_fake_token_exchange` and
 `test_operator_wizard_writes_not_verified_report_when_prerequisite_is_missing`;
 both were rerun on exact main `10d7f60` in the same environment and failed
