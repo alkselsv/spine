@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import tempfile
 from collections.abc import AsyncIterator
+from functools import partial
 from pathlib import Path
 from uuid import UUID
 
@@ -94,8 +96,13 @@ def object_store(tmp_path: Path) -> FilesystemOriginalObjectStore:
 
 @pytest.mark.asyncio
 async def test_original_storage_source_persists_and_verifies_finalized_references(
-    object_store: FilesystemOriginalObjectStore, tmp_path: Path
+    object_store: FilesystemOriginalObjectStore,
+    tmp_path: Path,
 ) -> None:
+    canonical_temp_parent = tmp_path / "canonical-temp"
+    canonical_temp_parent.mkdir()
+    temp_parent_alias = tmp_path / "temp-parent-alias"
+    temp_parent_alias.symlink_to(canonical_temp_parent, target_is_directory=True)
     write_receipt = await put_original(object_store)
     references = (write_receipt.object_reference,)
     protection_profile = protection()
@@ -107,6 +114,10 @@ async def test_original_storage_source_persists_and_verifies_finalized_reference
         inventory=Inventory(references),
         artifact_store=destination,
         volume_generation="volume:originals",
+        temporary_directory_factory=partial(
+            tempfile.TemporaryDirectory,
+            dir=temp_parent_alias,
+        ),
     )
 
     evidence = await source.create_and_verify(

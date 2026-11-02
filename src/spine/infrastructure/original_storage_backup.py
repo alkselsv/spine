@@ -8,6 +8,8 @@ import os
 import platform
 import tarfile
 import tempfile
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from pathlib import Path
 
 from spine.application.storage.backup_profile import (
@@ -46,6 +48,9 @@ class FilesystemOriginalStorageBackupSource:
         inventory: CanonicalOriginalReferenceInventory,
         artifact_store: FilesystemBackupArtifactStore,
         volume_generation: str,
+        temporary_directory_factory: Callable[..., AbstractContextManager[str]] = (
+            tempfile.TemporaryDirectory
+        ),
     ) -> None:
         if not _is_safe_identifier(volume_generation):
             raise ValueError("filesystem volume generation is invalid")
@@ -53,6 +58,7 @@ class FilesystemOriginalStorageBackupSource:
         self._inventory = inventory
         self._artifact_store = artifact_store
         self._volume_generation = volume_generation
+        self._temporary_directory_factory = temporary_directory_factory
 
     async def create_and_verify(
         self,
@@ -78,8 +84,10 @@ class FilesystemOriginalStorageBackupSource:
             )
 
         try:
-            with tempfile.TemporaryDirectory(prefix="spine-object-backup-") as temp_dir:
-                snapshot_path = Path(temp_dir) / "originals.tar"
+            with self._temporary_directory_factory(
+                prefix="spine-object-backup-"
+            ) as temp_dir:
+                snapshot_path = Path(temp_dir).resolve(strict=True) / "originals.tar"
                 snapshot = await self._object_store.export_finalized_backup(
                     snapshot_path, references
                 )

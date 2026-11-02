@@ -590,6 +590,25 @@ async def test_symlinked_storage_root_is_unsupported(tmp_path: Path) -> None:
         await store.begin_or_resume_upload(command(), state())
 
 
+async def test_storage_root_below_symlinked_parent_uses_canonical_path(
+    tmp_path: Path,
+) -> None:
+    canonical_parent = tmp_path / "canonical-parent"
+    canonical_parent.mkdir()
+    parent_alias = tmp_path / "platform-alias"
+    parent_alias.symlink_to(canonical_parent, target_is_directory=True)
+    configured_root = parent_alias / "object-store"
+    store = FilesystemOriginalObjectStore(
+        FilesystemStorageProfile(root=configured_root),
+        grant_registry=AuthorizedReadGrantRegistry(),
+    )
+
+    active = await store.begin_or_resume_upload(command(), state())
+
+    assert active.state is UploadCommandStateName.STAGING
+    assert (canonical_parent / "object-store" / "staged").is_dir()
+
+
 async def test_backup_snapshot_contains_finalized_bytes_and_private_manifest_but_excludes_staged(
     filesystem_store: tuple[FilesystemOriginalObjectStore, AuthorizedReadGrantRegistry],
     tmp_path: Path,
