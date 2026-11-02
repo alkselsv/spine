@@ -98,6 +98,7 @@ def _connection(
     *capabilities: ProviderCapability,
     workspace_id: UUID = _id(4),
     environment_id: UUID = _id(5),
+    provider_kind: ProviderKind = ProviderKind.GOOGLE,
     status: ProviderConnectionStatus = ProviderConnectionStatus.ACTIVE,
 ) -> ProviderConnection:
     return ProviderConnection(
@@ -108,7 +109,7 @@ def _connection(
         workspace_id=workspace_id,
         environment_id=environment_id,
         service_principal_id=_id(6),
-        provider_kind=ProviderKind.GOOGLE,
+        provider_kind=provider_kind,
         credential_reference=OpaqueProviderReference(value=_id(7)),
         grant_reference=OpaqueProviderReference(value=_id(8)),
         approved_resource_scope_references=(OpaqueProviderReference(value=_id(9)),),
@@ -473,6 +474,53 @@ async def test_required_guarantee_is_rejected_before_provider_call(
             _command(ProviderCapabilityKind.INCREMENTAL_CHANGE_DISCOVERY), _context()
         )
 
+    assert provider.calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_kind", "existing_file_capabilities"),
+    (
+        (
+            ProviderKind.GOOGLE,
+            (ProviderCapabilityKind.BINARY_READ, ProviderCapabilityKind.TABULAR_READ),
+        ),
+        (
+            ProviderKind.YANDEX_DISK,
+            (ProviderCapabilityKind.ENUMERATION, ProviderCapabilityKind.BINARY_READ),
+        ),
+    ),
+)
+@pytest.mark.parametrize(
+    "email_capability",
+    (
+        ProviderCapabilityKind.MAILBOX_ENUMERATION,
+        ProviderCapabilityKind.MESSAGE_METADATA_READ,
+        ProviderCapabilityKind.RAW_MESSAGE_READ,
+        ProviderCapabilityKind.ATTACHMENT_READ,
+    ),
+)
+async def test_file_authority_does_not_admit_email_operation(
+    provider_kind: ProviderKind,
+    existing_file_capabilities: tuple[ProviderCapabilityKind, ...],
+    email_capability: ProviderCapabilityKind,
+) -> None:
+    connection = _connection(
+        *(
+            _capability(kind, ProviderCapabilityStatus.SUPPORTED)
+            for kind in existing_file_capabilities
+        ),
+        provider_kind=provider_kind,
+    )
+    provider = _Provider()
+    admission = ProviderReadAdmission(
+        repository=_Repository(connection), provider=provider
+    )
+
+    with pytest.raises(ProviderCapabilityUnavailableError) as error:
+        await admission.read(_command(email_capability), _context())
+
+    assert str(error.value) == "Required provider capability is unavailable."
     assert provider.calls == 0
 
 

@@ -7431,7 +7431,11 @@
           "full_reconciliation",
           "lifecycle_evidence",
           "health_diagnostics",
-          "crm"
+          "crm",
+          "mailbox_enumeration",
+          "message_metadata_read",
+          "raw_message_read",
+          "attachment_read"
         ],
         "title": "ProviderCapabilityKind",
         "type": "string"
@@ -7682,7 +7686,8 @@
           "google",
           "yandex_disk",
           "bitrix24",
-          "mounted_filesystem"
+          "mounted_filesystem",
+          "yandex_mail"
         ],
         "title": "ProviderKind",
         "type": "string"

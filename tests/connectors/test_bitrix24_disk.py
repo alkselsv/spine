@@ -401,7 +401,23 @@ def test_capabilities_match_the_qualified_disk_slice() -> None:
         )
     }
 
-    assert set(capabilities) == set(ProviderCapabilityKind)
+    assert set(capabilities) == {
+        ProviderCapabilityKind.ENUMERATION,
+        ProviderCapabilityKind.METADATA_READ,
+        ProviderCapabilityKind.BINARY_READ,
+        ProviderCapabilityKind.TABULAR_READ,
+        ProviderCapabilityKind.STRUCTURED_READ,
+        ProviderCapabilityKind.STABLE_IDENTITY,
+        ProviderCapabilityKind.INCREMENTAL_CHANGE_DISCOVERY,
+        ProviderCapabilityKind.FULL_RECONCILIATION,
+        ProviderCapabilityKind.LIFECYCLE_EVIDENCE,
+        ProviderCapabilityKind.HEALTH_DIAGNOSTICS,
+        ProviderCapabilityKind.CRM,
+    }
+    assert ProviderCapabilityKind.MAILBOX_ENUMERATION not in capabilities
+    assert ProviderCapabilityKind.MESSAGE_METADATA_READ not in capabilities
+    assert ProviderCapabilityKind.RAW_MESSAGE_READ not in capabilities
+    assert ProviderCapabilityKind.ATTACHMENT_READ not in capabilities
     for capability in (
         ProviderCapabilityKind.ENUMERATION,
         ProviderCapabilityKind.METADATA_READ,
