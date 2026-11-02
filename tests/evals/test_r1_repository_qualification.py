@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 
 from spine.domain.evaluations.r1_repository_qualification import (
     ArtifactAttestation,
     MigrationTargetReceipt,
+    R1ComponentVersion,
+    R1ExecutedCommand,
     R1RepositoryEvidence,
     R1SkipPolicy,
     R1SkipPolicyEntry,
+    R1WorkflowExecution,
     RepositoryTestReceipt,
     SkipDisposition,
 )
@@ -77,6 +81,21 @@ def _evidence(
 ) -> R1RepositoryEvidence:
     return R1RepositoryEvidence(
         head_sha=HEAD_SHA,
+        workflow_execution=R1WorkflowExecution(
+            workflow_name="test",
+            run_id="41432821168",
+            job_id="r1-regression-gate",
+            run_attempt=1,
+            started_at=datetime(2026, 11, 2, 10, tzinfo=timezone.utc),
+            completed_at=datetime(2026, 11, 2, 10, 10, tzinfo=timezone.utc),
+        ),
+        commands=tuple(
+            R1ExecutedCommand(boundary=boundary, argv=("uv", "run", "pytest", "-q"))
+            for boundary in ("clean_target", "upgrade_target", "repository_tests")
+        ),
+        component_versions=(
+            R1ComponentVersion(component="python", version="3.12.12"),
+        ),
         skip_policy_version=POLICY_VERSION,
         skip_policy_digest=skip_policy_digest,
         migration_targets=(

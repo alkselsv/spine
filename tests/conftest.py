@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 
 import pytest
+
+pytest_plugins = (
+    ("tests.qualification.r1_target_receipt_plugin",)
+    if os.getenv("SPINE_R1_TARGET_ROLE") is not None
+    else ()
+)
 
 
 if sys.platform == "win32":

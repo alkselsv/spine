@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 
 from spine.domain.evaluations.r1_repository_qualification import (
     MigrationTargetReceipt,
     R1SkipPolicy,
     R1SkipPolicyEntry,
+    R1WorkflowExecution,
 )
 from spine.evaluations.r1_repository_evidence import collect_r1_repository_evidence
 
@@ -84,6 +86,14 @@ def test_junit_skip_is_classified_by_exact_versioned_policy(tmp_path: Path) -> N
         upgrade_target_path=upgrade_path,
         junit_path=junit_path,
         skip_policy_path=policy_path,
+        workflow_execution=R1WorkflowExecution(
+            workflow_name="test",
+            run_id="41432821168",
+            job_id="r1-regression-gate",
+            run_attempt=1,
+            started_at=datetime(2026, 11, 2, 10, tzinfo=timezone.utc),
+            completed_at=datetime(2026, 11, 2, 10, 10, tzinfo=timezone.utc),
+        ),
     )
 
     assert evidence.repository_tests.passed == 1

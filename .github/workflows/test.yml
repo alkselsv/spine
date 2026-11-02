@@ -77,6 +77,9 @@ jobs:
       artifact-metadata: write
 
     steps:
+      - name: Record R1 evidence start time
+        id: r1-started
+        run: echo "value=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -129,14 +132,19 @@ jobs:
           fi
       - name: Collect canonical R1 repository evidence
         if: always() && steps.repository-tests.outcome == 'success'
-        run: >-
-          uv run spine-r1-repository-evidence
-          --head-sha "$GITHUB_SHA"
-          --clean-target "$RUNNER_TEMP/r1-clean-target.json"
-          --upgrade-target "$RUNNER_TEMP/r1-upgrade-target.json"
-          --junit "$RUNNER_TEMP/r1-repository-tests.xml"
-          --skip-policy docs/qualification/r1-repository-skip-policy-v1.json
-          --output r1-repository-evidence.json
+        run: |
+          completed_at=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+          uv run spine-r1-repository-evidence \
+            --head-sha "$GITHUB_SHA" \
+            --clean-target "$RUNNER_TEMP/r1-clean-target.json" \
+            --upgrade-target "$RUNNER_TEMP/r1-upgrade-target.json" \
+            --junit "$RUNNER_TEMP/r1-repository-tests.xml" \
+            --skip-policy docs/qualification/r1-repository-skip-policy-v1.json \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --started-at "${{ steps.r1-started.outputs.value }}" \
+            --completed-at "$completed_at" \
+            --output r1-repository-evidence.json
       - name: Attest R1 repository evidence from main
         if: >-
           github.event_name == 'push' && github.ref == 'refs/heads/main' &&

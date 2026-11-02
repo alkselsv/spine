@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+from importlib.metadata import version
 from pathlib import Path
+import platform
 from xml.etree import ElementTree
 
 from spine.domain.evaluations.r1_repository_qualification import (
     MigrationTargetReceipt,
+    R1ComponentVersion,
+    R1ExecutedCommand,
     R1RepositoryEvidence,
     R1SkipPolicy,
+    R1WorkflowExecution,
     RepositoryTestReceipt,
     SkipDisposition,
 )
@@ -22,6 +27,7 @@ def collect_r1_repository_evidence(
     upgrade_target_path: Path,
     junit_path: Path,
     skip_policy_path: Path,
+    workflow_execution: R1WorkflowExecution,
 ) -> R1RepositoryEvidence:
     """Build canonical evidence from two target receipts and one pytest report."""
 
@@ -68,6 +74,39 @@ def collect_r1_repository_evidence(
 
     return R1RepositoryEvidence(
         head_sha=head_sha,
+        workflow_execution=workflow_execution,
+        commands=(
+            R1ExecutedCommand(
+                boundary="clean_target",
+                argv=(
+                    "uv",
+                    "run",
+                    "pytest",
+                    "-q",
+                    "tests/integration/postgresql/test_r1_migration_targets.py::test_current_graph_applies_to_clean_target",
+                ),
+            ),
+            R1ExecutedCommand(
+                boundary="upgrade_target",
+                argv=(
+                    "uv",
+                    "run",
+                    "pytest",
+                    "-q",
+                    "tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head",
+                ),
+            ),
+            R1ExecutedCommand(
+                boundary="repository_tests",
+                argv=("uv", "run", "pytest", "-q"),
+            ),
+        ),
+        component_versions=(
+            R1ComponentVersion(component="python", version=platform.python_version()),
+            R1ComponentVersion(component="pytest", version=version("pytest")),
+            R1ComponentVersion(component="alembic", version=version("alembic")),
+            R1ComponentVersion(component="postgresql", version="17"),
+        ),
         skip_policy_version=policy.policy_version,
         skip_policy_digest=hashlib.sha256(policy_bytes).hexdigest(),
         migration_targets=(clean, upgrade),

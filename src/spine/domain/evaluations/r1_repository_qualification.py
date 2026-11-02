@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import Field, StringConstraints, model_validator
@@ -82,6 +83,37 @@ class RepositoryTestReceipt(DefinitionModel):
         return self
 
 
+class R1WorkflowExecution(DefinitionModel):
+    """Attributable GitHub Actions execution that collected the evidence."""
+
+    workflow_name: Literal["test"]
+    run_id: str = Field(pattern=r"^[1-9][0-9]*$")
+    job_id: Literal["r1-regression-gate"]
+    run_attempt: int = Field(ge=1)
+    started_at: datetime
+    completed_at: datetime
+
+    @model_validator(mode="after")
+    def validate_time_order(self) -> "R1WorkflowExecution":
+        if self.completed_at < self.started_at:
+            raise ValueError("workflow completion cannot precede its start")
+        return self
+
+
+class R1ExecutedCommand(DefinitionModel):
+    """Safe, exact command identity included in the signed artifact."""
+
+    boundary: Literal["clean_target", "upgrade_target", "repository_tests"]
+    argv: tuple[str, ...] = Field(min_length=1)
+
+
+class R1ComponentVersion(DefinitionModel):
+    """Tool or component version used by the evidence collector."""
+
+    component: VersionIdentifier
+    version: str = Field(min_length=1, max_length=128)
+
+
 class R1RepositoryEvidence(DefinitionModel):
     """Canonical metadata-only artifact emitted by the R1 repository gate."""
 
@@ -89,6 +121,9 @@ class R1RepositoryEvidence(DefinitionModel):
         "r1-repository-evidence:v1"
     )
     head_sha: CommitSha
+    workflow_execution: R1WorkflowExecution
+    commands: tuple[R1ExecutedCommand, ...]
+    component_versions: tuple[R1ComponentVersion, ...]
     skip_policy_version: VersionIdentifier
     skip_policy_digest: Sha256Digest
     migration_targets: tuple[MigrationTargetReceipt, MigrationTargetReceipt]
@@ -98,6 +133,12 @@ class R1RepositoryEvidence(DefinitionModel):
     def validate_target_roles(self) -> "R1RepositoryEvidence":
         if {item.role for item in self.migration_targets} != {"clean", "upgrade"}:
             raise ValueError("clean and upgrade migration target receipts are required")
+        if {item.boundary for item in self.commands} != {
+            "clean_target",
+            "upgrade_target",
+            "repository_tests",
+        }:
+            raise ValueError("all R1 execution commands are required")
         return self
 
 

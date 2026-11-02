@@ -83,7 +83,32 @@ def qualify_r1_repository_artifact(
     except ValidationError:
         skip_policy = None
         reasons.append("skip_policy_schema_invalid")
-    if policy_digest != evidence.skip_policy_digest:
+    reasons.extend(
+        evaluate_r1_repository_evidence(
+            evidence=evidence,
+            skip_policy=skip_policy,
+            skip_policy_digest=policy_digest,
+        )
+    )
+
+    return R1RepositoryQualificationResult(
+        status="fail" if reasons else "pass",
+        reason_codes=tuple(reasons),
+        artifact_digest=observed_digest,
+        head_sha=expected_head_sha,
+    )
+
+
+def evaluate_r1_repository_evidence(
+    *,
+    evidence: R1RepositoryEvidence,
+    skip_policy: R1SkipPolicy | None,
+    skip_policy_digest: str,
+) -> tuple[str, ...]:
+    """Evaluate repository and migration facts independently of provenance."""
+
+    reasons: list[str] = []
+    if skip_policy_digest != evidence.skip_policy_digest:
         reasons.append("skip_policy_digest_mismatch")
     if skip_policy is not None:
         if skip_policy.policy_version != evidence.skip_policy_version:
@@ -129,9 +154,4 @@ def qualify_r1_repository_artifact(
     ):
         reasons.append("repository_required_test_skipped")
 
-    return R1RepositoryQualificationResult(
-        status="fail" if reasons else "pass",
-        reason_codes=tuple(reasons),
-        artifact_digest=observed_digest,
-        head_sha=expected_head_sha,
-    )
+    return tuple(reasons)

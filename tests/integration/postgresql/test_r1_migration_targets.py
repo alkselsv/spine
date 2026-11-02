@@ -16,6 +16,9 @@ from spine.infrastructure.db.settings import (
     OperatorDatabaseSettings,
 )
 from spine.infrastructure.db.test_harness import TestDatabaseProvision
+from tests.integration.postgresql.test_initial_tenancy_migration import (
+    assert_final_catalog_after_upgrade,
+)
 
 MIGRATION_ROLE = "spine_migration"
 RUNTIME_ROLE = "spine_runtime"
@@ -63,6 +66,7 @@ async def test_current_graph_applies_to_clean_target(
             revision = await connection.scalar(
                 text("SELECT version_num FROM spine.alembic_version")
             )
+            await assert_final_catalog_after_upgrade(connection)
     finally:
         await engine.dispose()
     assert revision == load_migration_inventory().supported_head

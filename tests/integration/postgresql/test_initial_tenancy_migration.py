@@ -1346,7 +1346,7 @@ async def _set_tenant_context(
         )
 
 
-async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> None:
+async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> None:
     policy_tables = {
         "access_policy_versions",
         "access_policy_grants",
@@ -5663,7 +5663,7 @@ async def test_every_retained_revision_upgrades_to_one_final_head(
 
             await asyncio.to_thread(upgrade_database, migrated_database.migration)
             async with _connection(migrated_database.migration.url) as connection:
-                await _assert_final_catalog_after_upgrade(connection)
+                await assert_final_catalog_after_upgrade(connection)
     finally:
         async with _connection(migrated_database.migration.url) as connection:
             await connection.execute(text("DROP SCHEMA IF EXISTS spine CASCADE"))
