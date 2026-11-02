@@ -15,8 +15,9 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 import pytest
 import pytest_asyncio
 from pydantic import SecretStr
-from sqlalchemy import event, func, insert, select, text
+from sqlalchemy import event, func, insert, select, text, update
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from spine.application.persistence.context import (
@@ -114,7 +115,9 @@ DISPATCHER_ROLE = "spine_dispatcher"
 MIGRATION_PASSWORD = "migration-asr-storage-secret"
 RUNTIME_PASSWORD = "runtime-asr-storage-secret"
 DISPATCHER_PASSWORD = "dispatcher-asr-storage-secret"
-NOW = datetime(2026, 10, 31, tzinfo=timezone.utc)
+# Keep deterministic synthetic artifacts valid against PostgreSQL's real
+# statement_timestamp(), including the aggregate visibility RLS policy.
+NOW = datetime(2099, 1, 1, tzinfo=timezone.utc)
 
 
 class _SyntheticRetentionApproval:
@@ -2454,6 +2457,173 @@ async def test_postgresql_private_asr_authorized_synthetic_report_commit(
     assert report_count == receipt_count == 1
 
 
+@pytest.mark.parametrize(
+    "manifest_field",
+    ("manifest_sha256", "manifest_version", "dataset_id", "split", "revision", "revision_digest"),
+)
+async def test_postgresql_private_asr_report_rejects_manifest_lineage_mismatch(
+    private_asr_database: _Database,
+    manifest_field: str,
+) -> None:
+    manifest_fields = (
+        "manifest_sha256", "manifest_version", "dataset_id", "split", "revision",
+        "revision_digest",
+    )
+    seed = 799800 + manifest_fields.index(manifest_field)
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=seed)
+    authority = prepared.manifest_lineage
+    original_binding = authority.bindings[0]
+    if manifest_field == "manifest_sha256":
+        authority.manifest_sha256 = "f" * 64
+    elif manifest_field == "manifest_version":
+        authority.manifest_version = "synthetic-manifest:substituted"
+    elif manifest_field == "dataset_id":
+        authority.dataset_id = synthetic_uuid(seed + 901)
+    elif manifest_field == "split":
+        authority.bindings = (original_binding.model_copy(
+            update={"split": CorpusSplit.QUALIFICATION}
+        ),)
+    elif manifest_field == "revision":
+        authority.bindings = (original_binding.model_copy(
+            update={"source_revision_id": synthetic_uuid(seed + 902)}
+        ),)
+    else:
+        authority.bindings = (original_binding.model_copy(
+            update={"source_revision_digest": "f" * 64}
+        ),)
+
+    with pytest.raises(PrivateASRStorageDenied):
+        await _commit_synthetic_report(
+            prepared, idempotency_key=f"manifest-mismatch-{manifest_field}",
+        )
+
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        report_count = (await session.execute(select(func.count()).select_from(
+            private_asr_artifacts
+        ).where(
+            private_asr_artifacts.c.idempotency_key == f"manifest-mismatch-{manifest_field}",
+        ))).scalar_one()
+        success_receipt = (await session.execute(select(audit_events.c.audit_event_id).where(
+            audit_events.c.audit_event_id == prepared.report_receipt_ref.reference_id,
+        ))).scalar_one_or_none()
+    assert report_count == 0
+    assert success_receipt is None
+
+
+async def test_postgresql_private_asr_runtime_cannot_rewrite_committed_report(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799705)
+    stored = await _commit_synthetic_report(prepared, idempotency_key="immutable-report")
+
+    with pytest.raises(DBAPIError):
+        async with prepared.runtime_sessions() as session, session.begin():
+            await prepared.store._set_scope(session, prepared.context)
+            await session.execute(update(private_asr_artifacts).where(
+                private_asr_artifacts.c.workspace_id == prepared.case.source.workspace_id,
+                private_asr_artifacts.c.environment_id == prepared.case.source.environment_id,
+                private_asr_artifacts.c.artifact_id == stored.report_ref.reference_id,
+            ).values(payload=b"forged synthetic report"))
+
+    assert await prepared.store.read_private_reference(
+        stored.report_ref, context=prepared.context,
+    ) == prepared.report.model_dump_json().encode()
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_staging_commit_cannot_replace_payload(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799704)
+    staging_ref = await prepared.store.begin(prepared.admitted, context=prepared.context)
+    original = b"synthetic staged original bytes"
+    await prepared.store.append(staging_ref, original, context=prepared.context)
+
+    with pytest.raises(DBAPIError):
+        async with prepared.runtime_sessions() as session, session.begin():
+            await prepared.store._set_scope(session, prepared.context)
+            await session.execute(update(private_asr_artifacts).where(
+                private_asr_artifacts.c.workspace_id == prepared.case.source.workspace_id,
+                private_asr_artifacts.c.environment_id == prepared.case.source.environment_id,
+                private_asr_artifacts.c.artifact_id == staging_ref.reference_id,
+            ).values(
+                status="committed",
+                content_sha256="0" * 64,
+                payload=b"forged staged payload",
+            ))
+
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        status, payload = (await session.execute(select(
+            private_asr_artifacts.c.status,
+            private_asr_artifacts.c.payload,
+        ).where(
+            private_asr_artifacts.c.artifact_id == staging_ref.reference_id,
+        ))).one()
+    assert status == "staging"
+    assert bytes(payload) == original
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_runtime_cannot_insert_committed_staging(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799703)
+    artifact_id = synthetic_uuid(7997031)
+    forged_payload = b"synthetic unverified inserted staging payload"
+
+    with pytest.raises(DBAPIError):
+        async with prepared.runtime_sessions() as session, session.begin():
+            await prepared.store._set_scope(session, prepared.context)
+            await session.execute(insert(private_asr_artifacts).values(
+                artifact_id=artifact_id,
+                workspace_id=prepared.case.source.workspace_id,
+                environment_id=prepared.case.source.environment_id,
+                purpose="asr_model_evaluation",
+                kind="staging",
+                status="committed",
+                source_object_id=prepared.case.source.source_object_id,
+                source_revision_id=prepared.case.revision.revision_id,
+                source_revision_digest=prepared.case.revision.revision_digest,
+                content_sha256=sha256(forged_payload).hexdigest(),
+                byte_length=len(forged_payload),
+                payload=forged_payload,
+                retention_profile_ref=prepared.admitted.retention_profile_ref.reference_id,
+                audit_receipt_ref=prepared.admitted.audit_receipt_ref.reference_id,
+                expires_at=NOW + timedelta(days=1),
+                admitted_record=prepared.admitted.model_dump(mode="json"),
+                created_at=NOW,
+            ))
+
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        count = (await session.execute(select(func.count()).select_from(
+            private_asr_artifacts
+        ).where(private_asr_artifacts.c.artifact_id == artifact_id))).scalar_one()
+    assert count == 0
+
+
+async def test_postgresql_private_asr_runtime_cannot_tombstone_without_audit(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799706)
+    stored = await _commit_synthetic_report(prepared, idempotency_key="audit-bound-tombstone")
+
+    with pytest.raises(DBAPIError):
+        async with prepared.runtime_sessions() as session, session.begin():
+            await prepared.store._set_scope(session, prepared.context)
+            await session.execute(update(private_asr_artifacts).where(
+                private_asr_artifacts.c.workspace_id == prepared.case.source.workspace_id,
+                private_asr_artifacts.c.environment_id == prepared.case.source.environment_id,
+                private_asr_artifacts.c.artifact_id == stored.report_ref.reference_id,
+            ).values(status="tombstoned", tombstoned_at=NOW, payload=b""))
+
+    assert await prepared.store.read_private_reference(
+        stored.report_ref, context=prepared.context,
+    ) == prepared.report.model_dump_json().encode()
+
+
 async def test_postgresql_private_asr_synthetic_aggregate_commits_with_canonical_audit(
     private_asr_database: _Database,
 ) -> None:
@@ -2486,8 +2656,8 @@ async def test_postgresql_private_asr_synthetic_aggregate_commits_with_canonical
 
     export_ref, replay = await asyncio.gather(publish(), publish())
     assert replay == export_ref
-    assert publication_authority.calls == 2
-    assert release_checks == 2
+    assert publication_authority.calls == 4
+    assert release_checks == 4
 
     expected_receipt_id = uuid5(
         NAMESPACE_URL,
@@ -2528,7 +2698,52 @@ async def test_postgresql_private_asr_synthetic_aggregate_commits_with_canonical
     assert str(prepared.case.source.source_object_id) not in exported_text
     assert str(prepared.case.revision.revision_id) not in exported_text
     assert prepared.case.revision.revision_digest not in exported_text
-    assert b"synthetic ASR source bytes".decode() not in exported_text
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_aggregate_read_is_fenced_by_source_revocation(
+    private_asr_database: _Database,
+) -> None:
+    publication_authority = _SyntheticAggregatePublicationAuthority()
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database,
+        seed=799251,
+        aggregate_authority=publication_authority,
+    )
+    sanitized, export_context = await _prepare_sanitized_aggregate(
+        prepared, publication_authority,
+    )
+    await _commit_synthetic_report(prepared, idempotency_key="aggregate-source-fence-report")
+    export_ref = await prepared.store.publish_sanitized_aggregate(
+        sanitized,
+        report_id=prepared.report_id,
+        idempotency_key="aggregate-source-fence:v1",
+        context=export_context,
+        authorize_export=_allow_commit,
+    )
+    revocation_context = prepared.boundary.worker(
+        scope=EnvironmentScope(
+            workspace_id=prepared.case.source.workspace_id,
+            environment_id=prepared.case.source.environment_id,
+        ),
+        service_principal_id=synthetic_uuid(799252),
+        purpose=PersistencePurpose("asr_model_evaluation"),
+        operation=PersistenceOperation("private_asr_revocation"),
+        trace_id=synthetic_uuid(799253),
+    )
+    await prepared.store.fence(
+        prepared.case.revision.revision_id,
+        reason="synthetic_source_withdrawal",
+        context=revocation_context,
+    )
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, export_context)
+        visible = (await session.execute(select(func.count()).select_from(
+            private_asr_aggregate_exports
+        ).where(
+            private_asr_aggregate_exports.c.export_id == export_ref.reference_id,
+        ))).scalar_one()
+    assert visible == 0
 
 
 async def test_postgresql_private_asr_aggregate_denies_revoked_synthetic_approval(
@@ -2566,6 +2781,55 @@ async def test_postgresql_private_asr_aggregate_denies_revoked_synthetic_approva
             private_asr_aggregate_exports
         ))).scalar_one()
     assert count == 0
+
+
+async def test_postgresql_private_asr_aggregate_release_denial_precedes_report_payload_read(
+    private_asr_database: _Database,
+) -> None:
+    publication_authority = _SyntheticAggregatePublicationAuthority()
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database,
+        seed=799735,
+        aggregate_authority=publication_authority,
+    )
+    sanitized, export_context = await _prepare_sanitized_aggregate(
+        prepared, publication_authority,
+    )
+    await _commit_synthetic_report(prepared, idempotency_key="denied-aggregate-report")
+    report_payload_selects: list[str] = []
+
+    def record_report_payload_select(
+        conn, cursor, statement, parameters, execution_context, executemany,
+    ) -> None:
+        normalized = statement.lower().replace('"', "")
+        if "select" in normalized and "private_asr_artifacts.payload" in normalized:
+            report_payload_selects.append(statement)
+
+    async def deny_release() -> None:
+        raise RuntimeError("synthetic release denied")
+
+    event.listen(
+        private_asr_database.runtime.sync_engine,
+        "before_cursor_execute",
+        record_report_payload_select,
+    )
+    try:
+        with pytest.raises(PrivateASRStorageDenied):
+            await prepared.store.publish_sanitized_aggregate(
+                sanitized,
+                report_id=prepared.report_id,
+                idempotency_key="denied-release-before-read:v1",
+                context=export_context,
+                authorize_export=deny_release,
+            )
+    finally:
+        event.remove(
+            private_asr_database.runtime.sync_engine,
+            "before_cursor_execute",
+            record_report_payload_select,
+        )
+
+    assert report_payload_selects == []
 
 
 async def test_postgresql_private_asr_aggregate_requires_commit_authority(

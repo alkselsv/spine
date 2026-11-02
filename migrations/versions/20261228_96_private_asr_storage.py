@@ -43,7 +43,14 @@ def _tenant_table(name: str, *, mutable: bool, purpose_scoped: bool = False) -> 
         f"FOR ALL TO {migration_role} USING (true) WITH CHECK (true)"
     )
     grants = "SELECT, INSERT, UPDATE" if mutable else "SELECT, INSERT"
-    op.execute(f"GRANT {grants} ON TABLE {SCHEMA}.{name} TO {runtime_role}")
+    if name == "private_asr_artifacts":
+        op.execute(f"GRANT SELECT, INSERT ON TABLE {SCHEMA}.{name} TO {runtime_role}")
+        op.execute(
+            f"GRANT UPDATE (status, payload, byte_length, content_sha256, expires_at, "
+            f"tombstoned_at, audit_receipt_ref) ON TABLE {SCHEMA}.{name} TO {runtime_role}"
+        )
+    else:
+        op.execute(f"GRANT {grants} ON TABLE {SCHEMA}.{name} TO {runtime_role}")
     op.execute(
         f"REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE {SCHEMA}.{name} "
         f"FROM {runtime_role}"
@@ -83,6 +90,10 @@ def upgrade() -> None:
                            name="ck_private_asr_artifact_kind"),
         sa.CheckConstraint("status IN ('staging','committed','tombstoned')",
                            name="ck_private_asr_artifact_status"),
+        sa.CheckConstraint(
+            "kind <> 'staging' OR status IN ('staging','tombstoned')",
+            name="ck_private_asr_staging_not_committed",
+        ),
         sa.CheckConstraint("byte_length >= 0", name="ck_private_asr_byte_length"),
         schema=SCHEMA,
     )
@@ -163,15 +174,120 @@ def upgrade() -> None:
         schema=SCHEMA,
         postgresql_where=sa.text("kind = 'report' AND report_id IS NOT NULL"),
     )
+    op.execute(f"""
+        CREATE FUNCTION {SCHEMA}.guard_private_asr_artifact_update()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+            IF OLD.status = 'tombstoned' THEN
+                RAISE EXCEPTION 'private ASR tombstone is immutable'
+                    USING ERRCODE = '42501';
+            END IF;
+
+            IF NEW.status = 'tombstoned' THEN
+                IF NEW.tombstoned_at IS NULL
+                   OR NEW.payload IS DISTINCT FROM ''::bytea
+                   OR (to_jsonb(NEW) - ARRAY['status', 'tombstoned_at', 'payload'])
+                      IS DISTINCT FROM
+                      (to_jsonb(OLD) - ARRAY['status', 'tombstoned_at', 'payload']) THEN
+                    RAISE EXCEPTION 'private ASR tombstone transition is invalid'
+                        USING ERRCODE = '42501';
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM {SCHEMA}.audit_events AS audit
+                    WHERE audit.workspace_id = OLD.workspace_id
+                      AND audit.environment_id = OLD.environment_id
+                      AND audit.target_type = 'private_asr_artifact'
+                      AND audit.target_id = OLD.artifact_id
+                      AND audit.event_type = 'command.outcome'
+                      AND audit.outcome = 'completed'
+                      AND audit.reason IN (
+                          'private_asr_artifact_expired',
+                          'private_asr_staging_discarded',
+                          'private_asr_source_revoked'
+                      )
+                ) THEN
+                    RAISE EXCEPTION 'private ASR tombstone requires canonical audit'
+                        USING ERRCODE = '42501';
+                END IF;
+                RETURN NEW;
+            END IF;
+
+            IF OLD.kind = 'staging' THEN
+                IF NEW.tombstoned_at IS NOT NULL
+                   OR (to_jsonb(NEW) - ARRAY['status', 'tombstoned_at', 'payload',
+                                               'byte_length', 'content_sha256', 'expires_at'])
+                      IS DISTINCT FROM
+                      (to_jsonb(OLD) - ARRAY['status', 'tombstoned_at', 'payload',
+                                              'byte_length', 'content_sha256', 'expires_at']) THEN
+                    RAISE EXCEPTION 'private ASR staging identity is immutable'
+                        USING ERRCODE = '42501';
+                END IF;
+                IF NEW.status = 'staging' THEN
+                    RETURN NEW;
+                END IF;
+                RAISE EXCEPTION 'private ASR staging transition is invalid'
+                    USING ERRCODE = '42501';
+            END IF;
+
+            IF OLD.status = 'staging' AND NEW.status = 'committed'
+               AND (to_jsonb(NEW) - ARRAY['status', 'audit_receipt_ref'])
+                   IS NOT DISTINCT FROM
+                   (to_jsonb(OLD) - ARRAY['status', 'audit_receipt_ref']) THEN
+                RETURN NEW;
+            END IF;
+
+            RAISE EXCEPTION 'committed private ASR artifact is immutable'
+                USING ERRCODE = '42501';
+        END;
+        $$
+    """)
+    op.execute(f"""
+        CREATE TRIGGER trg_private_asr_artifact_immutable
+        BEFORE UPDATE ON {SCHEMA}.private_asr_artifacts
+        FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.guard_private_asr_artifact_update()
+    """)
     for table, mutable in (("private_asr_artifacts", True),
                            ("private_asr_source_fences", True),
                            ("private_asr_report_sources", False),
                            ("private_asr_aggregate_exports", False)):
         purpose_scoped = True
         _tenant_table(table, mutable=mutable, purpose_scoped=purpose_scoped)
+    # An aggregate is visible only while its source report is still an active,
+    # unexpired private artifact.  This makes source-revocation tombstones and
+    # report expiry immediately fence aggregate reads at the database boundary.
+    # The application still rechecks current privacy/release authority before
+    # publication; external authority revocation requires the shared #813 fence.
+    runtime_role = _role("runtime_role")
+    op.execute(f"""
+        CREATE POLICY pol_private_asr_aggregate_exports_live_report
+        ON {SCHEMA}.private_asr_aggregate_exports
+        AS RESTRICTIVE FOR SELECT TO {runtime_role}
+        USING (
+            expires_at > statement_timestamp()
+            AND EXISTS (
+                SELECT 1
+                FROM {SCHEMA}.private_asr_artifacts AS report
+                WHERE report.workspace_id = private_asr_aggregate_exports.workspace_id
+                  AND report.environment_id = private_asr_aggregate_exports.environment_id
+                  AND report.artifact_id = private_asr_aggregate_exports.report_artifact_id
+                  AND report.kind = 'report'
+                  AND report.status = 'committed'
+                  AND report.tombstoned_at IS NULL
+                  AND report.expires_at > statement_timestamp()
+            )
+        )
+    """)
 
 
 def downgrade() -> None:
+    op.execute(
+        f"DROP POLICY pol_private_asr_aggregate_exports_live_report "
+        f"ON {SCHEMA}.private_asr_aggregate_exports"
+    )
+    op.execute(f"DROP TRIGGER trg_private_asr_artifact_immutable ON {SCHEMA}.private_asr_artifacts")
+    op.execute(f"DROP FUNCTION {SCHEMA}.guard_private_asr_artifact_update()")
     op.drop_index("uq_private_asr_report_identity", table_name="private_asr_artifacts", schema=SCHEMA)
     for table in ("private_asr_aggregate_exports",
                   "private_asr_report_sources", "private_asr_source_fences",

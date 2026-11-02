@@ -16,6 +16,26 @@ URL or filesystem export is created. Sanitized aggregates use a separate typed
 publication method bound to an exact committed report. Raw byte export remains
 fail-closed.
 
+Aggregate SELECT is additionally restricted to rows whose own retention
+deadline and linked report remain live, committed and untombstoned. Source
+revocation tombstones the linked report and therefore hides the aggregate at
+the database boundary. This visibility fence does not physically erase the
+aggregate row or backups, and it does not serialize an external privacy/release
+approval revocation; that shared fence remains #813.
+
+The RLS predicates follow Spine's canonical session-scope contract and read
+workspace, environment and purpose from transaction-local PostgreSQL settings
+installed by the trusted persistence adapter. Forced RLS and the
+non-superuser/`NOBYPASSRLS` role protect against omitted predicates and ordinary
+adapter misuse. PostgreSQL permits a holder of the `spine_runtime` credentials
+to set custom session settings directly, so this does not protect against
+arbitrary SQL executed with compromised runtime credentials. Those credentials
+must remain confined to trusted Spine services. The current test proves adapter
+scope isolation and role/RLS flags; it does not claim cryptographic tenant
+isolation against a compromised database credential. A stronger DB-verifiable
+scope assertion would require a shared platform contract, not an ASR-only
+registry.
+
 The adapter uses existing Spine source lifecycle/admission locks, current
 source head and AccessPolicy storage, canonical `RetentionApplicability` and
 canonical audit UoW. It does not create a second source registry, retention
@@ -65,6 +85,11 @@ become visible. The successful PostgreSQL UoW commit is the linearization
 point. Callback denial, exception, cancellation, audit insertion error or
 transaction rollback leaves neither a visible report nor a successful
 publication receipt.
+The migration grants only required artifact update columns and a database
+trigger freezes committed non-staging rows. A committed artifact may only move
+to a terminal tombstone that clears payload bytes while preserving its identity,
+lineage, digest, retention disposition and audit reference. Tombstoned rows
+cannot be changed again.
 
 The lock order is:
 
@@ -88,13 +113,17 @@ Detailed report content is never part of aggregate output. The synthetic
 aggregate path revalidates the strict sanitizer model, derives the expected
 aggregate again from the exact committed report, checks source/retention/
 AccessPolicy and fixture-only current publication authority, and calls release
-and disclosure-risk checks immediately before commit. Only the allowlisted
+and disclosure-risk checks before selecting report payload and again
+immediately before commit. Only the allowlisted
 `SanitizedCorpusReport` JSON is persisted. The aggregate row and canonical
 success audit share one PostgreSQL UoW; its commit is the visibility point.
 Duplicate identity is serialized and returns the same export reference after
 fresh authorization. Raw caller-provided bytes are denied. Production aggregate
 publication remains disabled until canonical privacy/release authority and
-the shared external revocation fence (#813) are composed.
+the shared external revocation fence (#813) are composed. The aggregate RLS
+policy hides rows after aggregate/report expiry or report tombstoning; it does
+not delete the row. Current privacy/release revocation after publication is
+not yet fenced, so no production export is authorized by this path.
 
 ## Manifest and lineage
 
@@ -116,13 +145,15 @@ one success receipt. Uncommitted PostgreSQL work rolls back; a committed
 report/audit pair survives a lost response and can be reconciled by a fresh
 authorized retry.
 
-These database behaviors are covered by synthetic integration tests. The test
-does not constitute process-kill/restart, physical deletion or restore
-qualification. Tombstones and cleanup are idempotent database state changes;
-WAL, replicas, snapshots and backups may retain prior bytes. Operators must
-define and verify backup/replica deletion and restore-time tombstone/receipt
-reconciliation. Encryption-at-rest, physical erasure and production recovery
-are `NOT_VERIFIED` absent named-environment evidence.
+Report process-recovery behaviors are covered by isolated subprocess tests:
+worker death before commit, death after commit before response, and a fresh
+process replay with the same idempotency identity. This verifies application
+process recovery against PostgreSQL; it is not PostgreSQL server crash, backup,
+replica or restore qualification. Tombstones and cleanup are idempotent
+database state changes; WAL, replicas, snapshots and backups may retain prior
+bytes. Operators must define and verify backup/replica deletion and restore-time
+tombstone/receipt reconciliation. Encryption-at-rest, physical erasure and
+production recovery are `NOT_VERIFIED` absent named-environment evidence.
 
 Retention expiration now has a synthetic authorized PostgreSQL path. It
 re-resolves current applicability and approved terms inside the deletion UoW,
@@ -150,48 +181,42 @@ restricted-role synthetic report publication and authorized read; report plus
 canonical success audit atomic commit; callback and audit-failure rollback;
 idempotent/concurrent duplicate behavior; callback and audit-flush cancellation
 rollback; lifecycle and retention CAS interleavings; manifest binding checks
-via the test verifier; RLS role flags; authorized expiration/tombstone/audit;
+via the test verifier, including wrong version/digest/dataset/split/revision;
+committed report update denial by database trigger; RLS role flags and adapter
+scope denials; authorized expiration/tombstone/audit;
 deadline and missing-authority denial; exact staging cleanup and generic
-cleanup denials.
+cleanup denials; process death before/after commit and fresh-process replay;
+sanitized aggregate publication with canonical audit; aggregate visibility
+fencing after report expiry/source revocation; and rejection of a staging
+payload mutation combined with an unauthorized commit transition.
 
-Specified but not implemented for production: approved policy terms and
-approval authority composition; authoritative frozen-manifest resolver
-(#811); canonical artifact-deletion authority (#812); coordination of any
-external revocation authority (#813); aggregate privacy/audit publication.
+Synthetic aggregate publication and its report/audit transaction are
+implemented. Specified but not implemented for production: approved policy
+terms and approval authority composition; authoritative frozen-manifest
+resolver (#811); canonical artifact-deletion authority (#812); and coordination
+of external privacy/release/retention revocation (#813). Aggregate rows are
+hidden after report/source expiry or tombstoning but are not physically removed
+by that visibility policy.
 
 Needs human or operator evidence: approved policy terms, applicable artifact
 classes and legal/data approvals; runtime database grants in a named
 environment; backup deletion, encryption, physical erasure and restart/restore
 qualification. No actual retention duration or approval is invented here.
 
-Latest executed focused verification before rebase to main
-`526c8117aba264c678d88fc313c36c18de31cb17`:
-
-- PostgreSQL private-ASR storage module: `46 passed`, using isolated PostgreSQL
-  17 and the restricted `spine_runtime` role, including aggregate commit and
-  subprocess crash/restart cases.
-- Source, lifecycle, AccessPolicy, retention and private-ASR application/domain
-  regressions: `130 passed`.
-- `/home/dima55279/project/spine/.venv/bin/python -m compileall -q src tests`:
-  PASS; `git diff --check`: PASS.
-- Alembic: one head, `20261230_98`.
-- Full `pytest -q` completed on an earlier baseline worktree: `5892 passed,
-  7 skipped, 3 failed, 1 warning` in `1836.01s`. The two direct failures were
-  Google OAuth loopback and the Issue #680 operator wizard; both reproduced on
-  detached exact current main `597b8025f528ec1d186ceb40e275e0d73abae4bf`
-  (`2 failed in 4.04s`). The third failure was the nested #68 gate embedding
-  those two. This run predates the current implementation and does not qualify
-  the full suite on the rebased head.
-- GitHub run `41499036549` passed on predecessor head `25c18ee`; it is not
-  exact-head CI evidence. New exact-head CI is pending.
+Qualification evidence must be read against the exact code revision recorded
+in the PR and test log. The current branch is based on
+`6171f290a403f9c183298fd483044437c8ac9c78`; the PostgreSQL module and other
+gates are being rerun after aggregate visibility and staging-trigger hardening.
+Earlier results on the pre-hardening branch do not qualify this diff.
 
 PR #797 remains OPEN/DRAFT and Issue #795 remains OPEN. Source-head replacement,
 AccessPolicy activation, canonical lifecycle withdrawal, retention CAS and
-multi-source lock ordering now have focused PostgreSQL evidence. Process
+multi-source lock ordering have focused PostgreSQL evidence. Process
 termination/restart recovery and synthetic aggregate publication also have
-focused PostgreSQL evidence. Bounded deadlock retry/reauthorization, production
-manifest/deletion/approval authorities and named-environment qualification
-remain unresolved. This runbook does not alter #690
+focused PostgreSQL evidence. The complete AccessPolicy revocation matrix,
+bounded deadlock retry/reauthorization, post-publication external approval
+revocation, production manifest/deletion/approval authorities and named-
+environment qualification remain unresolved. This runbook does not alter #690
 `NO-GO / NOT_VERIFIED` or any human approval state.
 
 ## Operator qualification checklist

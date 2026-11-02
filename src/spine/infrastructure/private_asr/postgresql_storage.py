@@ -503,6 +503,7 @@ class PostgreSQLPrivateASRStorage:
                 private_asr_artifacts.c.expires_at,
                 private_asr_artifacts.c.source_revision_id,
                 private_asr_artifacts.c.source_revision_digest,
+                private_asr_artifacts.c.content_sha256,
             ).where(
                 private_asr_artifacts.c.workspace_id == workspace_id,
                 private_asr_artifacts.c.environment_id == environment_id,
@@ -513,6 +514,8 @@ class PostgreSQLPrivateASRStorage:
                 private_asr_artifacts.c.expires_at > self._clock(),
             ).with_for_update())).mappings().one_or_none()
             if row is None or staging_ref.reference_kind != "private_asr_staging":
+                raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
+            if row["content_sha256"] is not None:
                 raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
             admitted = _admitted_from_jsonb(row["admitted_record"])
             await self._check_admitted(admitted, context)
@@ -581,7 +584,7 @@ class PostgreSQLPrivateASRStorage:
                 private_asr_artifacts.c.workspace_id == workspace_id,
                 private_asr_artifacts.c.environment_id == environment_id,
                 private_asr_artifacts.c.artifact_id == staging_ref.reference_id,
-            ).values(status="committed", content_sha256=sha256))
+            ).values(content_sha256=sha256))
         return self._ref(staging_ref.reference_id, "staging")
 
     async def discard(self, staging_ref: PrivateReference, *, context: TrustedPersistenceContext) -> None:
@@ -625,7 +628,7 @@ class PostgreSQLPrivateASRStorage:
                     private_asr_artifacts.c.source_revision_id == revision.revision_id,
                     private_asr_artifacts.c.source_revision_digest == revision.revision_digest,
                     private_asr_artifacts.c.kind == "staging",
-                    private_asr_artifacts.c.status == "committed",
+                    private_asr_artifacts.c.status == "staging",
                     private_asr_artifacts.c.content_sha256 == sha256,
                     private_asr_artifacts.c.byte_length == byte_length,
                     private_asr_artifacts.c.tombstoned_at.is_(None),
@@ -1219,6 +1222,41 @@ class PostgreSQLPrivateASRStorage:
             ):
                 raise PrivateASRStorageDenied("Private ASR aggregate lineage denied.")
 
+            async def verify_publication_authority() -> None:
+                try:
+                    approved = await self._aggregate_authority.verify_current_publication(
+                        session,
+                        report_id=report_id,
+                        sanitized_report=sanitized,
+                        context=context,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    raise PrivateASRStorageDenied(
+                        "Private ASR aggregate authorization unavailable."
+                    ) from None
+                if not approved:
+                    raise PrivateASRStorageDenied(
+                        "Private ASR aggregate authorization denied."
+                    )
+
+            async def verify_export_callback() -> None:
+                try:
+                    await authorize_export()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    raise PrivateASRStorageDenied(
+                        "Private ASR aggregate authorization denied."
+                    ) from None
+
+            # Refuse release before selecting detailed report bytes. Repeat the
+            # current checks immediately before audit/publication so a slow
+            # payload validation does not extend the callback's freshness.
+            await verify_publication_authority()
+            await verify_export_callback()
+
             report_payload = (await self._execute(session, select(
                 private_asr_artifacts.c.payload,
             ).where(
@@ -1254,20 +1292,6 @@ class PostgreSQLPrivateASRStorage:
             ):
                 raise PrivateASRStorageDenied("Private ASR aggregate lineage denied.")
 
-            try:
-                approved = await self._aggregate_authority.verify_current_publication(
-                    session,
-                    report_id=report_id,
-                    sanitized_report=sanitized,
-                    context=context,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                raise PrivateASRStorageDenied("Private ASR aggregate authorization unavailable.") from None
-            if not approved:
-                raise PrivateASRStorageDenied("Private ASR aggregate authorization denied.")
-
             existing = (await self._execute(session, select(
                 private_asr_aggregate_exports.c.export_id,
                 private_asr_aggregate_exports.c.report_id,
@@ -1291,12 +1315,8 @@ class PostgreSQLPrivateASRStorage:
             ):
                 raise PrivateASRStorageDenied("Private ASR aggregate idempotency conflict.")
 
-            try:
-                await authorize_export()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                raise PrivateASRStorageDenied("Private ASR aggregate authorization denied.") from None
+            await verify_publication_authority()
+            await verify_export_callback()
 
             if existing is None:
                 append_aggregate = getattr(
@@ -1356,11 +1376,15 @@ class PostgreSQLPrivateASRStorage:
         workspace_id, environment_id = self._require_worker_operation(
             context, "private_asr_revocation"
         )
-        if not _SAFE_REASON.fullmatch(reason):
+        if (
+            not _SAFE_REASON.fullmatch(reason)
+            or self._uow_factory is None
+            or getattr(self._audit_receipts, "append_source_revocation_tombstones", None) is None
+        ):
             raise PrivateASRStorageDenied("Private ASR revocation rejected.")
-        async with self._sessions() as session, session.begin():
-            await self._set_scope(session, context)
-            source_object_id = (await session.execute(select(
+        async with self._uow_factory(context) as transaction:
+            await self._set_scope(transaction, context)
+            source_object_id = (await self._execute(transaction, select(
                 source_revisions.c.source_object_id,
             ).where(
                 source_revisions.c.workspace_id == workspace_id,
@@ -1370,12 +1394,29 @@ class PostgreSQLPrivateASRStorage:
             if source_object_id is None:
                 raise PrivateASRStorageDenied("Private ASR revocation rejected.")
             await self._lock_source_admission_path(
-                session,
+                transaction,
                 workspace_id=workspace_id,
                 environment_id=environment_id,
                 source_object_id=source_object_id,
                 revision_id=source_revision_id,
             )
+            linked_reports = select(private_asr_report_sources.c.report_id).where(
+                private_asr_report_sources.c.workspace_id == workspace_id,
+                private_asr_report_sources.c.environment_id == environment_id,
+                private_asr_report_sources.c.source_revision_id == source_revision_id,
+            )
+            affected_artifacts = (await self._execute(transaction, select(
+                private_asr_artifacts.c.artifact_id,
+            ).where(
+                private_asr_artifacts.c.workspace_id == workspace_id,
+                private_asr_artifacts.c.environment_id == environment_id,
+                private_asr_artifacts.c.status.in_(("staging", "committed")),
+                (private_asr_artifacts.c.source_revision_id == source_revision_id)
+                | (
+                    (private_asr_artifacts.c.kind == "report")
+                    & private_asr_artifacts.c.report_id.in_(linked_reports)
+                ),
+            ).with_for_update())).scalars().all()
             statement = pg_insert(private_asr_source_fences).values(
                 workspace_id=workspace_id, environment_id=environment_id,
                 purpose="asr_model_evaluation",
@@ -1386,25 +1427,28 @@ class PostgreSQLPrivateASRStorage:
                 set_={"revoked": True, "epoch": private_asr_source_fences.c.epoch + 1,
                       "reason": reason, "updated_at": self._clock()},
             )
-            await session.execute(statement)
-            await session.execute(update(private_asr_artifacts).where(
+            await self._execute(transaction, statement)
+            if affected_artifacts:
+                await self._audit_receipts.append_source_revocation_tombstones(
+                    transaction,
+                    source_revision_id=source_revision_id,
+                    artifact_ids=tuple(affected_artifacts),
+                    context=context,
+                )
+            await self._execute(transaction, update(private_asr_artifacts).where(
                 private_asr_artifacts.c.workspace_id == workspace_id,
                 private_asr_artifacts.c.environment_id == environment_id,
                 private_asr_artifacts.c.source_revision_id == source_revision_id,
                 private_asr_artifacts.c.status.in_(("staging", "committed")),
             ).values(status="tombstoned", tombstoned_at=self._clock(), payload=b""))
-            linked_reports = select(private_asr_report_sources.c.report_id).where(
-                private_asr_report_sources.c.workspace_id == workspace_id,
-                private_asr_report_sources.c.environment_id == environment_id,
-                private_asr_report_sources.c.source_revision_id == source_revision_id,
-            )
-            await session.execute(update(private_asr_artifacts).where(
+            await self._execute(transaction, update(private_asr_artifacts).where(
                 private_asr_artifacts.c.workspace_id == workspace_id,
                 private_asr_artifacts.c.environment_id == environment_id,
                 private_asr_artifacts.c.report_id.in_(linked_reports),
                 private_asr_artifacts.c.kind == "report",
                 private_asr_artifacts.c.status == "committed",
             ).values(status="tombstoned", tombstoned_at=self._clock(), payload=b""))
+            await transaction.commit()
 
     async def delete_private_reference(self, reference: PrivateReference, *,
                                        context: TrustedPersistenceContext) -> None:

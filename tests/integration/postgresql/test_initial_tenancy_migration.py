@@ -4477,6 +4477,10 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         ("outbox_deliveries", "pol_outbox_deliveries_tenant_read"),
         ("outbox_deliveries", "pol_outbox_deliveries_dispatcher"),
         ("outbox_deliveries", "pol_outbox_deliveries_migration_maintenance"),
+        (
+            "private_asr_aggregate_exports",
+            "pol_private_asr_aggregate_exports_live_report",
+        ),
     }
     for table_name in standard_tables:
         roles, using_expression, check_expression = policies[

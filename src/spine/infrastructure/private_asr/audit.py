@@ -179,6 +179,51 @@ class PostgreSQLPrivateASRAuditReceipts(ScopedAuditReceiptPort):
         await transaction.audit.append(event)  # type: ignore[attr-defined]
         await transaction.flush_audit_events()  # type: ignore[attr-defined]
 
+    async def append_source_revocation_tombstones(
+        self,
+        transaction: object,
+        *,
+        source_revision_id: UUID,
+        artifact_ids: tuple[UUID, ...],
+        context: TrustedPersistenceContext,
+    ) -> None:
+        """Audit each artifact tombstone in the source-revocation UoW."""
+        if not isinstance(context.scope, EnvironmentScope) or not artifact_ids:
+            raise ValueError("ASR source revocation audit scope is invalid.")
+        for artifact_id in sorted(set(artifact_ids), key=str):
+            event_id = uuid5(
+                NAMESPACE_URL,
+                f"spine:private-asr-source-revocation:v1:{context.scope.workspace_id}:"
+                f"{context.scope.environment_id}:{source_revision_id}:{artifact_id}",
+            )
+            event = self._events.build_event(
+                audit_event_id=event_id,
+                workspace_id=context.scope.workspace_id,
+                environment_id=context.scope.environment_id,
+                target=AuditObjectReference(
+                    object_type="private_asr_artifact",
+                    object_id=artifact_id,
+                    schema_version=1,
+                ),
+                event_type="command.outcome",
+                schema_version=1,
+                payload=CommandAuditPayload(
+                    command_type="private_asr_source_revocation"
+                ),
+                origin=context.origin,
+                acting_subject_id=context.acting_subject_id,
+                service_principal_id=context.service_principal_id,
+                trace_id=context.trace_id,
+                occurred_at=self._clock(),
+                outcome=AuditOutcome.COMPLETED,
+                reason="private_asr_source_revoked",
+                producer_deduplication_id=(
+                    f"private-asr-source-revocation:{source_revision_id}:{artifact_id}"
+                ),
+            )
+            await transaction.audit.append(event)  # type: ignore[attr-defined]
+        await transaction.flush_audit_events()  # type: ignore[attr-defined]
+
     async def append_artifact_deletion(
         self,
         transaction: object,
