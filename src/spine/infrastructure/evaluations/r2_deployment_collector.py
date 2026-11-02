@@ -319,7 +319,7 @@ class DockerComposeR2EvidenceCollector:
                 and body["environment_id"] == environment_id
             )
             data = body["data"]
-            ready = response.status_code == 200 and data["status"] == "ready"
+            ready = response.status_code == 200 and _deployment_summary_ready(data)
         except (KeyError, TypeError, ValueError):
             raise R2CollectionError("authenticated_canary_invalid") from None
         return {"ready": ready, "scope_verified": scope_verified}
@@ -496,6 +496,43 @@ class DockerComposeR2EvidenceCollector:
                 )
             )
         return tuple(observations)
+
+
+def _deployment_summary_ready(data: object) -> bool:
+    if not isinstance(data, Mapping):
+        return False
+    authorization = data.get("authorization")
+    publication = data.get("publication")
+    ingestion = data.get("ingestion")
+    if not all(
+        isinstance(component, Mapping)
+        for component in (authorization, publication, ingestion)
+    ):
+        return False
+    authorization_ready = (
+        authorization.get("status") == "ready"
+        and authorization.get("code")
+        in {"authorization.ready", "local.ready", "oidc.ready"}
+    )
+    ingestion_ready = (
+        ingestion.get("status") == "ready"
+        and ingestion.get("code") == "ingestion.ready"
+    )
+    publication_ready = (
+        publication.get("status") == "ready"
+        and publication.get("code") == "publication.ready"
+        and data.get("status") == "ready"
+    )
+    publication_unpublished = (
+        publication.get("status") == "degraded"
+        and publication.get("code") == "publication.unpublished"
+        and data.get("status") == "degraded"
+    )
+    return bool(
+        authorization_ready
+        and ingestion_ready
+        and (publication_ready or publication_unpublished)
+    )
 
 
 def _compose_prefix(configuration: R2CollectorConfiguration) -> tuple[str, ...]:

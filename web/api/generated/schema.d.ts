@@ -3399,7 +3399,7 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "authorization.ready" | "local.ready" | "oidc.ready" | "oidc.check_deferred" | "oidc.stale_keys" | "oidc.provider_unavailable" | "oidc.provider_incompatible" | "oidc.runtime_closed" | "authorization.degraded" | "authorization.unavailable" | "authorization.stale" | "authorization.store_unavailable" | "authorization.provider_unavailable" | "authorization.provider_incompatible" | "dependency.unavailable" | "ingestion.ready" | "ingestion.degraded" | "ingestion.partial" | "ingestion.unavailable" | "ingestion.stale" | "publication.ready" | "publication.degraded" | "publication.unavailable" | "publication.stale";
+            code: "authorization.ready" | "local.ready" | "oidc.ready" | "oidc.check_deferred" | "oidc.stale_keys" | "oidc.provider_unavailable" | "oidc.provider_incompatible" | "oidc.runtime_closed" | "authorization.degraded" | "authorization.unavailable" | "authorization.stale" | "authorization.store_unavailable" | "authorization.provider_unavailable" | "authorization.provider_incompatible" | "dependency.unavailable" | "ingestion.ready" | "ingestion.degraded" | "ingestion.partial" | "ingestion.unavailable" | "ingestion.stale" | "publication.ready" | "publication.degraded" | "publication.unpublished" | "publication.unavailable" | "publication.stale";
             /** Provider Name */
             provider_name?: ("local" | "oidc" | "postgresql" | "filesystem" | "cognee" | "neo4j" | "pgvector" | "memory") | null;
             status: components["schemas"]["HealthStatus"];

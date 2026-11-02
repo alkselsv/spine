@@ -76,6 +76,7 @@ HealthCode: TypeAlias = Literal[
     "ingestion.stale",
     "publication.ready",
     "publication.degraded",
+    "publication.unpublished",
     "publication.unavailable",
     "publication.stale",
 ]

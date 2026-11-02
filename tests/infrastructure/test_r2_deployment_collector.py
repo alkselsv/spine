@@ -107,7 +107,23 @@ class ScopedHealthProbe:
         if headers.get("X-Workspace-ID", "").startswith("00000000-"):
             return HttpProbeResponse(status_code=403, body=b"")
         if url.endswith("/api/v1/health/summary"):
-            data: dict[str, object] = {"data": {"status": "ready"}}
+            data: dict[str, object] = {
+                "data": {
+                    "status": "ready",
+                    "authorization": {
+                        "status": "ready",
+                        "code": "authorization.ready",
+                    },
+                    "publication": {
+                        "status": "ready",
+                        "code": "publication.ready",
+                    },
+                    "ingestion": {
+                        "status": "ready",
+                        "code": "ingestion.ready",
+                    },
+                }
+            }
         else:
             if url.endswith("/api/v1/documents?limit=1"):
                 data = {"items": []}
@@ -141,6 +157,31 @@ class AuthorizationBypassingProbe(ScopedHealthProbe):
         ):
             self.requests.append((url, headers))
             return HttpProbeResponse(status_code=200, body=b"{}")
+        return super().get(url=url, headers=headers)
+
+
+class ConfiguredHealthSummaryProbe(ScopedHealthProbe):
+    def __init__(self, data: dict[str, object]) -> None:
+        super().__init__()
+        self.data = data
+
+    def get(self, *, url: str, headers: dict[str, str]) -> HttpProbeResponse:
+        if (
+            url.endswith("/api/v1/health/summary")
+            and headers.get("Authorization") != "Bearer r2-invalid-credential"
+            and not headers.get("X-Workspace-ID", "").startswith("00000000-")
+        ):
+            self.requests.append((url, headers))
+            return HttpProbeResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "workspace_id": headers["X-Workspace-ID"],
+                        "environment_id": headers["X-Environment-ID"],
+                        "data": self.data,
+                    }
+                ).encode("utf-8"),
+            )
         return super().get(url=url, headers=headers)
 
 
@@ -297,6 +338,136 @@ def test_live_collector_derives_complete_bound_evidence(tmp_path: Path) -> None:
         headers.get("X-Workspace-ID", "").startswith("00000000-")
         for _, headers in http_probe.requests
     )
+
+
+def test_fresh_unpublished_projection_is_deployment_ready_before_r5(
+    tmp_path: Path,
+) -> None:
+    times = iter((NOW, NOW, NOW, NOW + timedelta(minutes=1)))
+    collector = DockerComposeR2EvidenceCollector(
+        command_runner=LiveComposeRunner(),
+        http_probe=ConfiguredHealthSummaryProbe(
+            {
+                "status": "degraded",
+                "authorization": {
+                    "status": "ready",
+                    "code": "authorization.ready",
+                    "provider_name": None,
+                },
+                "publication": {
+                    "status": "degraded",
+                    "code": "publication.unpublished",
+                    "provider_name": None,
+                },
+                "ingestion": {
+                    "status": "ready",
+                    "code": "ingestion.ready",
+                    "provider_name": "postgresql",
+                },
+            }
+        ),
+        clock=lambda: next(times),
+        execution_id_factory=lambda: "issue-871-fresh-deployment:v1",
+    )
+
+    evidence = collector.collect(_configuration(tmp_path))
+
+    assert evidence.readiness.status == "passed"
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {
+            "status": "degraded",
+            "authorization": {
+                "status": "ready",
+                "code": "authorization.ready",
+            },
+            "publication": {
+                "status": "degraded",
+                "code": "publication.degraded",
+            },
+            "ingestion": {"status": "ready", "code": "ingestion.ready"},
+        },
+        {
+            "status": "stale",
+            "authorization": {
+                "status": "ready",
+                "code": "authorization.ready",
+            },
+            "publication": {"status": "stale", "code": "publication.stale"},
+            "ingestion": {"status": "ready", "code": "ingestion.ready"},
+        },
+        {
+            "status": "unavailable",
+            "authorization": {
+                "status": "ready",
+                "code": "authorization.ready",
+            },
+            "publication": {
+                "status": "unavailable",
+                "code": "publication.unavailable",
+            },
+            "ingestion": {"status": "ready", "code": "ingestion.ready"},
+        },
+        {
+            "status": "unavailable",
+            "authorization": {
+                "status": "unavailable",
+                "code": "authorization.unavailable",
+            },
+            "publication": {"status": "ready", "code": "publication.ready"},
+            "ingestion": {"status": "ready", "code": "ingestion.ready"},
+        },
+        {
+            "status": "degraded",
+            "authorization": {
+                "status": "ready",
+                "code": "authorization.ready",
+            },
+            "publication": {"status": "ready", "code": "publication.ready"},
+            "ingestion": {
+                "status": "degraded",
+                "code": "ingestion.degraded",
+            },
+        },
+        {
+            "status": "degraded",
+            "authorization": {
+                "status": "ready",
+                "code": "authorization.ready",
+            },
+            "publication": {
+                "status": "degraded",
+                "code": "publication.unpublished",
+            },
+        },
+    ],
+    ids=[
+        "degraded-publication",
+        "stale-publication",
+        "unavailable-publication",
+        "unavailable-authorization",
+        "degraded-ingestion",
+        "missing-ingestion",
+    ],
+)
+def test_non_fresh_health_summary_fails_deployment_readiness(
+    tmp_path: Path,
+    data: dict[str, object],
+) -> None:
+    times = iter((NOW, NOW, NOW, NOW + timedelta(minutes=1)))
+    collector = DockerComposeR2EvidenceCollector(
+        command_runner=LiveComposeRunner(),
+        http_probe=ConfiguredHealthSummaryProbe(data),
+        clock=lambda: next(times),
+        execution_id_factory=lambda: "issue-871-failed-readiness:v1",
+    )
+
+    evidence = collector.collect(_configuration(tmp_path))
+
+    assert evidence.readiness.status == "failed"
 
 
 def test_live_collector_observes_provider_request_marker(tmp_path: Path) -> None:
