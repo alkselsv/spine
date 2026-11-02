@@ -1,0 +1,40 @@
+{
+  "schema_version": "issue-511-verification-manifest:v1",
+  "run_id": "issue-511:repository-gates:2026-11-02",
+  "executed_at": "2026-11-02T12:00:00Z",
+  "base_commit": "ddf676bad8e9f56e9e001ea122b19dba57ab4a97",
+  "working_tree_clean": false,
+  "runtime": {
+    "python": "3.14.2",
+    "platform": "macos-arm64"
+  },
+  "focused_tests": {
+    "status": "pass",
+    "passed": 27,
+    "failed": 0
+  },
+  "full_pytest": {
+    "status": "fail",
+    "passed": 5735,
+    "failed": 53,
+    "skipped": 7,
+    "failure_groups": [
+      {"safe_code": "filesystem-storage-configuration", "count": 29},
+      {"safe_code": "asr-adapter-baseline", "count": 22},
+      {"safe_code": "object-storage-backup", "count": 1},
+      {"safe_code": "nested-offline-gate", "count": 1}
+    ]
+  },
+  "compileall": {
+    "status": "pass"
+  },
+  "migrations": {
+    "status": "not_verified",
+    "safe_code": "designated-postgresql-targets-unavailable"
+  },
+  "legacy_compatibility": {
+    "status": "not_verified",
+    "safe_code": "legacy-compatibility-not-requalified"
+  },
+  "target_commit_qualified": false
+}

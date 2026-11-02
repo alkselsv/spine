@@ -1,0 +1,826 @@
+{
+  "schema_version": "r0-r1-final-qualification-report:v1",
+  "package_id": "issue-511:qualification-input:v1",
+  "target_commit": "ddf676bad8e9f56e9e001ea122b19dba57ab4a97",
+  "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
+  "policy_generation": "unapproved-policy:v0",
+  "release_owner_principal_id": "github-user:305836",
+  "started_at": "2026-11-02T11:00:00Z",
+  "evaluated_at": "2026-11-02T12:00:00Z",
+  "component_versions": [
+    [
+      "spine-target",
+      "ddf676ba"
+    ],
+    [
+      "python",
+      "3.14.2"
+    ],
+    [
+      "final-gate",
+      "v1"
+    ]
+  ],
+  "configuration_digests": [
+    [
+      "deployment-profile",
+      "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5"
+    ]
+  ],
+  "scope_references": [
+    [
+      "qualification-workspace-a",
+      "production"
+    ],
+    [
+      "qualification-workspace-b",
+      "production"
+    ]
+  ],
+  "known_limitations": [
+    "repository-gates-failed",
+    "migrations-not-verified",
+    "release-policy-unapproved",
+    "target-deployment-not-bound"
+  ],
+  "decision": "no_go",
+  "input_digest": "9c4e4261fdfc47420d9bf8ee0beb6fe36ef7f5360bb878c173f2dc63d70be959",
+  "evidence_index_digest": "6e9d7d7a39b855ae9a99f51adcc40d99592c36bfcfba3a4eefd64b4b0bbb4aaa",
+  "criteria": [
+    {
+      "criterion_id": "R1",
+      "owner_function": "release-engineering",
+      "responsible_principal_id": null,
+      "ticket_ids": [
+        8,
+        16,
+        511
+      ],
+      "prerequisite_ids": [],
+      "status": "fail",
+      "reason_codes": [
+        "designated-postgresql-targets-unavailable",
+        "repository-gate-run-not-target-bound"
+      ],
+      "evidence": [
+        {
+          "evidence_id": "issue-511:migration:v1",
+          "evidence_kind": "migration_graph",
+          "digest": "ffd473db1aa1fd8fca8fe60b2aeca20e070d826741d7eb21b23c3a2dec2a86cc",
+          "status": "not_verified",
+          "mandatory": true,
+          "boundary": "repository",
+          "target_commit": null,
+          "deployment_fingerprint": null,
+          "policy_generation": null,
+          "captured_at": null,
+          "eligible_count": null
+        },
+        {
+          "evidence_id": "issue-511:repository-gates:v1",
+          "evidence_kind": "repository_gate",
+          "digest": "ffd473db1aa1fd8fca8fe60b2aeca20e070d826741d7eb21b23c3a2dec2a86cc",
+          "status": "fail",
+          "mandatory": true,
+          "boundary": "repository",
+          "target_commit": null,
+          "deployment_fingerprint": null,
+          "policy_generation": null,
+          "captured_at": "2026-11-02T12:00:00Z",
+          "eligible_count": null
+        }
+      ]
+    },
+    {
+      "criterion_id": "R2",
+      "owner_function": "runtime-operator",
+      "responsible_principal_id": null,
+      "ticket_ids": [
+        16,
+        508,
+        511
+      ],
+      "prerequisite_ids": [
+        "R1"
+      ],
+      "status": "not_verified",
+      "reason_codes": [
+        "target-deployment-not-bound"
+      ],
+      "evidence": [
+        {
+          "evidence_id": "issue-508:browser:v1",
+          "evidence_kind": "deployment_profile",
+          "digest": "fc5eec7a7f51b515507b5dcb75161366c60aa5480b1ec82470b79831d2749732",
+          "status": "pass",
+          "mandatory": true,
+          "boundary": "live",
+          "target_commit": "a35f80f0747880f4bbf67788050db1607bc80ce7",
+          "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
+          "policy_generation": null,
+          "captured_at": null,
+          "eligible_count": null
+        }
+      ]
+    },
+    {
+      "criterion_id": "R3",
+      "owner_function": "security-runtime",
+      "responsible_principal_id": null,
+      "ticket_ids": [
+        16,
+        508,
+        511
+      ],
+      "prerequisite_ids": [
+        "R2"
+      ],
+      "status": "not_verified",
+      "reason_codes": [
+        "current-authorization-binding-not-requalified"
+      ],
+      "evidence": [
+        {
+          "evidence_id": "issue-508:browser:v1",
+          "evidence_kind": "authorization",
+          "digest": "fc5eec7a7f51b515507b5dcb75161366c60aa5480b1ec82470b79831d2749732",
+          "status": "pass",
+          "mandatory": true,
+          "boundary": "live",
+          "target_commit": "a35f80f0747880f4bbf67788050db1607bc80ce7",
+          "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
+          "policy_generation": null,
+          "captured_at": null,
+          "eligible_count": null
+        }
+      ]
+    },
+    {
+      "criterion_id": "R4",
+      "owner_function": "ingestion-owner",
+      "responsible_principal_id": null,
+      "ticket_ids": [
+        3,
+        7,
+        16,
+        508,
+        511
+      ],
+      "prerequisite_ids": [
+        "R2"
+      ],
+      "status": "not_verified",
+      "reason_codes": [
+        "five-format-lifecycle-not-requalified"
+      ],
+      "evidence": [
+        {
+          "evidence_id": "issue-508:browser:v1",
+          "evidence_kind": "ingestion_lifecycle",
+          "digest": "fc5eec7a7f51b515507b5dcb75161366c60aa5480b1ec82470b79831d2749732",
+          "status": "pass",
+          "mandatory": true,
+          "boundary": "live",
+          "target_commit": "a35f80f0747880f4bbf67788050db1607bc80ce7",
+          "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
+          "policy_generation": null,
+          "captured_at": null,
+          "eligible_count": null
+        }
+      ]
+    },
+    {
+      "criterion_id": "R5",
+      "owner_function": "context-projection-owner",
+      "responsible_principal_id": null,
+      "ticket_ids": [
+        16,
+        212,
+        507,
+        511
+      ],
+      "prerequisite_ids": [
+        "R2",
+        "R4"
+      ],
+      "status": "not_verified",
+      "reason_codes": [
+        "provider-evidence-not-target-bound"
+      ],
+      "evidence": [
+        {
+          "evidence_id": "issue-212:physical-provider:v2",
+          "evidence_kind": "physical_provider",
+          "digest": "9d433a0e60ad0ffff479b3cf596ca2db1983e904a5065a8da49b711140012071",
+          "status": "pass",
+          "mandatory": true,
+          "boundary": "physical",
+          "target_commit": null,
+          "deployment_fingerprint": null,
+          "policy_generation": null,
+          "captured_at": null,
+          "eligible_count": null
+        }
+      ]
+    },
+    {
+      "criterion_id": "R6",
+      "owner_function": "projection-owner",
+      "responsible_principal_id": null,
+      "ticket_ids": [
+        7,
+        15,
+        16,
+        509,
+        511
+      ],
+      "prerequisite_ids": [
+        "R4",
+        "R5"
+      ],
+      "status": "not_verified",
+      "reason_codes": [
+        "projection-recovery-not-target-bound"
+      ],
+      "evidence": [
+        {
+          "evidence_id": "issue-509:recovery:v1",
+          "evidence_kind": "projection_live",
+          "digest": "2d1c8d168d144e6806d0c61f0f33f4efd3a96eb0b4bc0391b238277807c72968",
+          "status": "blocked",
+          "mandatory": true,
+          "boundary": "live",
+          "target_commit": "0df4d03b633ccf36ade81629f55bc3b5077c35c4",
+          "deployment_fingerprint": null,
+          "policy_generation": null,
+          "captured_at": "2026-10-20T22:24:32Z",
+          "eligible_count": null
+        },
+        {
+          "evidence_id": "issue-509:failure-injection:v1",
+          "evidence_kind": "projection_failure_injection",
+          "digest": "2d1c8d168d144e6806d0c61f0f33f4efd3a96eb0b4bc0391b238277807c72968",
+          "status": "not_verified",
+          "mandatory": true,
+          "boundary": "repository",
+          "target_commit": "0df4d03b633ccf36ade81629f55bc3b5077c35c4",
+          "deployment_fingerprint": null,
+          "policy_generation": null,
+          "captured_at": "2026-10-20T22:24:32Z",
+          "eligible_count": null
+        }
+      ]
+    },
+    {
+      "criterion_id": "R7",
+      "owner_function": "qa-security-owner",
+      "responsible_principal_id": null,
+      "ticket_ids": [
+        16,
+        508,
+        511
+      ],
+      "prerequisite_ids": [
+        "R2",
+        "R3",
+        "R5",
+        "R6"
+      ],
+      "status": "not_verified",
+      "reason_codes": [
+        "current-disclosure-validation-not-bound"
+      ],
+      "evidence": [
+        {
+          "evidence_id": "issue-508:browser:v1",
+          "evidence_kind": "grounded_qa",
+          "digest": "fc5eec7a7f51b515507b5dcb75161366c60aa5480b1ec82470b79831d2749732",
+          "status": "pass",
+          "mandatory": true,
+          "boundary": "live",
+          "target_commit": "a35f80f0747880f4bbf67788050db1607bc80ce7",
+          "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
+          "policy_generation": null,
+          "captured_at": null,
+          "eligible_count": null
+        }
+      ]
+    },
+    {
+      "criterion_id": "R8",
+      "owner_function": "qa-owner",
+      "responsible_principal_id": null,
+      "ticket_ids": [
+        16,
+        508,
+        511
+      ],
+      "prerequisite_ids": [
+        "R7"
+      ],
+      "status": "not_verified",
+      "reason_codes": [
+        "terminal-outcomes-not-target-bound"
+      ],
+      "evidence": [
+        {
+          "evidence_id": "issue-508:browser:v1",
+          "evidence_kind": "safe_outcomes",
+          "digest": "fc5eec7a7f51b515507b5dcb75161366c60aa5480b1ec82470b79831d2749732",
+          "status": "pass",
+          "mandatory": true,
+          "boundary": "live",
+          "target_commit": "a35f80f0747880f4bbf67788050db1607bc80ce7",
+          "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
+          "policy_generation": null,
+          "captured_at": null,
+          "eligible_count": null
+        }
+      ]
+    },
+    {
+      "criterion_id": "R9",
+      "owner_function": "workflow-api-owner",
+      "responsible_principal_id": null,
+      "ticket_ids": [
+        16,
+        508,
+        511
+      ],
+      "prerequisite_ids": [
+        "R2",
+        "R3"
+      ],
+      "status": "not_verified",
+      "reason_codes": [
+        "durable-browser-flow-not-target-bound"
+      ],
+      "evidence": [
+        {
+          "evidence_id": "issue-508:browser:v1",
+          "evidence_kind": "durable_session",
+          "digest": "fc5eec7a7f51b515507b5dcb75161366c60aa5480b1ec82470b79831d2749732",
+          "status": "pass",
+          "mandatory": true,
+          "boundary": "live",
+          "target_commit": "a35f80f0747880f4bbf67788050db1607bc80ce7",
+          "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
+          "policy_generation": null,
+          "captured_at": null,
+          "eligible_count": null
+        }
+      ]
+    },
+    {
+      "criterion_id": "R10",
+      "owner_function": "product-ui-owner",
+      "responsible_principal_id": null,
+      "ticket_ids": [
+        16,
+        508,
+        511
+      ],
+      "prerequisite_ids": [
+        "R2",
+        "R3",
+        "R4",
+        "R5",
+        "R6",
+        "R7",
+        "R8",
+        "R9"
+      ],
+      "status": "not_verified",
+      "reason_codes": [
+        "browser-journey-not-target-bound"
+      ],
+      "evidence": [
+        {
+          "evidence_id": "issue-508:browser:v1",
+          "evidence_kind": "browser_journey",
+          "digest": "fc5eec7a7f51b515507b5dcb75161366c60aa5480b1ec82470b79831d2749732",
+          "status": "pass",
+          "mandatory": true,
+          "boundary": "live",
+          "target_commit": "a35f80f0747880f4bbf67788050db1607bc80ce7",
+          "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
+          "policy_generation": null,
+          "captured_at": null,
+          "eligible_count": null
+        }
+      ]
+    },
+    {
+      "criterion_id": "R11",
+      "owner_function": "observability-product-owner",
+      "responsible_principal_id": null,
+      "ticket_ids": [
+        16,
+        508,
+        511
+      ],
+      "prerequisite_ids": [
+        "R10"
+      ],
+      "status": "not_verified",
+      "reason_codes": [
+        "trace-lineage-not-target-bound"
+      ],
+      "evidence": [
+        {
+          "evidence_id": "issue-508:browser:v1",
+          "evidence_kind": "diagnostics",
+          "digest": "fc5eec7a7f51b515507b5dcb75161366c60aa5480b1ec82470b79831d2749732",
+          "status": "pass",
+          "mandatory": true,
+          "boundary": "live",
+          "target_commit": "a35f80f0747880f4bbf67788050db1607bc80ce7",
+          "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
+          "policy_generation": null,
+          "captured_at": null,
+          "eligible_count": null
+        }
+      ]
+    },
+    {
+      "criterion_id": "R12",
+      "owner_function": "security-privacy-owner",
+      "responsible_principal_id": null,
+      "ticket_ids": [
+        16,
+        508,
+        511
+      ],
+      "prerequisite_ids": [
+        "R2",
+        "R3",
+        "R4",
+        "R5",
+        "R6",
+        "R7",
+        "R8",
+        "R9",
+        "R10",
+        "R11"
+      ],
+      "status": "not_verified",
+      "reason_codes": [
+        "leak-scan-not-target-bound"
+      ],
+      "evidence": [
+        {
+          "evidence_id": "issue-508:browser:v1",
+          "evidence_kind": "privacy_scan",
+          "digest": "fc5eec7a7f51b515507b5dcb75161366c60aa5480b1ec82470b79831d2749732",
+          "status": "pass",
+          "mandatory": true,
+          "boundary": "live",
+          "target_commit": "a35f80f0747880f4bbf67788050db1607bc80ce7",
+          "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
+          "policy_generation": null,
+          "captured_at": null,
+          "eligible_count": null
+        }
+      ]
+    },
+    {
+      "criterion_id": "R13",
+      "owner_function": "operations-storage-owner",
+      "responsible_principal_id": null,
+      "ticket_ids": [
+        16,
+        18,
+        509,
+        511
+      ],
+      "prerequisite_ids": [
+        "R2",
+        "R4",
+        "R5",
+        "R6"
+      ],
+      "status": "blocked",
+      "reason_codes": [
+        "approved-backup-and-restore-targets-unavailable"
+      ],
+      "evidence": [
+        {
+          "evidence_id": "issue-509:recovery:v1",
+          "evidence_kind": "backup_restore",
+          "digest": "2d1c8d168d144e6806d0c61f0f33f4efd3a96eb0b4bc0391b238277807c72968",
+          "status": "blocked",
+          "mandatory": true,
+          "boundary": "live",
+          "target_commit": "0df4d03b633ccf36ade81629f55bc3b5077c35c4",
+          "deployment_fingerprint": null,
+          "policy_generation": null,
+          "captured_at": "2026-10-20T22:24:32Z",
+          "eligible_count": null
+        }
+      ]
+    },
+    {
+      "criterion_id": "R14",
+      "owner_function": "evaluation-owner",
+      "responsible_principal_id": null,
+      "ticket_ids": [
+        16,
+        20,
+        501,
+        510,
+        511
+      ],
+      "prerequisite_ids": [
+        "R2",
+        "R3",
+        "R4",
+        "R5",
+        "R6",
+        "R7"
+      ],
+      "status": "not_verified",
+      "reason_codes": [
+        "real-baseline-evidence-unavailable"
+      ],
+      "evidence": [
+        {
+          "evidence_id": "issue-502:threshold-contract:v1",
+          "evidence_kind": "real_baseline",
+          "digest": "273163c0394df5180acf2730e756de44fab8dd683d30e48051b2501683af89da",
+          "status": "not_verified",
+          "mandatory": true,
+          "boundary": "repository",
+          "target_commit": null,
+          "deployment_fingerprint": null,
+          "policy_generation": null,
+          "captured_at": null,
+          "eligible_count": null
+        }
+      ]
+    },
+    {
+      "criterion_id": "R15",
+      "owner_function": "product-owner",
+      "responsible_principal_id": null,
+      "ticket_ids": [
+        16,
+        17,
+        501,
+        502,
+        510,
+        511
+      ],
+      "prerequisite_ids": [
+        "R14"
+      ],
+      "status": "not_verified",
+      "reason_codes": [
+        "product-owner-threshold-approval-unavailable"
+      ],
+      "evidence": [
+        {
+          "evidence_id": "issue-502:threshold-contract:v1",
+          "evidence_kind": "threshold_gate",
+          "digest": "273163c0394df5180acf2730e756de44fab8dd683d30e48051b2501683af89da",
+          "status": "not_verified",
+          "mandatory": true,
+          "boundary": "repository",
+          "target_commit": null,
+          "deployment_fingerprint": null,
+          "policy_generation": null,
+          "captured_at": null,
+          "eligible_count": null
+        },
+        {
+          "evidence_id": "issue-17:threshold-approval:v0",
+          "evidence_kind": "threshold_approval",
+          "digest": "273163c0394df5180acf2730e756de44fab8dd683d30e48051b2501683af89da",
+          "status": "not_verified",
+          "mandatory": true,
+          "boundary": "repository",
+          "target_commit": null,
+          "deployment_fingerprint": null,
+          "policy_generation": null,
+          "captured_at": null,
+          "eligible_count": null
+        },
+        {
+          "evidence_id": "metric:denial-quality:v1",
+          "evidence_kind": "metric",
+          "digest": "273163c0394df5180acf2730e756de44fab8dd683d30e48051b2501683af89da",
+          "status": "not_applicable",
+          "mandatory": false,
+          "boundary": "repository",
+          "target_commit": null,
+          "deployment_fingerprint": null,
+          "policy_generation": null,
+          "captured_at": null,
+          "eligible_count": 0
+        }
+      ]
+    },
+    {
+      "criterion_id": "R16",
+      "owner_function": "api-product-owner",
+      "responsible_principal_id": null,
+      "ticket_ids": [
+        16,
+        511
+      ],
+      "prerequisite_ids": [
+        "R1"
+      ],
+      "status": "not_verified",
+      "reason_codes": [
+        "legacy-compatibility-not-requalified"
+      ],
+      "evidence": [
+        {
+          "evidence_id": "issue-511:legacy:v1",
+          "evidence_kind": "legacy_disposition",
+          "digest": "ffd473db1aa1fd8fca8fe60b2aeca20e070d826741d7eb21b23c3a2dec2a86cc",
+          "status": "not_verified",
+          "mandatory": true,
+          "boundary": "repository",
+          "target_commit": null,
+          "deployment_fingerprint": null,
+          "policy_generation": null,
+          "captured_at": null,
+          "eligible_count": null
+        }
+      ]
+    },
+    {
+      "criterion_id": "R17",
+      "owner_function": "release-owner",
+      "responsible_principal_id": "github-user:305836",
+      "ticket_ids": [
+        16,
+        511
+      ],
+      "prerequisite_ids": [
+        "R1",
+        "R2",
+        "R3",
+        "R4",
+        "R5",
+        "R6",
+        "R7",
+        "R8",
+        "R9",
+        "R10",
+        "R11",
+        "R12",
+        "R13",
+        "R14",
+        "R15",
+        "R16"
+      ],
+      "status": "fail",
+      "reason_codes": [
+        "mandatory_fail",
+        "mandatory_not_verified",
+        "mandatory_blocked"
+      ],
+      "evidence": []
+    }
+  ],
+  "counts": {
+    "passed": 0,
+    "failed": 2,
+    "blocked": 1,
+    "not_verified": 14,
+    "not_applicable": 1
+  },
+  "blockers": [
+    {
+      "criterion_id": "R1",
+      "owner_function": "release-engineering",
+      "status": "fail",
+      "reason_codes": [
+        "designated-postgresql-targets-unavailable",
+        "repository-gate-run-not-target-bound"
+      ]
+    },
+    {
+      "criterion_id": "R2",
+      "owner_function": "runtime-operator",
+      "status": "not_verified",
+      "reason_codes": [
+        "target-deployment-not-bound"
+      ]
+    },
+    {
+      "criterion_id": "R3",
+      "owner_function": "security-runtime",
+      "status": "not_verified",
+      "reason_codes": [
+        "current-authorization-binding-not-requalified"
+      ]
+    },
+    {
+      "criterion_id": "R4",
+      "owner_function": "ingestion-owner",
+      "status": "not_verified",
+      "reason_codes": [
+        "five-format-lifecycle-not-requalified"
+      ]
+    },
+    {
+      "criterion_id": "R5",
+      "owner_function": "context-projection-owner",
+      "status": "not_verified",
+      "reason_codes": [
+        "provider-evidence-not-target-bound"
+      ]
+    },
+    {
+      "criterion_id": "R6",
+      "owner_function": "projection-owner",
+      "status": "not_verified",
+      "reason_codes": [
+        "projection-recovery-not-target-bound"
+      ]
+    },
+    {
+      "criterion_id": "R7",
+      "owner_function": "qa-security-owner",
+      "status": "not_verified",
+      "reason_codes": [
+        "current-disclosure-validation-not-bound"
+      ]
+    },
+    {
+      "criterion_id": "R8",
+      "owner_function": "qa-owner",
+      "status": "not_verified",
+      "reason_codes": [
+        "terminal-outcomes-not-target-bound"
+      ]
+    },
+    {
+      "criterion_id": "R9",
+      "owner_function": "workflow-api-owner",
+      "status": "not_verified",
+      "reason_codes": [
+        "durable-browser-flow-not-target-bound"
+      ]
+    },
+    {
+      "criterion_id": "R10",
+      "owner_function": "product-ui-owner",
+      "status": "not_verified",
+      "reason_codes": [
+        "browser-journey-not-target-bound"
+      ]
+    },
+    {
+      "criterion_id": "R11",
+      "owner_function": "observability-product-owner",
+      "status": "not_verified",
+      "reason_codes": [
+        "trace-lineage-not-target-bound"
+      ]
+    },
+    {
+      "criterion_id": "R12",
+      "owner_function": "security-privacy-owner",
+      "status": "not_verified",
+      "reason_codes": [
+        "leak-scan-not-target-bound"
+      ]
+    },
+    {
+      "criterion_id": "R13",
+      "owner_function": "operations-storage-owner",
+      "status": "blocked",
+      "reason_codes": [
+        "approved-backup-and-restore-targets-unavailable"
+      ]
+    },
+    {
+      "criterion_id": "R14",
+      "owner_function": "evaluation-owner",
+      "status": "not_verified",
+      "reason_codes": [
+        "real-baseline-evidence-unavailable"
+      ]
+    },
+    {
+      "criterion_id": "R15",
+      "owner_function": "product-owner",
+      "status": "not_verified",
+      "reason_codes": [
+        "product-owner-threshold-approval-unavailable"
+      ]
+    },
+    {
+      "criterion_id": "R16",
+      "owner_function": "api-product-owner",
+      "status": "not_verified",
+      "reason_codes": [
+        "legacy-compatibility-not-requalified"
+      ]
+    }
+  ]
+}
