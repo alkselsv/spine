@@ -29,6 +29,7 @@ from tests.infrastructure.test_cognee_worker_settings import binding_payload
 HEAD_SHA = "a" * 40
 DEPLOYMENT_FINGERPRINT = "b" * 64
 NOW = datetime(2026, 11, 2, 16, tzinfo=UTC)
+TRACE_ID = "50800000-0000-4000-8000-000000000073"
 WORKER_BINDING_JSON = json.dumps(binding_payload(), separators=(",", ":"))
 WORKER_BINDING = CogneeWorkerBindingSettings(
     binding_json=WORKER_BINDING_JSON
@@ -43,6 +44,48 @@ SERVICES = (
     "original-storage-bootstrap",
     "neo4j",
 )
+
+
+def _health_summary_data(
+    *,
+    status: str = "ready",
+    authorization_status: str = "ready",
+    authorization_code: str = "authorization.ready",
+    authorization_provider: str | None = None,
+    publication_status: str = "ready",
+    publication_code: str = "publication.ready",
+    publication_provider: str | None = "postgresql",
+    ingestion_status: str = "ready",
+    ingestion_code: str = "ingestion.ready",
+    ingestion_provider: str | None = "postgresql",
+) -> dict[str, object]:
+    return {
+        "status": status,
+        "build_version": "0.1.0",
+        "authentication_mode": None,
+        "configuration_version": None,
+        "authorization": {
+            "status": authorization_status,
+            "code": authorization_code,
+            "provider_name": authorization_provider,
+        },
+        "publication": {
+            "status": publication_status,
+            "code": publication_code,
+            "provider_name": publication_provider,
+        },
+        "ingestion": {
+            "status": ingestion_status,
+            "code": ingestion_code,
+            "provider_name": ingestion_provider,
+        },
+        "providers": {
+            "authentication": authorization_provider,
+            "publication": publication_provider,
+            "ingestion": ingestion_provider,
+        },
+        "last_operation": None,
+    }
 
 
 class LiveComposeRunner:
@@ -107,23 +150,7 @@ class ScopedHealthProbe:
         if headers.get("X-Workspace-ID", "").startswith("00000000-"):
             return HttpProbeResponse(status_code=403, body=b"")
         if url.endswith("/api/v1/health/summary"):
-            data: dict[str, object] = {
-                "data": {
-                    "status": "ready",
-                    "authorization": {
-                        "status": "ready",
-                        "code": "authorization.ready",
-                    },
-                    "publication": {
-                        "status": "ready",
-                        "code": "publication.ready",
-                    },
-                    "ingestion": {
-                        "status": "ready",
-                        "code": "ingestion.ready",
-                    },
-                }
-            }
+            data: dict[str, object] = {"data": _health_summary_data()}
         else:
             if url.endswith("/api/v1/documents?limit=1"):
                 data = {"items": []}
@@ -134,8 +161,10 @@ class ScopedHealthProbe:
             status_code=200,
             body=json.dumps(
                 {
+                    "schema_version": 1,
                     "workspace_id": headers["X-Workspace-ID"],
                     "environment_id": headers["X-Environment-ID"],
+                    "trace_id": TRACE_ID,
                     **data,
                 }
             ).encode("utf-8"),
@@ -161,9 +190,17 @@ class AuthorizationBypassingProbe(ScopedHealthProbe):
 
 
 class ConfiguredHealthSummaryProbe(ScopedHealthProbe):
-    def __init__(self, data: dict[str, object]) -> None:
+    def __init__(
+        self,
+        data: dict[str, object],
+        *,
+        envelope_updates: dict[str, object] | None = None,
+        omitted_envelope_field: str | None = None,
+    ) -> None:
         super().__init__()
         self.data = data
+        self.envelope_updates = envelope_updates or {}
+        self.omitted_envelope_field = omitted_envelope_field
 
     def get(self, *, url: str, headers: dict[str, str]) -> HttpProbeResponse:
         if (
@@ -172,15 +209,19 @@ class ConfiguredHealthSummaryProbe(ScopedHealthProbe):
             and not headers.get("X-Workspace-ID", "").startswith("00000000-")
         ):
             self.requests.append((url, headers))
+            envelope: dict[str, object] = {
+                "schema_version": 1,
+                "workspace_id": headers["X-Workspace-ID"],
+                "environment_id": headers["X-Environment-ID"],
+                "trace_id": TRACE_ID,
+                "data": self.data,
+                **self.envelope_updates,
+            }
+            if self.omitted_envelope_field is not None:
+                envelope.pop(self.omitted_envelope_field)
             return HttpProbeResponse(
                 status_code=200,
-                body=json.dumps(
-                    {
-                        "workspace_id": headers["X-Workspace-ID"],
-                        "environment_id": headers["X-Environment-ID"],
-                        "data": self.data,
-                    }
-                ).encode("utf-8"),
+                body=json.dumps(envelope).encode("utf-8"),
             )
         return super().get(url=url, headers=headers)
 
@@ -340,34 +381,34 @@ def test_live_collector_derives_complete_bound_evidence(tmp_path: Path) -> None:
     )
 
 
-def test_fresh_unpublished_projection_is_deployment_ready_before_r5(
+@pytest.mark.parametrize(
+    ("authorization_code", "authorization_provider"),
+    [
+        ("authorization.ready", None),
+        ("local.ready", "local"),
+        ("oidc.ready", "oidc"),
+    ],
+)
+def test_unpublished_projection_composition_is_r2_ready_before_r5(
     tmp_path: Path,
+    authorization_code: str,
+    authorization_provider: str | None,
 ) -> None:
     times = iter((NOW, NOW, NOW, NOW + timedelta(minutes=1)))
     collector = DockerComposeR2EvidenceCollector(
         command_runner=LiveComposeRunner(),
         http_probe=ConfiguredHealthSummaryProbe(
-            {
-                "status": "degraded",
-                "authorization": {
-                    "status": "ready",
-                    "code": "authorization.ready",
-                    "provider_name": None,
-                },
-                "publication": {
-                    "status": "degraded",
-                    "code": "publication.unpublished",
-                    "provider_name": None,
-                },
-                "ingestion": {
-                    "status": "ready",
-                    "code": "ingestion.ready",
-                    "provider_name": "postgresql",
-                },
-            }
+            _health_summary_data(
+                status="degraded",
+                authorization_code=authorization_code,
+                authorization_provider=authorization_provider,
+                publication_status="degraded",
+                publication_code="publication.unpublished",
+                publication_provider=None,
+            )
         ),
         clock=lambda: next(times),
-        execution_id_factory=lambda: "issue-871-fresh-deployment:v1",
+        execution_id_factory=lambda: "issue-871-unpublished-composition:v1",
     )
 
     evidence = collector.collect(_configuration(tmp_path))
@@ -378,71 +419,42 @@ def test_fresh_unpublished_projection_is_deployment_ready_before_r5(
 @pytest.mark.parametrize(
     "data",
     [
-        {
-            "status": "degraded",
-            "authorization": {
-                "status": "ready",
-                "code": "authorization.ready",
-            },
-            "publication": {
-                "status": "degraded",
-                "code": "publication.degraded",
-            },
-            "ingestion": {"status": "ready", "code": "ingestion.ready"},
-        },
-        {
-            "status": "stale",
-            "authorization": {
-                "status": "ready",
-                "code": "authorization.ready",
-            },
-            "publication": {"status": "stale", "code": "publication.stale"},
-            "ingestion": {"status": "ready", "code": "ingestion.ready"},
-        },
-        {
-            "status": "unavailable",
-            "authorization": {
-                "status": "ready",
-                "code": "authorization.ready",
-            },
-            "publication": {
-                "status": "unavailable",
-                "code": "publication.unavailable",
-            },
-            "ingestion": {"status": "ready", "code": "ingestion.ready"},
-        },
-        {
-            "status": "unavailable",
-            "authorization": {
-                "status": "unavailable",
-                "code": "authorization.unavailable",
-            },
-            "publication": {"status": "ready", "code": "publication.ready"},
-            "ingestion": {"status": "ready", "code": "ingestion.ready"},
-        },
-        {
-            "status": "degraded",
-            "authorization": {
-                "status": "ready",
-                "code": "authorization.ready",
-            },
-            "publication": {"status": "ready", "code": "publication.ready"},
-            "ingestion": {
-                "status": "degraded",
-                "code": "ingestion.degraded",
-            },
-        },
-        {
-            "status": "degraded",
-            "authorization": {
-                "status": "ready",
-                "code": "authorization.ready",
-            },
-            "publication": {
-                "status": "degraded",
-                "code": "publication.unpublished",
-            },
-        },
+        _health_summary_data(
+            status="degraded",
+            publication_status="degraded",
+            publication_code="publication.degraded",
+        ),
+        _health_summary_data(
+            status="stale",
+            publication_status="stale",
+            publication_code="publication.stale",
+        ),
+        _health_summary_data(
+            status="unavailable",
+            publication_status="unavailable",
+            publication_code="publication.unavailable",
+        ),
+        _health_summary_data(
+            status="unavailable",
+            authorization_status="unavailable",
+            authorization_code="authorization.unavailable",
+        ),
+        _health_summary_data(
+            status="degraded",
+            ingestion_status="degraded",
+            ingestion_code="ingestion.degraded",
+        ),
+        _health_summary_data(
+            status="ready",
+            publication_status="degraded",
+            publication_code="publication.unpublished",
+            publication_provider=None,
+        ),
+        _health_summary_data(status="degraded"),
+        _health_summary_data(
+            authorization_status="ready",
+            authorization_code="authorization.degraded",
+        ),
     ],
     ids=[
         "degraded-publication",
@@ -450,10 +462,12 @@ def test_fresh_unpublished_projection_is_deployment_ready_before_r5(
         "unavailable-publication",
         "unavailable-authorization",
         "degraded-ingestion",
-        "missing-ingestion",
+        "ready-overall-with-unpublished-publication",
+        "degraded-overall-with-ready-publication",
+        "ready-authorization-with-wrong-code",
     ],
 )
-def test_non_fresh_health_summary_fails_deployment_readiness(
+def test_non_qualifying_component_summary_fails_r2_readiness(
     tmp_path: Path,
     data: dict[str, object],
 ) -> None:
@@ -462,7 +476,87 @@ def test_non_fresh_health_summary_fails_deployment_readiness(
         command_runner=LiveComposeRunner(),
         http_probe=ConfiguredHealthSummaryProbe(data),
         clock=lambda: next(times),
-        execution_id_factory=lambda: "issue-871-failed-readiness:v1",
+        execution_id_factory=lambda: "issue-871-non-qualifying-summary:v1",
+    )
+
+    evidence = collector.collect(_configuration(tmp_path))
+
+    assert evidence.readiness.status == "failed"
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {key: value for key, value in _health_summary_data().items() if key != "ingestion"},
+        {**_health_summary_data(), "protected": "must-not-be-accepted"},
+        {**_health_summary_data(), "build_version": "not valid whitespace"},
+        {
+            **_health_summary_data(),
+            "publication": {
+                "status": "ready",
+                "code": "publication.ready",
+                "provider_name": "unknown-provider",
+            },
+        },
+    ],
+    ids=["missing-field", "extra-field", "invalid-field", "invalid-provider"],
+)
+def test_malformed_health_summary_is_rejected(
+    tmp_path: Path,
+    data: dict[str, object],
+) -> None:
+    collector = DockerComposeR2EvidenceCollector(
+        command_runner=LiveComposeRunner(),
+        http_probe=ConfiguredHealthSummaryProbe(data),
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(R2CollectionError, match="authenticated_canary_invalid"):
+        collector.collect(_configuration(tmp_path))
+
+
+@pytest.mark.parametrize(
+    ("envelope_updates", "omitted_envelope_field"),
+    [
+        ({"schema_version": 2}, None),
+        ({"unexpected": "field"}, None),
+        ({"trace_id": "00000000-0000-0000-0000-000000000000"}, None),
+        ({}, "trace_id"),
+    ],
+    ids=["wrong-version", "extra-field", "zero-trace", "missing-trace"],
+)
+def test_malformed_health_summary_envelope_is_rejected(
+    tmp_path: Path,
+    envelope_updates: dict[str, object],
+    omitted_envelope_field: str | None,
+) -> None:
+    collector = DockerComposeR2EvidenceCollector(
+        command_runner=LiveComposeRunner(),
+        http_probe=ConfiguredHealthSummaryProbe(
+            _health_summary_data(),
+            envelope_updates=envelope_updates,
+            omitted_envelope_field=omitted_envelope_field,
+        ),
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(R2CollectionError, match="authenticated_canary_invalid"):
+        collector.collect(_configuration(tmp_path))
+
+
+def test_inconsistent_provider_summary_fails_r2_readiness(tmp_path: Path) -> None:
+    data = _health_summary_data()
+    data["providers"] = {
+        "authentication": None,
+        "publication": "cognee",
+        "ingestion": "postgresql",
+    }
+    times = iter((NOW, NOW, NOW, NOW + timedelta(minutes=1)))
+    collector = DockerComposeR2EvidenceCollector(
+        command_runner=LiveComposeRunner(),
+        http_probe=ConfiguredHealthSummaryProbe(data),
+        clock=lambda: next(times),
+        execution_id_factory=lambda: "issue-871-inconsistent-providers:v1",
     )
 
     evidence = collector.collect(_configuration(tmp_path))
