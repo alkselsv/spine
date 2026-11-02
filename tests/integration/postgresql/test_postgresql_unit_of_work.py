@@ -8242,12 +8242,11 @@ async def test_requirements_acceptance_is_replay_safe_and_concurrent_decisions_h
     assert stored is not None
     assert loser is None
 
-@pytest.mark.postgresql
-@pytest.mark.asyncio(loop_scope="session")
-async def test_crm_relationship_identity_registration_is_race_safe_and_tenant_scoped(
+async def crm_relationship_identity_case(
     postgresql_adapter: PersistenceAdapter,
-) -> None:
-    case = await prepare_canonical_case(postgresql_adapter, 71600)
+    number: int,
+) -> tuple[PostgreSQLCrmRelationshipV2Repository, CrmRelationshipIdentity, UUID]:
+    case = await prepare_canonical_case(postgresql_adapter, number)
     workspace_id = case.source.workspace_id
     environment_id = case.source.environment_id
     actor_id = synthetic_uuid(961)
@@ -8262,41 +8261,138 @@ async def test_crm_relationship_identity_registration_is_race_safe_and_tenant_sc
         "workspace_id": workspace_id,
         "environment_id": environment_id,
         "provider_instance": "synthetic.bitrix.portal",
-        "connection_id": synthetic_uuid(71601),
+        "connection_id": synthetic_uuid(number + 1),
         "activity_namespace": "bitrix.activity",
         "activity_type_id": "1",
-        "activity_id": "71602",
+        "activity_id": str(number + 2),
         "raw_entity_type_id": "2",
         "normalizer_id": "bitrix.owner-type",
         "normalizer_version": "v1",
         "entity_namespace": "bitrix.company",
-        "entity_id": "71603",
+        "entity_id": str(number + 3),
         "files_namespace": "bitrix.activity.files",
-        "files_item_id": "71604",
-        "mapping_profile_id": synthetic_uuid(71605),
+        "files_item_id": str(number + 4),
+        "mapping_profile_id": synthetic_uuid(number + 5),
     }
     identity = CrmRelationshipIdentity(
         **identity_fields,
         relationship_key=relationship_key(CrmRelationshipNaturalIdentity(**identity_fields)),
     )
+    return repository, identity, actor_id
 
-    await asyncio.gather(
-        repository.register_identity(identity, actor_id=actor_id),
-        repository.register_identity(identity, actor_id=actor_id),
+
+async def crm_relationship_identity_count(
+    database: PostgreSQLContractDatabase,
+    identity: CrmRelationshipIdentity,
+) -> int:
+    engine = create_async_engine(database.migration_url.get_secret_value())
+    try:
+        async with engine.connect() as connection:
+            return int(await connection.scalar(text(
+                "SELECT count(*) FROM spine.crm_relationship_identities "
+                "WHERE workspace_id = :workspace_id AND environment_id = :environment_id "
+                "AND relationship_key = :relationship_key"
+            ), {
+                "workspace_id": identity.workspace_id,
+                "environment_id": identity.environment_id,
+                "relationship_key": identity.relationship_key,
+            }) or 0)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.postgresql
+@pytest.mark.asyncio(loop_scope="session")
+async def test_crm_relationship_identity_registration_is_race_safe(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    repository, identity, actor_id = await crm_relationship_identity_case(
+        postgresql_adapter, 71900
     )
+    started = 0
+    all_started = asyncio.Event()
+
+    async def register() -> None:
+        nonlocal started
+        started += 1
+        if started == 16:
+            all_started.set()
+        await repository.register_identity(identity, actor_id=actor_id)
+
+    async with postgresql_adapter.hold_transactions():
+        registrations = tuple(asyncio.create_task(register()) for _ in range(16))
+        await asyncio.wait_for(all_started.wait(), timeout=5)
+
+    await asyncio.gather(*registrations)
+    assert await crm_relationship_identity_count(
+        postgresql_contract_database, identity
+    ) == 1
     assert await repository.current_eligibility(
-        workspace_id=workspace_id,
-        environment_id=environment_id,
-        claim_id=synthetic_uuid(71606),
+        workspace_id=identity.workspace_id,
+        environment_id=identity.environment_id,
+        claim_id=synthetic_uuid(71906),
         actor_id=actor_id,
     ) is None
 
-    foreign_case = await prepare_canonical_case(postgresql_adapter, 71610)
+
+@pytest.mark.postgresql
+@pytest.mark.asyncio(loop_scope="session")
+async def test_crm_relationship_identity_registration_rejects_persisted_key_collision(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    repository, identity, actor_id = await crm_relationship_identity_case(
+        postgresql_adapter, 71920
+    )
+    conflicting_record = identity.model_dump(mode="json")
+    conflicting_record["entity_id"] = "persisted-corrupt-entity"
+    engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value()
+    )
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text(
+                "INSERT INTO spine.crm_relationship_identities "
+                "(relationship_key, workspace_id, environment_id, natural_identity, "
+                "schema_version, record_kind) VALUES "
+                "(:relationship_key, :workspace_id, :environment_id, "
+                "CAST(:natural_identity AS jsonb), :schema_version, :record_kind)"
+            ), {
+                "relationship_key": identity.relationship_key,
+                "workspace_id": identity.workspace_id,
+                "environment_id": identity.environment_id,
+                "natural_identity": json.dumps(conflicting_record),
+                "schema_version": identity.schema_version,
+                "record_kind": identity.record_kind,
+            })
+    finally:
+        await engine.dispose()
+
+    with pytest.raises(IdempotencyConflictError):
+        await repository.register_identity(identity, actor_id=actor_id)
+    assert await crm_relationship_identity_count(
+        postgresql_contract_database, identity
+    ) == 1
+
+
+@pytest.mark.postgresql
+@pytest.mark.asyncio(loop_scope="session")
+async def test_crm_relationship_identity_registration_denies_foreign_tenant(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    repository, identity, actor_id = await crm_relationship_identity_case(
+        postgresql_adapter, 71940
+    )
+    foreign_case = await prepare_canonical_case(postgresql_adapter, 71950)
     foreign_identity_fields = {
-        **identity_fields,
+        **identity.model_dump(
+            mode="python",
+            exclude={"schema_version", "record_kind", "relationship_key"},
+        ),
         "workspace_id": foreign_case.source.workspace_id,
         "environment_id": foreign_case.source.environment_id,
-        "activity_id": "71612",
+        "activity_id": "71942",
     }
     foreign_identity = CrmRelationshipIdentity(
         **foreign_identity_fields,

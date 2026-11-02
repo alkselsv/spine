@@ -413,17 +413,17 @@ class CrmRelationshipV2Store:
             "record_kind": identity.record_kind,
         }
         result = await self._execute(
-            insert(table).values(**values).on_conflict_do_nothing(
-                index_elements=[table.c.workspace_id, table.c.environment_id, table.c.relationship_key]
-            ).returning(table.c.relationship_key)
+            insert(table).values(**values).on_conflict_do_nothing().returning(
+                table.c.relationship_key
+            )
         )
         if result.scalar_one_or_none() is None:
             existing = (await self._execute(select(table.c.natural_identity).where(
                 table.c.workspace_id == identity.workspace_id,
                 table.c.environment_id == identity.environment_id,
                 table.c.relationship_key == identity.relationship_key,
-            ))).scalar_one()
-            if existing != record:
+            ))).scalar_one_or_none()
+            if existing is None or existing != record:
                 raise IdempotencyConflictError("CRM relationship digest conflicts with natural identity.")
         await self._execute(insert(crm_relationship_authority_heads).values(
             workspace_id=identity.workspace_id,
