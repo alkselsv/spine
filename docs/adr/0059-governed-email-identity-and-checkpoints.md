@@ -142,6 +142,12 @@ separate gates recorded in #816.
 
 ## Contract examples
 
+- Gmail source identity v1 golden vector: connection
+  `11111111-1111-1111-1111-111111111111`, mailbox binding
+  `aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa`, and message ID
+  `18f4a7d9c2b6e031` produce `gm1:ccjms2mlougmcl6n7kv7qtfvewqosybohifeewabzjrknd732cgq`.
+  Repeating the same qualified key produces the same value; changing the
+  connection, mailbox binding or provider message ID produces a different key.
 - Two Gmail message IDs with the same RFC `Message-ID` identify two provider
   sources; the header does not merge them.
 - A Yandex folder reports a new `UIDVALIDITY`: old UIDs are fenced, the cursor is
