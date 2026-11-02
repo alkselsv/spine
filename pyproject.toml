@@ -64,6 +64,8 @@ spine-yandex-qualification-connection = "spine.scripts.yandex_qualification_conn
 spine-final-qualification = "spine.scripts.final_qualification:main"
 spine-r1-repository-evidence = "spine.scripts.r1_repository_evidence:main"
 spine-r1-repository-verify = "spine.scripts.r1_repository_qualification:main"
+spine-r2-deployment-evidence = "spine.scripts.r2_deployment_evidence:main"
+spine-r2-deployment-verify = "spine.scripts.r2_deployment_qualification:main"
 
 [build-system]
 requires = ["hatchling"]

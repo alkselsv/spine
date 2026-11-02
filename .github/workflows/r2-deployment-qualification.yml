@@ -1,0 +1,105 @@
+name: r2-deployment-qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployment_fingerprint:
+        description: Exact approved 64-character deployment fingerprint
+        required: true
+        type: string
+      environment:
+        description: Environment carried by the live execution
+        required: true
+        type: choice
+        options:
+          - development
+      principal_id:
+        description: Accountable bounded release-operator principal ID
+        required: true
+        type: string
+
+concurrency:
+  group: r2-deployment-qualification
+  cancel-in-progress: false
+
+jobs:
+  collect-attested-r2-evidence:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: r2-qualification
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.12.24"
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --extra dev --locked
+      - name: Materialize operator-approved ephemeral configuration
+        env:
+          R2_RUNTIME_ENV: ${{ secrets.SPINE_R2_RUNTIME_ENV }}
+          R2_QUALIFICATION_ENV: ${{ secrets.SPINE_R2_QUALIFICATION_ENV }}
+        run: |
+          test -n "$R2_RUNTIME_ENV"
+          test -n "$R2_QUALIFICATION_ENV"
+          umask 077
+          printf '%s' "$R2_RUNTIME_ENV" > "$RUNNER_TEMP/r2-runtime.env"
+          printf '%s' "$R2_QUALIFICATION_ENV" > "$RUNNER_TEMP/r2-qualification.env"
+          echo "R2_COMPOSE_PROJECT=spine-r2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+      - name: Collect canonical live R2 evidence
+        run: >-
+          uv run spine-r2-deployment-evidence
+          --compose-project "$R2_COMPOSE_PROJECT"
+          --runtime-env "$RUNNER_TEMP/r2-runtime.env"
+          --qualification-env "$RUNNER_TEMP/r2-qualification.env"
+          --api-base-url http://127.0.0.1:18080
+          --web-base-url http://127.0.0.1:4175
+          --head-sha "$GITHUB_SHA"
+          --deployment-fingerprint "${{ inputs.deployment_fingerprint }}"
+          --environment "${{ inputs.environment }}"
+          --principal-id "${{ inputs.principal_id }}"
+          --output r2-deployment-evidence.json
+      - name: Attest exact R2 evidence bytes from main
+        uses: actions/attest@v4
+        with:
+          subject-path: r2-deployment-evidence.json
+      - name: Independently recompute the criterion result
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          artifact_digest=$(sha256sum r2-deployment-evidence.json | cut -d ' ' -f 1)
+          set +e
+          uv run spine-r2-deployment-verify \
+            --artifact r2-deployment-evidence.json \
+            --artifact-digest "$artifact_digest" \
+            --head-sha "$GITHUB_SHA" \
+            --deployment-fingerprint "${{ inputs.deployment_fingerprint }}" \
+            --output r2-deployment-qualification-result.json
+          verifier_exit=$?
+          set -e
+          test "$verifier_exit" -le 1
+      - name: Upload metadata-only R2 evidence and criterion result
+        uses: actions/upload-artifact@v4
+        with:
+          name: r2-deployment-evidence
+          path: |
+            r2-deployment-evidence.json
+            r2-deployment-qualification-result.json
+      - name: Remove isolated deployment and ephemeral configuration
+        if: always()
+        run: |
+          if [ -n "${R2_COMPOSE_PROJECT:-}" ]; then
+            docker compose \
+              --env-file "$RUNNER_TEMP/r2-runtime.env" \
+              --env-file "$RUNNER_TEMP/r2-qualification.env" \
+              -p "$R2_COMPOSE_PROJECT" down --volumes --remove-orphans || true
+          fi
+          rm -f "$RUNNER_TEMP/r2-runtime.env" "$RUNNER_TEMP/r2-qualification.env"

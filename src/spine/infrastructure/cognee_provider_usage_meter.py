@@ -9,6 +9,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
 import math
+import logging
 from threading import Lock
 from typing import Any, Awaitable, Callable, Literal
 
@@ -20,6 +21,7 @@ from spine.memory.cognee.worker_profile import CogneeWorkerLimits
 
 
 _COST_QUANTUM = Decimal("0.000000001")
+_LOGGER = logging.getLogger(__name__)
 
 
 class CogneeProviderUsageSnapshot(DefinitionModel):
@@ -123,6 +125,7 @@ class CogneeProviderUsageMeter:
     async def observe_provider_request(self) -> None:
         """Count one actual outbound HTTP attempt in the active run scope."""
 
+        _LOGGER.info("spine_provider_request_observed")
         run_id = self._active_run_id.get()
         if run_id is None:
             return

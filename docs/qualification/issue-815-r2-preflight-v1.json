@@ -1,0 +1,32 @@
+{
+  "schema_version": "issue-815-r2-preflight:v1",
+  "issue": 815,
+  "criterion": "R2",
+  "observed_at": "2026-11-02T15:29:56Z",
+  "implementation_base_commit": "2d7c447b9602562752e5797b7d569b7f78135bf6",
+  "criterion_status": "NOT_VERIFIED",
+  "r17_status": "FAIL",
+  "release_decision": "NO-GO",
+  "reason_codes": [
+    "live_report_unlinked",
+    "approved_runtime_configuration_unavailable",
+    "approved_provider_authorization_unavailable",
+    "attested_live_artifact_not_produced"
+  ],
+  "local_capabilities": {
+    "docker_daemon": "AVAILABLE",
+    "docker_version": "29.6.1",
+    "runtime_env": "UNAVAILABLE",
+    "qualification_env": "UNAVAILABLE",
+    "provider_authorization": "UNAVAILABLE",
+    "signed_live_artifact": "NOT_PRODUCED"
+  },
+  "privacy": {
+    "metadata_only": true,
+    "credentials_recorded": false,
+    "network_locations_recorded": false,
+    "protected_content_recorded": false,
+    "provider_payloads_recorded": false,
+    "raw_errors_recorded": false
+  }
+}
