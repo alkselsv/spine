@@ -1,0 +1,34 @@
+{
+  "schema_version": "r1-repository-qualification-input:v1",
+  "package_id": "issue-809:r1-repository-qualification:v1",
+  "target_commit": "bfd4887e62e543ccdabebd06c8fc7777e239bab3",
+  "workflow": {
+    "repository": "alkselsv/spine",
+    "workflow_path": ".github/workflows/test.yml",
+    "source_ref": "refs/heads/main",
+    "run_id": "41455426404",
+    "run_attempt": 1,
+    "job_id": "125310772293",
+    "run_url": "https://github.com/alkselsv/spine/actions/runs/41455426404",
+    "runner_environment": "github-hosted"
+  },
+  "artifact": {
+    "artifact_id": "13147569337",
+    "name": "r1-repository-evidence",
+    "github_container_digest": "dc973112315b871d44ef713ff8931a73dec2e9743d53b0cf6cd33bd7d722686f",
+    "subject_path": "docs/qualification/issue-809-r1-repository-evidence.json",
+    "subject_sha256": "33e8f07957ac697f28af2cec4a486db05f998a472dfb0ad531786aea9e59eb37",
+    "attestation_bundle_sha256": "5e441b8a1b48d7a87e185641a4577b330cd6f910610df5c9d3ebcc0aa1e3a7ec"
+  },
+  "skip_policy": {
+    "path": "docs/qualification/r1-repository-skip-policy-v1.json",
+    "version": "r1-skip-policy:2026-11-02",
+    "sha256": "4531fc7324dc1b66c5c61896f04f39686ad16e29d23172509b671c04c7e015b8"
+  },
+  "verification_constraints": {
+    "signer_workflow": "alkselsv/spine/.github/workflows/test.yml",
+    "deny_self_hosted_runners": true,
+    "predicate_type": "https://slsa.dev/provenance/v1"
+  },
+  "result_path": "docs/qualification/issue-809-r1-repository-qualification-result.json"
+}

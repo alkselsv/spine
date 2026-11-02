@@ -1,0 +1,7 @@
+{
+  "schema_version": "r1-repository-qualification-result:v1",
+  "status": "pass",
+  "reason_codes": [],
+  "artifact_digest": "33e8f07957ac697f28af2cec4a486db05f998a472dfb0ad531786aea9e59eb37",
+  "head_sha": "bfd4887e62e543ccdabebd06c8fc7777e239bab3"
+}
