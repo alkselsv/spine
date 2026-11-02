@@ -82,7 +82,7 @@ class MailboxReadAdmission(Generic[ReadResultT]):
         *,
         scopes: MailboxScopeRepository,
         connections: ProviderConnectionRepository,
-        provider: MailboxProviderReader,
+        provider: MailboxProviderReader[ReadResultT],
     ) -> None:
         self._scopes = scopes
         self._connections = connections
