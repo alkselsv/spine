@@ -25,7 +25,7 @@ import time
 import wave
 import threading
 from uuid import NAMESPACE_URL, UUID, uuid5
-from typing import Sequence, cast
+from typing import Callable, Sequence, cast
 
 from spine.domain.artifacts.transcription import (
     AudioChunkBoundary,
@@ -133,7 +133,15 @@ def _host_profile_mismatches(manifest: CandidateRuntimeManifest) -> tuple[str, .
     return tuple(mismatches)
 
 
-def _network_boundary_mismatches(manifest: CandidateRuntimeManifest) -> tuple[str, ...]:
+def _current_network_namespace_inode() -> int:
+    return os.stat("/proc/self/ns/net").st_ino
+
+
+def _network_boundary_mismatches(
+    manifest: CandidateRuntimeManifest,
+    *,
+    network_namespace_inode_reader: Callable[[], int] = _current_network_namespace_inode,
+) -> tuple[str, ...]:
     evidence = manifest.no_egress
     if not evidence.network_egress_disabled:
         return ("no_egress_attestation_denied",)
@@ -141,7 +149,7 @@ def _network_boundary_mismatches(manifest: CandidateRuntimeManifest) -> tuple[st
         return ("no_egress_boundary_not_independently_observable",)
     mismatches: list[str] = []
     try:
-        current_inode = os.stat("/proc/self/ns/net").st_ino
+        current_inode = network_namespace_inode_reader()
     except OSError:
         mismatches.append("network_namespace_identity_unavailable")
     else:
@@ -355,12 +363,18 @@ def preflight_candidate(
     dataset: RussianTranscriptionDatasetV2,
     *,
     asset_root: Path,
+    network_namespace_inode_reader: Callable[[], int] = _current_network_namespace_inode,
 ) -> tuple[CandidateQualificationReport, bool]:
     """Return a report and true only when real inference is permitted to start."""
 
     problems = list(validate_runtime_manifest(manifest, verify_runtime_import_location=True))
     problems.extend(_host_profile_mismatches(manifest))
-    problems.extend(_network_boundary_mismatches(manifest))
+    problems.extend(
+        _network_boundary_mismatches(
+            manifest,
+            network_namespace_inode_reader=network_namespace_inode_reader,
+        )
+    )
     observed_dataset_digest = transcription_dataset_v2_sha256(dataset)
     if (
         manifest.dataset_id != dataset.dataset_id
