@@ -21,6 +21,7 @@ from spine.domain.evaluations.private_asr_corpus import (
     AggregateMetric,
     ApprovedPrivacyPolicy,
     AudioDigestVerification,
+    CorpusSplit,
     PrivateReference,
     PrivacyPolicy,
     QualificationSufficiency,
@@ -165,7 +166,27 @@ class PrivateReportSourceBinding(PrivateASRApplicationContract):
     """Exact private report case to immutable source-revision lineage."""
 
     record_id: UUID
+    dataset_id: UUID
+    source_object_id: UUID
     source_revision_id: UUID
+    source_revision_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    split: CorpusSplit
+
+
+class PrivateASRManifestLineageVerifier(Protocol):
+    """Verify that report lineage is admitted by the current exact manifest."""
+
+    async def verify_current(
+        self,
+        *,
+        transaction: object,
+        context: TrustedPersistenceContext,
+        dataset_id: UUID,
+        manifest_version: str,
+        manifest_sha256: str,
+        retention_profile_ref: PrivateReference,
+        source_bindings: tuple[PrivateReportSourceBinding, ...],
+    ) -> bool: ...
 
 
 class AggregateMeasurement(PrivateASRApplicationContract):

@@ -4158,6 +4158,10 @@ class InMemoryUnitOfWork:
         self._guard_active()
         return self._audit
 
+    async def flush_audit_events(self) -> None:
+        """Keep queued audit events transaction-local for the final memory commit."""
+        self._guard_active()
+
     def _operation_snapshot(self) -> PersistenceOperation:
         self._guard_active()
         if self._operation is None:

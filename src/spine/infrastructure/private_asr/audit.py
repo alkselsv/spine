@@ -67,7 +67,7 @@ class PostgreSQLPrivateASRAuditReceipts(ScopedAuditReceiptPort):
             service_principal_id=context.service_principal_id,
             trace_id=context.trace_id,
             occurred_at=self._clock(),
-            outcome=AuditOutcome.RECORDED,
+            outcome=_audit_outcome(outcome),
             reason="private_asr_storage_receipt",
             producer_deduplication_id=(
                 f"private-asr:{context.trace_id}:{operation}:{outcome}:"
@@ -78,6 +78,79 @@ class PostgreSQLPrivateASRAuditReceipts(ScopedAuditReceiptPort):
             await uow.audit.append(event)
             await uow.commit()
         return PrivateReference(reference_id=event_id, reference_kind="private_asr_audit")
+
+    async def create_report_receipt(
+        self, *, workspace_id: UUID, environment_id: UUID, report_id: UUID,
+        retention_profile_ref: PrivateReference, context: TrustedPersistenceContext,
+    ) -> PrivateReference:
+        """Reserve a stable receipt identity; publication is appended by storage."""
+        del retention_profile_ref
+        context.validate_shape()
+        if (
+            not isinstance(context.scope, EnvironmentScope)
+            or (context.scope.workspace_id, context.scope.environment_id)
+            != (workspace_id, environment_id)
+            or context.purpose.value != "asr_model_evaluation"
+        ):
+            raise ValueError("ASR report receipt scope is invalid.")
+        return PrivateReference(
+            reference_id=_report_publication_id(workspace_id, environment_id, report_id),
+            reference_kind="private_asr_audit",
+        )
+
+    async def append_report_publication(
+        self, transaction: object, *, report_id: UUID, receipt_ref: PrivateReference,
+        context: TrustedPersistenceContext,
+    ) -> None:
+        """Append canonical success evidence to the report's UoW transaction."""
+        if not isinstance(context.scope, EnvironmentScope):
+            raise ValueError("ASR report receipt scope is invalid.")
+        expected_id = _report_publication_id(
+            context.scope.workspace_id, context.scope.environment_id, report_id
+        )
+        if receipt_ref != PrivateReference(
+            reference_id=expected_id, reference_kind="private_asr_audit"
+        ):
+            raise ValueError("ASR report receipt identity is invalid.")
+        event = self._events.build_event(
+            audit_event_id=expected_id,
+            workspace_id=context.scope.workspace_id,
+            environment_id=context.scope.environment_id,
+            target=AuditObjectReference(
+                object_type="private_asr_report", object_id=report_id, schema_version=1
+            ),
+            event_type="command.outcome",
+            schema_version=1,
+            payload=CommandAuditPayload(command_type="private_asr_report_publication"),
+            origin=context.origin,
+            acting_subject_id=context.acting_subject_id,
+            service_principal_id=context.service_principal_id,
+            trace_id=context.trace_id,
+            occurred_at=self._clock(),
+            outcome=AuditOutcome.COMPLETED,
+            reason="private_asr_report_published",
+            producer_deduplication_id=f"private-asr-report:{report_id}",
+        )
+        await transaction.audit.append(event)  # type: ignore[attr-defined]
+        await transaction.flush_audit_events()  # type: ignore[attr-defined]
+
+
+def _report_publication_id(workspace_id: UUID, environment_id: UUID, report_id: UUID) -> UUID:
+    return uuid5(
+        NAMESPACE_URL,
+        f"spine:private-asr-report-publication:v1:{workspace_id}:{environment_id}:{report_id}",
+    )
+
+
+def _audit_outcome(value: str) -> AuditOutcome:
+    normalized = value.strip().lower()
+    if normalized in {"denied", "rejected", "withdrawn"}:
+        return AuditOutcome.REJECTED
+    if normalized in {"replayed", "retry"}:
+        return AuditOutcome.REPLAYED
+    if normalized in {"accepted", "admitted"}:
+        return AuditOutcome.ACCEPTED
+    return AuditOutcome.COMPLETED
 
 
 __all__ = ["PostgreSQLPrivateASRAuditReceipts"]

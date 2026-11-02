@@ -8,7 +8,7 @@ from enum import Enum
 from typing import Literal, Protocol
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import Field, StrictInt, model_validator
 
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -189,6 +189,92 @@ class RetentionBindingApprovalReader(Protocol):
         context: TrustedPersistenceContext,
         transaction: UnitOfWork | None,
     ) -> bool: ...
+
+
+class RetentionStartingEvent(str, Enum):
+    """Events from which an approved policy may start an artifact clock."""
+
+    ARTIFACT_CREATED = "artifact_created"
+    SOURCE_REVISION_OBSERVED = "source_revision_observed"
+    REPORT_GENERATED = "report_generated"
+
+
+class ApprovedRetentionTerms(DefinitionModel):
+    """One resolved, approved policy term set for an exact artifact class.
+
+    Applicability validity and processing-admission expiry are deliberately not
+    represented as retention duration. The provider must resolve current,
+    approved terms and decisions for all referenced exceptions and holds.
+    """
+
+    retention_policy_id: UUID
+    retention_policy_version_id: UUID
+    retention_policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    artifact_class: RetentionArtifactClass
+    terms_id: UUID
+    terms_version: str = Field(pattern=r"^[a-z][a-z0-9_.:-]{0,63}$")
+    terms_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    starting_event: RetentionStartingEvent
+    duration_seconds: StrictInt = Field(gt=0)
+    approval_evidence_reference: UUID
+    resolved_exception_references: tuple[UUID, ...] = ()
+    resolved_legal_hold_references: tuple[UUID, ...] = ()
+    active_legal_hold_references: tuple[UUID, ...] = ()
+    deletion_obligation_reference: UUID
+    backup_obligation_reference: UUID
+    approved: bool
+    revoked: bool
+
+    @model_validator(mode="after")
+    def validate_terms_identity(self) -> "ApprovedRetentionTerms":
+        references = (
+            self.retention_policy_id,
+            self.retention_policy_version_id,
+            self.terms_id,
+            self.approval_evidence_reference,
+            self.deletion_obligation_reference,
+            self.backup_obligation_reference,
+            *self.resolved_exception_references,
+            *self.resolved_legal_hold_references,
+            *self.active_legal_hold_references,
+        )
+        if any(reference.int == 0 for reference in references):
+            raise ValueError("retention term references must be non-zero")
+        for collection in (
+            self.resolved_exception_references,
+            self.resolved_legal_hold_references,
+            self.active_legal_hold_references,
+        ):
+            if len(set(collection)) != len(collection):
+                raise ValueError("retention term references must be unique")
+        if not set(self.active_legal_hold_references).issubset(
+            self.resolved_legal_hold_references
+        ):
+            raise ValueError("active legal holds must have a resolved authority")
+        return self
+
+
+class RetentionCommitApprovalVerifier(Protocol):
+    """Verify current applicability/policy approvals using the commit transaction."""
+
+    async def verify_current(
+        self,
+        applicability: RetentionApplicability,
+        context: TrustedPersistenceContext,
+        transaction: UnitOfWork,
+    ) -> bool: ...
+
+
+class ApprovedRetentionTermsProvider(Protocol):
+    """Resolve approved policy terms; never derive terms from applicability IDs."""
+
+    async def resolve(
+        self,
+        applicability: RetentionApplicability,
+        artifact_class: RetentionArtifactClass,
+        context: TrustedPersistenceContext,
+        transaction: UnitOfWork,
+    ) -> ApprovedRetentionTerms | None: ...
 
 
 class ApprovedRetentionApplicabilityAuthority:

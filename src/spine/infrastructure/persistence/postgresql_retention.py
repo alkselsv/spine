@@ -5,8 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Protocol
 
-from sqlalchemy import and_, insert, or_, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import and_, insert, or_, select, update
 from sqlalchemy.engine import Result
 from sqlalchemy.exc import IntegrityError
 
@@ -121,45 +120,77 @@ class PostgreSQLRetentionApplicabilityRepository:
                         **_binding_columns(applicability)
                     )
                 )
-                pointer_insert = pg_insert(current_retention_applicabilities).values(
-                    workspace_id=applicability.workspace_id,
-                    environment_id=applicability.environment_id,
-                    target_kind=applicability.target_kind.value,
-                    target_reference=applicability.target_reference,
-                    current_applicability_id=applicability.applicability_id,
-                    predecessor_applicability_id=applicability.expected_current_applicability_id,
-                    generation=applicability.generation,
-                    updated_at=applicability.approved_at,
-                )
-                statement = pointer_insert.on_conflict_do_update(
-                    index_elements=[
-                        current_retention_applicabilities.c.workspace_id,
-                        current_retention_applicabilities.c.environment_id,
-                        current_retention_applicabilities.c.target_kind,
-                        current_retention_applicabilities.c.target_reference,
-                    ],
-                    set_={
-                        "current_applicability_id": pointer_insert.excluded.current_applicability_id,
-                        "predecessor_applicability_id": pointer_insert.excluded.predecessor_applicability_id,
-                        "generation": pointer_insert.excluded.generation,
-                        "updated_at": pointer_insert.excluded.updated_at,
-                    },
-                    where=(
-                        current_retention_applicabilities.c.current_applicability_id.is_not_distinct_from(
+                pointer_values = {
+                    "workspace_id": applicability.workspace_id,
+                    "environment_id": applicability.environment_id,
+                    "target_kind": applicability.target_kind.value,
+                    "target_reference": applicability.target_reference,
+                    "current_applicability_id": applicability.applicability_id,
+                    "predecessor_applicability_id": applicability.expected_current_applicability_id,
+                    "generation": applicability.generation,
+                    "updated_at": applicability.approved_at,
+                }
+                if pointer is None:
+                    statement = insert(current_retention_applicabilities).values(
+                        **pointer_values
+                    ).returning(current_retention_applicabilities.c.current_applicability_id)
+                else:
+                    statement = update(current_retention_applicabilities).where(
+                        current_retention_applicabilities.c.workspace_id
+                        == applicability.workspace_id,
+                        current_retention_applicabilities.c.environment_id
+                        == applicability.environment_id,
+                        current_retention_applicabilities.c.target_kind
+                        == applicability.target_kind.value,
+                        current_retention_applicabilities.c.target_reference
+                        == applicability.target_reference,
+                        current_retention_applicabilities.c.current_applicability_id
+                        == applicability.expected_current_applicability_id,
+                        current_retention_applicabilities.c.generation
+                        == applicability.expected_current_generation,
+                    ).values(
+                        current_applicability_id=applicability.applicability_id,
+                        predecessor_applicability_id=(
                             applicability.expected_current_applicability_id
-                        )
-                        & (
-                            current_retention_applicabilities.c.generation
-                            == applicability.expected_current_generation
-                        )
-                    ),
-                ).returning(current_retention_applicabilities.c.current_applicability_id)
+                        ),
+                        generation=applicability.generation,
+                        updated_at=applicability.approved_at,
+                    ).returning(current_retention_applicabilities.c.current_applicability_id)
                 result = await uow.execute_statement(statement)
                 if result.scalar_one_or_none() != applicability.applicability_id:
                     raise RetentionApplicabilityConflictError()
                 await uow.commit()
                 return applicability
         except (IntegrityError, ConstraintConflictError):
+            try:
+                async with self._uow_factory(context) as uow:
+                    current_result = await uow.execute_statement(
+                        select(
+                            current_retention_applicabilities.c.current_applicability_id,
+                            current_retention_applicabilities.c.generation,
+                        ).where(
+                            current_retention_applicabilities.c.workspace_id
+                            == applicability.workspace_id,
+                            current_retention_applicabilities.c.environment_id
+                            == applicability.environment_id,
+                            current_retention_applicabilities.c.target_kind
+                            == applicability.target_kind.value,
+                            current_retention_applicabilities.c.target_reference
+                            == applicability.target_reference,
+                        )
+                    )
+                    current = current_result.mappings().one_or_none()
+                    await uow.rollback()
+                if current is not None and (
+                    current["current_applicability_id"]
+                    != applicability.expected_current_applicability_id
+                    or current["generation"] != applicability.expected_current_generation
+                ):
+                    raise RetentionApplicabilityConflictError() from None
+            except RetentionApplicabilityConflictError:
+                raise
+            except Exception:
+                pass
             raise RetentionApplicabilityError() from None
 
     async def list_current_applicabilities(

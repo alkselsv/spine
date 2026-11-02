@@ -7739,6 +7739,11 @@ class PostgreSQLTenantUnitOfWork:
 
         return await self._execute(statement, parameters)
 
+    async def flush_audit_events(self) -> None:
+        """Insert queued canonical events into this transaction without commit."""
+        self._guard_active()
+        await self._flush_audit_events()
+
     async def _execute_during_entry(
         self, statement: object, parameters: object | None = None
     ):

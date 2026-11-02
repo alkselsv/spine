@@ -1043,9 +1043,24 @@ class PrivateRealASREvaluationRunner:
                 source_bindings=tuple(sorted((
                     PrivateReportSourceBinding(
                         record_id=outcome.record_ref.reference_id,
+                        dataset_id=manifest.dataset_id,
+                        source_object_id=next(
+                            record.source_binding.source_object_id
+                            for record in manifest.records
+                            if record.record_id == outcome.record_ref.reference_id
+                        ),
                         source_revision_id=next(
                             record.source_binding.source_revision_id
                             for record in manifest.records
+                            if record.record_id == outcome.record_ref.reference_id
+                        ),
+                        source_revision_digest=next(
+                            record.source_binding.source_revision_digest
+                            for record in manifest.records
+                            if record.record_id == outcome.record_ref.reference_id
+                        ),
+                        split=next(
+                            record.split for record in manifest.records
                             if record.record_id == outcome.record_ref.reference_id
                         ),
                     )
