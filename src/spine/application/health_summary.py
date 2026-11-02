@@ -12,8 +12,14 @@ from collections.abc import Awaitable
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Literal, Protocol
+from typing import Callable, Literal, Protocol
 from uuid import UUID
+
+from spine.application.ingestion_history import IngestionHistoryService
+from spine.application.persistence.context import TrustedPersistenceContext
+from spine.application.projection_control import ProjectionStatusService
+from spine.domain.ingestion import IngestionRunState
+from spine.domain.projections import ProjectionFreshness, ProjectionHealth
 
 
 class HealthStatus(str, Enum):
@@ -159,6 +165,104 @@ class UnavailableHealthStatusServices:
 
 
 @dataclass(frozen=True, slots=True)
+class CanonicalHealthStatusServices:
+    """Project canonical operational stores into bounded health metadata."""
+
+    projection_status_service: ProjectionStatusService
+    ingestion_history_service: IngestionHistoryService
+    context_factory: Callable[[UUID, UUID], TrustedPersistenceContext]
+
+    async def publication_status(
+        self, *, workspace_id: UUID, environment_id: UUID
+    ) -> HealthComponentSnapshot:
+        snapshot = await self.projection_status_service.status(
+            context=self.context_factory(workspace_id, environment_id),
+            projection_kind="qa",
+        )
+        if (
+            snapshot.workspace_id != workspace_id
+            or snapshot.environment_id != environment_id
+            or snapshot.publication_status == "unavailable"
+        ):
+            return HealthComponentSnapshot(
+                status=HealthStatus.UNAVAILABLE,
+                code="publication.unavailable",
+                provider_name="cognee",
+            )
+        if snapshot.freshness is ProjectionFreshness.STALE:
+            return HealthComponentSnapshot(
+                status=HealthStatus.STALE,
+                code="publication.stale",
+                provider_name="cognee",
+            )
+        if snapshot.health is ProjectionHealth.DEGRADED:
+            return HealthComponentSnapshot(
+                status=HealthStatus.DEGRADED,
+                code="publication.degraded",
+                provider_name="cognee",
+            )
+        return HealthComponentSnapshot(
+            status=HealthStatus.READY,
+            code="publication.ready",
+            provider_name="cognee",
+        )
+
+    async def ingestion_status(
+        self, *, workspace_id: UUID, environment_id: UUID
+    ) -> HealthComponentSnapshot:
+        page = await self.ingestion_history_service.list_runs(
+            context=self.context_factory(workspace_id, environment_id),
+            limit=1,
+            after=None,
+        )
+        if page.items and page.items[0].run_state is IngestionRunState.PARTIALLY_SUCCEEDED:
+            return HealthComponentSnapshot(
+                status=HealthStatus.DEGRADED,
+                code="ingestion.partial",
+                provider_name="postgresql",
+            )
+        if page.items and page.items[0].run_state in {
+            IngestionRunState.FAILED,
+            IngestionRunState.CANCELLED,
+        }:
+            return HealthComponentSnapshot(
+                status=HealthStatus.DEGRADED,
+                code="ingestion.degraded",
+                provider_name="postgresql",
+            )
+        return HealthComponentSnapshot(
+            status=HealthStatus.READY,
+            code="ingestion.ready",
+            provider_name="postgresql",
+        )
+
+    async def last_operation(
+        self, *, workspace_id: UUID, environment_id: UUID
+    ) -> HealthOperationSnapshot | None:
+        page = await self.ingestion_history_service.list_runs(
+            context=self.context_factory(workspace_id, environment_id),
+            limit=1,
+            after=None,
+        )
+        if not page.items:
+            return None
+        state = page.items[0].run_state
+        status: HealthOperationStatus
+        if state is IngestionRunState.REQUESTED:
+            status = "accepted"
+        elif state in {IngestionRunState.RECEIVING, IngestionRunState.PROCESSING}:
+            status = "running"
+        elif state in {
+            IngestionRunState.SUCCEEDED,
+            IngestionRunState.PARTIALLY_SUCCEEDED,
+        }:
+            status = "completed"
+        else:
+            status = "failed"
+        return HealthOperationSnapshot(operation="ingestion", status=status)
+
+
+@dataclass(frozen=True, slots=True)
 class HealthSummarySnapshot:
     """Safe application result assembled independently of HTTP transport."""
 
@@ -269,6 +373,7 @@ def _overall_status(
 
 
 __all__ = [
+    "CanonicalHealthStatusServices",
     "HealthOperationName",
     "HealthComponentSnapshot",
     "HealthOperationSnapshot",

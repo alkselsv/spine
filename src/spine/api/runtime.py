@@ -41,6 +41,7 @@ from spine.application.parsed_content_inspection import (
 from spine.application.qa_observation.contracts import AdmittedExecutionIdentity
 from spine.application.document_queries import CanonicalDocumentQueryService
 from spine.application.document_replacement_upload import DocumentReplacementUploadService
+from spine.application.health_summary import CanonicalHealthStatusServices
 from spine.application.ingestion_history import OrchestratedIngestionHistoryService
 from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.application.projection_control import (
@@ -443,6 +444,22 @@ def create_production_app(
                 authorization=transcript_authorization,
             ),
         )
+    ingestion_history = OrchestratedIngestionHistoryService(persistence.uow_factory)
+    projection_status = CanonicalProjectionStatusService(persistence.uow_factory)
+    health_status_services = CanonicalHealthStatusServices(
+        projection_status_service=projection_status,
+        ingestion_history_service=ingestion_history,
+        context_factory=lambda workspace_id, environment_id: persistence_boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            ),
+            service_principal_id=resolved_api.qa_service_principal_id,
+            purpose=PersistencePurpose("health_summary"),
+            operation=PersistenceOperation("inspect_health_summary"),
+            trace_id=uuid4(),
+        ),
+    )
     application = create_app(
         authorization_runtime=authorization,
         diagnostic_registry=diagnostic_registry,
@@ -460,9 +477,7 @@ def create_production_app(
         ),
         batch_document_ingestion_service=ingestion.batch_service,
         processing_command_service=ingestion.processing_service,
-        ingestion_history_service=OrchestratedIngestionHistoryService(
-            persistence.uow_factory
-        ),
+        ingestion_history_service=ingestion_history,
         ingestion_history_cursor_secret=(
             resolved_api.cursor_secret.get_secret_value().encode("utf-8")
         ),
@@ -486,9 +501,7 @@ def create_production_app(
             outbox_events=outbox_events,
             audit_events=audit_registry,
         ),
-        projection_status_service=CanonicalProjectionStatusService(
-            persistence.uow_factory
-        ),
+        projection_status_service=projection_status,
         projection_recovery_service=ProjectionRecoveryRequestService(
             uow_factory=persistence.uow_factory,
             outbox_events=outbox_events,
@@ -550,6 +563,7 @@ def create_production_app(
         ask_admission_service=ask_admission,
         max_upload_bytes=resolved_api.max_upload_bytes,
         max_batch_file_bytes=resolved_api.max_upload_bytes,
+        health_status_services=health_status_services,
         build_version=resolved_api.build_version,
         startup_verifiers=(verify_production_database_profile,),
         startup_verification_timeout_seconds=(

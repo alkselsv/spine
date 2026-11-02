@@ -15,6 +15,7 @@ from spine.application.production_qa_deployment import (
 )
 from spine.application.diagnostics import AuditEventRegistry, DiagnosticEventRegistry
 from spine.application.ingestion_history import IngestionHistoryPage
+from spine.application.projection_control import ProjectionStatusSnapshot
 from spine.auth import InMemoryAuthorizationDirectory, RoutePolicyRegistry
 from spine.infrastructure.auth import (
     InteractiveClientQualification,
@@ -53,6 +54,17 @@ class EmptyIngestionHistoryService:
     ):
         del context, limit, after
         return IngestionHistoryPage(items=(), has_more=False)
+
+
+class UnpublishedProjectionStatusService:
+    async def status(self, *, context: object, projection_kind: str):
+        scope = context.scope  # type: ignore[attr-defined]
+        return ProjectionStatusSnapshot(
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            projection_kind=projection_kind,
+            publication_status="unpublished",
+        )
 
 
 def _production_app(*, profile: ProductionQAADeploymentProfile | None = None):
@@ -257,6 +269,75 @@ def _production_app_with_empty_ingestion_history(
         lambda _uow_factory: EmptyIngestionHistoryService(),
     )
     return _production_app()
+
+
+def _production_app_with_ready_operational_stores(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    authorization = _authorization_runtime()
+    monkeypatch.setattr(
+        runtime_module,
+        "compose_local_api_authorization",
+        lambda **_: authorization,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "OrchestratedIngestionHistoryService",
+        lambda _uow_factory: EmptyIngestionHistoryService(),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "CanonicalProjectionStatusService",
+        lambda _uow_factory: UnpublishedProjectionStatusService(),
+    )
+    return _production_app()
+
+
+@pytest.mark.asyncio
+async def test_production_app_reports_ready_when_operational_stores_are_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = _production_app_with_ready_operational_stores(monkeypatch)
+    transport = httpx.ASGITransport(app=application)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/v1/health/summary",
+            headers={
+                "Authorization": "Bearer opaque-provider-token",
+                "X-Workspace-ID": str(WORKSPACE_ID),
+                "X-Environment-ID": str(ENVIRONMENT_ID),
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"] == {
+        "status": "ready",
+        "build_version": "issue-508-test",
+        "authentication_mode": None,
+        "configuration_version": None,
+        "authorization": {
+            "status": "ready",
+            "code": "authorization.ready",
+            "provider_name": None,
+        },
+        "publication": {
+            "status": "ready",
+            "code": "publication.ready",
+            "provider_name": "cognee",
+        },
+        "ingestion": {
+            "status": "ready",
+            "code": "ingestion.ready",
+            "provider_name": "postgresql",
+        },
+        "providers": {
+            "authentication": None,
+            "publication": "cognee",
+            "ingestion": "postgresql",
+        },
+        "last_operation": None,
+    }
 
 
 def test_production_app_exposes_protected_canonical_document_surface() -> None:
