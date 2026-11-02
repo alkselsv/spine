@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Generic, Protocol, TypeVar
 from uuid import UUID
 
 from pydantic import field_validator
@@ -10,7 +10,6 @@ from pydantic import field_validator
 from spine.application.connections.provider import (
     ProviderConnectionRepository,
     ProviderReadCommand,
-    ProviderReadError,
 )
 from spine.application.persistence.context import EnvironmentScope, TrustedPersistenceContext
 from spine.domain.connections.email_scope import (
@@ -55,12 +54,15 @@ class MailboxScopeRepository(Protocol):
     ) -> MailboxReadScope | None: ...
 
 
-class MailboxProviderReader(Protocol):
+ReadResultT = TypeVar("ReadResultT")
+
+
+class MailboxProviderReader(Protocol[ReadResultT]):
     async def read(
         self,
         connection: ProviderConnection,
         command: MailboxReadCommand,
-    ) -> object: ...
+    ) -> ReadResultT: ...
 
 
 _REQUIRED_CAPABILITY: dict[EmailOperation, ProviderCapabilityKind] = {
@@ -72,7 +74,7 @@ _REQUIRED_CAPABILITY: dict[EmailOperation, ProviderCapabilityKind] = {
 }
 
 
-class MailboxReadAdmission:
+class MailboxReadAdmission(Generic[ReadResultT]):
     """Revalidate exact scope and connection authority before invoking a provider."""
 
     def __init__(
@@ -90,7 +92,7 @@ class MailboxReadAdmission:
         self,
         command: MailboxReadCommand,
         context: TrustedPersistenceContext,
-    ) -> object:
+    ) -> ReadResultT:
         scope = command.scope
         trusted_scope = context.scope
         if (
@@ -138,7 +140,7 @@ class MailboxReadAdmission:
                     return await self._provider.read(connection, command)
                 except Exception:
                     raise MailboxReadDeniedError() from None
-        except ProviderReadError:
+        except Exception:
             raise MailboxReadDeniedError() from None
 
     @staticmethod

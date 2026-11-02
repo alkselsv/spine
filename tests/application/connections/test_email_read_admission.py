@@ -133,11 +133,14 @@ class _Connections:
     def __init__(self, connection: ProviderConnection) -> None:
         self.connection = connection
         self.calls = 0
+        self.failure: Exception | None = None
 
     @asynccontextmanager
     async def admit_read(self, command, context):
         del command, context
         self.calls += 1
+        if self.failure is not None:
+            raise self.failure
         yield self.connection
 
 
@@ -337,6 +340,24 @@ async def test_provider_failure_is_sanitized_without_sensitive_details() -> None
     assert "subject" not in str(error.value)
     assert "token" not in str(error.value)
     assert "attachment-name.pdf" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_connection_repository_failure_is_sanitized_without_sensitive_details() -> None:
+    admission, _, connections, provider = _admission()
+    connections.failure = RuntimeError(
+        "private@example.test label subject token from database"
+    )
+
+    with pytest.raises(MailboxReadDeniedError) as error:
+        await admission.read(_command(), _context())
+
+    assert str(error.value) == "Mailbox read denied."
+    assert "private@example.test" not in str(error.value)
+    assert "label" not in str(error.value)
+    assert "subject" not in str(error.value)
+    assert "token" not in str(error.value)
+    assert provider.calls == []
 
 
 @pytest.mark.asyncio
