@@ -156,33 +156,32 @@ classes and legal/data approvals; runtime database grants in a named
 environment; backup deletion, encryption, physical erasure and restart/restore
 qualification. No actual retention duration or approval is invented here.
 
-Latest local verification on the implementation diff based on
-`da65f7e839d039630ef4c5453b8ce5c47fefa30e` (base
-`10d7f60dd4407f7295340db1388abd25c5d20a57`):
+Latest executed focused verification on branch head `e16d8ce` based on main
+`597b8025f528ec1d186ceb40e275e0d73abae4bf`:
 
-- Focused ASR/corpus/retention/lifecycle/PostgreSQL/application suites:
-  `145 passed` in `19.88s`.
-- Focused PostgreSQL private-ASR module: `22 passed` (included in the focused
-  command above).
-- `python -m compileall -q src tests`: PASS.
-- `git diff --check`: PASS.
-- Alembic heads: single head `20261230_98`.
-- Full `/home/dima55279/project/spine/.venv/bin/pytest -q`: `5819 passed,
-  7 skipped, 3 failed, 1 warning` in `1201.87s`. Independent baseline failures:
-  Google loopback and Issue #680 wizard. Both exact test IDs were rerun on
-  detached exact main `10d7f60dd4407f7295340db1388abd25c5d20a57` in the same
-  environment and reproduced (`2 failed in 2.47s`). The third failure was the
-  nested Issue #68 gate embedding those same two failures. No #795 test failed.
-- Current-head GitHub run `41463270780` passed: full pytest `5845 passed,
-  7 skipped`; clean and retained-revision PostgreSQL migration acceptance;
-  Python compatibility 3.10–3.14; Web; and R1 regression gate. Its repository
-  tests, PostgreSQL acceptance and aggregate R1 status were all recorded as
-  passed. The local OAuth/#680 failures above were not reproduced in CI.
+- PostgreSQL private-ASR storage module: `36 passed`, using isolated PostgreSQL
+  17 and the restricted `spine_runtime` role.
+- Source, lifecycle, AccessPolicy, retention and private-ASR application/domain
+  regressions: `173 passed`.
+- `/home/dima55279/project/spine/.venv/bin/python -m compileall -q src tests`:
+  PASS; `git diff --check`: PASS.
+- Alembic: one head, `20261230_98`.
+- Full `pytest -q` completed on a pre-final-lock-order worktree: `5892 passed,
+  7 skipped, 3 failed, 1 warning` in `1836.01s`. The two direct failures were
+  Google OAuth loopback and the Issue #680 operator wizard; both reproduced on
+  detached exact current main `597b8025f528ec1d186ceb40e275e0d73abae4bf`
+  (`2 failed in 4.04s`). The third failure was the nested #68 gate embedding
+  those two. This full run predates the final lock-order refinement and does not
+  qualify the full suite on `e16d8ce`.
+- GitHub run `41466111887` passed on predecessor head `ed58285`, not this
+  rebased branch. Exact-head CI is pending.
 
-PR #797 remains OPEN/DRAFT and Issue #795 remains OPEN. Full source/policy
-concurrency qualification, process termination/restart recovery, production
-manifest/deletion/approval authorities, aggregate publication and named
-environment qualification remain unresolved. This runbook does not alter #690
+PR #797 remains OPEN/DRAFT and Issue #795 remains OPEN. Source-head replacement,
+AccessPolicy activation, canonical lifecycle withdrawal, retention CAS and
+multi-source lock ordering now have focused PostgreSQL evidence. The complete
+canonical-writer/deadlock-retry matrix, process termination/restart recovery,
+production manifest/deletion/approval authorities, aggregate publication and
+named-environment qualification remain unresolved. This runbook does not alter #690
 `NO-GO / NOT_VERIFIED` or any human approval state.
 
 ## Operator qualification checklist

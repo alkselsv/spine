@@ -98,7 +98,7 @@ second registry. Frozen dataset versions and #661 thresholds are unchanged.
 
 | Category | Scope | Result |
 | --- | --- | --- |
-| A — required for synthetic #795 acceptance | Concrete restricted PostgreSQL store; current canonical source/retention/AccessPolicy checks; atomic report+audit; synthetic manifest verifier; authorized report read; authorized expiry/cleanup fixture; negative RLS/callback/retention/idempotency tests; cancellation rollback. | Core path implemented and focused tests pass. Full AccessPolicy/source-head race matrix, process kill/restart, and cancellation around the irreversible commit point remain technical gaps. |
+| A — required for synthetic #795 acceptance | Concrete restricted PostgreSQL store; current canonical source/retention/AccessPolicy checks; atomic report+audit; synthetic manifest verifier; authorized report read; authorized expiry/cleanup fixture; negative RLS/callback/retention/idempotency tests; cancellation rollback; sanitized aggregate boundary. | Report, retention, read, deletion and audit paths are implemented and tested. Source-head, AccessPolicy activation, lifecycle withdrawal and retention-CAS interleavings now have PostgreSQL evidence. The complete writer/deadlock-retry matrix, process kill/restart recovery, and enabled aggregate publication remain technical blockers. |
 | B — shared production wiring | Trusted immutable manifest release authority (#811); canonical deletion authorization (#812); external approval/revocation commit fence (#813); production policy terms and authority composition. | Assigned as production/shared contracts. These do not block the synthetic path and cannot be replaced by test authorities. |
 | C — operator/deployment qualification | Named environment grants and RLS, backup/replica erasure, restore reconciliation, encryption-at-rest evidence, physical erasure and deployment recovery. | `OPERATOR_NOT_VERIFIED`; not proven by offline PostgreSQL tests. |
 
@@ -106,30 +106,33 @@ Aggregate export remains disabled and fail-closed. This removes a public
 exposure path but does not satisfy an enabled aggregate-export capability; its
 privacy/small-cell/audit publication boundary remains a #795 technical gap.
 
-Historical full-suite evidence on `f796882`: `5768 passed, 7 skipped, 3 failed,
-1 warning` in `1192.82s`. On this implementation tree, focused ASR,
-retention, lifecycle and PostgreSQL tests passed (`145 passed`); the latest
-focused PostgreSQL module passed (`22 passed`). The migration head is
-`20261230_98`. The completed full `pytest -q` reported `5819 passed, 7
-skipped, 3 failed, 1 warning` in `1201.87s`. The independent failures were
-`test_desktop_consent_uses_loopback_and_fake_token_exchange` and
-`test_operator_wizard_writes_not_verified_report_when_prerequisite_is_missing`;
-both were rerun on exact main `10d7f60` in the same environment and failed
-there as well. The third failure was the nested Issue #68 gate, which embeds a
-run reproducing those two baseline failures. No #795 test failed.
+Latest executed focused evidence on branch head `e16d8ce` based on main
+`597b8025f528ec1d186ceb40e275e0d73abae4bf`:
 
-Current-head GitHub run `41463270780` passed the full repository/PostgreSQL
-suite (`5845 passed, 7 skipped`), clean and retained-revision migration
-acceptance, Python compatibility 3.10–3.14, Web CI, and the R1 regression gate.
-The CI pytest environment did not reproduce the two unrelated local failures.
+- PostgreSQL private-ASR storage module: `36 passed` using isolated PostgreSQL
+  17 and restricted `spine_runtime`.
+- Source, lifecycle, AccessPolicy, retention and private-ASR application/domain
+  regressions: `173 passed`.
+- `python -m compileall -q src tests`: PASS; `git diff --check`: PASS.
+- Alembic has one head, `20261230_98`.
+- Full `pytest -q` completed on the pre-final-lock-order worktree: `5892 passed,
+  7 skipped, 3 failed, 1 warning` in `1836.01s`. The two direct failures were
+  `test_desktop_consent_uses_loopback_and_fake_token_exchange` and
+  `test_operator_wizard_writes_not_verified_report_when_prerequisite_is_missing`.
+  Both reproduced on detached exact current main `597b8025f528ec1d186ceb40e275e0d73abae4bf`
+  (`2 failed in 4.04s`). The third failure was the nested Issue #68 gate embedding
+  those same failures. This full run predates the final lock-order refinement
+  and is not full-suite qualification for `e16d8ce`.
+- The prior GitHub run `41466111887` passed on predecessor head `ed58285`; it is
+  not CI evidence for this rebased head. Exact-head CI is pending.
 
-Production manifest authority, production artifact-deletion authority,
-external approval revocation fencing, full AccessPolicy/source race matrix,
-aggregate publication, cancellation at every transaction phase, process crash
-and restore qualification remain open. New child issues #811/#812/#813 are
-linked to their owning contracts; #683 is blocked by them for real
-qualification only, not by these production dependencies for the synthetic
-path.
+Production manifest authority (#811), deletion authority (#812), and external
+approval/revocation fencing (#813) remain shared production dependencies.
+Separately, #795 synthetic technical gaps remain for the process-kill/restart
+recovery proof and an enabled aggregate-export path. Aggregate export remains
+unconditionally fail-closed because the current privacy/release approval ports
+cannot participate in the storage transaction. #683 remains blocked for real
+qualification; the production dependencies do not authorize real-data access.
 
 Required remaining gates include the full restricted-role race matrix,
 production-approved terms and manifest authority composition, aggregate
