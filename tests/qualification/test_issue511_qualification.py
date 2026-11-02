@@ -45,9 +45,9 @@ def test_issue511_report_is_exact_recomputation_of_immutable_input() -> None:
     assert checked_in.criteria[-1].status == "fail"
     assert checked_in.counts.model_dump() == {
         "passed": 0,
-        "failed": 1,
-        "blocked": 4,
-        "not_verified": 12,
+        "failed": 2,
+        "blocked": 1,
+        "not_verified": 14,
         "not_applicable": 1,
     }
 
@@ -81,7 +81,7 @@ def test_issue511_preserves_component_boundaries_and_not_applicable_status() -> 
     denied_quality = by_id["R15"].evidence[2]
     assert denied_quality.status == "not_applicable"
     assert denied_quality.mandatory is False
-    assert by_id["R15"].status == "blocked"
+    assert by_id["R15"].status == "not_verified"
 
 
 def test_issue511_summary_documents_reproduction_without_release_claim() -> None:

@@ -44,7 +44,7 @@
     "target-deployment-not-bound"
   ],
   "decision": "no_go",
-  "input_digest": "2870fe639266db2c3a4dca223e18e82bc92c2f597acc6d7a69823bb46a69a3f3",
+  "input_digest": "9c4e4261fdfc47420d9bf8ee0beb6fe36ef7f5360bb878c173f2dc63d70be959",
   "evidence_index_digest": "6e9d7d7a39b855ae9a99f51adcc40d99592c36bfcfba3a4eefd64b4b0bbb4aaa",
   "criteria": [
     {
@@ -57,7 +57,7 @@
         511
       ],
       "prerequisite_ids": [],
-      "status": "blocked",
+      "status": "fail",
       "reason_codes": [
         "designated-postgresql-targets-unavailable",
         "repository-gate-run-not-target-bound"
@@ -538,7 +538,7 @@
         "R6",
         "R7"
       ],
-      "status": "blocked",
+      "status": "not_verified",
       "reason_codes": [
         "real-baseline-evidence-unavailable"
       ],
@@ -573,7 +573,7 @@
       "prerequisite_ids": [
         "R14"
       ],
-      "status": "blocked",
+      "status": "not_verified",
       "reason_codes": [
         "product-owner-threshold-approval-unavailable"
       ],
@@ -595,7 +595,7 @@
           "evidence_id": "issue-17:threshold-approval:v0",
           "evidence_kind": "threshold_approval",
           "digest": "273163c0394df5180acf2730e756de44fab8dd683d30e48051b2501683af89da",
-          "status": "blocked",
+          "status": "not_verified",
           "mandatory": true,
           "boundary": "repository",
           "target_commit": null,
@@ -678,24 +678,25 @@
       ],
       "status": "fail",
       "reason_codes": [
-        "mandatory_blocked",
-        "mandatory_not_verified"
+        "mandatory_fail",
+        "mandatory_not_verified",
+        "mandatory_blocked"
       ],
       "evidence": []
     }
   ],
   "counts": {
     "passed": 0,
-    "failed": 1,
-    "blocked": 4,
-    "not_verified": 12,
+    "failed": 2,
+    "blocked": 1,
+    "not_verified": 14,
     "not_applicable": 1
   },
   "blockers": [
     {
       "criterion_id": "R1",
       "owner_function": "release-engineering",
-      "status": "blocked",
+      "status": "fail",
       "reason_codes": [
         "designated-postgresql-targets-unavailable",
         "repository-gate-run-not-target-bound"
@@ -800,7 +801,7 @@
     {
       "criterion_id": "R14",
       "owner_function": "evaluation-owner",
-      "status": "blocked",
+      "status": "not_verified",
       "reason_codes": [
         "real-baseline-evidence-unavailable"
       ]
@@ -808,7 +809,7 @@
     {
       "criterion_id": "R15",
       "owner_function": "product-owner",
-      "status": "blocked",
+      "status": "not_verified",
       "reason_codes": [
         "product-owner-threshold-approval-unavailable"
       ]

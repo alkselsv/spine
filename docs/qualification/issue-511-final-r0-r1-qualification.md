@@ -36,7 +36,7 @@ release evidence. The zero denied-case population is recorded as
 
 | Criterion | Status | Owner function | Evidence digest / blocker |
 |---|---|---|---|
-| R1 | BLOCKED | Release engineering | repository gate run failed and was not target-bound; designated PostgreSQL targets unavailable |
+| R1 | FAIL | Release engineering | repository gate run failed and was not target-bound; designated PostgreSQL targets unavailable |
 | R2 | NOT_VERIFIED | Runtime/operator | #508 `fc5eec7a...`; target deployment not bound |
 | R3 | NOT_VERIFIED | Security/runtime | #508 `fc5eec7a...`; current authorization binding not requalified |
 | R4 | NOT_VERIFIED | Ingestion | #508 `fc5eec7a...`; five-format lifecycle not requalified |
@@ -49,10 +49,10 @@ release evidence. The zero denied-case population is recorded as
 | R11 | NOT_VERIFIED | Observability/product | #508 `fc5eec7a...`; trace lineage not target-bound |
 | R12 | NOT_VERIFIED | Security/privacy | #508 `fc5eec7a...`; leak scan not target-bound |
 | R13 | BLOCKED | Operations/storage | #509 `2d1c8d16...`; approved backup and restore targets unavailable |
-| R14 | BLOCKED | Evaluation | #502 `273163c0...`; real baseline unavailable |
-| R15 | BLOCKED | Product Owner | #502 `273163c0...`; threshold approval unavailable |
+| R14 | NOT_VERIFIED | Evaluation | #502 `273163c0...`; real baseline unavailable |
+| R15 | NOT_VERIFIED | Product Owner | #502 `273163c0...`; threshold approval unavailable |
 | R16 | NOT_VERIFIED | API/product | `d3861968...`; legacy compatibility not requalified |
-| R17 | FAIL | Release owner | Mandatory BLOCKED and NOT_VERIFIED criteria require NO-GO |
+| R17 | FAIL | Release owner | Mandatory FAIL, BLOCKED and NOT_VERIFIED criteria require NO-GO |
 
 The complete ticket mappings, prerequisite IDs, full SHA-256 digests and safe
 reason codes are in the input and generated report.

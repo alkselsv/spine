@@ -33,7 +33,7 @@
       "owner_function": "release-engineering",
       "ticket_ids": [8, 16, 511],
       "prerequisite_ids": [],
-      "status": "blocked",
+      "status": "fail",
       "reason_codes": [
         "designated-postgresql-targets-unavailable",
         "repository-gate-run-not-target-bound"
@@ -324,7 +324,7 @@
       "owner_function": "evaluation-owner",
       "ticket_ids": [16, 20, 501, 510, 511],
       "prerequisite_ids": ["R2", "R3", "R4", "R5", "R6", "R7"],
-      "status": "blocked",
+      "status": "not_verified",
       "reason_codes": ["real-baseline-evidence-unavailable"],
       "evidence": [{
         "evidence_id": "issue-502:threshold-contract:v1",
@@ -344,7 +344,7 @@
       "owner_function": "product-owner",
       "ticket_ids": [16, 17, 501, 502, 510, 511],
       "prerequisite_ids": ["R14"],
-      "status": "blocked",
+      "status": "not_verified",
       "reason_codes": ["product-owner-threshold-approval-unavailable"],
       "evidence": [
         {
@@ -363,7 +363,7 @@
           "evidence_id": "issue-17:threshold-approval:v0",
           "evidence_kind": "threshold_approval",
           "digest": "273163c0394df5180acf2730e756de44fab8dd683d30e48051b2501683af89da",
-          "status": "blocked",
+          "status": "not_verified",
           "mandatory": true,
           "boundary": "repository",
           "target_commit": null,
