@@ -3,60 +3,36 @@
 from __future__ import annotations
 
 import json
-import subprocess
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
 
 from pydantic import ValidationError
 
-from spine.domain.evaluations.r1_repository_qualification import ArtifactAttestation
-from spine.evaluations.release_gates.r1_repository_qualification import (
+from spine.domain.evaluations.artifact_attestation import ArtifactAttestation
+from spine.evaluations.release_gates.artifact_attestation import (
     ArtifactAttestationVerificationError,
+)
+from spine.infrastructure.evaluations.command_runner import (
+    CommandExecutionResult,
+    CommandRunner,
+    SubprocessCommandRunner,
 )
 
 _REPOSITORY = "alkselsv/spine"
-_SIGNER_WORKFLOW = "alkselsv/spine/.github/workflows/test.yml"
+_DEFAULT_SIGNER_WORKFLOW = "alkselsv/spine/.github/workflows/test.yml"
 _SOURCE_REF = "refs/heads/main"
-
-
-@dataclass(frozen=True, slots=True)
-class CommandExecutionResult:
-    """Content captured from one non-shell command execution."""
-
-    return_code: int
-    stdout: str
-    stderr: str
-
-
-class CommandRunner(Protocol):
-    """Narrow execution port used by the GitHub CLI adapter."""
-
-    def run(self, arguments: tuple[str, ...]) -> CommandExecutionResult: ...
-
-
-class SubprocessCommandRunner:
-    """Execute an argument vector without invoking a shell."""
-
-    def run(self, arguments: tuple[str, ...]) -> CommandExecutionResult:
-        completed = subprocess.run(  # noqa: S603 - fixed executable and argument vector
-            arguments,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        return CommandExecutionResult(
-            return_code=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-        )
 
 
 class GitHubCliArtifactAttestationVerifier:
     """Verify artifact bytes against GitHub's signed Actions provenance."""
 
-    def __init__(self, *, command_runner: CommandRunner) -> None:
+    def __init__(
+        self,
+        *,
+        command_runner: CommandRunner,
+        signer_workflow: str = _DEFAULT_SIGNER_WORKFLOW,
+    ) -> None:
         self._command_runner = command_runner
+        self._signer_workflow = signer_workflow
 
     def verify(
         self,
@@ -73,7 +49,7 @@ class GitHubCliArtifactAttestationVerifier:
             "--repo",
             _REPOSITORY,
             "--signer-workflow",
-            _SIGNER_WORKFLOW,
+            self._signer_workflow,
             "--source-digest",
             expected_head_sha,
             "--source-ref",
@@ -99,7 +75,7 @@ class GitHubCliArtifactAttestationVerifier:
                 for item in certificates
                 if item["sourceRepositoryDigest"] == expected_head_sha
                 and item["subjectAlternativeName"]
-                == f"https://github.com/{_SIGNER_WORKFLOW}@{_SOURCE_REF}"
+                == f"https://github.com/{self._signer_workflow}@{_SOURCE_REF}"
             )
             return ArtifactAttestation(
                 artifact_digest=artifact_digest,

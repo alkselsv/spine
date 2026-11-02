@@ -4,32 +4,18 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Protocol
 
 from pydantic import ValidationError
 
 from spine.domain.evaluations.r1_repository_qualification import (
-    ArtifactAttestation,
     R1RepositoryEvidence,
     R1RepositoryQualificationResult,
     R1SkipPolicy,
 )
-
-
-class ArtifactAttestationVerificationError(Exception):
-    """Raised when an artifact has no acceptable trusted attestation."""
-
-
-class ArtifactAttestationVerifier(Protocol):
-    """Adapter seam for a trusted artifact-attestation implementation."""
-
-    def verify(
-        self,
-        *,
-        artifact_path: Path,
-        artifact_digest: str,
-        expected_head_sha: str,
-    ) -> ArtifactAttestation: ...
+from spine.evaluations.release_gates.artifact_attestation import (
+    ArtifactAttestationVerificationError,
+    ArtifactAttestationVerifier,
+)
 
 
 def qualify_r1_repository_artifact(

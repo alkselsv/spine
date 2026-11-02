@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import Field, StringConstraints, model_validator
+from pydantic import Field, model_validator
 
 from spine.domain.common import DefinitionModel, VersionIdentifier
+from spine.domain.evaluations.artifact_attestation import (
+    ArtifactAttestation,
+    CommitSha,
+    Sha256Digest,
+)
 
-Sha256Digest = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
-CommitSha = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{40}$")]
 
 
 class MigrationTargetReceipt(DefinitionModel):
@@ -140,18 +143,6 @@ class R1RepositoryEvidence(DefinitionModel):
         }:
             raise ValueError("all R1 execution commands are required")
         return self
-
-
-class ArtifactAttestation(DefinitionModel):
-    """Trusted identity returned by an attestation verifier adapter."""
-
-    artifact_digest: Sha256Digest
-    head_sha: CommitSha
-    repository: Literal["alkselsv/spine"]
-    workflow_ref: str = Field(min_length=1, max_length=512)
-    run_invocation_uri: str = Field(
-        pattern=r"^https://github\.com/alkselsv/spine/actions/runs/[1-9][0-9]*/attempts/[1-9][0-9]*$"
-    )
 
 
 class R1RepositoryQualificationResult(DefinitionModel):
