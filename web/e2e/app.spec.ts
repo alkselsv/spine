@@ -43,6 +43,231 @@ async function installContainerRuntime(page: Page): Promise<void> {
   }, { environmentId: localEnvironment, workspaceId: primaryWorkspace });
 }
 
+async function installMailboxRuntime(page: Page): Promise<void> {
+  await page.addInitScript(({ environmentId, primaryId, salesId }) => {
+    window.__SPINE_RUNTIME__ = {
+      authentication: {
+        status: 'authenticated',
+        role: 'administrator',
+        identityVersion: 'mailbox-fixture-principal-v1',
+        getBearerCredential: () => 'mailbox-fixture-token',
+      },
+      scope: {
+        defaultEnvironmentId: environmentId,
+        defaultWorkspaceId: primaryId,
+        environments: [{ id: environmentId, label: 'Local' }],
+        workspaces: [{ id: primaryId, label: 'Основная' }, { id: salesId, label: 'Продажи' }],
+      },
+    };
+  }, { environmentId: localEnvironment, primaryId: primaryWorkspace, salesId: salesWorkspace });
+}
+
+test('test_mailbox_connection_renders_every_safe_sync_state_without_protected_metadata', async ({ page }) => {
+  const stateCopy: Record<components['schemas']['MailboxConnectionSyncState'], string> = {
+    not_started: 'Синхронизация не запускалась',
+    pending: 'Синхронизация ожидает запуска',
+    running: 'Синхронизация выполняется',
+    complete: 'Синхронизация завершена',
+    partial: 'Получены частичные данные',
+    stale: 'Данные устарели',
+    suspended: 'Синхронизация приостановлена',
+    failed: 'Синхронизация завершилась с ошибкой',
+    revoked: 'Доступ отозван',
+    reconciliation_required: 'Требуется сверка',
+  };
+  let state: components['schemas']['MailboxConnectionSyncState'] = 'not_started';
+  await installMailboxRuntime(page);
+  await page.route('**/api/v1/source-connections**', async (route) => {
+    const item = mailboxConnection(state, primaryWorkspace);
+    const url = new URL(route.request().url());
+    const protectedPayload = {
+      mailbox_address: 'protected@example.test',
+      label_name: 'INBOX/private',
+      filename: 'proposal-secret.docx',
+      provider_payload: 'provider raw failure',
+      token: 'oauth-token-secret',
+    };
+    await route.fulfill({
+      contentType: 'application/json',
+      status: 200,
+      body: JSON.stringify(url.pathname === '/api/v1/source-connections'
+        ? { schema_version: 1, workspace_id: primaryWorkspace, environment_id: localEnvironment, trace_id: traceId, limit: 50, next_cursor: null, items: [{ ...item, ...protectedPayload }] }
+        : { schema_version: 1, workspace_id: primaryWorkspace, environment_id: localEnvironment, trace_id: traceId, data: { ...item, ...protectedPayload } }),
+    });
+  });
+
+  for (const [nextState, expected] of Object.entries(stateCopy)) {
+    state = nextState as components['schemas']['MailboxConnectionSyncState'];
+    await page.goto('/settings/connections');
+    await expect(page.getByText(expected, { exact: true })).toBeVisible();
+    await expect(page.locator('body')).not.toContainText('protected@example.test');
+    await expect(page.locator('body')).not.toContainText('INBOX/private');
+    await expect(page.locator('body')).not.toContainText('proposal-secret.docx');
+    await expect(page.locator('body')).not.toContainText('oauth-token-secret');
+    await expect(page.locator('body')).not.toContainText('provider raw failure');
+  }
+
+  await page.getByRole('button', { name: 'Открыть Gmail' }).click();
+  await expect(page).toHaveURL(/connection=40000000-0000-4000-8000-000000000001/);
+  await expect(page.getByRole('heading', { name: 'Одобренная область' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Разрешённые операции' })).toBeVisible();
+  await expect(page.getByText('Чтение исходного сообщения')).toBeVisible();
+  await expect(page.getByText('reconciliation_required', { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Одобренная область' })).toBeVisible();
+});
+
+test('test_mailbox_configuration_retries_idempotently_then_clears_state_on_workspace_switch', async ({ page }) => {
+  const idempotencyKeys: Array<string | null> = [];
+  const requestBodies: Record<string, unknown>[] = [];
+  let postAttempts = 0;
+  let logicalEffects = 0;
+  let storedResult: components['schemas']['ProviderConnectionResponse'] | null = null;
+  await installMailboxRuntime(page);
+  await page.route('**/api/v1/source-connections**', async (route) => {
+    const request = route.request();
+    const headers = request.headers();
+    const workspaceId = headers['x-workspace-id'] ?? primaryWorkspace;
+    const url = new URL(request.url());
+    if (request.method() === 'POST') {
+      postAttempts += 1;
+      idempotencyKeys.push(headers['idempotency-key'] ?? null);
+      requestBodies.push(request.postDataJSON() as Record<string, unknown>);
+      if (postAttempts === 1) {
+        logicalEffects += 1;
+        storedResult = mailboxConnection('complete', primaryWorkspace);
+        await route.fulfill({ contentType: 'application/json', status: 503, body: JSON.stringify({ schema_version: 1, code: 'spine.provider.unavailable', retryability: 'same_command', safe_message: 'Provider unavailable.', trace_id: traceId, provider_payload: 'protected@example.test' }) });
+        return;
+      }
+      await route.fulfill({ contentType: 'application/json', status: 201, body: JSON.stringify({ schema_version: 1, workspace_id: primaryWorkspace, environment_id: localEnvironment, trace_id: traceId, command_id: '60000000-0000-4000-8000-000000000001', status: 'completed', replay: true, result: storedResult }) });
+      return;
+    }
+    if (url.pathname !== '/api/v1/source-connections') {
+      const item = mailboxConnection('complete', workspaceId);
+      await route.fulfill({ contentType: 'application/json', status: 200, body: JSON.stringify({ schema_version: 1, workspace_id: workspaceId, environment_id: localEnvironment, trace_id: traceId, data: item }) });
+      return;
+    }
+    const items = workspaceId === primaryWorkspace ? [mailboxConnection('complete', primaryWorkspace)] : [];
+    await route.fulfill({ contentType: 'application/json', status: 200, body: JSON.stringify({ schema_version: 1, workspace_id: workspaceId, environment_id: localEnvironment, trace_id: traceId, limit: 50, next_cursor: null, items }) });
+  });
+
+  await page.goto('/settings/connections');
+  await expect(page.getByRole('heading', { name: 'Gmail' })).toBeVisible();
+  await page.getByRole('button', { name: 'Настроить по ссылкам' }).click();
+  await page.getByLabel(/Approval ID/).fill('30000000-0000-4000-8000-000000000001');
+  await page.getByLabel(/Connection ID/).fill('40000000-0000-4000-8000-000000000001');
+  await page.getByRole('button', { name: 'Сохранить ссылки' }).click();
+  await expect(page.getByRole('alert')).toContainText('Повтор отправит ту же идемпотентную команду');
+  await expect(page.locator('body')).not.toContainText('protected@example.test');
+  await page.getByRole('button', { name: 'Сохранить ссылки' }).click();
+  await expect(page.getByText(/Повтор команды распознан/)).toBeVisible();
+
+  expect(idempotencyKeys).toHaveLength(2);
+  expect(idempotencyKeys[1]).toBe(idempotencyKeys[0]);
+  expect(logicalEffects).toBe(1);
+  expect(requestBodies[0]).toEqual({ approval_id: '30000000-0000-4000-8000-000000000001', connection_id: '40000000-0000-4000-8000-000000000001', expected_version: 0, expected_predecessor_version_id: null });
+  expect(requestBodies[0]).not.toHaveProperty('credential');
+  expect(requestBodies[0]).not.toHaveProperty('mailbox');
+
+  await page.getByRole('button', { name: /Рабочая область: Основная/ }).click();
+  await page.getByRole('menuitemradio', { name: 'Продажи' }).click();
+  await expect(page.getByText('Почтовые подключения не настроены')).toBeVisible();
+  await expect(page.getByText(/Повтор команды распознан/)).not.toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`workspace=${salesWorkspace}`));
+});
+
+test('test_mailbox_loading_resolves_to_explicit_empty_state', async ({ page }) => {
+  let releaseLoading!: () => void;
+  const loading = new Promise<void>((resolve) => { releaseLoading = resolve; });
+  await installMailboxRuntime(page);
+  await page.route('**/api/v1/source-connections**', async (route) => {
+    await loading;
+    await route.fulfill({ contentType: 'application/json', status: 200, body: JSON.stringify(emptyMailboxCollection()) });
+  });
+
+  await page.goto('/settings/connections');
+  await expect(page.getByRole('status', { name: 'Загрузка почтовых коннекторов' })).toContainText('Загружаем почтовые подключения');
+  releaseLoading();
+  await expect(page.getByText('Почтовые подключения не настроены')).toBeVisible();
+});
+
+test('test_mailbox_permission_denial_hides_protected_payload', async ({ page }) => {
+  await installMailboxRuntime(page);
+  await page.route('**/api/v1/source-connections**', (route) => route.fulfill({ contentType: 'application/json', status: 403, body: JSON.stringify({ schema_version: 1, code: 'spine.authorization.denied', retryability: 'never', safe_message: 'Denied.', trace_id: traceId, provider_payload: 'protected@example.test' }) }));
+  await page.goto('/settings/connections');
+  await expect(page.getByText('Доступ запрещён')).toBeVisible();
+  await expect(page.locator('body')).not.toContainText('protected@example.test');
+});
+
+test('test_mailbox_invalid_approval_is_safe', async ({ page }) => {
+  await openEmptyMailboxConfiguration(page, 404, { schema_version: 1, code: 'spine.source_connections.not_found', retryability: 'never', safe_message: 'Not found.', trace_id: traceId, credential: 'oauth-token-secret' });
+  await page.getByRole('button', { name: 'Сохранить ссылки' }).click();
+  await expect(page.getByRole('alert')).toContainText('Approval недействителен');
+  await expect(page.locator('body')).not.toContainText('oauth-token-secret');
+});
+
+test('test_mailbox_optimistic_conflict_requires_refresh', async ({ page }) => {
+  await openEmptyMailboxConfiguration(page, 409, { schema_version: 1, code: 'spine.persistence.optimistic_conflict', retryability: 'never', safe_message: 'Conflict.', trace_id: traceId, mailbox_address: 'protected@example.test' });
+  await page.getByRole('button', { name: 'Сохранить ссылки' }).click();
+  await expect(page.getByRole('alert')).toContainText('Версия подключения уже изменилась');
+  await expect(page.locator('body')).not.toContainText('protected@example.test');
+});
+
+test('test_mailbox_fresh_command_reports_non_replayed_success', async ({ page }) => {
+  const item = mailboxConnection('complete', primaryWorkspace);
+  await openEmptyMailboxConfiguration(page, 201, { schema_version: 1, workspace_id: primaryWorkspace, environment_id: localEnvironment, trace_id: traceId, command_id: '60000000-0000-4000-8000-000000000002', status: 'completed', replay: false, result: item });
+  await page.getByRole('button', { name: 'Сохранить ссылки' }).click();
+  await expect(page.getByText('Одобренная конфигурация сохранена.')).toBeVisible();
+  await expect(page.getByText(/Повтор команды распознан/)).not.toBeVisible();
+});
+
+async function openEmptyMailboxConfiguration(page: Page, postStatus: number, postBody: Record<string, unknown>): Promise<void> {
+  await installMailboxRuntime(page);
+  await page.route('**/api/v1/source-connections**', (route) => route.request().method() === 'POST'
+    ? route.fulfill({ contentType: 'application/json', status: postStatus, body: JSON.stringify(postBody) })
+    : route.fulfill({ contentType: 'application/json', status: 200, body: JSON.stringify(emptyMailboxCollection()) }));
+  await page.goto('/settings/connections');
+  await page.getByRole('button', { name: 'Настроить по ссылкам' }).first().click();
+  await page.getByLabel(/Approval ID/).fill('30000000-0000-4000-8000-000000000001');
+  await page.getByLabel(/Connection ID/).fill('40000000-0000-4000-8000-000000000001');
+}
+
+function emptyMailboxCollection(): Record<string, unknown> {
+  return { schema_version: 1, workspace_id: primaryWorkspace, environment_id: localEnvironment, trace_id: traceId, limit: 50, next_cursor: null, items: [] };
+}
+
+function mailboxConnection(
+  state: components['schemas']['MailboxConnectionSyncState'],
+  workspaceId: string,
+): components['schemas']['ProviderConnectionResponse'] {
+  const health = state === 'revoked' ? 'revoked' : state === 'reconciliation_required' ? 'reconciliation_required' : ['partial', 'stale', 'failed', 'suspended'].includes(state) ? 'degraded' : 'healthy';
+  return {
+    schema_version: 2,
+    connection_id: workspaceId === primaryWorkspace ? '40000000-0000-4000-8000-000000000001' : '40000000-0000-4000-8000-000000000002',
+    connection_version_id: '41000000-0000-4000-8000-000000000001',
+    approval_id: '30000000-0000-4000-8000-000000000001',
+    version: 4,
+    predecessor_version_id: '41000000-0000-4000-8000-000000000000',
+    provider_kind: 'google',
+    status: state === 'revoked' ? 'revoked' : 'active',
+    authorization_generation: 3,
+    configuration_generation: 5,
+    approved_resource_scope_references: ['42000000-0000-4000-8000-000000000001'],
+    permitted_operations: ['enumerate_mailbox', 'read_raw_message', 'read_attachment', 'synchronize'],
+    capabilities: [
+      { kind: 'mailbox_enumeration', status: 'supported', qualification_reference: '43000000-0000-4000-8000-000000000001' },
+      { kind: 'raw_message_read', status: 'supported', qualification_reference: '43000000-0000-4000-8000-000000000002' },
+      { kind: 'attachment_read', status: 'unqualified', qualification_reference: null },
+    ],
+    health,
+    diagnostic_codes: health === 'healthy' ? ['connection_ready'] : health === 'revoked' ? ['authorization_revoked'] : health === 'reconciliation_required' ? ['reconciliation_required'] : ['provider_degraded'],
+    observed_at: '2026-11-03T17:00:00Z',
+    cursor_lag_seconds: state === 'complete' ? 45 : null,
+    last_successful_reconciliation_at: '2026-11-03T16:00:00Z',
+    mailbox_sync: { state, last_complete_at: state === 'not_started' ? null : '2026-11-03T16:00:00Z', lag_seconds: state === 'complete' ? 45 : null },
+  };
+}
+
 test('test_controlled_fixture_shows_embedded_data_without_test_route_interception', { tag: '@embedded-fixture' }, async ({ page }) => {
   await installContainerRuntime(page);
   await page.goto('/knowledge/documents');

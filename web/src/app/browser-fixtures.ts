@@ -84,6 +84,7 @@ export function installBrowserQualificationFixtures(
 export function createBrowserQualificationFetch(
   fallback: typeof fetch,
 ): typeof fetch {
+  const appliedConnectionCommands = new Map<string, { fingerprint: string; response: Record<string, unknown> }>();
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = input instanceof Request ? input : new Request(input, init);
     const url = new URL(request.url, window.location.origin);
@@ -105,14 +106,35 @@ export function createBrowserQualificationFetch(
     if (request.method === 'GET' && url.pathname === '/api/v1/source-connections') {
       return json(collection(scope, fixtureProviderConnections(scope)));
     }
+    const connectionMatch = url.pathname.match(/^\/api\/v1\/source-connections\/([^/]+)$/);
+    if (request.method === 'GET' && connectionMatch) {
+      const item = fixtureProviderConnections(scope).find(connection => connection.connection_id === connectionMatch[1]);
+      return item ? json(envelope(scope, item)) : notFound();
+    }
     if (request.method === 'POST' && url.pathname === '/api/v1/source-connections') {
       const body = await request.clone().json() as { approval_id?: string; connection_id?: string };
+      const idempotencyKey = request.headers.get('Idempotency-Key') ?? '';
+      const commandScope = `${scope.workspaceId}/${scope.environmentId}/${idempotencyKey}`;
+      const fingerprint = JSON.stringify(body);
+      const existing = appliedConnectionCommands.get(commandScope);
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) {
+          return json({
+            schema_version: 1,
+            code: 'spine.persistence.idempotency_conflict',
+            retryability: 'never',
+            safe_message: 'The idempotency key was already used for another command.',
+            trace_id: TRACE_ID,
+          }, 409);
+        }
+        return json({ ...existing.response, replay: true }, 201);
+      }
       const item = {
         ...fixtureProviderConnections(scope)[0],
         approval_id: body.approval_id,
         connection_id: body.connection_id,
       };
-      return json({
+      const response = {
         schema_version: 1,
         workspace_id: scope.workspaceId,
         environment_id: scope.environmentId,
@@ -121,7 +143,9 @@ export function createBrowserQualificationFetch(
         status: 'completed',
         replay: false,
         result: item,
-      }, 201);
+      };
+      appliedConnectionCommands.set(commandScope, { fingerprint, response });
+      return json(response, 201);
     }
     if (request.method === 'GET' && url.pathname === '/api/v1/documents') {
       return json(collection(scope, fixtureDocuments(scope)));
@@ -256,30 +280,54 @@ function fixtureDocuments(scope: FixtureScope) {
 }
 
 function fixtureProviderConnections(scope: FixtureScope) {
-  return [{
+  const base = {
     schema_version: 2,
-    connection_id: stableUuid(`${scope.workspaceId}:connection`, 1),
-    connection_version_id: stableUuid(`${scope.workspaceId}:connection-version`, 2),
-    approval_id: stableUuid(`${scope.workspaceId}:approval`, 3),
     version: 1,
     predecessor_version_id: null,
-    provider_kind: 'yandex_disk',
     status: 'active',
     authorization_generation: 2,
     configuration_generation: 3,
-    approved_resource_scope_references: [stableUuid(`${scope.workspaceId}:scope`, 4)],
-    permitted_operations: [],
-    capabilities: [
-      { kind: 'binary_read', status: 'supported', qualification_reference: stableUuid('binary-read', 5) },
-      { kind: 'incremental_change_discovery', status: 'unsupported', qualification_reference: null },
-    ],
     health: 'healthy',
     diagnostic_codes: ['connection_ready'],
-    observed_at: '2026-10-29T17:00:00Z',
-    cursor_lag_seconds: 4,
-    last_successful_reconciliation_at: '2026-10-29T16:00:00Z',
-    mailbox_sync: null,
-  }];
+    observed_at: '2026-11-03T17:00:00Z',
+  };
+  return [
+    {
+      ...base,
+      connection_id: stableUuid(`${scope.workspaceId}:gmail-connection`, 1),
+      connection_version_id: stableUuid(`${scope.workspaceId}:gmail-version`, 2),
+      approval_id: stableUuid(`${scope.workspaceId}:gmail-approval`, 3),
+      provider_kind: 'google',
+      approved_resource_scope_references: [stableUuid(`${scope.workspaceId}:gmail-scope`, 4)],
+      permitted_operations: ['enumerate_mailbox', 'read_raw_message', 'read_attachment', 'synchronize'],
+      capabilities: [
+        { kind: 'mailbox_enumeration', status: 'supported', qualification_reference: stableUuid('gmail-enumeration', 5) },
+        { kind: 'raw_message_read', status: 'supported', qualification_reference: stableUuid('gmail-raw', 6) },
+        { kind: 'attachment_read', status: 'supported', qualification_reference: stableUuid('gmail-attachment', 7) },
+      ],
+      cursor_lag_seconds: 248,
+      last_successful_reconciliation_at: '2026-11-03T16:00:00Z',
+      mailbox_sync: { state: 'complete', last_complete_at: '2026-11-03T16:00:00Z', lag_seconds: 248 },
+    },
+    {
+      ...base,
+      connection_id: stableUuid(`${scope.workspaceId}:yandex-mail-connection`, 11),
+      connection_version_id: stableUuid(`${scope.workspaceId}:yandex-mail-version`, 12),
+      approval_id: stableUuid(`${scope.workspaceId}:yandex-mail-approval`, 13),
+      provider_kind: 'yandex_mail',
+      approved_resource_scope_references: [stableUuid(`${scope.workspaceId}:yandex-mail-scope`, 14)],
+      permitted_operations: ['enumerate_folder_uids', 'read_message_metadata', 'read_raw_message', 'synchronize', 'observe_folder_generation'],
+      capabilities: [
+        { kind: 'mailbox_enumeration', status: 'supported', qualification_reference: stableUuid('imap-enumeration', 15) },
+        { kind: 'raw_message_read', status: 'unqualified', qualification_reference: null },
+      ],
+      health: 'degraded',
+      diagnostic_codes: ['provider_degraded'],
+      cursor_lag_seconds: 35280,
+      last_successful_reconciliation_at: '2026-11-02T20:15:00Z',
+      mailbox_sync: { state: 'partial', last_complete_at: '2026-11-02T20:15:00Z', lag_seconds: 35280 },
+    },
+  ];
 }
 
 function fixtureSessions(scope: FixtureScope) {
