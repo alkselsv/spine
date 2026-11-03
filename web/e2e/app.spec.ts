@@ -79,7 +79,7 @@ test('test_synthetic_ui_qualification_renders_safe_sync_states_without_provider_
     partial: 'Обновите статус и проверьте безопасные коды; результат может не включать все изменения.',
     stale: 'Сверьте дату последней полной синхронизации и отставание, затем обновите статус.',
     revoked: 'Передайте восстановление доступа администратору и обновите статус после его решения.',
-    reconciliation_required: 'Выполните предусмотренную сверку и обновите статус после её завершения.',
+    reconciliation_required: 'Проверьте доступность полной сверки в списке возможностей. Следуйте процедуре восстановления подключения и после завершения обновите статус.',
   };
   let state: components['schemas']['MailboxConnectionSyncState'] = 'not_started';
   let healthOverride: components['schemas']['ProviderConnectionHealth'] | undefined;

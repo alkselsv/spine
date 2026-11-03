@@ -100,6 +100,8 @@ describe('Approved mailbox connection control plane', () => {
     const item = connection({ capabilities: [], cursor_lag_seconds: 75, last_successful_reconciliation_at: '2026-11-03T16:00:00Z', mailbox_sync: { state: 'complete', last_complete_at: null, lag_seconds: null } });
     vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(collection([item]))));
     renderPage();
+    expect(await screen.findByText('Yandex Mail')).toBeVisible();
+    expect(screen.queryByText('2 мин')).not.toBeInTheDocument();
 
     await userEvent.setup().click(await screen.findByRole('button', { name: /Открыть Yandex Mail/ }));
     expect(screen.queryByText('Последняя полная синхронизация')).not.toBeInTheDocument();
