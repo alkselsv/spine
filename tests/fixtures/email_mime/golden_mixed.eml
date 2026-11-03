@@ -1,0 +1,17 @@
+From: =?utf-8?b?0KLQtdGB0YI=?= <sender@example.test>
+Subject: Synthetic golden
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="golden"
+
+--golden
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+=D0=A2=D0=B5=D0=BB=D0=BE
+--golden
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="synthetic.txt"
+Content-Transfer-Encoding: base64
+
+c3ludGhldGlj
+--golden--

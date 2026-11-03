@@ -22,6 +22,13 @@ from .models import (
     resolve_locator,
     validate_artifact_lineage,
 )
+from .email_mime import (
+    MimeArtifact,
+    MimeDefect,
+    MimeHeader,
+    MimeParseDisposition,
+    MimePart,
+)
 from .transcription import (
     AdapterSignal,
     AudioRecordingHandle,
@@ -78,6 +85,11 @@ __all__ = [
     "resolve_google_sheet_cell_locator",
     "resolve_locator",
     "validate_artifact_lineage",
+    "MimeArtifact",
+    "MimeDefect",
+    "MimeHeader",
+    "MimeParseDisposition",
+    "MimePart",
     "AdapterSignal",
     "AudioRecordingHandle",
     "SpeechToTextRequest",
