@@ -15,6 +15,7 @@ from spine.application.connections.email_read import (
     MailboxScopeRepository,
 )
 from spine.application.connections.provider import ProviderConnectionRepository
+from spine.domain.common import DefinitionModel
 from spine.domain.connections.email_scope import EmailOperation, MailboxReadScope
 from spine.domain.connections.provider import (
     ProviderCapabilityKind,
@@ -55,10 +56,12 @@ class YandexMailOAuthCredential:
     approved_oauth_scopes: tuple[str, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class YandexMailImapSecurity:
+class YandexMailImapSecurity(DefinitionModel):
     """Immutable transport requirements for an admitted Yandex Mail read."""
 
+    schema_version: Literal["yandex-mail-imap-security:v1"] = (
+        "yandex-mail-imap-security:v1"
+    )
     host: Literal["imap.yandex.ru"] = YANDEX_MAIL_IMAP_HOST
     port: Literal[993] = YANDEX_MAIL_IMAP_PORT
     tls_required: Literal[True] = True
@@ -67,8 +70,7 @@ class YandexMailImapSecurity:
     read_only: Literal[True] = True
 
 
-@dataclass(frozen=True, slots=True)
-class YandexMailImapReadRequest:
+class YandexMailImapReadRequest(DefinitionModel):
     """Metadata-only request passed to the fakeable IMAP boundary."""
 
     workspace_id: UUID
@@ -83,6 +85,11 @@ class YandexMailImapReadRequest:
     scope_generation: int
     operation: EmailOperation
     folder_reference: UUID | None
+    schema_version: Literal["yandex-mail-imap-read-request:v1"] = (
+        "yandex-mail-imap-read-request:v1"
+    )
+    enumeration_max_items: int | None = None
+    enumeration_max_response_bytes: int | None = None
     security: YandexMailImapSecurity = YandexMailImapSecurity()
 
 
@@ -162,6 +169,8 @@ class _YandexMailProviderAdapter:
             scope_generation=scope.scope_generation,
             operation=command.operation,
             folder_reference=command.folder_or_label_reference,
+            enumeration_max_items=command.enumeration_max_items,
+            enumeration_max_response_bytes=command.enumeration_max_response_bytes,
         )
         ssl_context = ssl.create_default_context()
         if (
@@ -241,6 +250,13 @@ def _connection_matches_scope(
         in connection.approved_resource_scope_references
         and command.mailbox_subject_reference == scope.mailbox_subject_reference
         and scope.allows(command.operation)
+        and (
+            not is_enumeration
+            or (
+                command.enumeration_max_items is not None
+                and command.enumeration_max_response_bytes is not None
+            )
+        )
         and (
             command.folder_or_label_reference is None
             if is_enumeration
