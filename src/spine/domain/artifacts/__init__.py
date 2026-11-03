@@ -29,6 +29,7 @@ from .email_mime import (
     MimeParseDisposition,
     MimePart,
 )
+from .email_message import EmailMessageArtifact, email_message_artifact_digest
 from .email_html import (
     EmailHtmlDisposition,
     EmailHtmlSanitizerProfile,
@@ -95,6 +96,8 @@ __all__ = [
     "MimeHeader",
     "MimeParseDisposition",
     "MimePart",
+    "EmailMessageArtifact",
+    "email_message_artifact_digest",
     "EmailHtmlDisposition",
     "EmailHtmlSanitizerProfile",
     "SanitizedEmailHtml",
