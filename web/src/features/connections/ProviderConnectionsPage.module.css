@@ -59,6 +59,14 @@
 .definition code, .referenceList code, .operationList code, .capabilityList code, .success code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
 .diagnosticCodes { display: flex; flex-wrap: wrap; gap: 5px; }
 .diagnosticCodes code { padding: 3px 6px; border-radius: 5px; background: var(--connections-subtle); color: var(--connections-secondary); }
+.operatorDiagnostic { display: grid; grid-template-columns: auto 1fr; gap: 9px; margin: 12px 0 4px; padding: 11px 12px; border: 1px solid var(--connections-border); border-radius: 8px; background: var(--connections-subtle); color: var(--connections-secondary); }
+.operatorDiagnostic svg { margin-top: 1px; color: var(--connections-success); }
+.operatorDiagnostic strong { display: block; color: var(--connections-text); font-size: 12px; }
+.operatorDiagnostic p { margin: 3px 0 0; font-size: 12px; line-height: 1.45; }
+.operatorDiagnostic[data-state='partial'], .operatorDiagnostic[data-state='stale'], .operatorDiagnostic[data-state='degraded'], .operatorDiagnostic[data-state='reconciliation_required'] { border-color: color-mix(in srgb, var(--connections-warning) 35%, var(--connections-border)); background: var(--connections-warning-bg); }
+.operatorDiagnostic[data-state='partial'] svg, .operatorDiagnostic[data-state='stale'] svg, .operatorDiagnostic[data-state='degraded'] svg, .operatorDiagnostic[data-state='reconciliation_required'] svg { color: var(--connections-warning); }
+.operatorDiagnostic[data-state='revoked'] { border-color: color-mix(in srgb, var(--connections-danger) 35%, var(--connections-border)); background: var(--connections-danger-bg); }
+.operatorDiagnostic[data-state='revoked'] svg { color: var(--connections-danger); }
 .referenceList { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .referenceList code { padding: 7px 8px; overflow-wrap: anywhere; border-radius: 6px; background: var(--connections-subtle); color: var(--connections-text); }
 .operationList, .capabilityList { display: grid; gap: 8px; margin: 0 0 12px; padding: 0; list-style: none; }
@@ -70,6 +78,10 @@
 .capabilityList li[data-status='unsupported'], .capabilityList li[data-status='unqualified'] { color: var(--connections-warning); }
 .capabilityList li > span:first-child { display: grid; gap: 2px; min-width: 0; color: var(--connections-text); }
 .capabilityList code { overflow: hidden; color: var(--connections-tertiary); text-overflow: ellipsis; }
+.qualificationNote { display: flex; align-items: flex-start; gap: 8px; margin: 10px 0 12px; padding: 10px 11px; border-radius: 7px; background: var(--connections-subtle); color: var(--connections-secondary); }
+.qualificationNote svg { flex: 0 0 auto; color: var(--connections-accent); }
+.qualificationNote p { margin: 0; font-size: 12px; line-height: 1.45; }
+.qualificationNote p + p { margin-top: 2px; }
 .state { display: flex; min-height: 260px; flex-direction: column; align-items: center; justify-content: center; gap: 8px; max-width: 920px; padding: 32px; border: 1px dashed var(--connections-border-strong); border-radius: 10px; text-align: center; }
 .stateIcon { display: inline-flex; width: 44px; height: 44px; align-items: center; justify-content: center; border-radius: 12px; background: var(--connections-subtle); color: var(--connections-secondary); }
 .state h3 { margin: 4px 0 0; font-size: 17px; }

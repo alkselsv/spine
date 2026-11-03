@@ -76,14 +76,18 @@ test('test_mailbox_connection_renders_every_safe_sync_state_without_protected_me
     reconciliation_required: 'Требуется сверка',
   };
   let state: components['schemas']['MailboxConnectionSyncState'] = 'not_started';
+  let healthOverride: components['schemas']['ProviderConnectionHealth'] | undefined;
   await installMailboxRuntime(page);
   await page.route('**/api/v1/source-connections**', async (route) => {
     const item = mailboxConnection(state, primaryWorkspace);
+    if (healthOverride) item.health = healthOverride;
     const url = new URL(route.request().url());
     const protectedPayload = {
+      subject: 'Quarterly acquisition',
       mailbox_address: 'protected@example.test',
       label_name: 'INBOX/private',
       filename: 'proposal-secret.docx',
+      raw_error: 'socket ECONNRESET at provider',
       provider_payload: 'provider raw failure',
       token: 'oauth-token-secret',
     };
@@ -100,19 +104,29 @@ test('test_mailbox_connection_renders_every_safe_sync_state_without_protected_me
     state = nextState as components['schemas']['MailboxConnectionSyncState'];
     await page.goto('/settings/connections');
     await expect(page.getByText(expected, { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Открыть Gmail' }).click();
+    await expect(page.getByRole('status', { name: expected })).toBeVisible();
     await expect(page.locator('body')).not.toContainText('protected@example.test');
+    await expect(page.locator('body')).not.toContainText('Quarterly acquisition');
     await expect(page.locator('body')).not.toContainText('INBOX/private');
     await expect(page.locator('body')).not.toContainText('proposal-secret.docx');
+    await expect(page.locator('body')).not.toContainText('socket ECONNRESET at provider');
     await expect(page.locator('body')).not.toContainText('oauth-token-secret');
     await expect(page.locator('body')).not.toContainText('provider raw failure');
   }
 
+  state = 'complete';
+  healthOverride = 'degraded';
+  await page.goto('/settings/connections');
+  await expect(page.getByText('Работает с ограничениями', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Открыть Gmail' }).click();
+  await expect(page.getByRole('status', { name: 'Работает с ограничениями' })).toContainText('операционному регламенту');
   await expect(page).toHaveURL(/connection=40000000-0000-4000-8000-000000000001/);
   await expect(page.getByRole('heading', { name: 'Одобренная область' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Разрешённые операции' })).toBeVisible();
   await expect(page.getByText('Чтение исходного сообщения')).toBeVisible();
-  await expect(page.getByText('reconciliation_required', { exact: true })).toBeVisible();
+  await expect(page.getByText(/квалифицирует только отображение безопасного API-контракта/i)).toBeVisible();
+  await expect(page.getByText(/не подтверждает live-доступ или работоспособность Gmail и Yandex Mail/i)).toBeVisible();
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Одобренная область' })).toBeVisible();
 });
