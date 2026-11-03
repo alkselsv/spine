@@ -91,7 +91,10 @@ from spine.application.persistence.ask_admission import (
 from spine.application.persistence.command_digest import digest_command
 from spine.application.persistence.boundary import CanonicalBoundaryCaptureCommand
 from spine.application.persistence.projection import ProjectionRunCommand
-from spine.application.persistence.outbox import OpaqueObjectReference
+from spine.application.persistence.outbox import (
+    OpaqueObjectReference,
+    OutboxEventRegistry,
+)
 from spine.application.persistence.workflow_runs import register_workflow_run_outbox_event
 from spine.application.persisted_workflow_runs import PersistedWorkflowRunAdmissionService
 from spine.application.workflow_runs import AddContextCommandV1, StartWorkflowCommand, WorkflowCommand
@@ -745,6 +748,226 @@ async def postgresql_adapter(
         )
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_email_artifact_replay_is_tenant_scoped_and_outbox_atomic(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    import hashlib
+
+    from sqlalchemy.exc import IntegrityError
+
+    from spine.application.email_artifacts import (
+        EMAIL_ARTIFACT_PROJECTION_REQUESTED,
+        EmailArtifactCommand,
+        EmailArtifactProjectionRequest,
+    )
+    from spine.application.persistence.context import EnvironmentScope, PersistenceOperation, PersistencePurpose
+    from spine.domain.artifacts.email_html import EmailHtmlSanitizerProfile
+    from spine.domain.artifacts.email_message import EmailMessageArtifact, email_message_artifact_digest
+    from spine.domain.artifacts.email_mime import MimeArtifact, MimeParseDisposition
+    from spine.infrastructure.persistence.email_artifacts import PostgreSQLEmailArtifactRepository
+    from spine.ingestion.email_html import EmailHtmlSanitizer
+    from spine.ingestion.email_mime import MimeParser, MimeParserProfile
+
+    raw = (
+        b"From: synthetic@example.test\r\nSubject: synthetic\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n\r\nSynthetic body"
+    )
+    case = await prepare_canonical_case(
+        postgresql_adapter, 85300, original_content=raw
+    )
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        acceptance = await uow.canonical.accept(case.command)
+        await uow.commit()
+    assert acceptance.acceptance is not None
+
+    other_source = source_contract_connector_source(
+        case.source.workspace_id,
+        case.source.environment_id,
+        "generation-2",
+    )
+    other_revision = source_contract_revision(other_source, synthetic_uuid(85352))
+    other_provenance = source_contract_provenance(
+        other_source, other_revision.revision_id, "event-2"
+    )
+    source_context = postgresql_adapter.source_context(
+        case.source.workspace_id, case.source.environment_id
+    )
+    assert source_context is not None
+    async with postgresql_adapter.uow_factory(source_context) as uow:
+        await uow.sources.record_observation(SourceObservationCommand.create(
+            source=other_source,
+            revision=other_revision,
+            provenance=other_provenance,
+            idempotency_key=IdempotencyKey("issue854-mismatched-artifact-parent"),
+        ))
+        await uow.commit()
+    assert other_source.source_object_id != case.source.source_object_id
+
+    parser = MimeParser(profile=MimeParserProfile(
+        max_total_bytes=20_000, max_header_bytes=10_000, max_parts=20,
+        max_depth=10, max_decoded_bytes=20_000, max_parse_seconds=2.0,
+    ))
+    sanitizer = EmailHtmlSanitizer(profile=EmailHtmlSanitizerProfile(
+        max_total_input_bytes=20_000, max_total_output_bytes=20_000,
+        max_parts=20, max_depth=10,
+    ))
+    mime = parser.parse(raw)
+    sanitized = sanitizer.sanitize_all(mime)
+    assert mime.disposition is MimeParseDisposition.COMPLETE
+    assert mime.root is not None and mime.root.text == "Synthetic body"
+    assert "selected_representation" in EmailMessageArtifact.model_fields
+
+    runtime_engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    session_factory = async_sessionmaker(runtime_engine, expire_on_commit=False, autoflush=False)
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(85301), secret=b"issue-854-email-artifact-integration-secret"
+    )
+
+    def context_factory(workspace_id: UUID, environment_id: UUID) -> TrustedPersistenceContext:
+        return boundary.worker(
+            scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id),
+            service_principal_id=synthetic_uuid(85302),
+            purpose=PersistencePurpose("email_artifact_test"),
+            operation=PersistenceOperation("email_artifact.persist"),
+            trace_id=synthetic_uuid(85303),
+        )
+
+    repository = PostgreSQLEmailArtifactRepository(
+        session_factory, context_factory=context_factory, context_verifier=boundary
+    )
+    registry = OutboxEventRegistry()
+    registry.register(
+        event_type=EMAIL_ARTIFACT_PROJECTION_REQUESTED,
+        schema_version=1,
+        payload_type=EmailArtifactProjectionRequest,
+    )
+
+    def command_for(artifact_id: UUID, *, intent_id: UUID | None = None) -> EmailArtifactCommand:
+        provisional = EmailMessageArtifact.model_construct(
+            artifact_id=artifact_id,
+            workspace_id=case.source.workspace_id,
+            environment_id=case.source.environment_id,
+            source_object_id=case.source.source_object_id,
+            source_revision_id=case.revision.revision_id,
+            canonical_acceptance_id=acceptance.acceptance.canonical_acceptance_id,
+            source_revision_digest=case.revision.revision_digest,
+            raw_sha256=hashlib.sha256(raw).hexdigest(),
+            raw_byte_length=len(raw),
+            parser_profile=parser.profile.reference,
+            sanitizer_profile=sanitizer.reference,
+            mime=mime,
+            sanitized_html=sanitized,
+            selected_representation="plain_text",
+            selected_text=mime.root.text,
+            artifact_sha256="0" * 64,
+        )
+        artifact = EmailMessageArtifact.model_validate(provisional.model_copy(
+            update={"artifact_sha256": email_message_artifact_digest(provisional)}
+        ).model_dump())
+        event_id = intent_id or synthetic_uuid(85310 + artifact_id.int % 1000)
+        intent = registry.build_intent(
+            event_id=event_id,
+            workspace_id=artifact.workspace_id,
+            environment_id=artifact.environment_id,
+            event_type=EMAIL_ARTIFACT_PROJECTION_REQUESTED,
+            schema_version=1,
+            payload=EmailArtifactProjectionRequest(
+                source_object_id=artifact.source_object_id,
+                source_revision_id=artifact.source_revision_id,
+                canonical_acceptance_id=artifact.canonical_acceptance_id,
+                artifact_id=artifact.artifact_id,
+                artifact_sha256=artifact.artifact_sha256,
+                parser_profile=artifact.parser_profile,
+                sanitizer_profile=artifact.sanitizer_profile,
+                selected_representation=artifact.selected_representation,
+            ),
+            aggregate=OpaqueObjectReference(
+                object_type="email_message_artifact", object_id=artifact.artifact_id,
+                schema_version=1,
+            ),
+            producer_deduplication_id=f"email-artifact:{artifact.artifact_id}",
+            trace_id=synthetic_uuid(85304),
+            causation_id=artifact.canonical_acceptance_id,
+        )
+        command_identity = f"email-artifact:{artifact.source_revision_id}:{artifact.parser_profile}:{artifact.sanitizer_profile}:{artifact.artifact_id}"
+        command_digest = hashlib.sha256(
+            f"{command_identity}:{artifact.artifact_sha256}".encode()
+        ).hexdigest()
+        return EmailArtifactCommand(artifact, command_identity, command_digest, intent)
+
+    first_command = command_for(synthetic_uuid(85310))
+    try:
+        first = await repository.persist(first_command)
+        replay = await repository.persist(first_command)
+        assert first.replay is False
+        assert replay.replay is True
+        assert replay.projection_intent_id == first.projection_intent_id
+        assert await repository.get(
+            workspace_id=case.source.workspace_id,
+            environment_id=case.source.environment_id,
+            artifact_id=first.artifact.artifact_id,
+        ) == first.artifact
+        assert await repository.get(
+            workspace_id=synthetic_uuid(85340),
+            environment_id=synthetic_uuid(85341),
+            artifact_id=first.artifact.artifact_id,
+        ) is None
+
+        migration_engine = create_async_engine(
+            postgresql_contract_database.migration_url.get_secret_value(),
+            hide_parameters=True,
+            connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+        )
+        try:
+            with pytest.raises(IntegrityError):
+                async with migration_engine.begin() as connection:
+                    await connection.execute(
+                        text(
+                            "INSERT INTO spine.email_message_artifacts "
+                            "(workspace_id, environment_id, artifact_id, source_object_id, "
+                            "source_revision_id, canonical_acceptance_id, artifact_digest, "
+                            "command_identity, command_digest, record, created_at) VALUES "
+                            "(:workspace_id, :environment_id, :artifact_id, :source_object_id, "
+                            ":source_revision_id, :canonical_acceptance_id, :artifact_digest, "
+                            ":command_identity, :command_digest, CAST(:record AS jsonb), :created_at)"
+                        ),
+                        {
+                            "workspace_id": case.source.workspace_id,
+                            "environment_id": case.source.environment_id,
+                            "artifact_id": synthetic_uuid(85312),
+                            "source_object_id": other_source.source_object_id,
+                            "source_revision_id": other_revision.revision_id,
+                            "canonical_acceptance_id": acceptance.acceptance.canonical_acceptance_id,
+                            "artifact_digest": "a" * 64,
+                            "command_identity": "mismatched-acceptance-revision",
+                            "command_digest": "b" * 64,
+                            "record": "{}",
+                            "created_at": datetime(2026, 10, 1, tzinfo=timezone.utc),
+                        },
+                    )
+        finally:
+            await migration_engine.dispose()
+
+        failed_command = command_for(
+            synthetic_uuid(85311), intent_id=first.projection_intent_id
+        )
+        with pytest.raises(IntegrityError):
+            await repository.persist(failed_command)
+        assert await repository.get(
+            workspace_id=case.source.workspace_id,
+            environment_id=case.source.environment_id,
+            artifact_id=failed_command.artifact.artifact_id,
+        ) is None
+    finally:
+        await runtime_engine.dispose()
 
 
 @pytest.mark.asyncio(loop_scope="session")

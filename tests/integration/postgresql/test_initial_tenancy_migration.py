@@ -392,6 +392,7 @@ CANONICAL_ACCEPTANCE_CONSTRAINTS = {
     "uq_canonical_acceptances_generation",
     "uq_canonical_acceptances_revision",
     "uq_canonical_acceptances_scope_id",
+    "uq_canonical_acceptances_scope_source_revision",
     "uq_canonical_acceptances_idempotency_receipt",
     "uq_canonical_acceptances_head_tuple",
     "fk_canonical_acceptances_source",
@@ -456,6 +457,7 @@ CANONICAL_ACCEPTANCE_INDEXES = {
     "uq_canonical_acceptances_generation",
     "uq_canonical_acceptances_revision",
     "uq_canonical_acceptances_scope_id",
+    "uq_canonical_acceptances_scope_source_revision",
     "uq_canonical_acceptances_idempotency_receipt",
     "uq_canonical_acceptances_head_tuple",
     "ix_canonical_acceptances_source_generation",
@@ -1619,6 +1621,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "email_sync_attempts",
         "email_sync_pages",
         "email_sync_effect_receipts",
+        "email_message_artifacts",
         "source_canonical_tables",
         "source_canonical_unicode",
         "source_canonical_compositions",
@@ -1679,6 +1682,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "email_sync_attempts",
         "email_sync_pages",
         "email_sync_effect_receipts",
+        "email_message_artifacts",
     }
     expected_final_constraints = {
         "alembic_version_pkc",
@@ -2144,6 +2148,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "pk_email_sync_attempts",
         "pk_email_sync_pages",
         "pk_email_sync_effect_receipts",
+        "pk_email_message_artifacts",
+        "uq_email_message_artifacts_command",
         "uq_email_sync_attempts_key",
         "fk_email_sync_attempts_environment",
         "fk_email_sync_pages_attempt",
@@ -2481,6 +2487,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "pk_email_sync_attempts",
         "pk_email_sync_pages",
         "pk_email_sync_effect_receipts",
+        "pk_email_message_artifacts",
+        "uq_email_message_artifacts_command",
         "uq_email_sync_attempts_key",
         "ix_email_sync_attempts_active",
         "uq_google_sheets_sync_runs_idempotency",
@@ -2718,6 +2726,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "email_sync_attempts": (True, True),
         "email_sync_pages": (True, True),
         "email_sync_effect_receipts": (True, True),
+        "email_message_artifacts": (True, True),
         "work_items": (True, True),
         "workflow_runs": (True, True),
         "workflow_command_receipts": (True, True),
@@ -2918,6 +2927,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "email_sync_attempts": (True, True, True, False),
         "email_sync_pages": (True, True, True, False),
         "email_sync_effect_receipts": (True, True, True, False),
+        "email_message_artifacts": (True, True, False, False),
         "idempotency_receipts": (True, True, False, False),
         "initial_workspace_bootstrap": (False, False, False, False),
         "outbox_intents": (False, True, False, False),
@@ -3418,6 +3428,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "email_sync_attempts",
         "email_sync_pages",
         "email_sync_effect_receipts",
+        "email_message_artifacts",
     }
     assert constraints == {
         "alembic_version_pkc",
@@ -3435,6 +3446,13 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "pk_email_sync_attempts",
         "pk_email_sync_pages",
         "pk_email_sync_effect_receipts",
+        "pk_email_message_artifacts",
+        "uq_email_message_artifacts_command",
+        "fk_email_message_artifacts_environment",
+        "fk_email_message_artifacts_acceptance",
+        "fk_email_message_artifacts_revision",
+        "ck_email_message_artifacts_ck_email_message_artifacts_digests",
+        "ck_email_message_artifacts_ck_email_message_artifacts_record",
         "uq_email_sync_attempts_key",
         "fk_email_sync_attempts_environment",
         "fk_email_sync_pages_attempt",
@@ -3609,6 +3627,17 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         ("email_sync_effect_receipts", "effect_key"),
         ("email_sync_effect_receipts", "receipt_reference"),
         ("email_sync_effect_receipts", "durable"),
+        ("email_message_artifacts", "workspace_id"),
+        ("email_message_artifacts", "environment_id"),
+        ("email_message_artifacts", "artifact_id"),
+        ("email_message_artifacts", "source_object_id"),
+        ("email_message_artifacts", "source_revision_id"),
+        ("email_message_artifacts", "canonical_acceptance_id"),
+        ("email_message_artifacts", "artifact_digest"),
+        ("email_message_artifacts", "command_identity"),
+        ("email_message_artifacts", "command_digest"),
+        ("email_message_artifacts", "record"),
+        ("email_message_artifacts", "created_at"),
     } | AUTHORIZATION_DIRECTORY_COLUMNS | AUDIT_COLUMNS | DELIVERY_COLUMNS | ADMISSION_COLUMNS
     assert columns[("workspaces", "id")] == ("uuid", "NO", None)
     assert columns[("environments", "id")] == ("uuid", "NO", None)
@@ -3661,6 +3690,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "pk_email_sync_attempts",
         "pk_email_sync_pages",
         "pk_email_sync_effect_receipts",
+        "pk_email_message_artifacts",
+        "uq_email_message_artifacts_command",
         "uq_email_sync_attempts_key",
         "ix_email_sync_attempts_active",
         "pk_context_profiles",
@@ -4133,7 +4164,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                         "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                         "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'yandex_disk_reconciliation_runs', 'mounted_fs_reconciliation_runs', 'mounted_fs_removal_policies', 'mounted_fs_removal_authorities', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'google_sheets_absence_candidates', 'google_sheets_removal_decisions', 'register_link_claims', 'register_association_acceptances', 'original_upload_records', "
-                        "'qa_agent_artifacts', 'qa_agent_results', 'email_sync_attempts', 'email_sync_pages', 'email_sync_effect_receipts')"
+                        "'qa_agent_artifacts', 'qa_agent_results', 'email_sync_attempts', 'email_sync_pages', 'email_sync_effect_receipts', 'email_message_artifacts')"
                     )
                 )
             )
@@ -4195,6 +4226,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "email_sync_attempts": (True, True),
             "email_sync_pages": (True, True),
             "email_sync_effect_receipts": (True, True),
+        "email_message_artifacts": (True, True),
         "idempotency_receipts": (True, True),
         "initial_workspace_bootstrap": (True, True),
         "outbox_intents": (True, True),
@@ -5731,13 +5763,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261227_95_processing_admission_expand.py",
         "20261228_96_governed_reprocessing.py",
         "20261229_97_email_sync_durability.py",
+        "20261230_98_email_message_artifacts.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261230_98_injected_failure.py").write_text(
+    (target / "versions" / "20261231_99_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261230_98'\n"
-        "down_revision = '20261229_97'\n"
+        "revision = '20261231_99'\n"
+        "down_revision = '20261230_98'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

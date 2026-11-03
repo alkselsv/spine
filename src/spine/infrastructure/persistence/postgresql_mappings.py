@@ -920,6 +920,45 @@ parsed_document_segments = Table(
     Column("heading_path", JSONB, nullable=False),
 )
 
+email_message_artifacts = Table(
+    "email_message_artifacts", metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("artifact_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("canonical_acceptance_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("artifact_digest", String(64), nullable=False),
+    Column("command_identity", Text, nullable=False),
+    Column("command_digest", String(64), nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("workspace_id", "environment_id", "artifact_id", name="pk_email_message_artifacts"),
+    UniqueConstraint("workspace_id", "environment_id", "command_identity", name="uq_email_message_artifacts_command"),
+    ForeignKeyConstraint(
+        [
+            "workspace_id",
+            "environment_id",
+            "canonical_acceptance_id",
+            "source_object_id",
+            "source_revision_id",
+        ],
+        [
+            "spine.canonical_acceptances.workspace_id",
+            "spine.canonical_acceptances.environment_id",
+            "spine.canonical_acceptances.canonical_acceptance_id",
+            "spine.canonical_acceptances.source_object_id",
+            "spine.canonical_acceptances.source_revision_id",
+        ],
+        name="fk_email_message_artifacts_acceptance",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "source_object_id", "source_revision_id"],
+        ["spine.source_revisions.workspace_id", "spine.source_revisions.environment_id", "spine.source_revisions.source_object_id", "spine.source_revisions.revision_id"],
+        name="fk_email_message_artifacts_revision",
+    ),
+)
+
 transcription_jobs = Table(
     "transcription_jobs",
     metadata,
@@ -1966,6 +2005,14 @@ canonical_acceptances = Table(
     Column("audit_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("outbox_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("accepted_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint(
+        "workspace_id",
+        "environment_id",
+        "canonical_acceptance_id",
+        "source_object_id",
+        "source_revision_id",
+        name="uq_canonical_acceptances_scope_source_revision",
+    ),
 )
 
 current_source_heads = Table(
@@ -2646,6 +2693,7 @@ current_trusted_canonical_acceptance_selectors = Table(
 )
 
 __all__ = [
+    "email_message_artifacts",
     "email_sync_attempts",
     "email_sync_pages",
     "email_sync_effect_receipts",
