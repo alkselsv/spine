@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useMutation, useQueries, useQueryClient } from '@tanstack/react-query';
-import { Check, ChevronLeft, ChevronRight, LockKeyhole, Mail, Plus, RefreshCw, ShieldCheck, X } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, CircleAlert, LockKeyhole, Mail, Plus, RefreshCw, ShieldCheck, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router';
 
@@ -32,6 +32,16 @@ const capabilityCopy: Partial<Record<Capability, string>> = {
 };
 const capabilityStatusCopy: Record<components['schemas']['ProviderCapabilityStatus'], string> = {
   supported: 'Поддерживается', unsupported: 'Не поддерживается', unqualified: 'Не квалифицировано',
+};
+type OperatorDiagnosticKind = 'healthy' | 'partial' | 'stale' | 'degraded' | 'revoked' | 'reconciliation_required';
+interface OperatorDiagnostic { guidance: string; kind: OperatorDiagnosticKind; title: string }
+const operatorDiagnosticCopy: Record<OperatorDiagnosticKind, OperatorDiagnostic> = {
+  healthy: { kind: 'healthy', title: 'Синхронизация работает штатно', guidance: 'Дополнительные действия не требуются. Обновите статус, если ожидаемые данные не появляются.' },
+  partial: { kind: 'partial', title: 'Получены частичные данные', guidance: 'Не считайте выборку полной. Обновите статус после следующей попытки синхронизации.' },
+  stale: { kind: 'stale', title: 'Данные устарели', guidance: 'Сверьте время последней полной синхронизации перед использованием данных и обновите статус.' },
+  degraded: { kind: 'degraded', title: 'Работает с ограничениями', guidance: 'Не расширяйте область доступа. Обновите статус позднее или следуйте операционному регламенту.' },
+  revoked: { kind: 'revoked', title: 'Доступ отозван', guidance: 'Остановите ожидание синхронизации и запросите новое одобрение подключения у владельца доступа.' },
+  reconciliation_required: { kind: 'reconciliation_required', title: 'Требуется сверка', guidance: 'Не запускайте ручной импорт. Дождитесь безопасной полной сверки и затем обновите статус.' },
 };
 
 export function ProviderConnectionsPage() {
@@ -196,20 +206,22 @@ function ConfigurationForm({ draft, error, onCancel, onChange, onSubmit, pending
 
 function ConnectionCard({ item, onOpen }: { item: Connection; onOpen: () => void }) {
   const sync = item.mailbox_sync;
-  return <article className={styles.card} data-health={item.health} role="listitem"><div className={styles.cardTop}><span className={styles.providerIcon}><Mail aria-hidden="true" size={18} /></span><span className={styles.statusBadge} data-state={sync?.state ?? item.health}>{sync ? syncCopy[sync.state] : healthCopy[item.health]}</span></div><div><p className={styles.providerKind}>{item.provider_kind === 'google' ? 'Google Workspace' : 'Яндекс 360'}</p><h3>{providerLabel(item)}</h3><p className={styles.cardDescription}>{providerDescription(item)}</p></div><dl className={styles.cardMetrics}><div><dt>Версия</dt><dd>v{item.version}</dd></div><div><dt>Отставание</dt><dd>{formatLag(sync?.lag_seconds ?? item.cursor_lag_seconds)}</dd></div><div><dt>Операции</dt><dd>{item.permitted_operations.length}</dd></div></dl><button aria-label={`Открыть ${providerLabel(item)}`} className={styles.cardAction} onClick={onOpen} type="button">Открыть безопасный статус <ChevronRight aria-hidden="true" size={14} /></button></article>;
+  const diagnostic = operatorDiagnostic(item);
+  return <article className={styles.card} data-health={item.health} role="listitem"><div className={styles.cardTop}><span className={styles.providerIcon}><Mail aria-hidden="true" size={18} /></span><span className={styles.statusBadge} data-state={diagnostic.kind}>{diagnostic.title}</span></div><div><p className={styles.providerKind}>{item.provider_kind === 'google' ? 'Google Workspace' : 'Яндекс 360'}</p><h3>{providerLabel(item)}</h3><p className={styles.cardDescription}>{providerDescription(item)}</p></div><dl className={styles.cardMetrics}><div><dt>Версия</dt><dd>v{item.version}</dd></div>{sync?.lag_seconds !== null && sync?.lag_seconds !== undefined ? <div><dt>Отставание</dt><dd>{formatLag(sync.lag_seconds)}</dd></div> : null}<div><dt>Операции</dt><dd>{item.permitted_operations.length}</dd></div></dl><button aria-label={`Открыть ${providerLabel(item)}`} className={styles.cardAction} onClick={onOpen} type="button">Открыть безопасный статус <ChevronRight aria-hidden="true" size={14} /></button></article>;
 }
 
 function ConnectionDetails({ item, onBack, onConfigure }: { item: Connection; onBack: () => void; onConfigure: () => void }) {
   const sync = item.mailbox_sync;
+  const diagnostic = operatorDiagnostic(item);
   const unsupported = item.capabilities.filter((capability) => capability.status !== 'supported');
   return <article aria-labelledby="connection-detail-heading" className={styles.details}>
     <header className={styles.detailHeader}><button className={styles.backButton} onClick={onBack} type="button"><ChevronLeft aria-hidden="true" size={15} />Все коннекторы</button><div className={styles.detailTitle}><span className={styles.providerIcon}><Mail aria-hidden="true" size={18} /></span><div><p className={styles.providerKind}>{item.provider_kind === 'google' ? 'Google Workspace' : 'Яндекс 360'}</p><h3 id="connection-detail-heading">{providerLabel(item)}</h3></div></div><button className={styles.secondaryButton} onClick={onConfigure} type="button">Изменить конфигурацию</button></header>
     <div className={styles.detailGrid}>
-      <section aria-labelledby="safe-status-heading" className={styles.detailSection}><div className={styles.sectionHeading}><div><p className={styles.eyebrow}>Наблюдаемое состояние</p><h4 id="safe-status-heading">Безопасный статус</h4></div><span className={styles.statusBadge} data-state={sync?.state ?? item.health}>{sync ? syncCopy[sync.state] : healthCopy[item.health]}</span></div><Definition label="Состояние подключения">{healthCopy[item.health]}</Definition><Definition label="Последняя полная синхронизация">{formatDate(sync?.last_complete_at ?? item.last_successful_reconciliation_at)}</Definition><Definition label="Отставание">{formatLag(sync?.lag_seconds ?? item.cursor_lag_seconds)}</Definition><Definition label="Проверено">{formatDate(item.observed_at)}</Definition>{item.diagnostic_codes.length > 0 ? <Definition label="Безопасные коды"><span className={styles.diagnosticCodes}>{item.diagnostic_codes.map((code) => <code key={code}>{code}</code>)}</span></Definition> : null}{unsupported.length > 0 ? <p className={styles.warning} role="status">{unsupported.length} возможностей недоступны или ещё не квалифицированы.</p> : null}</section>
+      <section aria-labelledby="safe-status-heading" className={styles.detailSection}><div className={styles.sectionHeading}><div><p className={styles.eyebrow}>Наблюдаемое состояние</p><h4 id="safe-status-heading">Безопасный статус</h4></div><span className={styles.statusBadge} data-state={diagnostic.kind}>{diagnostic.title}</span></div><div aria-label={diagnostic.title} className={styles.operatorDiagnostic} data-state={diagnostic.kind} role="status"><CircleAlert aria-hidden="true" size={17} /><div><strong>{diagnostic.title}</strong><p>{diagnostic.guidance}</p></div></div><Definition label="Состояние подключения">{healthCopy[item.health]}</Definition>{sync?.last_complete_at ? <Definition label="Последняя полная синхронизация">{formatDate(sync.last_complete_at)}</Definition> : null}{sync?.lag_seconds !== null && sync?.lag_seconds !== undefined ? <Definition label="Отставание">{formatLag(sync.lag_seconds)}</Definition> : null}<Definition label="Проверено">{formatDate(item.observed_at)}</Definition>{item.diagnostic_codes.length > 0 ? <Definition label="Безопасные коды"><span className={styles.diagnosticCodes}>{item.diagnostic_codes.map((code) => <code key={code}>{code}</code>)}</span></Definition> : null}{unsupported.length > 0 ? <p className={styles.warning} role="status">{unsupported.length} возможностей недоступны или ещё не квалифицированы.</p> : null}</section>
       <section aria-labelledby="approval-heading" className={styles.detailSection}><p className={styles.eyebrow}>Версионированная конфигурация</p><h4 id="approval-heading">Одобрение и версия</h4><Definition label="Approval ID"><code>{item.approval_id}</code></Definition><Definition label="Connection ID"><code>{item.connection_id}</code></Definition><Definition label="Точная версия подключения"><code>{item.connection_version_id}</code></Definition><Definition label="Версия конфигурации">{item.version}</Definition></section>
       <section aria-labelledby="scope-heading" className={styles.detailSection}><p className={styles.eyebrow}>Доступ провайдера</p><h4 id="scope-heading">Одобренная область</h4><div className={styles.referenceList}>{item.approved_resource_scope_references.map((reference) => <code key={reference}>{reference}</code>)}</div><p className={styles.protectedNote}><LockKeyhole aria-hidden="true" size={13} />Адреса ящиков, названия папок и ярлыков защищены и не отображаются.</p></section>
       <section aria-labelledby="operations-heading" className={styles.detailSection}><p className={styles.eyebrow}>Границы чтения</p><h4 id="operations-heading">Разрешённые операции</h4><ul className={styles.operationList}>{item.permitted_operations.map((operation) => <li key={operation}><Check aria-hidden="true" size={14} /><span>{operationCopy[operation]}</span><code>{operation}</code></li>)}</ul><p className={styles.protectedNote}><ChevronRight aria-hidden="true" size={13} />Исходящие и изменяющие операции не разрешены.</p></section>
-      <section aria-labelledby="capabilities-heading" className={`${styles.detailSection} ${styles.fullWidth}`}><p className={styles.eyebrow}>Offline qualification</p><h4 id="capabilities-heading">Возможности подключения</h4><ul className={styles.capabilityList}>{item.capabilities.map((capability) => <li data-status={capability.status} key={capability.kind}><span><b>{capabilityCopy[capability.kind] ?? capability.kind}</b><code>{capability.kind}</code></span><span>{capabilityStatusCopy[capability.status]}</span></li>)}</ul></section>
+      <section aria-labelledby="capabilities-heading" className={`${styles.detailSection} ${styles.fullWidth}`}><p className={styles.eyebrow}>UI qualification</p><h4 id="capabilities-heading">Возможности подключения</h4><div className={styles.qualificationNote}><ShieldCheck aria-hidden="true" size={16} /><div><p>Этот экран квалифицирует только отображение безопасного API-контракта.</p><p>Он не подтверждает live-доступ или работоспособность Gmail и Yandex Mail.</p></div></div><ul className={styles.capabilityList}>{item.capabilities.map((capability) => <li data-status={capability.status} key={capability.kind}><span><b>{capabilityCopy[capability.kind] ?? capability.kind}</b><code>{capability.kind}</code></span><span>{capabilityStatusCopy[capability.status]}</span></li>)}</ul></section>
     </div>
   </article>;
 }
@@ -217,6 +229,17 @@ function ConnectionDetails({ item, onBack, onConfigure }: { item: Connection; on
 function Definition({ children, label }: { children: ReactNode; label: string }) { return <dl className={styles.definition}><dt>{label}</dt><dd>{children}</dd></dl>; }
 function LoadingCatalog() { return <div aria-label="Загрузка почтовых коннекторов" aria-live="polite" className={styles.loading} role="status"><span>Загружаем почтовые подключения…</span>{[0, 1].map((item) => <div aria-hidden="true" className={styles.skeleton} key={item} />)}</div>; }
 function ConnectionState({ action, alert = false, description, title }: { action: ReactNode; alert?: boolean; description: string; title: string }) { return <div aria-label={title} className={styles.state} role={alert ? 'alert' : 'region'}><span className={styles.stateIcon}><Mail aria-hidden="true" size={22} /></span><h3>{title}</h3><p>{description}</p>{action}</div>; }
+function operatorDiagnostic(item: Connection): OperatorDiagnostic {
+  const syncState = item.mailbox_sync?.state;
+  if (item.health === 'revoked' || syncState === 'revoked') return operatorDiagnosticCopy.revoked;
+  if (item.health === 'reconciliation_required' || syncState === 'reconciliation_required') return operatorDiagnosticCopy.reconciliation_required;
+  if (syncState === 'partial') return operatorDiagnosticCopy.partial;
+  if (syncState === 'stale') return operatorDiagnosticCopy.stale;
+  if (syncState === 'failed' || syncState === 'suspended') return { ...operatorDiagnosticCopy.degraded, title: syncCopy[syncState] };
+  if (item.health === 'degraded') return operatorDiagnosticCopy.degraded;
+  if (syncState) return { ...operatorDiagnosticCopy.healthy, title: syncCopy[syncState] };
+  return { ...operatorDiagnosticCopy.healthy, title: healthCopy[item.health] };
+}
 function isMailboxConnection(item: Connection): boolean { return item.provider_kind === 'yandex_mail' || (item.provider_kind === 'google' && (item.mailbox_sync !== null || item.permitted_operations.length > 0)); }
 function providerLabel(item: Connection): string { return item.provider_kind === 'google' ? 'Gmail' : 'Yandex Mail'; }
 function providerDescription(item: Connection): string { return item.provider_kind === 'google' ? 'Входящая почта и вложения из уже одобренного Google Workspace подключения.' : 'Почтовые сообщения через одобренное read-only подключение Яндекс 360.'; }

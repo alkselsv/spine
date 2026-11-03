@@ -29,6 +29,8 @@ describe('Approved mailbox connection control plane', () => {
     expect(screen.getByText('mailbox-scope:gmail:approved:10')).toBeVisible();
     expect(screen.getByText('Чтение исходного сообщения')).toBeVisible();
     expect(screen.getByText('Чтение вложений')).toBeVisible();
+    expect(screen.getByText('Последняя полная синхронизация')).toBeVisible();
+    expect(screen.getByText('5 мин')).toBeVisible();
     expect(document.body).not.toHaveTextContent('protected@example.test');
   });
 
@@ -56,28 +58,55 @@ describe('Approved mailbox connection control plane', () => {
   });
 
   it('test_partial_inspection_failure_keeps_only_safe_persisted_fields', async () => {
-    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(Response.json(collection([connection()]))).mockResolvedValueOnce(structuredError(503, 'spine.provider.unavailable', { provider_payload: 'subject: protected acquisition' })));
+    const protectedValues = ['Quarterly acquisition', 'person@example.test', 'proposal-secret.docx', 'INBOX/private', 'socket ECONNRESET at provider', '{"raw":"provider payload"}'];
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(Response.json(collection([connection()]))).mockResolvedValueOnce(structuredError(503, 'spine.provider.unavailable', {
+      subject: protectedValues[0], address: protectedValues[1], filename: protectedValues[2], label_name: protectedValues[3], raw_error: protectedValues[4], provider_payload: protectedValues[5],
+    })));
     renderPage();
 
     expect(await screen.findByText(/часть актуальных проверок недоступна/i)).toBeVisible();
     expect(screen.getByRole('heading', { name: 'Yandex Mail' })).toBeVisible();
-    expect(document.body).not.toHaveTextContent('protected acquisition');
+    for (const protectedValue of protectedValues) expect(document.body).not.toHaveTextContent(protectedValue);
   });
 
   it.each([
-    ['complete', 'Синхронизация завершена'],
-    ['partial', 'Получены частичные данные'],
-    ['stale', 'Данные устарели'],
-    ['failed', 'Синхронизация завершилась с ошибкой'],
-    ['revoked', 'Доступ отозван'],
-    ['reconciliation_required', 'Требуется сверка'],
-  ] as const)('test_%s_sync_state_has_distinct_accessible_operator_copy', async (state, expected) => {
-    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(collection([connection({ mailbox_sync: { state, last_complete_at: null, lag_seconds: null } })]))));
+    ['partial', 'healthy', 'Получены частичные данные', 'Не считайте выборку полной'],
+    ['stale', 'healthy', 'Данные устарели', 'Сверьте время последней полной синхронизации'],
+    ['complete', 'degraded', 'Работает с ограничениями', 'Обновите статус позднее или следуйте операционному регламенту'],
+    ['revoked', 'revoked', 'Доступ отозван', 'запросите новое одобрение подключения'],
+    ['reconciliation_required', 'reconciliation_required', 'Требуется сверка', 'Дождитесь безопасной полной сверки'],
+  ] as const)('test_%s_sync_state_has_distinct_accessible_operator_guidance', async (state, health, expected, guidance) => {
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(collection([connection({ health, mailbox_sync: { state, last_complete_at: null, lag_seconds: null } })]))));
     renderPage();
 
-    expect(await screen.findByText(expected)).toBeVisible();
+    await userEvent.setup().click(await screen.findByRole('button', { name: /Открыть Yandex Mail/ }));
+    const diagnostic = screen.getByRole('status', { name: expected });
+    expect(diagnostic).toHaveTextContent(guidance);
     expect(document.body).not.toHaveTextContent('oauth-token-secret');
     expect(document.body).not.toHaveTextContent('INBOX/private');
+  });
+
+  it('test_synthetic_status_is_identified_as_ui_qualification_not_provider_pass', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(collection([connection()]))));
+    renderPage();
+
+    await userEvent.setup().click(await screen.findByRole('button', { name: /Открыть Yandex Mail/ }));
+    expect(screen.getByText(/квалифицирует только отображение безопасного API-контракта/i)).toBeVisible();
+    expect(screen.getByText(/не подтверждает live-доступ или работоспособность Gmail и Yandex Mail/i)).toBeVisible();
+    expect(document.body).not.toHaveTextContent(/provider pass/i);
+  });
+
+  it('test_sync_metrics_are_omitted_when_mailbox_contract_does_not_supply_them', async () => {
+    const item = connection({ capabilities: [], cursor_lag_seconds: 75, last_successful_reconciliation_at: '2026-11-03T16:00:00Z', mailbox_sync: { state: 'complete', last_complete_at: null, lag_seconds: null } });
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(collection([item]))));
+    renderPage();
+
+    await userEvent.setup().click(await screen.findByRole('button', { name: /Открыть Yandex Mail/ }));
+    expect(screen.queryByText('Последняя полная синхронизация')).not.toBeInTheDocument();
+    expect(screen.queryByText('Отставание')).not.toBeInTheDocument();
+    expect(screen.queryByText('2 мин')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Возможности подключения' })).toBeVisible();
+    expect(screen.queryByText('mailbox_enumeration')).not.toBeInTheDocument();
   });
 
   it('test_permission_denied_state_never_renders_provider_or_mailbox_payload', async () => {
