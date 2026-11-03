@@ -222,10 +222,11 @@ qualification. No actual retention duration or approval is invented here.
 Verification on the rebased working tree, based on current main
 `c3a7feb200cd352d90f23853c4bc131efd4f7d4b`:
 
-- Restricted PostgreSQL ASR storage and readiness: previous base result was
-  `78 passed in 83.61s`; rerun against current head `20270105_104` is pending.
-- Fresh-database initial-tenancy migration suite against current head
-  `20270105_104` is running; record exact result before handoff.
+- Restricted PostgreSQL ASR storage and readiness on current head:
+  `78 passed in 82.09s` using restricted `spine_runtime`.
+- Fresh-database initial-tenancy migration suite on current head
+  `20270105_104`: `59 passed in 793.81s`, including main migrations 100–101,
+  ASR revisions 102–104 and injected-failure rollback.
 - `python -m compileall -q src tests` and `git diff --check`: PASS.
 - Full repository suite on exact previous-main base `c05b0914`: `6468 passed,
   7 skipped, 5 failed, 1 warning` in `2008.34s`.
@@ -233,11 +234,15 @@ Verification on the rebased working tree, based on current main
   nested #68 traceability/full gates repeat baseline failures. The artifact-diff
   check also failed because migration resequencing changes were uncommitted
   during this run; rerun it on the clean committed tree. No ASR storage test
-  failed. Verify the direct failures against exact current base `c3a7feb2`.
+  failed. Focused tests on exact current main `c3a7feb2` reproduce the Google
+  desktop loopback OAuth and #680 wizard failures. The current branch full-suite
+  invocation reached about 95%, then its exec session ended without final output
+  or exit code after reporting failures; local full-suite status is
+  `NOT_VERIFIED`.
 - `python -m compileall -q src tests`, `uv lock --check` with `/tmp` cache, and
   `git diff --check`: PASS.
-- GitHub CI on the previous base passed all seven checks; checks for current
-  base `c3a7feb2` and the pushed rebased head are pending.
+- All seven GitHub checks on exact PR HEAD `1d74ee13` passed, including
+  `r1-regression-gate` (21m51s). The clean-tree #68 artifact gate passed.
 
 PR #797 stays OPEN/DRAFT and Issue #795 stays OPEN. Source-head replacement,
 AccessPolicy activation, lifecycle withdrawal, retention CAS, multi-source

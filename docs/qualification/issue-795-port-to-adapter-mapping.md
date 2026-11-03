@@ -123,11 +123,11 @@ external revocation fencing are available.
 Verification on the rebased working tree (base
 `c3a7feb200cd352d90f23853c4bc131efd4f7d4b`):
 
-- Restricted PostgreSQL storage/readiness qualification on the previous base:
-  `78 passed in 83.61s`, using `spine_runtime`. Rerun against the current
-  migration chain `20270105_104` is pending.
+- Restricted PostgreSQL storage/readiness qualification on the current branch:
+  `78 passed in 82.09s`, using restricted `spine_runtime` and migration head
+  `20270105_104`.
 - Initial-tenancy migration upgrade/rollback qualification against the current
-  chain is running; report its exact result before handoff.
+  chain `20270105_104`: `59 passed in 793.81s`.
 - `python -m compileall -q src tests`, `uv lock --check` with cache redirected
   to `/tmp`, and `git diff --check`: PASS.
 - Full repository `pytest -q` on exact previous-main base `c05b0914`: `6468
@@ -136,10 +136,14 @@ Verification on the rebased working tree (base
   offline traceability/full gates repeat baseline failures. Its artifact-diff
   gate also fails while the re-sequencing changes are uncommitted; rerun that
   gate against the clean committed tree. No ASR-specific test failed.
-- Exact current-main baseline verification for the two direct failures and
-  full suite on this rebased branch remain pending. Prior main `8b99d598`
-  reproduced the OAuth and #680 wizard failures. GitHub checks for the final
-  rebased head are pending until push.
+- On exact current main `c3a7feb2`, focused baseline runs reproduce the Google
+  desktop loopback OAuth failure and #680 wizard failure. The current branch's
+  full-suite invocation reached approximately 95%, but its exec session ended
+  without a final summary or exit code after reporting failures; treat the
+  local full-suite result as `NOT_VERIFIED`. The exact-head GitHub
+  `r1-regression-gate` passed.
+- Exact-head GitHub checks all passed. The clean-tree #68 artifact gate passed
+  after the migration resequence commit.
 
 Production manifest authority (#811), deletion authority (#812), and external
 approval/revocation fencing (#813) remain separate production gates. One
