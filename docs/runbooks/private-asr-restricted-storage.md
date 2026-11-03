@@ -220,22 +220,18 @@ environment; backup deletion, encryption, physical erasure and restart/restore
 qualification. No actual retention duration or approval is invented here.
 
 Verification on the rebased working tree, based on current main
-`4554596ed6e4cee4ebc3fe1d2d1464ea559296b5`:
+`00c4b911f36bbf973cae108b3665fd13fc3c9170`:
 
 - PostgreSQL private-ASR module: `60 passed in 57.42s` with restricted
   `spine_runtime`, including report/aggregate atomicity, RLS, process restart,
   aggregate revocation visibility, staging forgery and bounded retry checks.
-- Migration, PostgreSQL readiness, canonical retention and audit suites:
-  `103 passed in 530.16s` through Alembic head `20270101_100`.
+- Fresh-database initial-tenancy migration suite: `58 passed in 752.29s` through
+  Alembic head `20270102_101`; migration/readiness inventory unit suite: `7 passed`.
 - Source lifecycle, AccessPolicy, retention, audit, retry and related contracts:
   `196 passed in 11.86s`.
 - `uv run python -m compileall -q src tests` and `git diff --check`: PASS.
-- Exact current-main baseline reproduces two unrelated failures: Google desktop
-  loopback OAuth and the #680 wizard. The #68 staged-diff artifact check passes
-  on clean main. Full repository `pytest -q` on the latest rebased source-fence
-  fix remains pending.
-- Existing PR checks are from pre-rebase head `7441583`. Exact-head GitHub CI
-  remains pending until this branch is pushed.
+- Exact current-main baseline and full repository suite for `00c4b91` are pending.
+- Exact-head GitHub CI is pending until this branch is pushed.
 
 PR #797 stays OPEN/DRAFT and Issue #795 stays OPEN. Source-head replacement,
 AccessPolicy activation, lifecycle withdrawal, retention CAS, multi-source
