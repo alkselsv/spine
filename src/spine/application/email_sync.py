@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, timezone
 from enum import Enum
+import hashlib
 from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -64,6 +65,8 @@ class EmailSyncAdmission(DefinitionModel):
 class EmailSyncEffect(DefinitionModel):
     """Opaque reference to one idempotent canonical effect covered by a page."""
 
+    workspace_id: UUID
+    environment_id: UUID
     effect_key: str = Field(
         min_length=1, max_length=255, pattern=r"^[A-Za-z0-9_.:-]+$"
     )
@@ -91,6 +94,8 @@ class EmailSyncEffectReceipt(DefinitionModel):
 class EmailSyncPage(DefinitionModel):
     """One provider page with opaque cursors and stable effect identities."""
 
+    workspace_id: UUID
+    environment_id: UUID
     page_id: str = Field(
         min_length=1, max_length=255, pattern=r"^[A-Za-z0-9_.:-]+$"
     )
@@ -110,10 +115,15 @@ class EmailSyncPage(DefinitionModel):
 
 
 class EmailSyncPageState(DefinitionModel):
+    workspace_id: UUID
+    environment_id: UUID
     page_id: str = Field(
         min_length=1, max_length=255, pattern=r"^[A-Za-z0-9_.:-]+$"
     )
+    page_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     requested_checkpoint: str | None = Field(default=None, max_length=4096)
+    # The provider's next cursor is deliberately absent until all effects have
+    # durable receipts and the coordinator is ready to publish the page.
     next_checkpoint: str | None = Field(default=None, max_length=4096)
     terminal: bool
     effects: tuple[EmailSyncEffect, ...]
@@ -145,7 +155,9 @@ class EmailSyncAttempt(DefinitionModel):
 
 
 class EmailSyncRepository(Protocol):
-    async def get(self, attempt_id: UUID) -> EmailSyncAttempt | None: ...
+    async def get(
+        self, attempt_id: UUID, workspace_id: UUID, environment_id: UUID
+    ) -> EmailSyncAttempt | None: ...
 
     async def save(self, attempt: EmailSyncAttempt) -> EmailSyncAttempt: ...
 
@@ -166,8 +178,16 @@ class InMemoryEmailSyncRepository:
     def __init__(self) -> None:
         self._attempts: dict[UUID, EmailSyncAttempt] = {}
 
-    async def get(self, attempt_id: UUID) -> EmailSyncAttempt | None:
-        return self._attempts.get(attempt_id)
+    async def get(
+        self, attempt_id: UUID, workspace_id: UUID, environment_id: UUID
+    ) -> EmailSyncAttempt | None:
+        attempt = self._attempts.get(attempt_id)
+        if attempt is None or (
+            attempt.admission.workspace_id != workspace_id
+            or attempt.admission.environment_id != environment_id
+        ):
+            return None
+        return attempt
 
     async def save(self, attempt: EmailSyncAttempt) -> EmailSyncAttempt:
         self._attempts[attempt.attempt_id] = attempt
@@ -208,7 +228,9 @@ class EmailSyncCoordinator:
             NAMESPACE_URL,
             f"email-sync:{admission.model_dump_json()}:{attempt_key}",
         )
-        existing = await self._repository.get(attempt_id)
+        existing = await self._repository.get(
+            attempt_id, admission.workspace_id, admission.environment_id
+        )
         if existing is not None:
             if existing.admission != admission or existing.attempt_key != attempt_key:
                 raise ValueError("attempt identity conflicts with its binding")
@@ -226,11 +248,16 @@ class EmailSyncCoordinator:
         )
 
     async def apply_page(
-        self, attempt_id: UUID, page: EmailSyncPage
+        self,
+        attempt_id: UUID,
+        page: EmailSyncPage,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
     ) -> EmailSyncAttempt:
         """Apply a page idempotently and publish its opaque cursor after receipts."""
 
-        attempt = await self._require(attempt_id)
+        attempt = await self._require(attempt_id, workspace_id, environment_id)
         known = self._page(attempt, page.page_id)
         if known is not None and not self._matches(known, page):
             return await self._save(
@@ -269,10 +296,34 @@ class EmailSyncCoordinator:
             )
 
         if known is None:
+            if page.workspace_id != attempt.admission.workspace_id or page.environment_id != attempt.admission.environment_id:
+                return await self._save(
+                    attempt.model_copy(
+                        update={
+                            "status": EmailSyncStatus.FAILED,
+                            "failure_code": "page_scope_conflict",
+                        }
+                    )
+                )
+            if any(
+                effect.workspace_id != attempt.admission.workspace_id
+                or effect.environment_id != attempt.admission.environment_id
+                for effect in page.effects
+            ):
+                return await self._save(
+                    attempt.model_copy(
+                        update={
+                            "status": EmailSyncStatus.FAILED,
+                            "failure_code": "effect_scope_conflict",
+                        }
+                    )
+                )
             known = EmailSyncPageState(
+                workspace_id=page.workspace_id,
+                environment_id=page.environment_id,
                 page_id=page.page_id,
+                page_digest=self._page_digest(page),
                 requested_checkpoint=page.requested_checkpoint,
-                next_checkpoint=page.next_checkpoint,
                 terminal=page.terminal,
                 effects=page.effects,
             )
@@ -306,7 +357,9 @@ class EmailSyncCoordinator:
         if admission_state is not EmailSyncAdmissionState.ALLOWED:
             return await self._stop_for_admission(attempt, admission_state)
 
-        known = known.model_copy(update={"committed": True})
+        known = known.model_copy(
+            update={"next_checkpoint": page.next_checkpoint, "committed": True}
+        )
         attempt = attempt.model_copy(
             update={
                 "committed_checkpoint": known.next_checkpoint,
@@ -319,10 +372,16 @@ class EmailSyncCoordinator:
         )
         return await self._replace_page(attempt, known)
 
-    async def cancel(self, attempt_id: UUID) -> EmailSyncAttempt:
+    async def cancel(
+        self,
+        attempt_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+    ) -> EmailSyncAttempt:
         """Suspend an attempt without publishing any uncommitted page cursor."""
 
-        attempt = await self._require(attempt_id)
+        attempt = await self._require(attempt_id, workspace_id, environment_id)
         if attempt.status in {EmailSyncStatus.COMPLETE, EmailSyncStatus.FAILED}:
             return attempt
         return await self._save(
@@ -331,7 +390,14 @@ class EmailSyncCoordinator:
             )
         )
 
-    async def fail(self, attempt_id: UUID, *, failure_code: str) -> EmailSyncAttempt:
+    async def fail(
+        self,
+        attempt_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        failure_code: str,
+    ) -> EmailSyncAttempt:
         """Record a safe, caller-supplied failure code for the attempt."""
 
         if (
@@ -340,7 +406,7 @@ class EmailSyncCoordinator:
             or not all(char.islower() or char.isdigit() or char == "_" for char in failure_code)
         ):
             raise ValueError("failure code must be a bounded non-empty value")
-        attempt = await self._require(attempt_id)
+        attempt = await self._require(attempt_id, workspace_id, environment_id)
         if attempt.status in {EmailSyncStatus.COMPLETE, EmailSyncStatus.SUSPENDED}:
             return attempt
         return await self._save(
@@ -394,8 +460,10 @@ class EmailSyncCoordinator:
             attempt.model_copy(update={"updated_at": self._now()})
         )
 
-    async def _require(self, attempt_id: UUID) -> EmailSyncAttempt:
-        attempt = await self._repository.get(attempt_id)
+    async def _require(
+        self, attempt_id: UUID, workspace_id: UUID, environment_id: UUID
+    ) -> EmailSyncAttempt:
+        attempt = await self._repository.get(attempt_id, workspace_id, environment_id)
         if attempt is None:
             raise KeyError("email sync attempt was not found")
         return attempt
@@ -412,12 +480,11 @@ class EmailSyncCoordinator:
 
     @staticmethod
     def _matches(stored: EmailSyncPageState, supplied: EmailSyncPage) -> bool:
-        return (
-            stored.requested_checkpoint == supplied.requested_checkpoint
-            and stored.next_checkpoint == supplied.next_checkpoint
-            and stored.terminal == supplied.terminal
-            and stored.effects == supplied.effects
-        )
+        return stored.page_digest == EmailSyncCoordinator._page_digest(supplied)
+
+    @staticmethod
+    def _page_digest(page: EmailSyncPage) -> str:
+        return hashlib.sha256(page.model_dump_json().encode("utf-8")).hexdigest()
 
     @staticmethod
     def _receipt_for(

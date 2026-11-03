@@ -8,6 +8,7 @@ import pytest
 from spine.application.email_sync import (
     EmailSyncAdmission,
     EmailSyncAdmissionState,
+    EmailSyncAttempt,
     EmailSyncCoordinator,
     EmailSyncEffect,
     EmailSyncEffectReceipt,
@@ -105,12 +106,19 @@ def page(
 ) -> EmailSyncPage:
     effects_by_key = {"effect-one": EFFECT_ONE, "effect-two": EFFECT_TWO}
     return EmailSyncPage(
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
         page_id=page_id,
         requested_checkpoint=requested_checkpoint,
         next_checkpoint=next_checkpoint,
         terminal=terminal,
         effects=tuple(
-            EmailSyncEffect(effect_key=key, effect_reference=effects_by_key[key])
+            EmailSyncEffect(
+                workspace_id=WORKSPACE_ID,
+                environment_id=ENVIRONMENT_ID,
+                effect_key=key,
+                effect_reference=effects_by_key[key],
+            )
             for key in effect_keys
         ),
     )
@@ -134,13 +142,30 @@ def coordinator(
     return service, admission, effect_port, repository
 
 
+async def apply_page(
+    service: EmailSyncCoordinator,
+    attempt_id: UUID,
+    submitted_page: EmailSyncPage,
+    *,
+    workspace_id: UUID = WORKSPACE_ID,
+    environment_id: UUID = ENVIRONMENT_ID,
+) -> EmailSyncAttempt:
+    return await service.apply_page(
+        attempt_id,
+        submitted_page,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+    )
+
+
 @pytest.mark.asyncio
 async def test_pages_commit_opaque_checkpoints_after_durable_effects() -> None:
     service, _, effects, _ = coordinator()
     attempt = await service.create_attempt(mailbox_scope(), attempt_key="sync-1")
 
-    first = await service.apply_page(attempt.attempt_id, page())
-    second = await service.apply_page(
+    first = await apply_page(service, attempt.attempt_id, page())
+    second = await apply_page(
+        service,
         attempt.attempt_id,
         page(
             page_id="page-two",
@@ -171,7 +196,8 @@ async def test_page_failure_holds_checkpoint_until_every_effect_is_durable(
     service, _, _, repository = coordinator(effects=effect_port)
     attempt = await service.create_attempt(mailbox_scope(), attempt_key="sync-partial")
 
-    result = await service.apply_page(
+    result = await apply_page(
+        service,
         attempt.attempt_id,
         page(effect_keys=("effect-one", "effect-two")),
     )
@@ -179,7 +205,10 @@ async def test_page_failure_holds_checkpoint_until_every_effect_is_durable(
     assert result.status is EmailSyncStatus.INCOMPLETE
     assert result.committed_checkpoint is None
     assert result.pages[0].committed is False
-    stored = await repository.get(attempt.attempt_id)
+    assert result.pages[0].next_checkpoint is None
+    stored = await repository.get(
+        attempt.attempt_id, WORKSPACE_ID, ENVIRONMENT_ID
+    )
     assert stored is not None
     assert stored.committed_checkpoint is None
 
@@ -191,8 +220,9 @@ async def test_incomplete_page_blocks_later_page_from_skipping_its_effects() -> 
     service, _, _, _ = coordinator(effects=effect_port)
     attempt = await service.create_attempt(mailbox_scope(), attempt_key="sync-no-gap")
 
-    failed = await service.apply_page(attempt.attempt_id, page())
-    later = await service.apply_page(
+    failed = await apply_page(service, attempt.attempt_id, page())
+    later = await apply_page(
+        service,
         attempt.attempt_id,
         page(
             page_id="page-two",
@@ -211,8 +241,8 @@ async def test_duplicate_page_and_effect_replay_return_stable_receipts() -> None
     attempt = await service.create_attempt(mailbox_scope(), attempt_key="sync-duplicate")
     submitted_page = page()
 
-    first = await service.apply_page(attempt.attempt_id, submitted_page)
-    replay = await service.apply_page(attempt.attempt_id, submitted_page)
+    first = await apply_page(service, attempt.attempt_id, submitted_page)
+    replay = await apply_page(service, attempt.attempt_id, submitted_page)
 
     assert replay == first
     assert effects.calls == ["effect-one"]
@@ -240,10 +270,10 @@ async def test_retry_after_effect_receipt_before_checkpoint_commit_converges() -
 
     repository.save = save_with_one_interruption  # type: ignore[method-assign]
     with pytest.raises(RuntimeError, match="synthetic interruption"):
-        await service.apply_page(attempt.attempt_id, submitted_page)
+        await apply_page(service, attempt.attempt_id, submitted_page)
 
     repository.save = original_save  # type: ignore[method-assign]
-    result = await service.apply_page(attempt.attempt_id, submitted_page)
+    result = await apply_page(service, attempt.attempt_id, submitted_page)
 
     assert result.status is EmailSyncStatus.RUNNING
     assert result.committed_checkpoint == "opaque.cursor.v1:next"
@@ -258,10 +288,70 @@ async def test_revoked_admission_suspends_without_calling_effects() -> None:
     )
     attempt = await service.create_attempt(mailbox_scope(), attempt_key="sync-revoked")
 
-    result = await service.apply_page(attempt.attempt_id, page())
+    result = await apply_page(service, attempt.attempt_id, page())
 
     assert result.status is EmailSyncStatus.SUSPENDED
     assert result.committed_checkpoint is None
+    assert effects.calls == []
+
+
+@pytest.mark.asyncio
+async def test_denied_admission_suspends_without_disclosing_or_applying_effects() -> None:
+    service, _, effects, _ = coordinator(admission_state=EmailSyncAdmissionState.DENIED)
+    attempt = await service.create_attempt(mailbox_scope(), attempt_key="sync-denied")
+
+    result = await apply_page(service, attempt.attempt_id, page())
+
+    assert result.status is EmailSyncStatus.SUSPENDED
+    assert result.committed_checkpoint is None
+    assert result.failure_code is None
+    assert effects.calls == []
+
+
+@pytest.mark.asyncio
+async def test_attempt_reads_and_commands_are_isolated_by_workspace_and_environment() -> None:
+    service, _, effects, repository = coordinator()
+    attempt = await service.create_attempt(mailbox_scope(), attempt_key="sync-tenant")
+    other_workspace_id = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+
+    assert await repository.get(attempt.attempt_id, other_workspace_id, ENVIRONMENT_ID) is None
+    with pytest.raises(KeyError, match="not found"):
+        await apply_page(
+            service,
+            attempt.attempt_id,
+            page(),
+            workspace_id=other_workspace_id,
+        )
+
+    other_scope = mailbox_scope().model_copy(update={"workspace_id": other_workspace_id})
+    other_attempt = await service.create_attempt(other_scope, attempt_key="sync-tenant")
+    assert other_attempt.attempt_id != attempt.attempt_id
+    assert await repository.get(attempt.attempt_id, WORKSPACE_ID, ENVIRONMENT_ID) == attempt
+    assert await repository.get(other_attempt.attempt_id, other_workspace_id, ENVIRONMENT_ID) == other_attempt
+    assert effects.calls == []
+
+
+@pytest.mark.asyncio
+async def test_effect_scope_substitution_fails_before_effect_application() -> None:
+    service, _, effects, _ = coordinator()
+    attempt = await service.create_attempt(mailbox_scope(), attempt_key="sync-effect-scope")
+    submitted = page().model_copy(
+        update={
+            "effects": (
+                EmailSyncEffect(
+                    workspace_id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                    environment_id=ENVIRONMENT_ID,
+                    effect_key="effect-one",
+                    effect_reference=EFFECT_ONE,
+                ),
+            )
+        }
+    )
+
+    result = await apply_page(service, attempt.attempt_id, submitted)
+
+    assert result.status is EmailSyncStatus.FAILED
+    assert result.failure_code == "effect_scope_conflict"
     assert effects.calls == []
 
 
@@ -271,7 +361,7 @@ async def test_stale_generation_cannot_publish_page_checkpoint() -> None:
     attempt = await service.create_attempt(mailbox_scope(), attempt_key="sync-stale")
     admission.state = EmailSyncAdmissionState.STALE_GENERATION
 
-    result = await service.apply_page(attempt.attempt_id, page())
+    result = await apply_page(service, attempt.attempt_id, page())
 
     assert result.status is EmailSyncStatus.RECONCILIATION_REQUIRED
     assert result.committed_checkpoint is None
@@ -287,7 +377,7 @@ async def test_generation_change_after_effects_still_holds_checkpoint() -> None:
         EmailSyncAdmissionState.STALE_GENERATION,
     ]
 
-    result = await service.apply_page(attempt.attempt_id, page())
+    result = await apply_page(service, attempt.attempt_id, page())
 
     assert result.status is EmailSyncStatus.RECONCILIATION_REQUIRED
     assert result.committed_checkpoint is None
@@ -306,10 +396,41 @@ async def test_cancelled_attempt_is_suspended_and_cannot_resume() -> None:
     service, _, effects, _ = coordinator()
     attempt = await service.create_attempt(mailbox_scope(), attempt_key="sync-cancel")
 
-    cancelled = await service.cancel(attempt.attempt_id)
-    resumed = await service.apply_page(attempt.attempt_id, page())
+    cancelled = await service.cancel(
+        attempt.attempt_id,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+    )
+    resumed = await apply_page(service, attempt.attempt_id, page())
 
     assert cancelled.status is EmailSyncStatus.SUSPENDED
     assert resumed.status is EmailSyncStatus.SUSPENDED
     assert effects.calls == []
+
+
+@pytest.mark.asyncio
+async def test_running_attempt_can_be_cancelled_without_applying_another_page() -> None:
+    service, _, effects, _ = coordinator()
+    attempt = await service.create_attempt(mailbox_scope(), attempt_key="sync-cancel-running")
+    running = await apply_page(service, attempt.attempt_id, page())
+
+    cancelled = await service.cancel(
+        attempt.attempt_id,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+    )
+    resumed = await apply_page(
+        service,
+        attempt.attempt_id,
+        page(
+            page_id="page-two",
+            requested_checkpoint="opaque.cursor.v1:next",
+            next_checkpoint="opaque.cursor.v1:last",
+        ),
+    )
+
+    assert running.status is EmailSyncStatus.RUNNING
+    assert cancelled.status is EmailSyncStatus.SUSPENDED
+    assert resumed.status is EmailSyncStatus.SUSPENDED
+    assert effects.calls == ["effect-one"]
 
