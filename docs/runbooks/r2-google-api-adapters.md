@@ -151,6 +151,11 @@ categories such as timeout, transport connectivity and HTTP 5xx without
 retaining the URL, response or raw exception. The retry disposition says whether
 the failure exhausted its attempts, was non-retryable, stopped before another
 retry, stopped at the run deadline or had no applicable provider retry.
+Every failed v3 report contains the failure stage, code, class and retry
+disposition together; every passed report omits all four. A second provider 401
+after the single permitted refresh is `not_retryable`, even when the general
+request-attempt ceiling is higher, because the authorization policy deliberately
+stops before exhausting that ceiling.
 
 Migration note: v1 reports contain completed-operation counters only. Version 2
 adds transport attempts and `failure_stage`, but has no failure class, retry

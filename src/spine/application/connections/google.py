@@ -83,6 +83,15 @@ GoogleProviderRetryDisposition = Literal[
 ]
 
 
+@dataclass(frozen=True, slots=True)
+class GoogleProviderFailureEvidence:
+    """Closed, disclosure-safe provider failure evidence kept as one value."""
+
+    failure_code: str
+    failure_class: GoogleProviderFailureClass
+    retry_disposition: GoogleProviderRetryDisposition
+
+
 class GoogleProviderReadError(GoogleConnectionError):
     def __init__(
         self,
@@ -91,10 +100,24 @@ class GoogleProviderReadError(GoogleConnectionError):
         failure_class: GoogleProviderFailureClass = "unclassified",
         retry_disposition: GoogleProviderRetryDisposition = "stopped_before_retry",
     ) -> None:
-        self.failure_code = failure_code
-        self.failure_class = failure_class
-        self.retry_disposition = retry_disposition
+        self.evidence = GoogleProviderFailureEvidence(
+            failure_code=failure_code,
+            failure_class=failure_class,
+            retry_disposition=retry_disposition,
+        )
         super().__init__("Google provider read failed.")
+
+    @property
+    def failure_code(self) -> str:
+        return self.evidence.failure_code
+
+    @property
+    def failure_class(self) -> GoogleProviderFailureClass:
+        return self.evidence.failure_class
+
+    @property
+    def retry_disposition(self) -> GoogleProviderRetryDisposition:
+        return self.evidence.retry_disposition
 
     def with_retry_disposition(
         self, retry_disposition: GoogleProviderRetryDisposition
@@ -166,6 +189,10 @@ class GoogleProviderNotFoundError(GoogleProviderReadError):
 
 class GoogleProviderContractError(GoogleConnectionError):
     """A provider response violated a typed, fail-closed reader contract."""
+
+
+class GoogleProviderExecutionError(GoogleConnectionError):
+    """A typed execution boundary stopped provider work safely."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,7 +360,7 @@ class GoogleReadAdmission(Generic[ProviderResultT]):
                     result = await self._provider.read(connection, command)
                 except asyncio.CancelledError:
                     raise
-                except GoogleProviderContractError:
+                except (GoogleProviderContractError, GoogleProviderExecutionError):
                     raise
                 except Exception as error:
                     classified = _classify_google_provider_error(error)
@@ -622,6 +649,8 @@ __all__ = [
     "GoogleConnectionRepository",
     "GoogleProvider",
     "GoogleProviderContractError",
+    "GoogleProviderExecutionError",
+    "GoogleProviderFailureEvidence",
     "GoogleProviderReadError",
     "GoogleProviderAuthorizationError",
     "GoogleProviderQuotaError",

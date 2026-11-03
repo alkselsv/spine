@@ -289,13 +289,17 @@ class GoogleLiveQualificationReport(DefinitionModel):
 
     @model_validator(mode="after")
     def validate_failure_stage(self) -> "GoogleLiveQualificationReport":
-        evidence_is_absent = (
-            self.failure_stage is None
-            and self.failure_class is None
-            and self.retry_disposition is None
-            and self.failure_code is None
+        evidence = (
+            self.failure_stage,
+            self.failure_class,
+            self.retry_disposition,
+            self.failure_code,
         )
-        if (self.status == "passed") != evidence_is_absent:
+        evidence_is_absent = all(value is None for value in evidence)
+        evidence_is_complete = all(value is not None for value in evidence)
+        if self.status == "passed" and not evidence_is_absent:
+            raise ValueError("Google live report failure evidence contradicts status")
+        if self.status == "failed" and not evidence_is_complete:
             raise ValueError("Google live report failure evidence contradicts status")
         return self
 

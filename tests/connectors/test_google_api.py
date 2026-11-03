@@ -107,6 +107,7 @@ def _service(
     retry_observer=None,
     drive_id: str | None = None,
     max_requests_per_run: int = 500,
+    max_attempts: int = 2,
     jitter=None,
 ) -> GoogleApiService:
     return GoogleApiService(
@@ -123,10 +124,12 @@ def _service(
         ),
         request_policy=GoogleApiRequestPolicy(
             timeout_seconds=7.5,
-            max_attempts=2,
+            max_attempts=max_attempts,
             max_requests_per_run=max_requests_per_run,
             max_concurrent_requests=2,
-            backoff_ceiling_seconds=(1.0,),
+            backoff_ceiling_seconds=tuple(
+                float(2**attempt) for attempt in range(max_attempts - 1)
+            ),
             drive_page_size=100,
             sheets_page_size=sheets_page_size,
         ),
@@ -1143,6 +1146,34 @@ async def test_provider_unauthorized_invalidates_token_and_refreshes_once() -> N
     assert result.version == "2"
     assert len(resolver.calls) == 2
     assert transport.requests[-1].headers == {"Authorization": "Bearer second-token"}
+
+
+@pytest.mark.asyncio
+async def test_second_provider_unauthorized_stops_after_single_refresh() -> None:
+    resolver = RecordingCredentialResolver()
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "first-token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(status_code=401, json_body={}),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "second-token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(status_code=401, json_body={}),
+        ]
+    )
+
+    with pytest.raises(GoogleProviderAuthorizationError) as captured:
+        await _service(resolver, transport, max_attempts=4).get_metadata_for_file(
+            _connection(), RESOURCE_SCOPE, "file-1"
+        )
+
+    assert captured.value.retry_disposition == "not_retryable"
+    assert len(resolver.calls) == 2
+    assert len(transport.requests) == 4
 
 
 @pytest.mark.asyncio

@@ -27,9 +27,7 @@ from spine.connectors.google_live_qualification import (
     GoogleLiveQualificationProvider,
     GoogleLiveQualificationRunner,
     GoogleLiveProbeCounts,
-    GoogleLiveRunProgress,
     GoogleLiveSheetTarget,
-    GoogleLiveTransportAttemptEvidence,
     GoogleSharedDriveApproval,
     GoogleSharedDrivePreflightBinding,
     compose_google_live_qualification_runner,
@@ -42,6 +40,7 @@ from spine.connectors.google_live_composition import (
 from spine.scripts import google_live_qualification
 from spine.application.connections.google import (
     GoogleConnectionDeniedError,
+    GoogleProviderReadError,
     GoogleReadCommand,
 )
 from spine.connectors.google_execution_envelope import (
@@ -227,6 +226,7 @@ class CurrentConnectionRepository:
     def __init__(self, current: GoogleConnection) -> None:
         self.current = current
         self.commands = []
+        self.suspensions = []
 
     @asynccontextmanager
     async def admit_read(self, command, context):
@@ -235,7 +235,7 @@ class CurrentConnectionRepository:
         yield self.current
 
     async def suspend_revoked(self, connection, context, *, occurred_at):
-        raise AssertionError("not expected")
+        self.suspensions.append((connection, context, occurred_at))
 
 
 def _runner(
@@ -278,12 +278,15 @@ def _composed_runner(
     config: GoogleLiveQualificationConfig,
     transport,
     *,
+    credential_resolver=None,
     retry_observer=None,
     diagnostic_sink=None,
 ) -> GoogleLiveQualificationRunner:
     registry = DiagnosticEventRegistry.with_default_families()
     return GoogleLiveQualificationBindings(
-        credential_resolver=StaticCredentialResolver(),  # type: ignore[arg-type]
+        credential_resolver=(
+            credential_resolver or StaticCredentialResolver()
+        ),  # type: ignore[arg-type]
         transport=transport,
         retry_observer=retry_observer or NoOpRetryObserver(),  # type: ignore[arg-type]
         connection_repository=CurrentConnectionRepository(config.connection),  # type: ignore[arg-type]
@@ -383,6 +386,8 @@ async def test_live_harness_returns_typed_cancelled_outcome() -> None:
 
     assert report.status == "failed"
     assert report.failure_code == "cancelled"
+    assert report.failure_class == "cancelled"
+    assert report.retry_disposition == "not_applicable"
     assert len(admission.calls) == 1
 
 
@@ -460,6 +465,8 @@ async def test_live_harness_deadline_cancels_provider_and_starts_no_later_calls(
     report = await runner.run(environment_opt_in=True)
 
     assert report.failure_code == "deadline_exceeded"
+    assert report.failure_class == "deadline"
+    assert report.retry_disposition == "stopped_by_deadline"
     assert service.calls == ["synthetic-file"]
     assert service.cancelled.is_set()
 
@@ -500,6 +507,8 @@ async def test_live_harness_deadline_includes_admission_and_cancels_it() -> None
     report = await runner.run(environment_opt_in=True)
 
     assert report.failure_code == "deadline_exceeded"
+    assert report.failure_class == "deadline"
+    assert report.retry_disposition == "stopped_by_deadline"
     assert cancelled.is_set()
 
 
@@ -607,15 +616,39 @@ def test_live_config_rejects_targets_that_do_not_equal_exact_allowlist() -> None
         GoogleLiveQualificationConfig.model_validate(payload)
 
 
-@pytest.mark.parametrize(
-    ("status", "failure_stage"),
-    (("passed", "drive"), ("failed", None)),
-)
-def test_live_report_rejects_status_failure_evidence_contradictions(
-    status: str, failure_stage: str | None
+@pytest.mark.parametrize("evidence_mask", range(15))
+def test_live_report_rejects_every_partial_failed_evidence_combination(
+    evidence_mask: int,
 ) -> None:
     valid = _valid_report().model_dump()
-    valid.update({"status": status, "failure_stage": failure_stage})
+    evidence = {
+        "failure_stage": "drive",
+        "failure_class": "transport",
+        "retry_disposition": "not_retryable",
+        "failure_code": "provider_unavailable",
+    }
+    valid["status"] = "failed"
+    for index, (field, value) in enumerate(evidence.items()):
+        valid[field] = value if evidence_mask & (1 << index) else None
+
+    with pytest.raises(ValueError, match="failure evidence"):
+        GoogleLiveQualificationReport.model_validate(valid)
+
+
+@pytest.mark.parametrize(
+    "evidence_field",
+    ("failure_stage", "failure_class", "retry_disposition", "failure_code"),
+)
+def test_live_report_rejects_passed_status_with_failure_evidence(
+    evidence_field: str,
+) -> None:
+    valid = _valid_report().model_dump()
+    valid[evidence_field] = {
+        "failure_stage": "drive",
+        "failure_class": "transport",
+        "retry_disposition": "not_retryable",
+        "failure_code": "provider_unavailable",
+    }[evidence_field]
 
     with pytest.raises(ValueError, match="failure evidence"):
         GoogleLiveQualificationReport.model_validate(valid)
@@ -667,6 +700,8 @@ async def test_live_harness_rejects_noncurrent_connection_before_provider_calls(
 
     assert report.status == "failed"
     assert report.failure_code == "provider_contract_rejected"
+    assert report.failure_class == "contract"
+    assert report.retry_disposition == "not_retryable"
     assert len(repository.commands) == 1
     assert service.calls == []
 
@@ -972,6 +1007,8 @@ async def test_offline_composition_attributes_post_provider_failure_to_harness()
 
     assert report.failure_code == "harness_failure"
     assert report.failure_stage == "harness"
+    assert report.failure_class == "harness"
+    assert report.retry_disposition == "not_applicable"
     assert report.oauth_request_attempts == 1
     assert report.drive_request_attempts == 1
     assert report.metadata_reads == 1
@@ -980,29 +1017,64 @@ async def test_offline_composition_attributes_post_provider_failure_to_harness()
 @pytest.mark.asyncio
 async def test_offline_composition_attributes_inflight_deadline_to_provider() -> None:
     config = _config(opt_in=True)
-    evidence = GoogleLiveTransportAttemptEvidence()
 
-    class DeadlineAdmission:
-        async def read(self, command, context):
-            del command, context
-            evidence.record("drive")
+    class Transport:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def request(self, request):
+            del request
+            self.calls += 1
+            if self.calls == 1:
+                return GoogleApiResponse(
+                    status_code=200,
+                    json_body={"access_token": "synthetic-token", "expires_in": 3600},
+                )
             raise GoogleExecutionDeadlineExceeded(
                 "Google qualification deadline exceeded."
             )
 
-    runner = GoogleLiveQualificationRunner(
-        config=config,
-        admission=DeadlineAdmission(),  # type: ignore[arg-type]
-        context=object(),  # type: ignore[arg-type]
-        approval_verifier=ApprovedEnvelopeVerifier(),
-        progress=GoogleLiveRunProgress(attempt_evidence=evidence),
-    )
-
-    report = await runner.run(environment_opt_in=True)
+    transport = Transport()
+    report = await _composed_runner(config, transport).run(environment_opt_in=True)
 
     assert report.failure_code == "deadline_exceeded"
     assert report.failure_stage == "drive"
+    assert report.failure_class == "deadline"
+    assert report.retry_disposition == "stopped_by_deadline"
     assert report.drive_request_attempts == 1
+    assert transport.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_offline_composition_reports_resource_limit_without_retry() -> None:
+    config = _config(opt_in=True)
+    responses = [
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"access_token": "synthetic-token", "expires_in": 3600},
+        ),
+        GoogleApiResponse(
+            status_code=200,
+            json_body={
+                "id": "synthetic-file",
+                "name": "Synthetic file.txt",
+                "mimeType": "text/plain",
+                "version": "1",
+            },
+            content=b"x" * 1025,
+        ),
+    ]
+
+    report = await _composed_runner(
+        config, QueuedResponseTransport(responses)
+    ).run(environment_opt_in=True)
+
+    assert report.failure_code == "resource_limit_exceeded"
+    assert report.failure_stage == "harness"
+    assert report.failure_class == "resource_limit"
+    assert report.retry_disposition == "not_applicable"
+    assert report.drive_request_attempts == 1
+    assert responses == []
 
 
 @pytest.mark.asyncio
@@ -1103,6 +1175,128 @@ async def test_offline_composition_reports_exhausted_drive_http_5xx_retries() ->
     assert report.configured_max_attempts == 4
     assert report.drive_request_attempts == 4
     assert responses == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "failure_class"),
+    (
+        (TimeoutError("synthetic timeout"), "timeout"),
+        (
+            GoogleProviderReadError(
+                failure_class="transport",
+                retry_disposition="stopped_before_retry",
+            ),
+            "transport",
+        ),
+    ),
+)
+async def test_offline_composition_reports_exhausted_drive_transport_retries(
+    failure: Exception, failure_class: str
+) -> None:
+    config = _config(opt_in=True)
+    config = config.model_copy(
+        update={
+            "request_policy": config.request_policy.model_copy(
+                update={"max_attempts": 2, "backoff_ceiling_seconds": (1.0,)}
+            )
+        }
+    )
+
+    class Transport:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def request(self, request):
+            del request
+            self.calls += 1
+            if self.calls == 1:
+                return GoogleApiResponse(
+                    status_code=200,
+                    json_body={"access_token": "synthetic-token", "expires_in": 3600},
+                )
+            raise failure
+
+    transport = Transport()
+    report = await _composed_runner(config, transport).run(environment_opt_in=True)
+
+    assert report.failure_stage == "drive"
+    assert report.failure_class == failure_class
+    assert report.retry_disposition == "attempts_exhausted"
+    assert report.configured_max_attempts == 2
+    assert report.drive_request_attempts == 2
+    assert transport.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_offline_composition_reports_second_unauthorized_as_nonretryable() -> (
+    None
+):
+    config = _config(opt_in=True)
+    config = config.model_copy(
+        update={
+            "request_policy": config.request_policy.model_copy(
+                update={
+                    "max_attempts": 4,
+                    "backoff_ceiling_seconds": (1.0, 2.0, 4.0),
+                }
+            )
+        }
+    )
+    responses = [
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"access_token": "first-token", "expires_in": 3600},
+        ),
+        GoogleApiResponse(status_code=401),
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"access_token": "second-token", "expires_in": 3600},
+        ),
+        GoogleApiResponse(status_code=401),
+    ]
+
+    report = await _composed_runner(
+        config, QueuedResponseTransport(responses)
+    ).run(environment_opt_in=True)
+
+    assert report.failure_code == "authorization_revoked"
+    assert report.failure_stage == "drive"
+    assert report.failure_class == "authorization"
+    assert report.retry_disposition == "not_retryable"
+    assert report.configured_max_attempts == 4
+    assert report.oauth_request_attempts == 2
+    assert report.drive_request_attempts == 2
+    assert responses == []
+
+
+@pytest.mark.asyncio
+async def test_offline_composition_reports_failure_before_transport_retry() -> None:
+    config = _config(opt_in=True)
+
+    class Resolver:
+        async def resolve(self, credential_reference, grant_reference):
+            del credential_reference, grant_reference
+            raise GoogleProviderReadError(
+                failure_class="credential_resolution",
+                retry_disposition="stopped_before_retry",
+            )
+
+    class Transport:
+        async def request(self, request):
+            raise AssertionError(f"credential failure must precede transport: {request!r}")
+
+    report = await _composed_runner(
+        config,
+        Transport(),
+        credential_resolver=Resolver(),
+    ).run(environment_opt_in=True)
+
+    assert report.failure_stage == "harness"
+    assert report.failure_class == "credential_resolution"
+    assert report.retry_disposition == "stopped_before_retry"
+    assert report.oauth_request_attempts == 0
+    assert report.drive_request_attempts == 0
 
 
 @pytest.mark.asyncio
@@ -1220,6 +1414,9 @@ async def test_offline_composition_records_every_bounded_sheets_attempt() -> Non
     assert report.status == "failed"
     assert report.failure_code == "provider_unavailable"
     assert report.failure_stage == "sheets"
+    assert report.failure_class == "http_5xx"
+    assert report.retry_disposition == "attempts_exhausted"
+    assert report.configured_max_attempts == 2
     assert report.oauth_request_attempts == 1
     assert report.drive_request_attempts == 1
     assert report.sheets_request_attempts == 2

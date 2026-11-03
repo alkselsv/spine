@@ -1180,7 +1180,11 @@ class GoogleApiService:
                     or attempt + 1 == self._policy.max_attempts
                 ):
                     raise GoogleProviderAuthorizationError(
-                        retry_disposition="attempts_exhausted"
+                        retry_disposition=(
+                            "not_retryable"
+                            if refreshed_after_unauthorized
+                            else "attempts_exhausted"
+                        )
                     )
                 refreshed_after_unauthorized = True
                 delay = self._retry_delay(attempt, response)
