@@ -114,6 +114,7 @@ from .boundary import (
 )
 
 from .models import (
+    EmailRevisionMetadata,
     ExternalFileRevisionMetadata,
     IdentityMode,
     RevisionKind,
@@ -148,7 +149,12 @@ from .canonicalization import (
     revision_digest,
     tombstone_revision,
 )
-from .profile import BCP47_TABLE_DIGEST, REVISION_METADATA_SCHEMA, UNICODE_TABLE_DIGEST
+from .profile import (
+    BCP47_TABLE_DIGEST,
+    EMAIL_REVISION_METADATA_SCHEMA,
+    REVISION_METADATA_SCHEMA,
+    UNICODE_TABLE_DIGEST,
+)
 from .profile import OBSERVATION_SCHEMA
 from .google import (
     GOOGLE_EXTERNAL_GENERATION,
@@ -223,6 +229,7 @@ __all__ = [
     "CurrentAccessPolicy",
     "EligibilityDisposition",
     "ExternalFileRevisionMetadata",
+    "EmailRevisionMetadata",
     "InitialPolicyEligibilityDecision",
     "PolicyActivation",
     "PolicyApproval",
@@ -260,6 +267,7 @@ __all__ = [
     "BCP47_TABLE_DIGEST",
     "REVISION_PROFILE",
     "REVISION_METADATA_SCHEMA",
+    "EMAIL_REVISION_METADATA_SCHEMA",
     "REVISION_SCHEMA",
     "assert_revision_digest",
     "content_revision",

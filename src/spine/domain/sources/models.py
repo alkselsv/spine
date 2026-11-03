@@ -15,7 +15,17 @@ from pydantic import ConfigDict, Field, model_validator
 from spine.domain.common import DefinitionModel, VersionIdentifier
 from spine.domain.connections.bitrix24_disk_scope import Bitrix24DiskMembershipEvidence
 from .original_reference import ObjectReference
-from .profile import BCP47_TABLE_DIGEST, REVISION_METADATA_SCHEMA, REVISION_PROFILE, REVISION_SCHEMA, UNICODE_TABLE_DIGEST, UNICODE_WHITESPACE_CODEPOINTS, normalize_language_tag, normalize_nfc
+from .profile import (
+    BCP47_TABLE_DIGEST,
+    EMAIL_REVISION_METADATA_SCHEMA,
+    REVISION_METADATA_SCHEMA,
+    REVISION_PROFILE,
+    REVISION_SCHEMA,
+    UNICODE_TABLE_DIGEST,
+    UNICODE_WHITESPACE_CODEPOINTS,
+    normalize_language_tag,
+    normalize_nfc,
+)
 
 ALLOWED_TOMBSTONE_REASONS = frozenset(
     {"source_deleted", "provider_deleted", "legal_erasure", "retention_expired"}
@@ -96,6 +106,39 @@ class ExternalFileRevisionMetadata(DefinitionModel):
         return self
 
 
+class EmailRevisionMetadata(DefinitionModel):
+    """Revision-bearing provider and relationship claims for raw email."""
+
+    schema_version: Literal["email-revision-metadata:v1"] = (
+        "email-revision-metadata:v1"
+    )
+    provider_kind: BoundedIdentifier
+    provider_message_id: str = Field(min_length=1, max_length=1024)
+    internal_date: datetime
+    header_date: datetime | None = None
+    provider_thread_reference: str | None = Field(
+        default=None, min_length=1, max_length=1024
+    )
+    rfc_message_id_claims: tuple[str, ...] = Field(max_length=32)
+    references_claims: tuple[str, ...] = Field(max_length=32)
+    in_reply_to_claims: tuple[str, ...] = Field(max_length=32)
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> "EmailRevisionMetadata":
+        for name in ("internal_date", "header_date"):
+            value = getattr(self, name)
+            if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+                raise ValueError(f"{name} must be timezone-aware")
+        for claims in (
+            self.rfc_message_id_claims,
+            self.references_claims,
+            self.in_reply_to_claims,
+        ):
+            if any(len(value) > 4096 for value in claims):
+                raise ValueError("email header claim exceeds its bound")
+        return self
+
+
 class RevisionMetadata(DefinitionModel):
     """Revision-bearing metadata shared by uploads and connector observations."""
 
@@ -104,6 +147,7 @@ class RevisionMetadata(DefinitionModel):
     document_language: str | None = None
     representation_profile: BoundedIdentifier | None = None
     external_file_revision: ExternalFileRevisionMetadata | None = None
+    email_revision: EmailRevisionMetadata | None = None
 
     @model_validator(mode="after")
     def validate_values(self) -> "RevisionMetadata":
@@ -173,7 +217,9 @@ class SourceRevision(DefinitionModel):
     canonicalization_profile: Literal[REVISION_PROFILE] = REVISION_PROFILE
     unicode_table_digest: Literal[UNICODE_TABLE_DIGEST] = UNICODE_TABLE_DIGEST
     bcp47_table_digest: Literal[BCP47_TABLE_DIGEST] = BCP47_TABLE_DIGEST
-    revision_metadata_schema: Literal[REVISION_METADATA_SCHEMA]
+    revision_metadata_schema: Literal[
+        REVISION_METADATA_SCHEMA, EMAIL_REVISION_METADATA_SCHEMA
+    ]
     revision_metadata: RevisionMetadata | None = None
     revision_metadata_digest: DigestHex | None = None
     original_reference: ObjectReference | None = None
@@ -208,6 +254,10 @@ class SourceRevision(DefinitionModel):
                 raise ValueError("original evidence does not match content identity")
             if self.revision_metadata_digest != canonical_revision_metadata_digest(self.revision_metadata):
                 raise ValueError("revision metadata digest does not match metadata")
+            if (
+                self.revision_metadata_schema == EMAIL_REVISION_METADATA_SCHEMA
+            ) != (self.revision_metadata.email_revision is not None):
+                raise ValueError("revision metadata does not match its schema")
             media_type = _normalize_text(self.media_type).lower()
             if not _MEDIA_TYPE.fullmatch(media_type):
                 raise ValueError("media_type must be lowercase ASCII type/subtype")
@@ -406,6 +456,8 @@ def canonical_revision_metadata_digest(metadata: RevisionMetadata) -> str:
         payload["external_file_revision"] = metadata.external_file_revision.model_dump(
             mode="json"
         )
+    if metadata.email_revision is not None:
+        payload["email_revision"] = metadata.email_revision.model_dump(mode="json")
     canonical = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
 

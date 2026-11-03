@@ -97,7 +97,7 @@ def assert_revision_digest(revision: SourceRevision) -> None:
 def _metadata_payload(metadata: RevisionMetadata | None) -> dict[str, Any]:
     if metadata is None:
         return {"document_language": None, "embedded_title": None}
-    payload: dict[str, str | None] = {
+    payload: dict[str, Any] = {
         "document_language": metadata.document_language,
         "embedded_title": metadata.embedded_title,
     }
@@ -107,6 +107,8 @@ def _metadata_payload(metadata: RevisionMetadata | None) -> dict[str, Any]:
         payload["external_file_revision"] = metadata.external_file_revision.model_dump(
             mode="json"
         )
+    if metadata.email_revision is not None:
+        payload["email_revision"] = metadata.email_revision.model_dump(mode="json")
     return payload
 
 
