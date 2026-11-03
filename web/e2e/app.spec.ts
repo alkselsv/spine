@@ -122,7 +122,6 @@ test('test_synthetic_ui_qualification_renders_safe_sync_states_without_provider_
     await expect(page.locator('body')).not.toContainText(/(gmail|yandex).{0,40}pass/i);
 
     if (guidanceByState[state]) {
-      await page.getByRole('button', { name: 'Открыть Gmail' }).click();
       await expect(page.getByRole('status', { name: expected })).toContainText(guidanceByState[state]!);
       await page.getByRole('button', { name: 'Все коннекторы' }).click();
     }
