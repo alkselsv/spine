@@ -56,7 +56,7 @@ def test_schema_revision_state_classifies_database_heads(
 def test_committed_migration_inventory_has_one_linear_head() -> None:
     inventory = load_migration_inventory()
 
-    assert inventory.heads == ("20270109_108",)
+    assert inventory.heads == ("20270110_109",)
     assert inventory.revisions == (
         "20261009_01",
         "20261009_02",
@@ -167,4 +167,5 @@ def test_committed_migration_inventory_has_one_linear_head() -> None:
         "20270107_106",
         "20270108_107",
         "20270109_108",
+        "20270110_109",
     )

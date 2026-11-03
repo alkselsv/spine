@@ -6075,6 +6075,7 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20270107_106_private_asr_aggregate_tombstone.py",
         "20270108_107_email_attachment_processing.py",
         "20270109_108_private_asr_manifest_authority.py",
+        "20270110_109_gmail_message_state.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "transactional_failure_probe.py").write_text(
@@ -6271,3 +6272,58 @@ async def test_trusted_content_evidence_has_forced_rls_and_append_only_privilege
             )
         ).one()
         assert tuple(security) == (True, True, True, True, False, False)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_gmail_message_state_catalog_is_tenant_scoped_and_evidence_is_immutable(
+    migrated_database: MigratedDatabase,
+) -> None:
+    expected_update = {
+        "gmail_message_label_observations": False,
+        "gmail_message_label_heads": True,
+        "gmail_message_relationship_evidence": False,
+    }
+    async with _connection(migrated_database.migration.url) as connection:
+        for table, can_update in expected_update.items():
+            security = (
+                await connection.execute(
+                    text(
+                        "SELECT relation.relrowsecurity, relation.relforcerowsecurity, "
+                        "has_table_privilege(:runtime, relation.oid, 'SELECT'), "
+                        "has_table_privilege(:runtime, relation.oid, 'INSERT'), "
+                        "has_table_privilege(:runtime, relation.oid, 'UPDATE'), "
+                        "has_table_privilege(:runtime, relation.oid, 'DELETE') "
+                        "FROM pg_class AS relation JOIN pg_namespace AS namespace "
+                        "ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' AND relation.relname = :table"
+                    ),
+                    {"runtime": RUNTIME_ROLE, "table": table},
+                )
+            ).one()
+            assert tuple(security) == (
+                True,
+                True,
+                True,
+                True,
+                can_update,
+                False,
+            )
+
+        triggers = set(
+            (
+                await connection.execute(
+                    text(
+                        "SELECT trigger.tgname FROM pg_trigger AS trigger "
+                        "JOIN pg_class AS relation ON relation.oid = trigger.tgrelid "
+                        "JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' AND relation.relname IN "
+                        "('gmail_message_label_observations', "
+                        "'gmail_message_relationship_evidence') AND NOT trigger.tgisinternal"
+                    )
+                )
+            ).scalars()
+        )
+        assert triggers == {
+            "trg_gmail_message_label_observations_immutable",
+            "trg_gmail_message_relationship_evidence_immutable",
+        }

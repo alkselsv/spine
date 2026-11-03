@@ -219,6 +219,11 @@ after fresh AccessPolicy, lifecycle and retention revalidation; malformed,
 tombstoned, revoked, cross-tenant or digest-mismatched references, plus superseded
 references in ordinary current inspection, return the same content-free unavailable
 outcome. Attachment locators remain a separate successor contract.
+Gmail label observations and provider/header relationship evidence are stored in
+a tenant-scoped append-only ledger bound to the exact current raw-MIME revision;
+only the derived per-label head is mutable, and state writes cannot emit content
+projection intents. Provider `threadId` and header-inferred relationships retain
+different authority classes.
 Opaque generation-bound checkpoints advance only after all covered canonical
 acceptance and outbox effects are durable; partial scans and stale generations
 hold the cursor for retry or reconciliation. The offline-only decision and its
