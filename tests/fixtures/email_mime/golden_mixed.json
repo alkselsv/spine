@@ -1,0 +1,66 @@
+{
+  "schema_version": "mime-artifact:v1",
+  "parser_profile": "mime-parser:v1:b6278f7bcb22764c70adb8b715a154ec4baba8a76b61d3b213b5a1f338848a3d",
+  "raw_sha256": "0988684a1113d35a95803c20cd90e79f554c8987a5c9b64803c8542ff27bac34",
+  "raw_byte_length": 431,
+  "disposition": "complete",
+  "headers": [
+    {"schema_version": "mime-header:v1", "name": "from", "value": "Тест <sender@example.test>"},
+    {"schema_version": "mime-header:v1", "name": "subject", "value": "Synthetic golden"},
+    {"schema_version": "mime-header:v1", "name": "mime-version", "value": "1.0"},
+    {"schema_version": "mime-header:v1", "name": "content-type", "value": "multipart/mixed; boundary=\"golden\""}
+  ],
+  "root": {
+    "schema_version": "mime-part:v1",
+    "part_path": "1",
+    "media_type": "multipart/mixed",
+    "headers": [
+      {"schema_version": "mime-header:v1", "name": "from", "value": "Тест <sender@example.test>"},
+      {"schema_version": "mime-header:v1", "name": "subject", "value": "Synthetic golden"},
+      {"schema_version": "mime-header:v1", "name": "mime-version", "value": "1.0"},
+      {"schema_version": "mime-header:v1", "name": "content-type", "value": "multipart/mixed; boundary=\"golden\""}
+    ],
+    "content_disposition": null,
+    "content_id": null,
+    "filename_present": false,
+    "decoded_byte_length": 0,
+    "payload_sha256": null,
+    "text": null,
+    "children": [
+      {
+        "schema_version": "mime-part:v1",
+        "part_path": "1.1",
+        "media_type": "text/plain",
+        "headers": [
+          {"schema_version": "mime-header:v1", "name": "content-type", "value": "text/plain; charset=\"utf-8\""},
+          {"schema_version": "mime-header:v1", "name": "content-transfer-encoding", "value": "quoted-printable"}
+        ],
+        "content_disposition": null,
+        "content_id": null,
+        "filename_present": false,
+        "decoded_byte_length": 8,
+        "payload_sha256": "58cb66d28b6c2367bdb94fc26a3ab4f3234715393c61a3d41951526f93f0740c",
+        "text": "Тело",
+        "children": []
+      },
+      {
+        "schema_version": "mime-part:v1",
+        "part_path": "1.2",
+        "media_type": "application/octet-stream",
+        "headers": [
+          {"schema_version": "mime-header:v1", "name": "content-type", "value": "application/octet-stream"},
+          {"schema_version": "mime-header:v1", "name": "content-disposition", "value": "attachment; filename=\"synthetic.txt\""},
+          {"schema_version": "mime-header:v1", "name": "content-transfer-encoding", "value": "base64"}
+        ],
+        "content_disposition": "attachment",
+        "content_id": null,
+        "filename_present": true,
+        "decoded_byte_length": 9,
+        "payload_sha256": "b3cc0475bb78a5026098858e9889acf666d31062d513d303314eca31d36e72f2",
+        "text": null,
+        "children": []
+      }
+    ]
+  },
+  "defects": []
+}

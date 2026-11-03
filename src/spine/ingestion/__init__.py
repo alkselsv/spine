@@ -13,6 +13,7 @@ from .parsers import (
     parse_document,
     resolve_xlsx_locator,
 )
+from .email_mime import MimeParser, MimeParserProfile
 
 __all__ = [
     "MarkdownParser",
@@ -22,4 +23,6 @@ __all__ = [
     "XlsxParser",
     "parse_document",
     "resolve_xlsx_locator",
+    "MimeParser",
+    "MimeParserProfile",
 ]
