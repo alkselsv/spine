@@ -77,7 +77,10 @@ Live access is forbidden unless both gates are present:
 2. the process has `SPINE_GOOGLE_LIVE_OPT_IN=1`.
 
 The config names (but does not contain) the approved credential inputs. The
-connection contains only opaque references. `--composition module:function`
+connection contains only opaque references. The private manifest pins the exact
+canonical workspace, environment, connection/version, approval, service
+principal, credential/grant/resource-scope references and authority generations;
+it never derives authority from provider IDs. `--composition module:function`
 must name a deployment-owned factory returning `GoogleLiveQualificationRunner`.
 That factory resolves secrets through the approved store, supplies the trusted
 persistence context and current connection repository, and wires the provider
@@ -110,9 +113,18 @@ SPINE_GOOGLE_PREFLIGHT_OPT_IN=1 \
 ```
 
 This preflight validates the direct manifest digest, exact file roles,
-spreadsheet/sheet allowlist, current pinned connection/context, approved limits,
-effective fingerprint and reference-bound OAuth values after admission. It does
+spreadsheet/sheet allowlist, PostgreSQL-canonical current connection and trusted
+workspace/environment context, approved limits, effective fingerprint and
+reference-bound OAuth values after admission. Missing, stale, revoked or
+mismatched current authority refuses before OAuth or provider transport. It does
 not write a report or invoke OAuth/Drive/Sheets endpoints.
+
+Phase 1 requests only `drive.readonly` and `spreadsheets.readonly`. The consent
+command reads the exact mode-0600 Web client JSON named by
+`GOOGLE_OAUTH_CLIENT_FILE`; the JSON must contain the configured client ID and
+secret and the exact registered loopback redirect URI. Installed/Desktop client
+JSON, an absent redirect registration or mismatched client material is refused
+before the browser opens.
 
 Only a later, separately authorized one-run command may contact the provider:
 

@@ -1,25 +1,22 @@
 from __future__ import annotations
 
 import json
-import socket
 from urllib.parse import parse_qs, urlencode, urlsplit
-from urllib.request import urlopen
 
 import pytest
 from pydantic import SecretStr
 
 from spine.application.google_manual_authorization import GoogleManualAuthorizationError
-from spine.infrastructure.google_web_oauth import GoogleWebLoopbackConsent
+from spine.infrastructure.google_web_oauth import (
+    GoogleWebLoopbackConsent,
+    parse_google_oauth_callback,
+)
 
 
 SCOPES = ("https://www.googleapis.com/auth/drive.readonly",)
 
 
-def _available_redirect_uri() -> str:
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        port = listener.getsockname()[1]
-    return f"http://127.0.0.1:{port}/callback"
+REDIRECT_URI = "http://127.0.0.1:8765/callback"
 
 
 def _web_client(redirect_uri: str) -> SecretStr:
@@ -38,54 +35,62 @@ def _web_client(redirect_uri: str) -> SecretStr:
     )
 
 
-class WebCallbackBrowserFake:
-    def __init__(self, *, override_state: str | None = None) -> None:
+class CallbackServerFake:
+    def __init__(
+        self,
+        *,
+        override_state: str | None = None,
+        error: Exception | None = None,
+    ) -> None:
         self.authorization_parameters: dict[str, list[str]] = {}
         self.override_state = override_state
+        self.error = error
 
-    def open(self, url: str) -> bool:
-        parsed = urlsplit(url)
+    async def receive_code(self, **kwargs) -> str:
+        if self.error is not None:
+            raise self.error
+        parsed = urlsplit(kwargs["authorization_url"])
         self.authorization_parameters = parse_qs(parsed.query)
-        callback = self.authorization_parameters["redirect_uri"][0]
-        state = self.override_state or self.authorization_parameters["state"][0]
-        request_url = f"{callback}?{urlencode({'code': 'synthetic-code', 'state': state})}"
-        try:
-            with urlopen(request_url, timeout=2) as response:
-                response.read()
-        except Exception:
-            if self.override_state is None:
-                raise
-        return True
+        expected_state = kwargs["expected_state"]
+        state = self.override_state or expected_state
+        target = f"/callback?{urlencode({'code': 'synthetic-code', 'state': state})}"
+        return parse_google_oauth_callback(
+            f"GET {target} HTTP/1.1\r\n".encode(),
+            expected_state=expected_state,
+            callback_path=kwargs["callback_path"],
+        )
 
 
 class TokenExchangeFake:
-    def __init__(self) -> None:
+    def __init__(self, *, error: Exception | None = None) -> None:
         self.arguments: dict[str, str] = {}
+        self.error = error
 
     async def exchange(self, **kwargs: str) -> SecretStr:
         self.arguments = kwargs
+        if self.error is not None:
+            raise self.error
         return SecretStr("synthetic-refresh-token")
 
 
 @pytest.mark.asyncio
 async def test_web_consent_uses_exact_registered_fixed_callback() -> None:
-    redirect_uri = _available_redirect_uri()
-    browser = WebCallbackBrowserFake()
+    callback_server = CallbackServerFake()
     exchange = TokenExchangeFake()
     consent = GoogleWebLoopbackConsent(
         approved_scopes=SCOPES,
-        redirect_uri=redirect_uri,
-        browser=browser,
+        redirect_uri=REDIRECT_URI,
+        callback_server=callback_server,
         token_exchange=exchange,
         timeout_seconds=2,
     )
 
-    result = await consent.authorize(client_configuration=_web_client(redirect_uri))
+    result = await consent.authorize(client_configuration=_web_client(REDIRECT_URI))
 
-    assert browser.authorization_parameters["redirect_uri"] == [redirect_uri]
-    assert browser.authorization_parameters["access_type"] == ["offline"]
-    assert browser.authorization_parameters["prompt"] == ["consent"]
-    assert exchange.arguments["redirect_uri"] == redirect_uri
+    assert callback_server.authorization_parameters["redirect_uri"] == [REDIRECT_URI]
+    assert callback_server.authorization_parameters["access_type"] == ["offline"]
+    assert callback_server.authorization_parameters["prompt"] == ["consent"]
+    assert exchange.arguments["redirect_uri"] == REDIRECT_URI
     assert exchange.arguments["client_secret"] == "synthetic-web-client-secret"
     assert result.refresh_token.get_secret_value() == "synthetic-refresh-token"
     assert "synthetic-web-client-secret" not in repr(consent)
@@ -94,8 +99,7 @@ async def test_web_consent_uses_exact_registered_fixed_callback() -> None:
 
 @pytest.mark.asyncio
 async def test_web_consent_rejects_installed_client_before_browser_open() -> None:
-    redirect_uri = _available_redirect_uri()
-    browser = WebCallbackBrowserFake()
+    callback_server = CallbackServerFake()
     installed = SecretStr(
         json.dumps(
             {
@@ -110,25 +114,24 @@ async def test_web_consent_rejects_installed_client_before_browser_open() -> Non
     )
     consent = GoogleWebLoopbackConsent(
         approved_scopes=SCOPES,
-        redirect_uri=redirect_uri,
-        browser=browser,
+        redirect_uri=REDIRECT_URI,
+        callback_server=callback_server,
         token_exchange=TokenExchangeFake(),
     )
 
     with pytest.raises(GoogleManualAuthorizationError):
         await consent.authorize(client_configuration=installed)
 
-    assert browser.authorization_parameters == {}
+    assert callback_server.authorization_parameters == {}
 
 
 @pytest.mark.asyncio
 async def test_web_consent_rejects_unregistered_callback_before_browser_open() -> None:
-    redirect_uri = _available_redirect_uri()
-    browser = WebCallbackBrowserFake()
+    callback_server = CallbackServerFake()
     consent = GoogleWebLoopbackConsent(
         approved_scopes=SCOPES,
-        redirect_uri=redirect_uri,
-        browser=browser,
+        redirect_uri=REDIRECT_URI,
+        callback_server=callback_server,
         token_exchange=TokenExchangeFake(),
     )
 
@@ -137,24 +140,83 @@ async def test_web_consent_rejects_unregistered_callback_before_browser_open() -
             client_configuration=_web_client("http://127.0.0.1:65530/callback")
         )
 
-    assert browser.authorization_parameters == {}
+    assert callback_server.authorization_parameters == {}
 
 
 @pytest.mark.asyncio
 async def test_web_consent_rejects_state_mismatch_with_sanitized_error() -> None:
-    redirect_uri = _available_redirect_uri()
     consent = GoogleWebLoopbackConsent(
         approved_scopes=SCOPES,
-        redirect_uri=redirect_uri,
-        browser=WebCallbackBrowserFake(override_state="wrong-state"),
+        redirect_uri=REDIRECT_URI,
+        callback_server=CallbackServerFake(override_state="wrong-state"),
         token_exchange=TokenExchangeFake(),
         timeout_seconds=2,
     )
 
     with pytest.raises(GoogleManualAuthorizationError) as raised:
-        await consent.authorize(client_configuration=_web_client(redirect_uri))
+        await consent.authorize(client_configuration=_web_client(REDIRECT_URI))
 
     assert str(raised.value) == "Google manual authorization could not be completed."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    (TimeoutError(), GoogleManualAuthorizationError()),
+)
+async def test_web_consent_rejects_callback_failure_without_token_exchange(
+    error: Exception,
+) -> None:
+    exchange = TokenExchangeFake()
+    consent = GoogleWebLoopbackConsent(
+        approved_scopes=SCOPES,
+        redirect_uri=REDIRECT_URI,
+        callback_server=CallbackServerFake(error=error),
+        token_exchange=exchange,
+    )
+
+    with pytest.raises(GoogleManualAuthorizationError):
+        await consent.authorize(client_configuration=_web_client(REDIRECT_URI))
+
+    assert exchange.arguments == {}
+
+
+@pytest.mark.asyncio
+async def test_web_consent_rejects_exchange_without_refresh_token() -> None:
+    exchange = TokenExchangeFake(error=GoogleManualAuthorizationError())
+    consent = GoogleWebLoopbackConsent(
+        approved_scopes=SCOPES,
+        redirect_uri=REDIRECT_URI,
+        callback_server=CallbackServerFake(),
+        token_exchange=exchange,
+    )
+
+    with pytest.raises(GoogleManualAuthorizationError) as raised:
+        await consent.authorize(client_configuration=_web_client(REDIRECT_URI))
+
+    assert exchange.arguments["code"] == "synthetic-code"
+    assert str(raised.value) == "Google manual authorization could not be completed."
+
+
+@pytest.mark.parametrize(
+    "request_line",
+    (
+        b"POST /callback?code=value&state=expected HTTP/1.1\r\n",
+        b"GET /other?code=value&state=expected HTTP/1.1\r\n",
+        b"GET /callback?error=denied&state=expected HTTP/1.1\r\n",
+        b"GET /callback?code=value&state=wrong HTTP/1.1\r\n",
+        b"malformed\r\n",
+    ),
+)
+def test_web_callback_parser_rejects_malformed_or_refused_callback(
+    request_line: bytes,
+) -> None:
+    with pytest.raises(GoogleManualAuthorizationError):
+        parse_google_oauth_callback(
+            request_line,
+            expected_state="expected",
+            callback_path="/callback",
+        )
 
 
 @pytest.mark.parametrize(

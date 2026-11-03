@@ -12,17 +12,14 @@ import tempfile
 from pydantic import SecretStr
 
 from spine.application.google_manual_authorization import GoogleManualAuthorizationError
+from spine.connectors.google_qualification_policy import (
+    GOOGLE_PHASE1_READONLY_SCOPES,
+)
 from spine.infrastructure.google_web_oauth import GoogleWebLoopbackConsent
 from spine.scripts.google_live_qualification import _load_private_environment
 
 
 _REFRESH_TOKEN_KEY = "SPINE_GOOGLE_OAUTH_REFRESH_TOKEN"
-_SCOPES = (
-    "https://www.googleapis.com/auth/drive",
-    "https://www.googleapis.com/auth/spreadsheets",
-)
-
-
 def _required(environment: dict[str, str], name: str) -> str:
     value = environment.get(name)
     if not isinstance(value, str) or not value or len(value) > 16_384:
@@ -31,26 +28,41 @@ def _required(environment: dict[str, str], name: str) -> str:
 
 
 def _client_configuration(environment: dict[str, str]) -> SecretStr:
+    path = Path(_required(environment, "GOOGLE_OAUTH_CLIENT_FILE"))
     redirect_uri = _required(environment, "SPINE_GOOGLE_OAUTH_REDIRECT_URI")
-    return SecretStr(
-        json.dumps(
-            {
-                "web": {
-                    "client_id": _required(
-                        environment, "SPINE_GOOGLE_OAUTH_CLIENT_ID"
-                    ),
-                    "client_secret": _required(
-                        environment, "SPINE_GOOGLE_OAUTH_CLIENT_SECRET"
-                    ),
-                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                    "redirect_uris": [redirect_uri],
-                }
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    )
+    try:
+        stat = path.lstat()
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or stat.st_uid != os.getuid()
+            or stat.st_mode & 0o077
+            or stat.st_size > 65_536
+        ):
+            raise GoogleManualAuthorizationError()
+        raw = path.read_text(encoding="utf-8")
+        payload = json.loads(raw)
+        web = payload["web"]
+        redirect_uris = web["redirect_uris"]
+        if (
+            set(payload) != {"web"}
+            or not isinstance(web, dict)
+            or not isinstance(redirect_uris, list)
+            or not redirect_uris
+            or any(not isinstance(value, str) for value in redirect_uris)
+            or len(set(redirect_uris)) != len(redirect_uris)
+            or web["client_id"]
+            != _required(environment, "SPINE_GOOGLE_OAUTH_CLIENT_ID")
+            or web["client_secret"]
+            != _required(environment, "SPINE_GOOGLE_OAUTH_CLIENT_SECRET")
+            or redirect_uri not in redirect_uris
+        ):
+            raise GoogleManualAuthorizationError()
+        return SecretStr(raw)
+    except GoogleManualAuthorizationError:
+        raise
+    except (KeyError, OSError, TypeError, UnicodeError, ValueError):
+        raise GoogleManualAuthorizationError() from None
 
 
 def _store_refresh_token(path: Path, refresh_token: SecretStr) -> None:
@@ -105,7 +117,7 @@ async def authorize_and_store(
         raise GoogleManualAuthorizationError()
     redirect_uri = _required(environment, "SPINE_GOOGLE_OAUTH_REDIRECT_URI")
     adapter = consent or GoogleWebLoopbackConsent(
-        approved_scopes=_SCOPES,
+        approved_scopes=GOOGLE_PHASE1_READONLY_SCOPES,
         redirect_uri=redirect_uri,
     )
     result = await adapter.authorize(

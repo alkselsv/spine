@@ -3,20 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping
-from contextlib import asynccontextmanager
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import json
 import logging
 import os
-from uuid import NAMESPACE_URL, UUID, uuid5
+from uuid import UUID, uuid4
 
 import httpx
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from spine.application.connections.google import (
-    GoogleConnectionConflictError,
-    GoogleConnectionDeniedError,
+    GoogleConnectionRepository,
     GoogleReadCommand,
 )
 from spine.application.diagnostics import DiagnosticEventRegistry
@@ -24,7 +24,6 @@ from spine.application.persistence.context import (
     EnvironmentScope,
     PersistenceOperation,
     PersistencePurpose,
-    TrustedContextProvenance,
     TrustedPersistenceContext,
 )
 from spine.connectors.google_api import (
@@ -34,7 +33,6 @@ from spine.connectors.google_api import (
     GoogleApiRequestPolicy,
     GoogleApiResponse,
     GoogleApiRetryEvent,
-    GoogleApiService,
     GoogleOAuthMaterial,
     GoogleResourceScope,
     HttpxGoogleApiTransport,
@@ -49,14 +47,21 @@ from spine.connectors.google_live_qualification import (
     GoogleLiveQualificationRunner,
     GoogleLiveSheetTarget,
 )
+from spine.connectors.google_qualification_policy import (
+    GOOGLE_PHASE1_READONLY_SCOPES,
+)
 from spine.connectors.google_sheets import GoogleSheetsColumn, GoogleSheetsReadProfile
-from spine.domain.common import ContextOrigin
 from spine.domain.connections.google import (
     GoogleConnection,
     GoogleConnectionStatus,
     OpaqueGoogleReference,
 )
 from spine.infrastructure.diagnostics import JsonLoggingDiagnosticSink
+from spine.infrastructure.db.settings import (
+    POSTGRESQL_SEARCH_PATH_OPTIONS,
+    RuntimeDatabaseSettings,
+)
+from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 
 
 _MANIFEST_KEYS = (
@@ -70,9 +75,20 @@ _MANIFEST_KEYS = (
     "GOOGLE_NUMERIC_SHEET_IDS",
     "GOOGLE_SHARED_DRIVE_STATUS",
     "GOOGLE_RESOURCE_SCOPE_VERSION",
+    "SPINE_GOOGLE_CONNECTION_VERSION_ID",
+    "SPINE_GOOGLE_CONNECTION_ID",
+    "SPINE_GOOGLE_APPROVAL_ID",
+    "SPINE_GOOGLE_CONNECTION_VERSION",
+    "SPINE_GOOGLE_PREDECESSOR_VERSION_ID",
+    "SPINE_GOOGLE_WORKSPACE_ID",
+    "SPINE_GOOGLE_ENVIRONMENT_ID",
+    "SPINE_GOOGLE_SERVICE_PRINCIPAL_ID",
+    "SPINE_GOOGLE_CREDENTIAL_REFERENCE",
+    "SPINE_GOOGLE_GRANT_REFERENCE",
+    "SPINE_GOOGLE_RESOURCE_SCOPE_REFERENCE",
+    "SPINE_GOOGLE_AUTHORIZATION_GENERATION",
+    "SPINE_GOOGLE_CONFIGURATION_GENERATION",
 )
-_NAMESPACE_PREFIX = "https://spine.local/qualification/google/"
-
 
 def _required(environment: Mapping[str, str], name: str) -> str:
     value = environment.get(name)
@@ -102,8 +118,28 @@ def _manifest_digest(environment: Mapping[str, str]) -> str:
     return digest
 
 
-def _id(digest: str, label: str) -> UUID:
-    return uuid5(NAMESPACE_URL, f"{_NAMESPACE_PREFIX}{digest}/{label}")
+def _uuid(environment: Mapping[str, str], name: str) -> UUID:
+    try:
+        value = UUID(_required(environment, name))
+        if value.int == 0:
+            raise ValueError
+        return value
+    except ValueError:
+        raise GoogleLiveQualificationRefused(
+            "Google private qualification authority is invalid"
+        ) from None
+
+
+def _positive_int(environment: Mapping[str, str], name: str) -> int:
+    try:
+        value = int(_required(environment, name))
+        if value < 1:
+            raise ValueError
+        return value
+    except ValueError:
+        raise GoogleLiveQualificationRefused(
+            "Google private qualification authority is invalid"
+        ) from None
 
 
 def build_google_live_config_from_environment(
@@ -111,7 +147,7 @@ def build_google_live_config_from_environment(
 ) -> GoogleLiveQualificationConfig:
     """Build the private non-secret manifest from exact approved env values."""
 
-    digest = _manifest_digest(environment)
+    _manifest_digest(environment)
     allowed_files = _csv(environment, "GOOGLE_ALLOWED_FILE_IDS")
     spreadsheets = _csv(environment, "GOOGLE_SPREADSHEET_IDS")
     sheet_ids_text = _csv(environment, "GOOGLE_NUMERIC_SHEET_IDS")
@@ -141,26 +177,48 @@ def build_google_live_config_from_environment(
             "Google Phase 1 private environment must remain My Drive only"
         )
 
-    workspace_id = _id(digest, "workspace")
-    environment_id = _id(digest, "environment")
-    connection_id = _id(digest, "connection")
-    service_principal_id = _id(digest, "service-principal")
-    scope_reference = OpaqueGoogleReference(value=_id(digest, "resource-scope"))
-    credential_reference = OpaqueGoogleReference(value=_id(digest, "credential"))
-    grant_reference = OpaqueGoogleReference(value=_id(digest, "grant"))
+    workspace_id = _uuid(environment, "SPINE_GOOGLE_WORKSPACE_ID")
+    environment_id = _uuid(environment, "SPINE_GOOGLE_ENVIRONMENT_ID")
+    connection_id = _uuid(environment, "SPINE_GOOGLE_CONNECTION_ID")
+    service_principal_id = _uuid(environment, "SPINE_GOOGLE_SERVICE_PRINCIPAL_ID")
+    scope_reference = OpaqueGoogleReference(
+        value=_uuid(environment, "SPINE_GOOGLE_RESOURCE_SCOPE_REFERENCE")
+    )
+    credential_reference = OpaqueGoogleReference(
+        value=_uuid(environment, "SPINE_GOOGLE_CREDENTIAL_REFERENCE")
+    )
+    grant_reference = OpaqueGoogleReference(
+        value=_uuid(environment, "SPINE_GOOGLE_GRANT_REFERENCE")
+    )
+    version = _positive_int(environment, "SPINE_GOOGLE_CONNECTION_VERSION")
+    predecessor_text = _required(
+        environment, "SPINE_GOOGLE_PREDECESSOR_VERSION_ID"
+    )
+    predecessor_version_id = (
+        None
+        if predecessor_text == "NONE"
+        else _uuid(environment, "SPINE_GOOGLE_PREDECESSOR_VERSION_ID")
+    )
     connection = GoogleConnection(
-        connection_version_id=_id(digest, "connection-version-1"),
+        connection_version_id=_uuid(
+            environment, "SPINE_GOOGLE_CONNECTION_VERSION_ID"
+        ),
         connection_id=connection_id,
-        approval_id=_id(digest, "approval"),
-        version=1,
+        approval_id=_uuid(environment, "SPINE_GOOGLE_APPROVAL_ID"),
+        version=version,
+        predecessor_version_id=predecessor_version_id,
         workspace_id=workspace_id,
         environment_id=environment_id,
         service_principal_id=service_principal_id,
         credential_reference=credential_reference,
         grant_reference=grant_reference,
         approved_resource_scope_references=(scope_reference,),
-        authorization_generation=1,
-        configuration_generation=1,
+        authorization_generation=_positive_int(
+            environment, "SPINE_GOOGLE_AUTHORIZATION_GENERATION"
+        ),
+        configuration_generation=_positive_int(
+            environment, "SPINE_GOOGLE_CONFIGURATION_GENERATION"
+        ),
         status=GoogleConnectionStatus.ACTIVE,
     )
     spreadsheet_id = spreadsheets[0]
@@ -192,8 +250,8 @@ def build_google_live_config_from_environment(
             workspace_id=workspace_id,
             environment_id=environment_id,
             connection_id=connection_id,
-            authorization_generation=1,
-            configuration_generation=1,
+            authorization_generation=connection.authorization_generation,
+            configuration_generation=connection.configuration_generation,
             allowed_file_ids=allowed_files,
             allowed_spreadsheet_ids=spreadsheets,
             folder_id=_required(environment, "GOOGLE_ROOT_FOLDER_ID"),
@@ -203,10 +261,7 @@ def build_google_live_config_from_environment(
             drive_base_url="https://www.googleapis.com/drive/v3",
             sheets_base_url="https://sheets.googleapis.com/v4",
             oauth_token_url="https://oauth2.googleapis.com/token",
-            approved_oauth_scopes=(
-                "https://www.googleapis.com/auth/drive",
-                "https://www.googleapis.com/auth/spreadsheets",
-            ),
+            approved_oauth_scopes=GOOGLE_PHASE1_READONLY_SCOPES,
             provider_api_version="google-drive:v3+google-sheets:v4",
             configuration_version="google-615-phase1-web-oauth:v1",
         ),
@@ -267,9 +322,28 @@ class _ApprovedFingerprint:
 
 
 @dataclass(frozen=True, slots=True)
-class _NoOpRetryObserver:
+class JsonLoggingGoogleApiRetryObserver:
+    """Emit disclosure-safe tenant retry evidence to an operator-owned logger."""
+
+    logger: logging.Logger
+
     async def record_retry(self, event: GoogleApiRetryEvent) -> None:
-        del event
+        self.logger.info(
+            json.dumps(
+                {
+                    "schema_version": event.schema_version,
+                    "workspace_id": str(event.workspace_id),
+                    "environment_id": str(event.environment_id),
+                    "connection_id": str(event.connection_id),
+                    "operation": event.operation,
+                    "reason": event.reason,
+                    "attempt": event.attempt,
+                    "max_attempts": event.max_attempts,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,47 +354,10 @@ class _OneShotHttpxTransport:
 
 
 @dataclass(frozen=True, slots=True)
-class _PinnedConnectionRepository:
-    connection: GoogleConnection
-    context: TrustedPersistenceContext
-
-    @asynccontextmanager
-    async def admit_read(
-        self,
-        command: GoogleReadCommand,
-        context: TrustedPersistenceContext,
-    ) -> AsyncIterator[GoogleConnection]:
-        if (
-            context != self.context
-            or command.connection_id != self.connection.connection_id
-            or command.resource_scope_reference
-            not in self.connection.approved_resource_scope_references
-            or command.authorization_generation
-            != self.connection.authorization_generation
-            or command.configuration_generation
-            != self.connection.configuration_generation
-        ):
-            raise GoogleConnectionDeniedError()
-        yield self.connection
-
-    async def get_current(self, connection_id, context):
-        if connection_id != self.connection.connection_id or context != self.context:
-            raise GoogleConnectionConflictError()
-        return self.connection
-
-    async def register(self, command, context):
-        del command, context
-        raise GoogleConnectionConflictError()
-
-    async def suspend_revoked(self, connection, context, *, occurred_at):
-        del connection, context, occurred_at
-        raise GoogleConnectionConflictError()
-
-
-@dataclass(frozen=True, slots=True)
 class _AdmittedCredentialPreflight:
-    repository: _PinnedConnectionRepository
+    repository: GoogleConnectionRepository
     resolver: EnvironmentGoogleCredentialResolver
+    expected_connection: GoogleConnection
 
     async def verify(
         self,
@@ -328,6 +365,10 @@ class _AdmittedCredentialPreflight:
         context: TrustedPersistenceContext,
     ) -> None:
         async with self.repository.admit_read(command, context) as connection:
+            if connection != self.expected_connection:
+                raise GoogleLiveQualificationRefused(
+                    "Google current connection does not match the approved authority"
+                )
             material = await self.resolver.resolve(
                 connection.credential_reference, connection.grant_reference
             )
@@ -345,9 +386,44 @@ class GooglePrivateLiveRuntime:
         environment: Mapping[str, str],
         *,
         transport=None,
+        connection_repository: GoogleConnectionRepository | None = None,
+        context_boundary: TrustedContextBoundary | None = None,
     ) -> None:
         self._environment = environment
         self._transport = transport or _OneShotHttpxTransport()
+        self._connection_repository = connection_repository
+        self._context_boundary = context_boundary or TrustedContextBoundary.create()
+        self._retry_observer = JsonLoggingGoogleApiRetryObserver(
+            logging.getLogger("spine.google.qualification.retry")
+        )
+
+    def _repository(self):
+        if self._connection_repository is not None:
+            return self._connection_repository
+        from spine.infrastructure.connections.postgresql_google import (
+            PostgreSQLGoogleConnectionRepository,
+        )
+
+        settings = RuntimeDatabaseSettings()
+        engine = create_async_engine(
+            settings.url.get_secret_value(),
+            pool_size=1,
+            max_overflow=0,
+            pool_timeout=settings.pool_timeout_seconds,
+            pool_pre_ping=settings.pool_pre_ping,
+            pool_reset_on_return="rollback",
+            isolation_level="READ COMMITTED",
+            connect_args={
+                "connect_timeout": settings.connect_timeout_seconds,
+                "options": POSTGRESQL_SEARCH_PATH_OPTIONS,
+            },
+            hide_parameters=True,
+        )
+        sessions = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+        return PostgreSQLGoogleConnectionRepository(
+            session_factory=sessions,
+            context_verifier=self._context_boundary,
+        )
 
     def build_runner(
         self, config: GoogleLiveQualificationConfig
@@ -364,22 +440,16 @@ class GooglePrivateLiveRuntime:
             raise GoogleLiveQualificationRefused(
                 "Google live effective configuration is not approved"
             )
-        digest = _manifest_digest(self._environment)
-        context = TrustedPersistenceContext(
+        context = self._context_boundary.worker(
             scope=EnvironmentScope(
                 config.connection.workspace_id, config.connection.environment_id
             ),
-            origin=ContextOrigin.WORKER,
             purpose=PersistencePurpose("google_connector"),
             operation=PersistenceOperation("google_connection_read"),
-            trace_id=_id(digest, "trace"),
-            acting_subject_id=None,
+            trace_id=uuid4(),
             service_principal_id=config.connection.service_principal_id,
-            provenance=TrustedContextProvenance(
-                _id(digest, "context-issuer"), hashlib.sha256(digest.encode()).digest()
-            ),
         )
-        repository = _PinnedConnectionRepository(config.connection, context)
+        repository = self._repository()
         resolver = EnvironmentGoogleCredentialResolver(
             credential_reference=config.connection.credential_reference,
             grant_reference=config.connection.grant_reference,
@@ -392,7 +462,7 @@ class GooglePrivateLiveRuntime:
         bindings = GoogleLiveQualificationBindings(
             credential_resolver=resolver,
             transport=self._transport,
-            retry_observer=_NoOpRetryObserver(),
+            retry_observer=self._retry_observer,
             connection_repository=repository,
             diagnostic_sink=JsonLoggingDiagnosticSink(
                 registry, logger=logging.getLogger("spine.google.qualification")
@@ -402,7 +472,9 @@ class GooglePrivateLiveRuntime:
             sleep=asyncio.sleep,
             context=context,
             approval_verifier=_ApprovedFingerprint(approved_fingerprint),
-            credential_preflight=_AdmittedCredentialPreflight(repository, resolver),
+            credential_preflight=_AdmittedCredentialPreflight(
+                repository, resolver, config.connection
+            ),
         )
         return bindings.build_runner(config)
 
@@ -417,6 +489,7 @@ def build_live_runner(
 
 __all__ = [
     "GooglePrivateLiveRuntime",
+    "JsonLoggingGoogleApiRetryObserver",
     "build_google_live_config_from_environment",
     "build_live_runner",
 ]

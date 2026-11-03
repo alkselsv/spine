@@ -6,6 +6,7 @@ import asyncio
 import hmac
 import json
 import secrets
+from typing import Protocol
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from pydantic import SecretStr
@@ -27,6 +28,7 @@ class GoogleWebLoopbackConsent:
 
     __slots__ = (
         "_browser",
+        "_callback_server",
         "_exchange",
         "_redirect_uri",
         "_scopes",
@@ -39,6 +41,7 @@ class GoogleWebLoopbackConsent:
         approved_scopes: tuple[str, ...],
         redirect_uri: str,
         browser: GoogleAuthorizationBrowserPort | None = None,
+        callback_server: GoogleOAuthCallbackServerPort | None = None,
         token_exchange: GoogleOAuthTokenExchangePort | None = None,
         timeout_seconds: float = 300.0,
     ) -> None:
@@ -57,6 +60,7 @@ class GoogleWebLoopbackConsent:
         self._scopes = tuple(sorted(approved_scopes))
         self._redirect_uri = redirect_uri
         self._browser = browser or SystemAuthorizationBrowser()
+        self._callback_server = callback_server or AsyncioGoogleOAuthCallbackServer()
         self._exchange = token_exchange or HttpxGoogleOAuthTokenExchange()
         self._timeout_seconds = timeout_seconds
 
@@ -76,36 +80,23 @@ class GoogleWebLoopbackConsent:
                 )
             )
             host, port, callback_path = _parse_loopback_redirect(self._redirect_uri)
-            loop = asyncio.get_running_loop()
-            callback: asyncio.Future[str] = loop.create_future()
             state = secrets.token_urlsafe(32)
-            server = await asyncio.start_server(
-                lambda reader, writer: self._handle_callback(
-                    reader,
-                    writer,
-                    callback=callback,
-                    expected_state=state,
-                    callback_path=callback_path,
-                ),
+            url = _authorization_url(
+                authorize_url=authorize_url,
+                client_id=client_id,
+                redirect_uri=self._redirect_uri,
+                scopes=self._scopes,
+                state=state,
+            )
+            code = await self._callback_server.receive_code(
                 host=host,
                 port=port,
-                limit=8192,
+                callback_path=callback_path,
+                expected_state=state,
+                authorization_url=url,
+                browser=self._browser,
+                timeout_seconds=self._timeout_seconds,
             )
-            try:
-                url = _authorization_url(
-                    authorize_url=authorize_url,
-                    client_id=client_id,
-                    redirect_uri=self._redirect_uri,
-                    scopes=self._scopes,
-                    state=state,
-                )
-                opened = await asyncio.to_thread(self._browser.open, url)
-                if not opened:
-                    raise GoogleManualAuthorizationError()
-                code = await asyncio.wait_for(callback, timeout=self._timeout_seconds)
-            finally:
-                server.close()
-                await server.wait_closed()
             refresh_token = await self._exchange.exchange(
                 token_url=token_url,
                 code=code,
@@ -124,6 +115,57 @@ class GoogleWebLoopbackConsent:
         except Exception:
             raise GoogleManualAuthorizationError() from None
 
+class GoogleOAuthCallbackServerPort(Protocol):
+    async def receive_code(
+        self,
+        *,
+        host: str,
+        port: int,
+        callback_path: str,
+        expected_state: str,
+        authorization_url: str,
+        browser: GoogleAuthorizationBrowserPort,
+        timeout_seconds: float,
+    ) -> str: ...
+
+
+class AsyncioGoogleOAuthCallbackServer:
+    """Receive one bounded loopback callback after the listener is active."""
+
+    async def receive_code(
+        self,
+        *,
+        host: str,
+        port: int,
+        callback_path: str,
+        expected_state: str,
+        authorization_url: str,
+        browser: GoogleAuthorizationBrowserPort,
+        timeout_seconds: float,
+    ) -> str:
+        loop = asyncio.get_running_loop()
+        callback: asyncio.Future[str] = loop.create_future()
+        server = await asyncio.start_server(
+            lambda reader, writer: self._handle_callback(
+                reader,
+                writer,
+                callback=callback,
+                expected_state=expected_state,
+                callback_path=callback_path,
+            ),
+            host=host,
+            port=port,
+            limit=8192,
+        )
+        try:
+            opened = await asyncio.to_thread(browser.open, authorization_url)
+            if not opened:
+                raise GoogleManualAuthorizationError()
+            return await asyncio.wait_for(callback, timeout=timeout_seconds)
+        finally:
+            server.close()
+            await server.wait_closed()
+
     async def _handle_callback(
         self,
         reader: asyncio.StreamReader,
@@ -137,21 +179,11 @@ class GoogleWebLoopbackConsent:
             request_line = await asyncio.wait_for(reader.readline(), timeout=5.0)
             if len(request_line) > 4096:
                 raise GoogleManualAuthorizationError()
-            parts = request_line.decode("ascii").strip().split(" ")
-            if len(parts) != 3 or parts[0] != "GET" or parts[2] != "HTTP/1.1":
-                raise GoogleManualAuthorizationError()
-            target = urlsplit(parts[1])
-            values = parse_qs(target.query, strict_parsing=True)
-            state = values.get("state", [""])[0]
-            code = values.get("code", [""])[0]
-            if (
-                target.path != callback_path
-                or not hmac.compare_digest(state, expected_state)
-                or not code
-                or len(code) > 4096
-                or "error" in values
-            ):
-                raise GoogleManualAuthorizationError()
+            code = parse_google_oauth_callback(
+                request_line,
+                expected_state=expected_state,
+                callback_path=callback_path,
+            )
             while await asyncio.wait_for(reader.readline(), timeout=5.0) not in (
                 b"\r\n",
                 b"\n",
@@ -187,6 +219,37 @@ class GoogleWebLoopbackConsent:
                 await writer.wait_closed()
             except Exception:
                 pass
+
+
+def parse_google_oauth_callback(
+    request_line: bytes,
+    *,
+    expected_state: str,
+    callback_path: str,
+) -> str:
+    """Parse one provider callback without starting a listener or disclosing input."""
+
+    try:
+        if len(request_line) > 4096:
+            raise ValueError
+        parts = request_line.decode("ascii").strip().split(" ")
+        if len(parts) != 3 or parts[0] != "GET" or parts[2] != "HTTP/1.1":
+            raise ValueError
+        target = urlsplit(parts[1])
+        values = parse_qs(target.query, strict_parsing=True)
+        state = values.get("state", [""])[0]
+        code = values.get("code", [""])[0]
+        if (
+            target.path != callback_path
+            or not hmac.compare_digest(state, expected_state)
+            or not code
+            or len(code) > 4096
+            or "error" in values
+        ):
+            raise ValueError
+        return code
+    except (UnicodeError, TypeError, ValueError):
+        raise GoogleManualAuthorizationError() from None
 
 
 def _parse_loopback_redirect(value: str) -> tuple[str, int, str]:
@@ -289,4 +352,9 @@ def _loopback_response(*, status: str, body: bytes) -> bytes:
     ).encode("ascii") + body
 
 
-__all__ = ["GoogleWebLoopbackConsent"]
+__all__ = [
+    "AsyncioGoogleOAuthCallbackServer",
+    "GoogleOAuthCallbackServerPort",
+    "GoogleWebLoopbackConsent",
+    "parse_google_oauth_callback",
+]
