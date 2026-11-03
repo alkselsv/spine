@@ -76,10 +76,10 @@ test('test_synthetic_ui_qualification_renders_safe_sync_states_without_provider_
     reconciliation_required: 'Требуется сверка',
   };
   const guidanceByState: Partial<Record<components['schemas']['MailboxConnectionSyncState'], string>> = {
-    partial: 'Обновите статус и проверьте безопасные коды; результат может не включать все изменения.',
-    stale: 'Сверьте дату последней полной синхронизации и отставание, затем обновите статус.',
-    revoked: 'Передайте восстановление доступа администратору и обновите статус после его решения.',
-    reconciliation_required: 'Проверьте доступность полной сверки в списке возможностей. Следуйте процедуре восстановления подключения и после завершения обновите статус.',
+    partial: 'Не считайте выборку полной. Обновите статус после следующей попытки синхронизации.',
+    stale: 'Сверьте время последней полной синхронизации перед использованием данных и обновите статус.',
+    revoked: 'Остановите ожидание синхронизации и запросите новое одобрение подключения у владельца доступа.',
+    reconciliation_required: 'Не запускайте ручной импорт. Дождитесь безопасной полной сверки и затем обновите статус.',
   };
   let state: components['schemas']['MailboxConnectionSyncState'] = 'not_started';
   let healthOverride: components['schemas']['ProviderConnectionHealth'] | undefined;
