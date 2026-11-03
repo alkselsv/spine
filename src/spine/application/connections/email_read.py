@@ -74,6 +74,14 @@ _REQUIRED_CAPABILITY: dict[EmailOperation, ProviderCapabilityKind] = {
 }
 
 
+def required_mailbox_capability(
+    operation: EmailOperation,
+) -> ProviderCapabilityKind | None:
+    """Return the provider capability needed for one mail operation."""
+
+    return _REQUIRED_CAPABILITY.get(operation)
+
+
 class MailboxReadAdmission(Generic[ReadResultT]):
     """Revalidate exact scope and connection authority before invoking a provider."""
 
@@ -118,6 +126,9 @@ class MailboxReadAdmission(Generic[ReadResultT]):
         if approved_scope != scope:
             raise MailboxReadDeniedError()
 
+        required_capability = required_mailbox_capability(command.operation)
+        if required_capability is None:
+            raise MailboxReadDeniedError()
         read_command = ProviderReadCommand(
             workspace_id=scope.workspace_id,
             environment_id=scope.environment_id,
@@ -128,13 +139,13 @@ class MailboxReadAdmission(Generic[ReadResultT]):
             ),
             authorization_generation=scope.authorization_generation,
             configuration_generation=scope.configuration_generation,
-            required_capabilities=(_REQUIRED_CAPABILITY[command.operation],),
+            required_capabilities=(required_capability,),
         )
         try:
             async with self._connections.admit_read(read_command, context) as connection:
                 if not self._connection_matches(scope, connection):
                     raise MailboxReadDeniedError()
-                if not connection.supports(_REQUIRED_CAPABILITY[command.operation]):
+                if not connection.supports(required_capability):
                     raise MailboxReadDeniedError()
                 try:
                     return await self._provider.read(connection, command)
@@ -168,4 +179,5 @@ __all__ = [
     "MailboxReadCommand",
     "MailboxReadDeniedError",
     "MailboxScopeRepository",
+    "required_mailbox_capability",
 ]
