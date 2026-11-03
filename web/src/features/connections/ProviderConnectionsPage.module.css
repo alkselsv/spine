@@ -92,8 +92,6 @@
 .success code { overflow-wrap: anywhere; }
 .notice { background: var(--connections-subtle); color: var(--connections-secondary); }
 .warning { margin-top: 12px; background: var(--connections-warning-bg); color: var(--connections-warning); }
-.operatorGuidance { display: grid; gap: 4px; margin-top: 10px; padding: 10px; border-radius: 7px; background: var(--connections-warning-bg); color: var(--connections-warning); font-size: 12px; line-height: 1.45; }
-.operatorGuidance strong { color: var(--connections-text); }
 .loading { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 12px; max-width: 920px; }
 .loading span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 .skeleton { height: 210px; border: 1px solid var(--connections-border); border-radius: 10px; background: linear-gradient(100deg, var(--connections-subtle) 30%, var(--connections-muted) 50%, var(--connections-subtle) 70%); background-size: 300% 100%; animation: shimmer 1.5s infinite; }
