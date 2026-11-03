@@ -1,0 +1,135 @@
+{
+  "schema_version": "issue-729-bitrix24-source-admission:v1",
+  "ticket": 729,
+  "status": "offline_pass",
+  "qualified_base_commit": "00c4b911f36bbf973cae108b3665fd13fc3c9170",
+  "qualification_commit": "5a3a65c0e3c0c389792b77663259c15abc199a5d",
+  "migration_revision": "20261230_98",
+  "qualification_boundary": "synthetic-source-admission-through-current-disclosure-with-isolated-postgresql",
+  "required_scenarios": [
+    "root_scope_membership_and_workspace_isolation",
+    "incomplete_scan_and_stale_authority_fencing",
+    "trusted_verifier_exact_receipt_and_failure",
+    "selector_conflicts_and_compatibility",
+    "canonical_retry_idempotency_and_unknown_commit",
+    "postgresql_constraints_rls_and_immutable_history",
+    "migration_upgrade_rollback_and_version_interpretation",
+    "lock_order_and_revocation_acceptance_races",
+    "opaque_exclusion_and_no_old_current_fallback",
+    "process_only_reprocessing_preserves_canonical_state",
+    "provider_compatibility_regression_gates"
+  ],
+  "traceability": {
+    "root_scope_membership_and_workspace_isolation": [
+      "tests/application/test_bitrix24_disk_scope_admission.py::test_admission_resolves_exact_current_tenant_scoped_policy_versions",
+      "tests/application/test_bitrix24_disk_scope_admission.py::test_admission_cannot_resolve_policy_from_another_workspace",
+      "tests/application/test_bitrix24_disk_scope_admission.py::test_admission_denies_empty_content_allowlist",
+      "tests/connectors/test_bitrix24_disk_traversal.py::test_nested_membership_requires_matching_parent_chain_and_independent_discovery"
+    ],
+    "incomplete_scan_and_stale_authority_fencing": [
+      "tests/connectors/test_bitrix24_disk_traversal.py::test_incomplete_listing_does_not_prove_non_membership",
+      "tests/connectors/test_bitrix24_disk_traversal.py::test_permission_filtered_provider_failure_stays_incomplete",
+      "tests/application/test_bitrix24_disk_scope_admission.py::test_admission_fences_superseded_root_policy",
+      "tests/application/test_bitrix24_disk_scope_admission.py::test_traversal_coordinator_rechecks_scope_and_s1_grant_after_scan"
+    ],
+    "trusted_verifier_exact_receipt_and_failure": [
+      "tests/application/storage/test_trusted_content.py::test_verifier_accepts_qualified_utf8_content_and_binds_receipt",
+      "tests/application/storage/test_trusted_content.py::test_verifier_denies_substituted_association_before_reading",
+      "tests/application/storage/test_trusted_content.py::test_verifier_returns_safe_typed_failure_for_untrusted_content",
+      "tests/application/storage/test_trusted_content.py::test_verifier_denies_bytes_that_do_not_match_finalized_receipt"
+    ],
+    "selector_conflicts_and_compatibility": [
+      "tests/application/test_canonical_acceptance_selectors.py::test_resolver_returns_explicit_google_v1_compatibility_selector",
+      "tests/application/test_canonical_acceptance_selectors.py::test_legacy_provider_requires_explicit_v1_compatibility_selector",
+      "tests/application/test_canonical_acceptance_selectors.py::test_bitrix24_s2_uses_server_selected_v2_and_rejects_v1_downgrade",
+      "tests/application/test_canonical_acceptance_selectors.py::test_resolver_denies_overlapping_authority_with_conflicting_policy",
+      "tests/application/test_canonical_acceptance_selectors.py::test_resolver_denies_current_head_mismatch"
+    ],
+    "canonical_retry_idempotency_and_unknown_commit": [
+      "tests/application/persistence/test_canonical_acceptance_retry.py::test_serialization_retry_reopens_uow_and_returns_one_result",
+      "tests/application/persistence/test_canonical_acceptance_retry.py::test_unknown_commit_reconciles_with_same_command_identity",
+      "tests/application/persistence/test_canonical_acceptance_retry.py::test_v2_processing_authority_is_revalidated_inside_each_uow"
+    ],
+    "postgresql_constraints_rls_and_immutable_history": [
+      "tests/integration/postgresql/test_bitrix24_disk_policy_persistence.py::test_postgresql_policy_heads_are_tenant_scoped_immutable_and_cas_fenced",
+      "tests/integration/postgresql/test_initial_tenancy_migration.py::test_initial_schema_has_named_tenancy_constraints_and_postgresql_types",
+      "tests/integration/postgresql/test_initial_tenancy_migration.py::test_governed_reprocessing_catalog_has_exact_tenant_foreign_keys",
+      "tests/integration/postgresql/test_initial_tenancy_migration.py::test_processing_admission_and_selector_history_are_immutable",
+      "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_selector_postgresql_publish_replays_and_serializes_cas"
+    ],
+    "migration_upgrade_rollback_and_version_interpretation": [
+      "tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head",
+      "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_selector_migration_rollback_preserves_existing_v1_acceptance",
+      "tests/domain/sources/test_processing_admission.py::test_canonical_acceptance_v2_requires_exact_processing_link",
+      "tests/domain/sources/test_processing_admission.py::test_canonical_acceptance_v1_cannot_fabricate_processing_link"
+    ],
+    "lock_order_and_revocation_acceptance_races": [
+      "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_policy_change_wins_before_acceptance_and_stale_evidence_fails_closed",
+      "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_acceptance_locks_authoritative_policy_until_commit",
+      "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_admission_change_wins_before_acceptance_and_fails_closed"
+    ],
+    "opaque_exclusion_and_no_old_current_fallback": [
+      "tests/application/test_processing_commands.py::test_opaque_reprocess_is_rejected_before_item_parser_or_byte_read",
+      "tests/application/test_projection_request_resolution.py::test_opaque_current_revision_is_rejected_before_physical_projection",
+      "tests/application/test_projection_request_execution.py::test_current_turning_opaque_after_resolution_never_reaches_projection_adapter",
+      "tests/application/test_projection_request_resolution.py::test_opaque_boundary_member_is_excluded_from_projection_command",
+      "tests/application/test_authorized_context_broker.py::test_replay_is_denied_when_cached_revision_is_now_opaque",
+      "tests/application/test_disclosure_revalidation.py::test_opaque_current_dependency_suppresses_cached_answer"
+    ],
+    "process_only_reprocessing_preserves_canonical_state": [
+      "tests/application/test_processing_commands.py::test_authorized_opaque_reprocess_pins_exact_process_only_lineage",
+      "tests/application/test_processing_commands.py::test_ordinary_reprocess_preserves_ordinary_admission_and_process_only_output",
+      "tests/application/test_processing_commands.py::test_reprocess_accepts_historical_revision_without_moving_current_head_or_publication",
+      "tests/application/test_projection_request_resolution.py::test_process_only_receipt_is_rejected_before_physical_projection"
+    ],
+    "provider_compatibility_regression_gates": [
+      "tests/qualification/test_issue598_google_qualification.py::test_issue598_report_records_offline_pass_results",
+      "tests/qualification/test_issue665_yandex_disk.py::test_issue665_traceability_points_to_executable_public_seams",
+      "tests/qualification/test_issue680_mounted_filesystem.py::test_missing_live_prerequisites_are_not_verified"
+    ]
+  },
+  "verification": {
+    "focused": {
+      "command": "UV_CACHE_DIR=/private/tmp/spine-uv-cache uv run pytest -q tests/application/test_bitrix24_disk_scope_admission.py tests/connectors/test_bitrix24_disk_traversal.py tests/application/storage/test_trusted_content.py tests/application/test_canonical_acceptance_selectors.py tests/application/persistence/test_canonical_acceptance_retry.py tests/domain/sources/test_processing_admission.py tests/application/test_projection_request_resolution.py tests/application/test_projection_request_execution.py tests/application/test_authorized_context_broker.py tests/application/test_disclosure_revalidation.py tests/application/test_processing_commands.py tests/qualification/test_issue598_google_qualification.py tests/qualification/test_issue665_yandex_disk.py tests/qualification/test_issue680_mounted_filesystem.py",
+      "passed": 144,
+      "skipped": 0,
+      "failed": 0
+    },
+    "postgresql": {
+      "command": "UV_CACHE_DIR=/private/tmp/spine-uv-cache uv run pytest -q tests/integration/postgresql/test_bitrix24_disk_policy_persistence.py::test_postgresql_policy_heads_are_tenant_scoped_immutable_and_cas_fenced tests/integration/postgresql/test_initial_tenancy_migration.py::test_initial_schema_has_named_tenancy_constraints_and_postgresql_types tests/integration/postgresql/test_initial_tenancy_migration.py::test_governed_reprocessing_catalog_has_exact_tenant_foreign_keys tests/integration/postgresql/test_initial_tenancy_migration.py::test_processing_admission_and_selector_history_are_immutable tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head tests/integration/postgresql/test_postgresql_unit_of_work.py::test_selector_postgresql_publish_replays_and_serializes_cas tests/integration/postgresql/test_postgresql_unit_of_work.py::test_selector_migration_rollback_preserves_existing_v1_acceptance tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_policy_change_wins_before_acceptance_and_stale_evidence_fails_closed tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_acceptance_locks_authoritative_policy_until_commit tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_admission_change_wins_before_acceptance_and_fails_closed",
+      "database": "isolated PostgreSQL 17.6 container",
+      "passed": 10,
+      "skipped": 0,
+      "failed": 0
+    },
+    "repository": {
+      "command": "UV_CACHE_DIR=/private/tmp/spine-uv-cache uv run pytest -q",
+      "passed": 6286,
+      "skipped": 7,
+      "failed": 0
+    },
+    "compileall": "passed"
+  },
+  "live_provider_status": "not_verified",
+  "production_activation_status": "not_verified",
+  "unverified_prerequisites": [
+    "approved_synthetic_or_production_portal_and_current_acting_user",
+    "approved_concrete_roots_recursion_discovery_and_formats",
+    "production_secret_resolution_and_provider_transport",
+    "live_pagination_permission_move_revision_and_outage_behavior",
+    "retention_legal_cleanup_and_physical_deletion_authority",
+    "deployment_activation_and_independent_security_operations_review",
+    "explicit_issue_679_execution_authorization"
+  ],
+  "writer_activation": {
+    "canonical_acceptance_v2": "reader_first_fence_remains_enabled",
+    "fence_removal_authorized": false
+  },
+  "privacy": {
+    "synthetic_fakes_only": true,
+    "credentials_recorded": false,
+    "provider_payloads_recorded": false,
+    "production_data_recorded": false,
+    "opaque_content_recorded": false
+  }
+}
