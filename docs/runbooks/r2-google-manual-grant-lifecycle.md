@@ -7,6 +7,7 @@ credentials.
 
 ## Local credential files
 
+The original #754 adapter remains a compatibility contract:
 `LocalGoogleCredentialStore` uses the absolute path
 `~/.config/spine/google-qualification/` by default. It creates and verifies the
 owned directory with mode `0700`; Desktop OAuth client configuration and refresh
@@ -41,6 +42,37 @@ and returns the refresh token as `SecretStr`. The listener has a bounded wait
 and sanitized errors. Calling this adapter performs OAuth network requests and
 is not part of ordinary tests or this offline qualification.
 
+## Phase 1 Web OAuth correction
+
+The owner decision recorded on #615 supersedes Desktop OAuth for the isolated
+Phase 1 My Drive + Sheets run. `GoogleWebLoopbackConsent` accepts only a `web`
+client configuration and one explicit registered callback of the form
+`http://127.0.0.1:<fixed-port>/callback`. It never chooses an ephemeral port,
+rejects Desktop/installed JSON, validates the exact redirect entry before
+opening a browser, retains the bounded state check and exchanges the code
+through the same fakeable port.
+
+For this one local qualification, OAuth values are permitted in the ignored
+mode-0600 `.env.qualification`. `EnvironmentGoogleCredentialResolver` binds
+them to the exact opaque credential/grant references and the private runtime
+resolves them only inside a successful `GoogleReadAdmission`. This exception
+does not select a production secret store or product callback design.
+
+After the exact Web redirect URI is registered and a separate owner decision
+authorizes consent/token issuance, the operator runs the one-shot command:
+
+```bash
+SPINE_GOOGLE_CONSENT_OPT_IN=1 \
+  uv run spine-google-web-oauth-consent \
+  --env-file .env.qualification
+```
+
+The command refuses an insecure env-file mode, Desktop client material, a
+missing exact redirect, absent opt-in and an existing refresh token. It writes
+the returned token atomically with mode `0600` and prints only a closed success
+message. This command performs real Google OAuth calls and must not be used for
+ordinary tests or before the separate authorization.
+
 Remote revoke and local cleanup are explicit operations behind ports. The local
 connection is first suspended through `GoogleConnectionRepository.register`,
 which blocks further reads. The canonical record remains `SUSPENDED` before and
@@ -57,6 +89,10 @@ fail-closed at whichever step had completed.
 ```bash
 uv run pytest -q \
   tests/application/test_google_manual_authorization.py \
+  tests/infrastructure/test_google_web_oauth.py \
+  tests/connectors/test_google_env_credentials.py \
+  tests/scripts/test_google_web_oauth_consent.py \
+  tests/qualification/test_google_private_live_runtime.py \
   tests/infrastructure/test_google_qualification_credentials.py \
   tests/domain/connections/test_google_connections.py \
   tests/infrastructure/connections/test_in_memory_google_connections.py

@@ -21,6 +21,7 @@ from spine.connectors.google_api import (
 )
 from spine.connectors.google_execution_envelope import GoogleExecutionApprovalVerifier
 from spine.connectors.google_live_qualification import (
+    GoogleCredentialPreflightPort,
     GoogleLiveQualificationConfig,
     GoogleLiveQualificationRefused,
     GoogleLiveQualificationRunner,
@@ -45,6 +46,7 @@ class GoogleLiveQualificationBindings:
     approval_verifier: GoogleExecutionApprovalVerifier
     jitter: Callable[[float, float], float] = random.uniform
     shared_drive_preflight: GoogleSharedDrivePreflightPort | None = None
+    credential_preflight: GoogleCredentialPreflightPort | None = None
 
     def build_runner(
         self, config: GoogleLiveQualificationConfig
@@ -92,6 +94,7 @@ class GoogleLiveQualificationBindings:
                 context=self.context,
                 approval_verifier=self.approval_verifier,
                 shared_drive_preflight=self.shared_drive_preflight,
+                credential_preflight=self.credential_preflight,
             )
         except GoogleLiveQualificationRefused:
             raise
@@ -133,6 +136,12 @@ class GoogleLiveQualificationBindings:
         if self.shared_drive_preflight is not None and any(
             not callable(getattr(self.shared_drive_preflight, method, None))
             for method in ("resolve_approval", "resolve_execution_authorization")
+        ):
+            raise GoogleLiveQualificationRefused(
+                "Google live composition bindings are unsupported"
+            )
+        if self.credential_preflight is not None and not callable(
+            getattr(self.credential_preflight, "verify", None)
         ):
             raise GoogleLiveQualificationRefused(
                 "Google live composition bindings are unsupported"

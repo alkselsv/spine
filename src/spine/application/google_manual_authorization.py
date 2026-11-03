@@ -157,8 +157,13 @@ class GoogleConsentResult:
     refresh_token: SecretStr
 
 
-class GoogleDesktopConsentPort(Protocol):
+class GoogleOAuthConsentPort(Protocol):
     async def authorize(self, *, client_configuration: SecretStr) -> GoogleConsentResult: ...
+
+
+# Compatibility name for the already merged Desktop adapter. New compositions
+# depend on the registration-type-neutral port above.
+GoogleDesktopConsentPort = GoogleOAuthConsentPort
 
 
 class GoogleGrantRevocationPort(Protocol):
@@ -178,7 +183,7 @@ class GoogleCredentialStoragePort(Protocol):
 class GoogleManualConsent:
     """Manual consent coordinator whose external effect is supplied by a port."""
 
-    def __init__(self, consent: GoogleDesktopConsentPort) -> None:
+    def __init__(self, consent: GoogleOAuthConsentPort) -> None:
         self._consent = consent
 
     async def authorize(self, *, client_configuration: SecretStr) -> GoogleConsentResult:
@@ -300,6 +305,7 @@ __all__ = [
     "GoogleConsentResult",
     "GoogleCredentialStoragePort",
     "GoogleDesktopConsentPort",
+    "GoogleOAuthConsentPort",
     "GoogleGrantLifecycle",
     "GoogleGrantRevocationPort",
     "GoogleManualAuthorizationError",

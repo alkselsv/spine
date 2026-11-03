@@ -12,8 +12,10 @@ outbox processing are unchanged.
   current `uv.lock` resolves `0.28.1`.
 - Google Drive REST API: v3.
 - Google Sheets REST API: v4.
-- OAuth mode: OAuth 2.0 Desktop refresh grant resolved through separate opaque
-  credential and grant references.
+- OAuth mode: server-side OAuth 2.0 refresh grant. Production provider reads are
+  registration-type neutral and resolve secrets through separate opaque
+  credential and grant references. The isolated #615 Phase 1 qualification uses
+  a Web application client under its narrower owner-approved policy.
 
 No Google SDK is added. The REST endpoints and the provider/configuration
 version evidence are required runtime inputs rather than hardcoded policy.
@@ -74,10 +76,12 @@ Live access is forbidden unless both gates are present:
 1. the JSON config contains `"opt_in": true` and a complete exact allowlist;
 2. the process has `SPINE_GOOGLE_LIVE_OPT_IN=1`.
 
-The config also names (but does not contain) the approved Desktop credential
-inputs. The connection contains only opaque references. The CLI cannot build a
-provider client from this JSON snapshot: `--composition module:function` must
-name a deployment-owned factory returning `GoogleLiveQualificationRunner`.
+The config names (but does not contain) the approved credential inputs. The
+connection contains only opaque references. The private manifest pins the exact
+canonical workspace, environment, connection/version, approval, service
+principal, credential/grant/resource-scope references and authority generations;
+it never derives authority from provider IDs. `--composition module:function`
+must name a deployment-owned factory returning `GoogleLiveQualificationRunner`.
 That factory resolves secrets through the approved store, supplies the trusted
 persistence context and current connection repository, and wires the provider
 through `compose_google_live_qualification_runner`. The admitted current
@@ -89,13 +93,46 @@ manifest. Missing/mismatched references, scope, generations, current version,
 configuration fingerprint, opt-in or composition refuse the run before a
 provider request.
 
-Run only against the separately approved isolated synthetic Google resources:
+For #615 Phase 1, inspect the safe fingerprints from the mode-0600 private env:
+
+```bash
+uv run spine-google-live-qualification \
+  --env-file .env.qualification \
+  --inspect-fingerprints
+```
+
+After the manifest and effective fingerprint are separately approved, verify
+the entire private composition without a Google request:
+
+```bash
+SPINE_GOOGLE_PREFLIGHT_OPT_IN=1 \
+  uv run spine-google-live-qualification \
+  --env-file .env.qualification \
+  --composition spine.infrastructure.google_live_runtime:build_live_runner \
+  --preflight-only
+```
+
+This preflight validates the direct manifest digest, exact file roles,
+spreadsheet/sheet allowlist, PostgreSQL-canonical current connection and trusted
+workspace/environment context, approved limits, effective fingerprint and
+reference-bound OAuth values after admission. Missing, stale, revoked or
+mismatched current authority refuses before OAuth or provider transport. It does
+not write a report or invoke OAuth/Drive/Sheets endpoints.
+
+Phase 1 requests only `drive.readonly` and `spreadsheets.readonly`. The consent
+command reads the exact mode-0600 Web client JSON named by
+`GOOGLE_OAUTH_CLIENT_FILE`; the JSON must contain the configured client ID and
+secret and the exact registered loopback redirect URI. Installed/Desktop client
+JSON, an absent redirect registration or mismatched client material is refused
+before the browser opens.
+
+Only a later, separately authorized one-run command may contact the provider:
 
 ```bash
 SPINE_GOOGLE_LIVE_OPT_IN=1 \
   uv run spine-google-live-qualification \
-  --config /approved/path/google-live-config.json \
-  --composition approved_google_runtime:build_live_runner \
+  --env-file .env.qualification \
+  --composition spine.infrastructure.google_live_runtime:build_live_runner \
   --report /approved/path/google-live-report.json
 ```
 
@@ -114,7 +151,7 @@ separate execution authorization described in
 
 ## Not verified by offline evidence
 
-- Google endpoint availability and real Desktop OAuth consent/rotation;
+- Google endpoint availability and real Web OAuth consent/rotation;
 - real quota allocation, rate-limit timing and provider backoff headers;
 - real Drive change-feed delivery/token expiry and provider removal semantics;
 - real Sheets concurrent edits and response-size behavior;

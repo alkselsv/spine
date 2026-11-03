@@ -185,7 +185,7 @@ class GoogleResourceScope(DefinitionModel):
 
 
 @dataclass(frozen=True, slots=True, repr=False)
-class GoogleDesktopOAuthMaterial:
+class GoogleOAuthMaterial:
     """Secret material resolved from opaque references after read admission."""
 
     client_id: str
@@ -194,7 +194,20 @@ class GoogleDesktopOAuthMaterial:
 
     def __post_init__(self) -> None:
         if not self.client_id or not self.client_secret or not self.refresh_token:
-            raise ValueError("resolved Desktop OAuth material is incomplete")
+            raise ValueError("resolved Google OAuth material is incomplete")
+
+
+# Provider requests do not depend on the OAuth client registration type. Keep
+# the old name as a compatibility alias while new compositions use the neutral
+# contract.
+GoogleDesktopOAuthMaterial = GoogleOAuthMaterial
+
+
+class GoogleCredentialResolutionError(RuntimeError):
+    """Closed error that never includes environment names or secret values."""
+
+    def __init__(self) -> None:
+        super().__init__("Google credential resolution is unavailable.")
 
 
 class GoogleCredentialResolver(Protocol):
@@ -202,7 +215,7 @@ class GoogleCredentialResolver(Protocol):
         self,
         credential_reference: OpaqueGoogleReference,
         grant_reference: OpaqueGoogleReference,
-    ) -> GoogleDesktopOAuthMaterial: ...
+    ) -> GoogleOAuthMaterial: ...
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -236,7 +249,7 @@ class GoogleCredentialStore(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ReferenceGoogleCredentialResolver:
-    """Resolve Desktop OAuth material through two independent opaque references."""
+    """Resolve OAuth material through two independent opaque references."""
 
     store: GoogleCredentialStore
 
@@ -244,14 +257,74 @@ class ReferenceGoogleCredentialResolver:
         self,
         credential_reference: OpaqueGoogleReference,
         grant_reference: OpaqueGoogleReference,
-    ) -> GoogleDesktopOAuthMaterial:
+    ) -> GoogleOAuthMaterial:
         client = await self.store.resolve_client(credential_reference)
         grant = await self.store.resolve_grant(grant_reference)
-        return GoogleDesktopOAuthMaterial(
+        return GoogleOAuthMaterial(
             client_id=client.client_id,
             client_secret=client.client_secret,
             refresh_token=grant.refresh_token,
         )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class EnvironmentGoogleCredentialResolver:
+    """Resolve one exact reference pair from an injected private environment."""
+
+    credential_reference: OpaqueGoogleReference
+    grant_reference: OpaqueGoogleReference
+    client_id_variable: str
+    client_secret_variable: str
+    refresh_token_variable: str
+    environment: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        names = (
+            self.client_id_variable,
+            self.client_secret_variable,
+            self.refresh_token_variable,
+        )
+        if (
+            len(set(names)) != len(names)
+            or any(
+                not isinstance(name, str)
+                or re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", name) is None
+                for name in names
+            )
+        ):
+            raise GoogleCredentialResolutionError()
+
+    async def resolve(
+        self,
+        credential_reference: OpaqueGoogleReference,
+        grant_reference: OpaqueGoogleReference,
+    ) -> GoogleOAuthMaterial:
+        if (
+            credential_reference != self.credential_reference
+            or grant_reference != self.grant_reference
+        ):
+            raise GoogleCredentialResolutionError()
+        try:
+            values = tuple(
+                self.environment[name]
+                for name in (
+                    self.client_id_variable,
+                    self.client_secret_variable,
+                    self.refresh_token_variable,
+                )
+            )
+            if any(
+                not isinstance(value, str)
+                or not value
+                or len(value) > 16_384
+                for value in values
+            ):
+                raise GoogleCredentialResolutionError()
+            return GoogleOAuthMaterial(*values)
+        except GoogleCredentialResolutionError:
+            raise
+        except Exception:
+            raise GoogleCredentialResolutionError() from None
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -1797,7 +1870,10 @@ __all__ = [
     "GoogleApiTransport",
     "GoogleCredentialStore",
     "GoogleCredentialResolver",
+    "GoogleCredentialResolutionError",
     "GoogleDesktopOAuthMaterial",
+    "GoogleOAuthMaterial",
+    "EnvironmentGoogleCredentialResolver",
     "GoogleOAuthClientCredentials",
     "GoogleOAuthRefreshGrant",
     "GoogleResourceScope",
