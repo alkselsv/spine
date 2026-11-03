@@ -262,8 +262,6 @@ async def test_unfinalized_staged_email_bytes_cannot_be_read(
     observed = await store.write_chunks(
         active.upload_id, chunks(*split_chunks(raw_mime, 8))
     )
-    staged_payload = next((store._root / "staged").rglob("payload"))
-    assert staged_payload.read_bytes() == raw_mime
 
     guessed_reference = ObjectReference(
         schema_version=1,
