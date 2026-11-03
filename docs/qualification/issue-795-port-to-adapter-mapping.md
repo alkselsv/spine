@@ -141,8 +141,7 @@ Verification on the rebased working tree (base
   were rerun on a clean detached `7bc8192` worktree and failed identically
   (`2 failed in 2.61s`), confirming inherited baseline failures. No PR-specific
   full-suite failure was observed.
-- Clean-tree #68 artifact gate: `1 passed in 1.88s` before final documentation
-  edits; rerun after commit.
+- Clean-tree #68 artifact gate after documentation commit: `1 passed in 1.41s`.
 - Exact-head GitHub CI awaits pushing the updated branch.
 
 Production manifest authority (#811), deletion authority (#812), and external

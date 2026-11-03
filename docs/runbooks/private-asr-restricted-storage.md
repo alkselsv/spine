@@ -236,8 +236,8 @@ Verification on the rebased working tree, based on current main
   nested #68 repeats them. Both direct failures reproduced on a clean detached
   `7bc8192` worktree (`2 failed in 2.61s`), so they are inherited baseline
   defects. No PR-specific full-suite failure was observed.
-- The clean-tree #68 artifact gate passed (`1 passed in 1.88s`) before these
-  final documentation updates; it must be rerun after commit.
+- The clean-tree #68 artifact gate passed after the final documentation commit
+  (`1 passed in 1.41s`).
 - `python -m compileall -q src tests`, `uv lock --check` with `/tmp` cache, and
   `git diff --check`: PASS.
 - Exact-head GitHub CI is pending until this branch is pushed.
