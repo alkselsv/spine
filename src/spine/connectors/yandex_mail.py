@@ -37,6 +37,14 @@ from spine.connectors.yandex_mail_uid_enumeration import (
     failed_yandex_mail_uid_page,
     normalize_yandex_mail_uid_page,
 )
+from spine.connectors.yandex_mail_message import (
+    YandexMailRawMessageFetchCode,
+    YandexMailRawMessageFetchCommand,
+    YandexMailRawMessageFetchResult,
+    YandexMailRawMessageFetchTranscript,
+    failed_yandex_mail_raw_message_fetch,
+    fetch_yandex_mail_raw_message,
+)
 
 
 YANDEX_MAIL_IMAP_HOST = "imap.yandex.ru"
@@ -105,6 +113,11 @@ class YandexMailImapReadRequest(DefinitionModel):
     enumeration_max_response_bytes: int | None = None
     expected_uid_validity: int | None = None
     selection_command: Literal["EXAMINE"] | None = None
+    fetch_command: Literal["UID FETCH"] | None = None
+    fetch_data_item: Literal["BODY.PEEK[]"] | None = None
+    message_uid: int | None = Field(default=None, ge=1, le=2**32 - 1)
+    max_message_bytes: int | None = Field(default=None, ge=1)
+    mutation_commands: tuple[()] = ()
     security: YandexMailImapSecurity = YandexMailImapSecurity()
 
 
@@ -189,11 +202,18 @@ class _YandexMailProviderAdapter:
 
         try:
             credential = await self._credentials.resolve(connection, scope)
-        except Exception:
+        except Exception as error:
+            if isinstance(command, YandexMailRawMessageFetchCommand):
+                return _raw_fetch_error(command, error)  # type: ignore[return-value]
             raise YandexMailAuthorityDeniedError() from None
         if not isinstance(credential, YandexMailOAuthCredential) or not (
             _credential_matches_scope(credential, connection, scope)
         ):
+            if isinstance(command, YandexMailRawMessageFetchCommand):
+                return _raw_fetch_failure(
+                    command,
+                    YandexMailRawMessageFetchCode.AUTHORIZATION_LOST,
+                )  # type: ignore[return-value]
             raise YandexMailAuthorityDeniedError()
 
         request_values = dict(
@@ -215,12 +235,37 @@ class _YandexMailProviderAdapter:
                 in (
                     EmailOperation.OBSERVE_FOLDER_GENERATION,
                     EmailOperation.ENUMERATE_FOLDER_UIDS,
+                    EmailOperation.READ_RAW_MESSAGE,
                 )
                 else None
             ),
             enumeration_max_items=command.enumeration_max_items,
             enumeration_max_response_bytes=command.enumeration_max_response_bytes,
-            expected_uid_validity=command.expected_uid_validity,
+            expected_uid_validity=(
+                command.uid_validity
+                if isinstance(command, YandexMailRawMessageFetchCommand)
+                else command.expected_uid_validity
+            ),
+            fetch_command=(
+                "UID FETCH"
+                if isinstance(command, YandexMailRawMessageFetchCommand)
+                else None
+            ),
+            fetch_data_item=(
+                "BODY.PEEK[]"
+                if isinstance(command, YandexMailRawMessageFetchCommand)
+                else None
+            ),
+            message_uid=(
+                command.uid
+                if isinstance(command, YandexMailRawMessageFetchCommand)
+                else None
+            ),
+            max_message_bytes=(
+                command.max_message_bytes
+                if isinstance(command, YandexMailRawMessageFetchCommand)
+                else None
+            ),
         )
         if isinstance(command, YandexMailUidEnumerationPageRequest):
             request = YandexMailUidImapReadRequest(
@@ -252,7 +297,7 @@ class _YandexMailProviderAdapter:
             )
             try:
                 result = await session.read(request)
-            except Exception:
+            except Exception as error:
                 if command.operation is EmailOperation.OBSERVE_FOLDER_GENERATION:
                     return failed_yandex_mail_folder_generation_observation(
                         scope=scope,
@@ -264,6 +309,8 @@ class _YandexMailProviderAdapter:
                         request=command,
                         code=YandexMailUidPageCode.SERVER_REJECTED,
                     )  # type: ignore[return-value]
+                if isinstance(command, YandexMailRawMessageFetchCommand):
+                    return _raw_fetch_error(command, error)  # type: ignore[return-value]
                 raise
             if command.operation is EmailOperation.OBSERVE_FOLDER_GENERATION:
                 if not isinstance(result, YandexMailFolderExamineTranscript):
@@ -289,8 +336,25 @@ class _YandexMailProviderAdapter:
                     request=command,
                     transcript=result,
                 )  # type: ignore[return-value]
+            if isinstance(command, YandexMailRawMessageFetchCommand):
+                assert command.folder_or_label_reference is not None
+                if not isinstance(result, YandexMailRawMessageFetchTranscript):
+                    return _raw_fetch_failure(
+                        command,
+                        YandexMailRawMessageFetchCode.MALFORMED_RESPONSE,
+                    )  # type: ignore[return-value]
+                return await fetch_yandex_mail_raw_message(
+                    scope=scope,
+                    folder_reference=command.folder_or_label_reference,
+                    uid_validity=command.uid_validity,
+                    uid=command.uid,
+                    max_message_bytes=command.max_message_bytes,
+                    transcript=result,
+                )  # type: ignore[return-value]
             return result
-        except Exception:
+        except Exception as error:
+            if isinstance(command, YandexMailRawMessageFetchCommand):
+                return _raw_fetch_error(command, error)  # type: ignore[return-value]
             raise YandexMailAuthorityDeniedError() from None
         finally:
             if session is not None:
@@ -395,6 +459,35 @@ def _credential_matches_scope(
         and credential.authorization_generation == scope.authorization_generation
         and credential.configuration_generation == scope.configuration_generation
         and credential.approved_oauth_scopes == (YANDEX_MAIL_OAUTH_SCOPE,)
+    )
+
+
+def _raw_fetch_error(
+    command: YandexMailRawMessageFetchCommand,
+    error: Exception,
+) -> YandexMailRawMessageFetchResult:
+    return _raw_fetch_failure(
+        command,
+        (
+            YandexMailRawMessageFetchCode.AUTHORIZATION_LOST
+            if isinstance(error, PermissionError)
+            else YandexMailRawMessageFetchCode.PROVIDER_UNAVAILABLE
+        ),
+    )
+
+
+def _raw_fetch_failure(
+    command: YandexMailRawMessageFetchCommand,
+    code: YandexMailRawMessageFetchCode,
+) -> YandexMailRawMessageFetchResult:
+    folder_reference = command.folder_or_label_reference
+    assert folder_reference is not None
+    return failed_yandex_mail_raw_message_fetch(
+        scope=command.scope,
+        folder_reference=folder_reference,
+        uid_validity=command.uid_validity,
+        uid=command.uid,
+        code=code,
     )
 
 
