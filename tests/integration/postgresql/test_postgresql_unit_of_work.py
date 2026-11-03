@@ -784,6 +784,29 @@ async def test_postgresql_email_artifact_replay_is_tenant_scoped_and_outbox_atom
         await uow.commit()
     assert acceptance.acceptance is not None
 
+    other_source = source_contract_connector_source(
+        case.source.workspace_id,
+        case.source.environment_id,
+        "generation-2",
+    )
+    other_revision = source_contract_revision(other_source, synthetic_uuid(85352))
+    other_provenance = source_contract_provenance(
+        other_source, other_revision.revision_id, "event-2"
+    )
+    source_context = postgresql_adapter.source_context(
+        case.source.workspace_id, case.source.environment_id
+    )
+    assert source_context is not None
+    async with postgresql_adapter.uow_factory(source_context) as uow:
+        await uow.sources.record_observation(SourceObservationCommand.create(
+            source=other_source,
+            revision=other_revision,
+            provenance=other_provenance,
+            idempotency_key=IdempotencyKey("issue854-mismatched-artifact-parent"),
+        ))
+        await uow.commit()
+    assert other_source.source_object_id != case.source.source_object_id
+
     parser = MimeParser(profile=MimeParserProfile(
         max_total_bytes=20_000, max_header_bytes=10_000, max_parts=20,
         max_depth=10, max_decoded_bytes=20_000, max_parse_seconds=2.0,
@@ -897,6 +920,41 @@ async def test_postgresql_email_artifact_replay_is_tenant_scoped_and_outbox_atom
             environment_id=synthetic_uuid(85341),
             artifact_id=first.artifact.artifact_id,
         ) is None
+
+        migration_engine = create_async_engine(
+            postgresql_contract_database.migration_url.get_secret_value(),
+            hide_parameters=True,
+            connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+        )
+        try:
+            with pytest.raises(IntegrityError):
+                async with migration_engine.begin() as connection:
+                    await connection.execute(
+                        text(
+                            "INSERT INTO spine.email_message_artifacts "
+                            "(workspace_id, environment_id, artifact_id, source_object_id, "
+                            "source_revision_id, canonical_acceptance_id, artifact_digest, "
+                            "command_identity, command_digest, record, created_at) VALUES "
+                            "(:workspace_id, :environment_id, :artifact_id, :source_object_id, "
+                            ":source_revision_id, :canonical_acceptance_id, :artifact_digest, "
+                            ":command_identity, :command_digest, CAST(:record AS jsonb), :created_at)"
+                        ),
+                        {
+                            "workspace_id": case.source.workspace_id,
+                            "environment_id": case.source.environment_id,
+                            "artifact_id": synthetic_uuid(85312),
+                            "source_object_id": other_source.source_object_id,
+                            "source_revision_id": other_revision.revision_id,
+                            "canonical_acceptance_id": acceptance.acceptance.canonical_acceptance_id,
+                            "artifact_digest": "a" * 64,
+                            "command_identity": "mismatched-acceptance-revision",
+                            "command_digest": "b" * 64,
+                            "record": "{}",
+                            "created_at": datetime(2026, 10, 1, tzinfo=timezone.utc),
+                        },
+                    )
+        finally:
+            await migration_engine.dispose()
 
         failed_command = command_for(
             synthetic_uuid(85311), intent_id=first.projection_intent_id

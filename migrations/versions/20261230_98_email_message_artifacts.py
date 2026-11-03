@@ -22,6 +22,18 @@ def _role(attribute: str) -> str:
 
 def upgrade() -> None:
     uuid = postgresql.UUID(as_uuid=True)
+    op.create_unique_constraint(
+        "uq_canonical_acceptances_scope_source_revision",
+        "canonical_acceptances",
+        [
+            "workspace_id",
+            "environment_id",
+            "canonical_acceptance_id",
+            "source_object_id",
+            "source_revision_id",
+        ],
+        schema=SCHEMA,
+    )
     op.create_table(
         "email_message_artifacts",
         sa.Column("workspace_id", uuid, nullable=False),
@@ -38,8 +50,20 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("workspace_id", "environment_id", "artifact_id", name="pk_email_message_artifacts"),
         sa.UniqueConstraint("workspace_id", "environment_id", "command_identity", name="uq_email_message_artifacts_command"),
         sa.ForeignKeyConstraint(
-            ["workspace_id", "environment_id", "canonical_acceptance_id"],
-            [f"{SCHEMA}.canonical_acceptances.workspace_id", f"{SCHEMA}.canonical_acceptances.environment_id", f"{SCHEMA}.canonical_acceptances.canonical_acceptance_id"],
+            [
+                "workspace_id",
+                "environment_id",
+                "canonical_acceptance_id",
+                "source_object_id",
+                "source_revision_id",
+            ],
+            [
+                f"{SCHEMA}.canonical_acceptances.workspace_id",
+                f"{SCHEMA}.canonical_acceptances.environment_id",
+                f"{SCHEMA}.canonical_acceptances.canonical_acceptance_id",
+                f"{SCHEMA}.canonical_acceptances.source_object_id",
+                f"{SCHEMA}.canonical_acceptances.source_revision_id",
+            ],
             name="fk_email_message_artifacts_acceptance",
         ),
         sa.ForeignKeyConstraint(
@@ -83,3 +107,9 @@ def downgrade() -> None:
     op.execute(f"DROP TRIGGER trg_email_message_artifact_immutable ON {SCHEMA}.email_message_artifacts")
     op.execute(f"DROP FUNCTION {SCHEMA}.reject_email_message_artifact_mutation()")
     op.drop_table("email_message_artifacts", schema=SCHEMA)
+    op.drop_constraint(
+        "uq_canonical_acceptances_scope_source_revision",
+        "canonical_acceptances",
+        schema=SCHEMA,
+        type_="unique",
+    )
