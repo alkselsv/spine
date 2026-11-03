@@ -1361,6 +1361,38 @@ async def test_offline_composition_reports_nonretryable_drive_policy_denial() ->
 
 
 @pytest.mark.asyncio
+async def test_offline_composition_reports_drive_404_as_safe_not_found() -> None:
+    config = _config(opt_in=True)
+    responses = [
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"access_token": "synthetic-token", "expires_in": 3600},
+        ),
+        GoogleApiResponse(
+            status_code=404,
+            json_body={"error": {"message": "provider-payload-sentinel"}},
+        ),
+    ]
+
+    report = await _composed_runner(
+        config, QueuedResponseTransport(responses)
+    ).run(environment_opt_in=True)
+
+    assert report.failure_code == "provider_not_found"
+    assert report.failure_stage == "drive"
+    assert report.failure_class == "not_found"
+    assert report.retry_disposition == "not_retryable"
+    assert report.oauth_request_attempts == 1
+    assert report.drive_request_attempts == 1
+    assert report.sheets_request_attempts == 0
+    assert report.metadata_reads == 0
+    assert report.downloads == 0
+    assert report.exports == 0
+    assert "provider-payload-sentinel" not in report.model_dump_json()
+    assert responses == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("scenario", "failure_code", "failure_stage", "failure_class", "disposition"),
     (

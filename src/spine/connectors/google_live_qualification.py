@@ -25,6 +25,7 @@ from spine.application.connections.google import (
     GoogleConnectionError,
     GoogleProviderContractError,
     GoogleProviderFailureClass,
+    GoogleProviderNotFoundError,
     GoogleProviderReadError,
     GoogleProviderRetryDisposition,
     GoogleReadAdmission,
@@ -42,6 +43,7 @@ from spine.connectors.google_api import (
     GoogleResourceScope,
     google_api_configuration_fingerprint,
 )
+from spine.connectors.google_drive import GoogleDriveAccessOutcomeError
 from spine.connectors.google_sheets import GoogleSheetsReadProfile
 from spine.connectors.google_execution_envelope import (
     GoogleBoundedResponseTransport,
@@ -57,6 +59,7 @@ from spine.domain.connections.google import (
     GoogleConnectionStatus,
     OpaqueGoogleReference,
 )
+from spine.domain.sources.google import GoogleDriveLifecycleSignal
 
 
 class GoogleLiveQualificationRefused(RuntimeError):
@@ -410,6 +413,10 @@ class GoogleLiveQualificationProvider:
         )
         try:
             return await self.wait_for(run_task, duration)
+        except GoogleDriveAccessOutcomeError as error:
+            if error.signal is GoogleDriveLifecycleSignal.HTTP_404:
+                raise GoogleProviderNotFoundError() from None
+            raise
         except asyncio.TimeoutError:
             if run_task.cancelled():
                 raise GoogleExecutionDeadlineExceeded(
