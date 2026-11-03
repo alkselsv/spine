@@ -260,6 +260,53 @@ async def test_gmail_enumeration_returns_partial_coverage_at_page_limit() -> Non
 
 
 @pytest.mark.asyncio
+async def test_gmail_enumeration_marks_empty_page_partial() -> None:
+    exact_scope = _scope(allowed_operations=(EmailProviderOperation.ENUMERATE_MAILBOX,))
+
+    class Pages:
+        async def read(self, request: GmailReadRequest) -> GmailMessageIdPage:
+            del request
+            return GmailMessageIdPage()
+
+    reader = compose_gmail_mailbox_reader(
+        scopes=_Scopes(exact_scope), connections=_Connections(_connection()), client=Pages()
+    )
+    command = MailboxReadCommand(
+        scope=exact_scope, operation=EmailOperation.ENUMERATE_MAILBOX,
+        mailbox_subject_reference=exact_scope.mailbox_subject_reference,
+    )
+
+    result = await reader.read(command, _context())
+
+    assert result == GmailEnumerationResult(message_ids=(), complete=False, pages_read=1)
+
+
+@pytest.mark.asyncio
+async def test_gmail_enumeration_preserves_continuation_at_item_limit() -> None:
+    exact_scope = _scope(allowed_operations=(EmailProviderOperation.ENUMERATE_MAILBOX,))
+
+    class Pages:
+        async def read(self, request: GmailReadRequest) -> GmailMessageIdPage:
+            del request
+            return GmailMessageIdPage(message_ids=("m1", "m2"), next_page_token="next")
+
+    reader = compose_gmail_mailbox_reader(
+        scopes=_Scopes(exact_scope), connections=_Connections(_connection()),
+        client=Pages(), max_items=1,
+    )
+    command = MailboxReadCommand(
+        scope=exact_scope, operation=EmailOperation.ENUMERATE_MAILBOX,
+        mailbox_subject_reference=exact_scope.mailbox_subject_reference,
+    )
+
+    result = await reader.read(command, _context())
+
+    assert result == GmailEnumerationResult(
+        message_ids=("m1",), complete=False, pages_read=1, continuation_token="next"
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "connection_changes",
     (
