@@ -29,6 +29,11 @@ from .email_mime import (
     MimeParseDisposition,
     MimePart,
 )
+from .email_html import (
+    EmailHtmlDisposition,
+    EmailHtmlSanitizerProfile,
+    SanitizedEmailHtml,
+)
 from .transcription import (
     AdapterSignal,
     AudioRecordingHandle,
@@ -90,6 +95,9 @@ __all__ = [
     "MimeHeader",
     "MimeParseDisposition",
     "MimePart",
+    "EmailHtmlDisposition",
+    "EmailHtmlSanitizerProfile",
+    "SanitizedEmailHtml",
     "AdapterSignal",
     "AudioRecordingHandle",
     "SpeechToTextRequest",
