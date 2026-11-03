@@ -5835,13 +5835,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261229_97_email_sync_durability.py",
         "20261230_98_email_message_artifacts.py",
         "20261231_99_mailbox_connection_status.py",
+        "20270101_100_email_revision_metadata.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20270101_100_injected_failure.py").write_text(
+    (target / "versions" / "20270102_101_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20270101_100'\n"
-        "down_revision = '20261231_99'\n"
+        "revision = '20270102_101'\n"
+        "down_revision = '20270101_100'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

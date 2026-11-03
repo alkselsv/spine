@@ -1483,6 +1483,12 @@ async def test_postgresql_source_revision_preserves_external_file_evidence(
             resource_path="disk:/approved/proposal.docx",
             content_md5="1" * 32,
             content_sha256=case.revision.original_sha256,
+            provider_payload_digest="2" * 64,
+            provider_payload={
+                "resource_id": "resource-665",
+                "revision": 665,
+                "parent_id": None,
+            },
             byte_length=case.revision.byte_length,
             modified_at=datetime(2026, 10, 29, 9, 30, tzinfo=timezone.utc),
             identity_assurance="path_scoped",
@@ -1523,6 +1529,64 @@ async def test_postgresql_source_revision_preserves_external_file_evidence(
         )
     ) as uow:
         resolved = await uow.sources.resolve_revision(revision.revision_id)
+
+    assert resolved == revision
+    assert resolved.revision_metadata == metadata
+
+
+async def test_postgresql_source_revision_preserves_email_evidence(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    from spine.domain.sources import (
+        EMAIL_REVISION_METADATA_SCHEMA,
+        EmailRevisionMetadata,
+        RevisionMetadata,
+    )
+
+    case = await prepare_canonical_case(postgresql_adapter, 83500)
+    metadata = RevisionMetadata(
+        representation_profile="raw_email_mime:v1",
+        email_revision=EmailRevisionMetadata(
+            provider_kind="google",
+            provider_message_id="gmail-message-835",
+            internal_date=datetime(2026, 11, 3, 9, 30, tzinfo=timezone.utc),
+            header_date=None,
+            provider_thread_reference=None,
+            rfc_message_id_claims=("<synthetic-835@example.invalid>",),
+            references_claims=("<parent@example.invalid>",),
+            in_reply_to_claims=("<parent@example.invalid>",),
+        ),
+    )
+    revision = content_revision(
+        **{
+            **case.revision.model_dump(
+                exclude={"revision_digest", "revision_metadata_digest"}
+            ),
+            "revision_id": synthetic_uuid(83501),
+            "revision_metadata_schema": EMAIL_REVISION_METADATA_SCHEMA,
+            "revision_metadata": metadata,
+        }
+    )
+    provenance = source_contract_provenance(
+        case.source, revision.revision_id, "gmail-event-835"
+    )
+
+    async with postgresql_adapter.uow_factory(
+        postgresql_adapter.source_context(
+            case.source.workspace_id, case.source.environment_id
+        )
+    ) as uow:
+        await uow.sources.record_observation(
+            SourceObservationCommand.create(
+                source=case.source,
+                revision=revision,
+                provenance=provenance,
+                idempotency_key=IdempotencyKey("issue835-gmail-source-revision"),
+            )
+        )
+        await uow._execute(text("SET CONSTRAINTS ALL IMMEDIATE"))  # type: ignore[attr-defined]
+        resolved = await uow.sources.resolve_revision(revision.revision_id)
+        await uow.rollback()  # type: ignore[attr-defined]
 
     assert resolved == revision
     assert resolved.revision_metadata == metadata

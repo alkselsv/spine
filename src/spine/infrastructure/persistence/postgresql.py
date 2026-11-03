@@ -2239,7 +2239,19 @@ class _PostgreSQLSourceObservationRepository:
         if rev_row is None:
             values = revision.model_dump(mode="python")
             values["kind"] = revision.kind.value
-            values["revision_metadata"] = revision.revision_metadata.model_dump(mode="json") if revision.revision_metadata is not None else null()
+            metadata_exclude = (
+                {"email_revision"}
+                if revision.revision_metadata is not None
+                and revision.revision_metadata.email_revision is None
+                else set()
+            )
+            values["revision_metadata"] = (
+                revision.revision_metadata.model_dump(
+                    mode="json", exclude=metadata_exclude
+                )
+                if revision.revision_metadata is not None
+                else null()
+            )
             values["original_reference"] = revision.original_reference.model_dump(mode="json") if revision.original_reference is not None else null()
             await self._uow._execute(postgresql_insert(_SOURCE_REVISIONS).values(**values).on_conflict_do_nothing(constraint="uq_source_revisions_digest"))
             rev_row = (await self._uow._execute(rev_query)).mappings().one()

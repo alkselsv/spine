@@ -6,7 +6,7 @@ import base64
 from datetime import datetime
 from enum import Enum
 import hashlib
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import ConfigDict, Field, StrictBytes, StrictInt, model_validator
@@ -120,13 +120,62 @@ class ProviderImapMessageKey(_ProviderKey):
         return self
 
 
+class ProviderEmailMessageKey(_ProviderKey):
+    """Provider message identity qualified by its approved mailbox binding."""
+
+    kind: Literal["email_message"] = "email_message"
+    schema_version: Literal["provider-email-message-key:v1"] = (
+        "provider-email-message-key:v1"
+    )
+    mailbox_binding_id: UUID
+    provider_object_id: str = Field(min_length=1, max_length=1024)
+
+    @model_validator(mode="after")
+    def validate_mailbox_binding(self) -> "ProviderEmailMessageKey":
+        if self.mailbox_binding_id.int == 0:
+            raise ValueError("mailbox_binding_id must be a non-zero UUID")
+        return self
+
+
 ProviderIdentityKey = (
     ProviderFileKey
     | ProviderTabularScopeKey
     | ProviderTabularRecordKey
     | ProviderStructuredObjectKey
     | ProviderImapMessageKey
+    | ProviderEmailMessageKey
 )
+
+
+EmailHeaderClaim = Annotated[str, Field(max_length=4096)]
+
+
+class EmailObservationEvidence(DefinitionModel):
+    """Revision-bearing email evidence without business-association authority."""
+
+    schema_version: Literal["email-observation-evidence:v1"] = (
+        "email-observation-evidence:v1"
+    )
+    provider_message_id: str = Field(min_length=1, max_length=1024)
+    provider_received_at: datetime
+    internal_date: datetime
+    header_date: datetime | None = None
+    provider_thread_reference: str | None = Field(
+        default=None, min_length=1, max_length=1024
+    )
+    rfc_message_id_claims: tuple[EmailHeaderClaim, ...] = Field(max_length=32)
+    references_claims: tuple[EmailHeaderClaim, ...] = Field(max_length=32)
+    in_reply_to_claims: tuple[EmailHeaderClaim, ...] = Field(max_length=32)
+
+    @model_validator(mode="after")
+    def validate_times(self) -> "EmailObservationEvidence":
+        for name in ("provider_received_at", "internal_date", "header_date"):
+            value = getattr(self, name)
+            if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+                raise ValueError(f"{name} must be timezone-aware")
+        if self.provider_received_at < self.internal_date:
+            raise ValueError("provider_received_at cannot precede internal_date")
+        return self
 
 
 class ProviderExternalIdentity(DefinitionModel):
@@ -285,6 +334,20 @@ class BinaryObservationRepresentation(_ContentObservationRepresentation):
         return self
 
 
+class EmailObservationRepresentation(_ContentObservationRepresentation):
+    """Immutable raw message plus bounded provider and header evidence."""
+
+    kind: Literal["email"] = "email"
+    schema_version: Literal["email-observation:v1"] = "email-observation:v1"
+    email_evidence: EmailObservationEvidence
+
+    @model_validator(mode="after")
+    def validate_media_type(self) -> "EmailObservationRepresentation":
+        if self.media_type != "message/rfc822":
+            raise ValueError("email observation requires message/rfc822 media type")
+        return self
+
+
 class TabularObservationRepresentation(_ContentObservationRepresentation):
     kind: Literal["tabular"] = "tabular"
     schema_version: Literal["tabular-observation:v2"] = "tabular-observation:v2"
@@ -305,6 +368,7 @@ class LifecycleObservationRepresentation(DefinitionModel):
 
 ProviderObservationRepresentation = (
     BinaryObservationRepresentation
+    | EmailObservationRepresentation
     | TabularObservationRepresentation
     | StructuredObservationRepresentation
     | LifecycleObservationRepresentation
@@ -397,6 +461,8 @@ class NormalizedExternalObservationV2(DefinitionModel):
         required: set[ProviderCapabilityKind] = set()
         if isinstance(self.representation, BinaryObservationRepresentation):
             required.add(ProviderCapabilityKind.BINARY_READ)
+        elif isinstance(self.representation, EmailObservationRepresentation):
+            required.add(ProviderCapabilityKind.RAW_MESSAGE_READ)
         elif isinstance(self.representation, TabularObservationRepresentation):
             required.add(ProviderCapabilityKind.TABULAR_READ)
         elif isinstance(self.representation, StructuredObservationRepresentation):
@@ -439,11 +505,14 @@ def _content_representation(
 
 __all__ = [
     "BinaryObservationRepresentation",
+    "EmailObservationRepresentation",
     "EXTERNAL_OBSERVATION_SCHEMA_V2",
     "ExternalIdentityAssurance",
+    "EmailObservationEvidence",
     "LifecycleObservationRepresentation",
     "NormalizedExternalObservationV2",
     "ProviderExternalIdentity",
+    "ProviderEmailMessageKey",
     "ProviderFileKey",
     "ProviderFileRevisionEvidence",
     "ProviderImapMessageKey",

@@ -25,6 +25,7 @@ from .profile_extensions import (
 REVISION_PROFILE = "r1-c14n-2026-10"
 REVISION_SCHEMA = "source-revision:v1"
 REVISION_METADATA_SCHEMA = "revision-metadata:r1-document-v1"
+EMAIL_REVISION_METADATA_SCHEMA = "revision-metadata:r1-email-v1"
 OBSERVATION_SCHEMA = "source-observation-command:v1"
 
 PRIMARY_LANGUAGE_TAGS = frozenset(BCP47_DATA["languages"])

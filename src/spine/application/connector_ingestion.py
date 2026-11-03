@@ -88,6 +88,8 @@ from spine.domain.sources import (
     AdmissionDisposition,
     AdmissionReference,
     ExternalFileRevisionMetadata,
+    EmailRevisionMetadata,
+    EMAIL_REVISION_METADATA_SCHEMA,
     IdentityMode,
     RevisionKind,
     RevisionMetadata,
@@ -98,7 +100,12 @@ from spine.domain.sources import (
     canonical_revision_metadata_digest,
     content_revision,
 )
-from spine.domain.sources.google import GoogleDriveFileKey, GoogleRegisterRowKey
+from spine.domain.sources.google import (
+    GOOGLE_EXTERNAL_GENERATION,
+    GOOGLE_EXTERNAL_NAMESPACE,
+    GoogleDriveFileKey,
+    GoogleRegisterRowKey,
+)
 from spine.domain.connections.google import OpaqueGoogleReference
 from spine.domain.connections.provider import (
     OpaqueProviderReference,
@@ -115,6 +122,7 @@ from spine.connectors.observations_v2 import (
     ExternalIdentityAssurance,
     LifecycleObservationRepresentation,
     NormalizedExternalObservationV2,
+    ProviderEmailMessageKey,
     ProviderFileKey,
     ProviderImapMessageKey,
     ProviderTabularRecordKey,
@@ -645,6 +653,7 @@ class ConnectorIngestionOrchestrator:
         external_revision_digest = (
             canonical_revision_metadata_digest(revision_metadata)
             if revision_metadata.external_file_revision is not None
+            or revision_metadata.email_revision is not None
             else observation.extraction_profile
         )
         source = SourceObject(
@@ -677,7 +686,11 @@ class ConnectorIngestionOrchestrator:
             environment_id=command.environment_id,
             kind="content",
             revision_schema_version="source-revision:v1",
-            revision_metadata_schema="revision-metadata:r1-document-v1",
+            revision_metadata_schema=(
+                EMAIL_REVISION_METADATA_SCHEMA
+                if revision_metadata.email_revision is not None
+                else "revision-metadata:r1-document-v1"
+            ),
             revision_metadata=revision_metadata,
             original_reference=upload.write_receipt.object_reference,
             original_sha256=upload.write_receipt.observed_content.observed_sha256,
@@ -1231,6 +1244,7 @@ async def _bytes(value: bytes):
 
 def _revision_metadata(observation: ConnectorObservation) -> RevisionMetadata:
     external_file_revision = None
+    email_revision = None
     if (
         isinstance(observation, NormalizedExternalObservationV2)
         and isinstance(observation.representation, BinaryObservationRepresentation)
@@ -1286,9 +1300,23 @@ def _revision_metadata(observation: ConnectorObservation) -> RevisionMetadata:
                 observation.external_identity.assurance_evidence_reference
             ),
         )
+    representation = getattr(observation, "representation", None)
+    evidence = getattr(representation, "email_evidence", None)
+    if evidence is not None:
+        email_revision = EmailRevisionMetadata(
+            provider_kind=observation.provider_kind.value,
+            provider_message_id=evidence.provider_message_id,
+            internal_date=evidence.internal_date,
+            header_date=evidence.header_date,
+            provider_thread_reference=evidence.provider_thread_reference,
+            rfc_message_id_claims=evidence.rfc_message_id_claims,
+            references_claims=evidence.references_claims,
+            in_reply_to_claims=evidence.in_reply_to_claims,
+        )
     return RevisionMetadata(
         representation_profile=observation.extraction_profile,
         external_file_revision=external_file_revision,
+        email_revision=email_revision,
     )
 
 
@@ -1297,8 +1325,7 @@ def _observation_digest(
 ) -> str:
     digest_observation = (
         google_v2_observation_to_v1(observation)
-        if isinstance(observation, NormalizedExternalObservationV2)
-        and observation.provider_kind.value == "google"
+        if _uses_google_v1_contract(observation)
         else observation
     )
     payload = {
@@ -1350,8 +1377,7 @@ def _source_contract_identity(
     """Return the source contract whose provenance survives compatibility mapping."""
 
     if (
-        isinstance(observation, NormalizedExternalObservationV2)
-        and observation.provider_kind is ProviderKind.GOOGLE
+        _uses_google_v1_contract(observation)
     ):
         # Google v2 explicitly expands the accepted v1 contract. Its
         # provider-neutral envelope must not replace the source contract identity.
@@ -1370,7 +1396,20 @@ def _has_stable_lifecycle_identity(observation: ConnectorObservation) -> bool:
             ExternalIdentityAssurance.PROVIDER_STABLE,
             ExternalIdentityAssurance.SCOPE_STABLE,
         }
-        and isinstance(key, (ProviderFileKey, ProviderTabularRecordKey))
+        and isinstance(
+            key,
+            (ProviderEmailMessageKey, ProviderFileKey, ProviderTabularRecordKey),
+        )
+    )
+
+
+def _uses_google_v1_contract(observation: ConnectorObservation) -> bool:
+    return (
+        isinstance(observation, NormalizedExternalObservationV2)
+        and observation.external_identity.external_namespace
+        == GOOGLE_EXTERNAL_NAMESPACE
+        and observation.external_identity.external_generation
+        == GOOGLE_EXTERNAL_GENERATION
     )
 
 
