@@ -1,0 +1,4 @@
+{
+  "sanitized_html": "<h1>Hello &amp; welcome</h1><a>bad link</a><a href=\"https://example.test/path\" title=\"safe\">safe link</a>\n",
+  "plain_text": "Hello & welcome\nbad link safe link"
+}

@@ -14,6 +14,7 @@ from .parsers import (
     resolve_xlsx_locator,
 )
 from .email_mime import MimeParser, MimeParserProfile
+from .email_html import EmailHtmlSanitizer, EmailHtmlSanitizerProfile
 
 __all__ = [
     "MarkdownParser",
@@ -25,4 +26,6 @@ __all__ = [
     "resolve_xlsx_locator",
     "MimeParser",
     "MimeParserProfile",
+    "EmailHtmlSanitizer",
+    "EmailHtmlSanitizerProfile",
 ]
