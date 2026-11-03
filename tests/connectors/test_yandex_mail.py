@@ -45,6 +45,14 @@ from spine.connectors.yandex_mail_uid_enumeration import (
     YandexMailUidMessageMetadata,
     YandexMailUidPageCode,
 )
+from spine.connectors.yandex_mail_message import (
+    YandexMailRawMessageFetchCode,
+    YandexMailRawMessageFetchCommand,
+    YandexMailRawMessageFetchEnd,
+    YandexMailRawMessageFetchEvent,
+    YandexMailRawMessageFetchStart,
+    YandexMailRawMessageLiteralChunk,
+)
 from spine.domain.common import ContextOrigin
 from spine.domain.connections.email_scope import (
     EmailOperation,
@@ -248,11 +256,72 @@ class _ImapSession:
         self.transport.read_calls.append(request)
         if self.transport.read_failure is not None:
             raise self.transport.read_failure
-        return self.transport.read_result
+        result = self.transport.read_result
+        return result() if callable(result) else result
 
     async def close(self):
         self.transport.closed_sessions += 1
         return None
+
+
+class _RawFetchTranscript:
+    def __init__(self, *events: YandexMailRawMessageFetchEvent) -> None:
+        assert events and isinstance(events[0], YandexMailRawMessageFetchStart)
+        self.start = events[0]
+        self.events = events[1:]
+        self.index = 0
+        self.failure_after: int | None = None
+        self.failure: Exception | None = None
+
+    def __repr__(self) -> str:
+        return "_RawFetchTranscript(private_events=True)"
+
+    async def read_start(self):
+        return self.start
+
+    async def read_next(self, *, max_bytes: int):
+        del max_bytes
+        if self.failure_after == self.index and self.failure is not None:
+            raise self.failure
+        if self.index == len(self.events):
+            return None
+        event = self.events[self.index]
+        self.index += 1
+        return event
+
+
+def _raw_fetch_transcript(
+    scope: MailboxReadScope,
+    raw_message: bytes,
+) -> _RawFetchTranscript:
+    return _RawFetchTranscript(
+        YandexMailRawMessageFetchStart(
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            connection_id=scope.connection_id,
+            connection_version_id=scope.connection_version_id,
+            mailbox_binding_id=scope.mailbox_binding_id,
+            folder_reference=_id(11),
+            authorization_generation=scope.authorization_generation,
+            configuration_generation=scope.configuration_generation,
+            scope_generation=scope.scope_generation,
+            command_names=("EXAMINE", "UID FETCH"),
+            fetch_data_item="BODY.PEEK[]",
+            selected_uid_validity=101,
+            fetched_uid=42,
+            declared_octets=len(raw_message),
+            envelope=b"private synthetic envelope",
+            internal_date="2026-11-03T09:15:00Z",
+            flags_before=("\\Flagged",),
+        ),
+        YandexMailRawMessageLiteralChunk(value=raw_message[:8]),
+        YandexMailRawMessageLiteralChunk(value=raw_message[8:]),
+        YandexMailRawMessageFetchEnd(
+            command_names=("EXAMINE", "UID FETCH"),
+            flags_after=("\\Flagged",),
+            complete=True,
+        ),
+    )
 
 
 def _command(
@@ -480,6 +549,17 @@ async def test_uid_enumeration_without_exact_operation_authority_never_reaches_i
     assert resolver.calls == 0
     assert imap.tls_calls == []
 
+def _raw_message_command(scope: MailboxReadScope) -> YandexMailRawMessageFetchCommand:
+    return YandexMailRawMessageFetchCommand(
+        scope=scope,
+        operation=EmailOperation.READ_RAW_MESSAGE,
+        mailbox_subject_reference=scope.mailbox_subject_reference,
+        folder_or_label_reference=_id(11),
+        message_id="42",
+        uid_validity=101,
+        uid=42,
+        max_message_bytes=1024,
+    )
 
 def _composition(
     *,
@@ -658,6 +738,266 @@ async def test_folder_generation_is_reobserved_after_reconnect() -> None:
     assert len(imap.tls_calls) == 2
     assert len(imap.read_calls) == 2
     assert imap.closed_sessions == 2
+
+
+@pytest.mark.asyncio
+async def test_raw_message_composition_issues_bounded_body_peek_and_preserves_seen() -> None:
+    scope = _scope()
+    connection = _connection(
+        capabilities=(
+            ProviderCapability(
+                kind=ProviderCapabilityKind.RAW_MESSAGE_READ,
+                status=ProviderCapabilityStatus.SUPPORTED,
+                qualification_reference=OpaqueProviderReference(value=_id(32)),
+            ),
+        )
+    )
+    composition, _, _, _, imap = _composition(
+        scope=scope,
+        connection=connection,
+        credential=_credential(connection, scope),
+    )
+    raw_message = b"Subject: Synthetic\r\n\r\nbody\r\n"
+    imap.read_result = lambda: _raw_fetch_transcript(scope, raw_message)
+
+    result = await composition.read(_raw_message_command(scope), _context())
+
+    assert result.code is YandexMailRawMessageFetchCode.COMPLETE
+    assert result.raw_bytes == raw_message
+    assert result.seen_preserved is True
+    request = imap.read_calls[0]
+    assert request.selection_command == "EXAMINE"
+    assert request.fetch_command == "UID FETCH"
+    assert request.fetch_data_item == "BODY.PEEK[]"
+    assert request.expected_uid_validity == 101
+    assert request.message_uid == 42
+    assert request.max_message_bytes == 1024
+    assert request.mutation_commands == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ("resolver", "tls", "authentication", "read"))
+async def test_raw_message_provider_outage_is_typed_and_disclosure_safe(
+    failure_stage: str,
+) -> None:
+    scope = _scope()
+    connection = _connection(
+        capabilities=(
+            ProviderCapability(
+                kind=ProviderCapabilityKind.RAW_MESSAGE_READ,
+                status=ProviderCapabilityStatus.SUPPORTED,
+                qualification_reference=OpaqueProviderReference(value=_id(32)),
+            ),
+        )
+    )
+    composition, _, _, resolver, imap = _composition(
+        scope=scope,
+        connection=connection,
+        credential=_credential(connection, scope),
+    )
+    failure = RuntimeError("private provider outage")
+    if failure_stage == "resolver":
+        resolver.failure = failure
+    elif failure_stage == "tls":
+        imap.open_failure = failure
+    elif failure_stage == "authentication":
+        imap.authentication_failure = failure
+    else:
+        imap.read_failure = failure
+
+    result = await composition.read(_raw_message_command(scope), _context())
+
+    assert result.code is YandexMailRawMessageFetchCode.PROVIDER_UNAVAILABLE
+    assert result.complete is False
+    assert str(failure) not in repr(result)
+    assert _TOKEN not in repr(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ("resolver", "tls", "authentication", "read"))
+async def test_raw_message_authorization_loss_is_typed_and_disclosure_safe(
+    failure_stage: str,
+) -> None:
+    scope = _scope()
+    connection = _connection(
+        capabilities=(
+            ProviderCapability(
+                kind=ProviderCapabilityKind.RAW_MESSAGE_READ,
+                status=ProviderCapabilityStatus.SUPPORTED,
+                qualification_reference=OpaqueProviderReference(value=_id(32)),
+            ),
+        )
+    )
+    composition, _, _, resolver, imap = _composition(
+        scope=scope,
+        connection=connection,
+        credential=_credential(connection, scope),
+    )
+    failure = PermissionError("revoked private token")
+    if failure_stage == "resolver":
+        resolver.failure = failure
+    elif failure_stage == "tls":
+        imap.open_failure = failure
+    elif failure_stage == "authentication":
+        imap.authentication_failure = failure
+    else:
+        imap.read_failure = failure
+
+    result = await composition.read(_raw_message_command(scope), _context())
+
+    assert result.code is YandexMailRawMessageFetchCode.AUTHORIZATION_LOST
+    assert result.complete is False
+    assert str(failure) not in repr(result)
+    assert _TOKEN not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_raw_message_reconnect_revalidates_generation_and_uid() -> None:
+    scope = _scope()
+    connection = _connection(
+        capabilities=(
+            ProviderCapability(
+                kind=ProviderCapabilityKind.RAW_MESSAGE_READ,
+                status=ProviderCapabilityStatus.SUPPORTED,
+                qualification_reference=OpaqueProviderReference(value=_id(32)),
+            ),
+        )
+    )
+    composition, _, _, _, imap = _composition(
+        scope=scope,
+        connection=connection,
+        credential=_credential(connection, scope),
+    )
+    raw_message = b"synthetic\x00message"
+    imap.read_result = lambda: _raw_fetch_transcript(scope, raw_message)
+
+    first = await composition.read(_raw_message_command(scope), _context())
+    after_reconnect = await composition.read(_raw_message_command(scope), _context())
+
+    assert first == after_reconnect
+    assert first.code is YandexMailRawMessageFetchCode.COMPLETE
+    assert len(imap.tls_calls) == 2
+    assert len(imap.read_calls) == 2
+    assert all(request.expected_uid_validity == 101 for request in imap.read_calls)
+    assert all(request.message_uid == 42 for request in imap.read_calls)
+    assert imap.closed_sessions == 2
+
+
+@pytest.mark.asyncio
+async def test_raw_message_retry_after_partial_failure_returns_stable_single_read() -> None:
+    scope = _scope()
+    connection = _connection(
+        capabilities=(
+            ProviderCapability(
+                kind=ProviderCapabilityKind.RAW_MESSAGE_READ,
+                status=ProviderCapabilityStatus.SUPPORTED,
+                qualification_reference=OpaqueProviderReference(value=_id(32)),
+            ),
+        )
+    )
+    composition, _, _, _, imap = _composition(
+        scope=scope,
+        connection=connection,
+        credential=_credential(connection, scope),
+    )
+    raw_message = b"stable synthetic message"
+    partial_transcript = _raw_fetch_transcript(scope, raw_message)
+    partial_transcript.failure_after = 1
+    partial_transcript.failure = RuntimeError("partial private provider failure")
+    imap.read_result = partial_transcript
+
+    partial = await composition.read(_raw_message_command(scope), _context())
+    imap.read_result = lambda: _raw_fetch_transcript(scope, raw_message)
+    retried = await composition.read(_raw_message_command(scope), _context())
+    replayed = await composition.read(_raw_message_command(scope), _context())
+
+    assert partial.code is YandexMailRawMessageFetchCode.PROVIDER_UNAVAILABLE
+    assert partial.raw_bytes is None
+    assert "stable synthetic message" not in repr(partial)
+    assert retried == replayed
+    assert retried.raw_bytes == raw_message
+    assert retried.code is YandexMailRawMessageFetchCode.COMPLETE
+    assert len(imap.read_calls) == 3
+    assert imap.closed_sessions == 3
+
+
+@pytest.mark.asyncio
+async def test_raw_message_cross_workspace_request_is_denied_before_imap() -> None:
+    scope = _scope(workspace_id=_id(99))
+    connection = _connection(
+        workspace_id=_id(99),
+        capabilities=(
+            ProviderCapability(
+                kind=ProviderCapabilityKind.RAW_MESSAGE_READ,
+                status=ProviderCapabilityStatus.SUPPORTED,
+                qualification_reference=OpaqueProviderReference(value=_id(32)),
+            ),
+        ),
+    )
+    composition, _, _, resolver, imap = _composition(
+        scope=scope,
+        connection=connection,
+        credential=_credential(connection, scope),
+    )
+
+    with pytest.raises(MailboxReadDeniedError) as error:
+        await composition.read(_raw_message_command(scope), _context())
+
+    assert str(error.value) == "Mailbox read denied."
+    assert resolver.calls == 0
+    assert imap.tls_calls == []
+
+
+@pytest.mark.asyncio
+async def test_raw_message_stale_resolved_credential_is_typed_before_imap() -> None:
+    scope = _scope()
+    connection = _connection(
+        capabilities=(
+            ProviderCapability(
+                kind=ProviderCapabilityKind.RAW_MESSAGE_READ,
+                status=ProviderCapabilityStatus.SUPPORTED,
+                qualification_reference=OpaqueProviderReference(value=_id(32)),
+            ),
+        )
+    )
+    stale = _credential(connection, scope, authorization_generation=99)
+    composition, _, _, _, imap = _composition(
+        scope=scope,
+        connection=connection,
+        credential=stale,
+    )
+
+    result = await composition.read(_raw_message_command(scope), _context())
+
+    assert result.code is YandexMailRawMessageFetchCode.AUTHORIZATION_LOST
+    assert result.complete is False
+    assert imap.tls_calls == []
+
+
+@pytest.mark.asyncio
+async def test_raw_message_malformed_provider_response_is_typed_and_safe() -> None:
+    scope = _scope()
+    connection = _connection(
+        capabilities=(
+            ProviderCapability(
+                kind=ProviderCapabilityKind.RAW_MESSAGE_READ,
+                status=ProviderCapabilityStatus.SUPPORTED,
+                qualification_reference=OpaqueProviderReference(value=_id(32)),
+            ),
+        )
+    )
+    composition, _, _, _, imap = _composition(
+        scope=scope,
+        connection=connection,
+        credential=_credential(connection, scope),
+    )
+    imap.read_result = b"private malformed provider payload"
+
+    result = await composition.read(_raw_message_command(scope), _context())
+
+    assert result.code is YandexMailRawMessageFetchCode.MALFORMED_RESPONSE
+    assert result.complete is False
+    assert "private malformed" not in repr(result)
 
 
 @pytest.mark.asyncio
