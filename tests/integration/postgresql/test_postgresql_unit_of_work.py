@@ -2151,6 +2151,195 @@ async def test_postgresql_source_revision_preserves_email_evidence(
     assert resolved.revision_metadata == metadata
 
 
+async def test_postgresql_gmail_message_state_converges_and_is_tenant_isolated(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    from sqlalchemy import func, select
+
+    from spine.application.gmail_message_state import (
+        GmailLabelDisposition,
+        gmail_relationship_observations,
+    )
+    from spine.connectors.gmail_history import (
+        GmailHistoryChange,
+        GmailHistoryChangeKind,
+        GmailHistoryResult,
+        GmailHistoryState,
+    )
+    from spine.connectors.gmail_message_state import GmailMessageStateWriter
+    from spine.domain.sources import (
+        EMAIL_REVISION_METADATA_SCHEMA,
+        EmailRevisionMetadata,
+        IdentityMode,
+        RevisionMetadata,
+        SourceObject,
+        content_revision,
+    )
+    from spine.domain.sources.gmail import GmailMessageKey, gmail_source_identity
+    from spine.infrastructure.persistence.postgresql_gmail_message_state import (
+        PostgreSQLGmailMessageStateRepository,
+    )
+    from spine.infrastructure.persistence.postgresql_mappings import (
+        outbox_intents,
+        source_revisions,
+    )
+
+    workspace_id = synthetic_uuid(84000)
+    environment_id = synthetic_uuid(84001)
+    connection_id = synthetic_uuid(84002)
+    mailbox_id = synthetic_uuid(84003)
+    key = GmailMessageKey(
+        connection_id=connection_id,
+        mailbox_binding_id=mailbox_id,
+        message_id="gmail-message-840",
+    )
+    identity = gmail_source_identity(key)
+    source = SourceObject(
+        source_object_id=synthetic_uuid(84004),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        source_kind="email_message",
+        identity_mode=IdentityMode.CONNECTOR,
+        connection_id=connection_id,
+        external_namespace=identity.external_namespace,
+        external_generation=identity.external_generation,
+        external_object_id=identity.external_object_id,
+        created_at=NOW,
+    )
+    metadata = RevisionMetadata(
+        representation_profile="raw_email_mime:v1",
+        email_revision=EmailRevisionMetadata(
+            provider_kind="google",
+            provider_message_id=key.message_id,
+            internal_date=NOW,
+            provider_thread_reference="gmail-thread-840",
+            rfc_message_id_claims=("<message@example.invalid>",),
+            references_claims=("<parent@example.invalid>",),
+            in_reply_to_claims=("<parent@example.invalid>",),
+        ),
+    )
+    base_revision = source_contract_revision(source, synthetic_uuid(84005))
+    revision_values = base_revision.model_dump(
+        mode="python", exclude={"revision_digest", "revision_metadata_digest"}
+    )
+    revision_values.update(
+        revision_metadata_schema=EMAIL_REVISION_METADATA_SCHEMA,
+        revision_metadata=metadata,
+        media_type="message/rfc822",
+    )
+    source_revision = content_revision(**revision_values)
+    case = await prepare_canonical_case(
+        postgresql_adapter,
+        84000,
+        source_object=source,
+        source_revision=source_revision,
+    )
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        await uow.canonical.accept(case.command)
+        await uow.commit()
+
+    def context_factory(operation, trace_id):
+        del operation, trace_id
+        return postgresql_adapter.source_context(workspace_id, environment_id)
+
+    repository = PostgreSQLGmailMessageStateRepository(
+        postgresql_adapter.uow_factory, context_factory
+    )
+    writer = GmailMessageStateWriter(
+        repository=repository,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        connection_id=connection_id,
+        mailbox_binding_id=mailbox_id,
+    )
+    history = GmailHistoryResult(
+        state=GmailHistoryState.COMPLETE,
+        changes=(
+            GmailHistoryChange(
+                history_id="102",
+                kind=GmailHistoryChangeKind.LABEL_REMOVED,
+                message_id=key.message_id,
+                label_id="INBOX",
+            ),
+            GmailHistoryChange(
+                history_id="101",
+                kind=GmailHistoryChangeKind.LABEL_ADDED,
+                message_id=key.message_id,
+                label_id="INBOX",
+            ),
+        ),
+        terminal_history_id="103",
+        pages_read=1,
+        duplicate_count=0,
+        malformed_count=0,
+    )
+    async with postgresql_adapter.uow_factory(
+        postgresql_adapter.source_context(workspace_id, environment_id)
+    ) as uow:
+        revisions_before = await uow._execute(
+            select(func.count()).select_from(source_revisions)
+        )
+        outbox_before = await uow._execute(
+            select(func.count()).select_from(outbox_intents)
+        )
+        before = (revisions_before.scalar_one(), outbox_before.scalar_one())
+        await uow.rollback()
+
+    first = await writer.record_history(history, received_at=NOW)
+    replay = await writer.record_history(history, received_at=NOW + timedelta(seconds=1))
+    binding = await repository.resolve_current_binding(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        message_key=key,
+    )
+    assert binding is not None
+    assert metadata.email_revision is not None
+    relationships = gmail_relationship_observations(
+        binding, revision_evidence=metadata.email_revision, received_at=NOW
+    )
+    for relationship in relationships:
+        await repository.record_relationship(relationship)
+
+    async with postgresql_adapter.uow_factory(
+        postgresql_adapter.source_context(workspace_id, environment_id)
+    ) as uow:
+        revisions_after = await uow._execute(
+            select(func.count()).select_from(source_revisions)
+        )
+        outbox_after = await uow._execute(
+            select(func.count()).select_from(outbox_intents)
+        )
+        after = (revisions_after.scalar_one(), outbox_after.scalar_one())
+        await uow.rollback()
+
+    assert [item.disposition for item in first] == [
+        GmailLabelDisposition.APPLIED,
+        GmailLabelDisposition.OUT_OF_ORDER,
+    ]
+    assert all(
+        item.disposition is GmailLabelDisposition.DUPLICATE for item in replay
+    )
+    assert first[0].current.present is False
+    assert len(await repository.list_label_observations(binding)) == 2
+    assert len(await repository.list_relationships(binding)) == 3
+    assert after == before
+
+    foreign_workspace_id = synthetic_uuid(84090)
+    foreign_environment_id = synthetic_uuid(84091)
+    await prepare_source_scope(
+        postgresql_adapter, foreign_workspace_id, foreign_environment_id
+    )
+    foreign_repository = PostgreSQLGmailMessageStateRepository(
+        postgresql_adapter.uow_factory,
+        lambda operation, trace_id: postgresql_adapter.source_context(
+            foreign_workspace_id, foreign_environment_id
+        ),
+    )
+    with pytest.raises(ValueError, match="unavailable in this tenant") as error:
+        await foreign_repository.record_label(first[0].persisted)
+    assert key.message_id not in str(error.value)
+
+
 async def _trusted_content_evidence_case(
     postgresql_adapter: PersistenceAdapter, number: int
 ):

@@ -20,7 +20,8 @@ from spine.application.gmail_message_state import (
     GmailRelationshipEvidence,
 )
 from spine.application.persistence.context import PersistenceOperation, TrustedPersistenceContext
-from spine.domain.sources.gmail import gmail_source_identity
+from spine.domain.sources.gmail import GmailMessageKey, gmail_source_identity
+from spine.domain.sources.models import EmailRevisionMetadata
 from spine.infrastructure.persistence.postgresql_mappings import (
     current_source_heads,
     gmail_message_label_heads,
@@ -41,6 +42,56 @@ class PostgreSQLGmailMessageStateRepository:
     ) -> None:
         self._uow_factory = uow_factory
         self._context_factory = context_factory
+
+    async def resolve_current_binding(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        message_key: GmailMessageKey,
+    ) -> GmailMessageEvidenceBinding | None:
+        identity = gmail_source_identity(message_key)
+        async with self._uow("gmail_message_state_resolve", workspace_id) as uow:
+            result = await uow._execute(
+                select(
+                    source_objects.c.source_object_id,
+                    current_source_heads.c.current_revision_id,
+                )
+                .select_from(
+                    source_objects.join(
+                        current_source_heads,
+                        and_(
+                            current_source_heads.c.workspace_id
+                            == source_objects.c.workspace_id,
+                            current_source_heads.c.environment_id
+                            == source_objects.c.environment_id,
+                            current_source_heads.c.source_object_id
+                            == source_objects.c.source_object_id,
+                        ),
+                    )
+                )
+                .where(
+                    source_objects.c.workspace_id == workspace_id,
+                    source_objects.c.environment_id == environment_id,
+                    source_objects.c.connection_id == message_key.connection_id,
+                    source_objects.c.external_namespace
+                    == identity.external_namespace,
+                    source_objects.c.external_generation
+                    == identity.external_generation,
+                    source_objects.c.external_object_id == identity.external_object_id,
+                )
+            )
+            row = result.mappings().one_or_none()
+            await uow.rollback()
+            if row is None:
+                return None
+            return GmailMessageEvidenceBinding(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                source_object_id=row["source_object_id"],
+                source_revision_id=row["current_revision_id"],
+                message_key=message_key,
+            )
 
     async def record_label(
         self, observation: GmailLabelObservation
@@ -77,7 +128,7 @@ class PostgreSQLGmailMessageStateRepository:
                 if existing_row is None:
                     raise ValueError("Gmail label observation was not persisted")
                 persisted = _label_from_row(existing_row)
-                if _label_semantics(persisted) != _label_semantics(observation):
+                if persisted.semantic_identity() != observation.semantic_identity():
                     raise ValueError("Gmail label observation identity conflicts")
 
             head_values = {
@@ -153,19 +204,7 @@ class PostgreSQLGmailMessageStateRepository:
             revision_evidence = await self._assert_target(
                 uow, binding, require_current=existing_row is None
             )
-            expected_claims = {
-                "provider_thread": revision_evidence.get("provider_thread_reference"),
-                "references": revision_evidence.get("references_claims", ()),
-                "in_reply_to": revision_evidence.get("in_reply_to_claims", ()),
-            }
-            expected = expected_claims[evidence.kind.value]
-            if evidence.kind.value == "provider_thread":
-                matches = evidence.relationship_reference == expected
-            else:
-                matches = isinstance(expected, (list, tuple)) and (
-                    evidence.relationship_reference in expected
-                )
-            if not matches:
+            if not evidence.is_claimed_by(revision_evidence):
                 raise ValueError("Gmail relationship is absent from the bound revision")
             if existing_row is None:
                 await uow._execute(
@@ -191,7 +230,7 @@ class PostgreSQLGmailMessageStateRepository:
             if row is None:
                 raise ValueError("Gmail relationship evidence was not persisted")
             persisted = _relationship_from_row(row)
-            if _relationship_semantics(persisted) != _relationship_semantics(evidence):
+            if persisted.semantic_identity() != evidence.semantic_identity():
                 raise ValueError("Gmail relationship evidence identity conflicts")
             await uow.commit()
             return persisted
@@ -228,7 +267,13 @@ class PostgreSQLGmailMessageStateRepository:
                 )
             )
             records = tuple(
-                _relationship_from_row(row) for row in result.mappings().all()
+                sorted(
+                    (
+                        _relationship_from_row(row)
+                        for row in result.mappings().all()
+                    ),
+                    key=lambda item: item.sort_key(),
+                )
             )
             await uow.rollback()
             return records
@@ -285,7 +330,7 @@ class PostgreSQLGmailMessageStateRepository:
         binding: GmailMessageEvidenceBinding,
         *,
         require_current: bool,
-    ) -> dict[str, object]:
+    ) -> EmailRevisionMetadata:
         identity = gmail_source_identity(binding.message_key)
         result = await uow._execute(
             select(
@@ -318,15 +363,21 @@ class PostgreSQLGmailMessageStateRepository:
         metadata = row["revision_metadata"]
         if isinstance(metadata, str):
             metadata = json.loads(metadata)
-        email = metadata.get("email_revision") if isinstance(metadata, dict) else None
+        email_payload = (
+            metadata.get("email_revision") if isinstance(metadata, dict) else None
+        )
+        try:
+            email = EmailRevisionMetadata.model_validate(email_payload)
+        except Exception:
+            email = None
         if (
             row["connection_id"] != binding.message_key.connection_id
             or row["external_namespace"] != identity.external_namespace
             or row["external_generation"] != identity.external_generation
             or row["external_object_id"] != identity.external_object_id
-            or not isinstance(email, dict)
-            or email.get("provider_kind") != "google"
-            or email.get("provider_message_id") != binding.message_key.message_id
+            or email is None
+            or email.provider_kind != "google"
+            or email.provider_message_id != binding.message_key.message_id
         ):
             raise ValueError("Gmail message evidence target identity does not match")
         if require_current:
@@ -350,25 +401,6 @@ def _label_from_row(row: Any) -> GmailLabelObservation:
 
 def _relationship_from_row(row: Any) -> GmailRelationshipEvidence:
     return GmailRelationshipEvidence.model_validate(row["record"])
-
-
-def _label_semantics(observation: GmailLabelObservation) -> tuple[object, ...]:
-    return (
-        observation.binding,
-        observation.history_id,
-        observation.event_identity,
-        observation.label_id,
-        observation.state,
-    )
-
-
-def _relationship_semantics(evidence: GmailRelationshipEvidence) -> tuple[object, ...]:
-    return (
-        evidence.binding,
-        evidence.kind,
-        evidence.authority,
-        evidence.relationship_reference,
-    )
 
 
 __all__ = ["PostgreSQLGmailMessageStateRepository"]

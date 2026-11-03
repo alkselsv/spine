@@ -123,6 +123,17 @@ class GmailLabelObservation(DefinitionModel):
             raise ValueError("observation_id does not match Gmail label evidence")
         return self
 
+    def semantic_identity(self) -> tuple[object, ...]:
+        """Return replay-relevant fields, excluding first-receipt time."""
+
+        return (
+            self.binding,
+            self.history_id,
+            self.event_identity,
+            self.label_id,
+            self.state,
+        )
+
 
 class GmailCurrentLabelState(DefinitionModel):
     schema_version: Literal["gmail-current-label-state:v1"] = (
@@ -139,7 +150,7 @@ class GmailCurrentLabelState(DefinitionModel):
 
 
 class GmailLabelObservationResult(DefinitionModel):
-    """Safe convergence diagnostic; metadata-only writes never publish content."""
+    """Safe convergence diagnostic for one content-free label observation."""
 
     schema_version: Literal["gmail-label-observation-result:v1"] = (
         "gmail-label-observation-result:v1"
@@ -147,8 +158,6 @@ class GmailLabelObservationResult(DefinitionModel):
     disposition: GmailLabelDisposition
     persisted: GmailLabelObservation
     current: GmailCurrentLabelState
-    content_revision_created: Literal[False] = False
-    projection_intent_created: Literal[False] = False
 
 
 class GmailRelationshipEvidence(DefinitionModel):
@@ -184,8 +193,43 @@ class GmailRelationshipEvidence(DefinitionModel):
             raise ValueError("evidence_id does not match Gmail relationship evidence")
         return self
 
+    def semantic_identity(self) -> tuple[object, ...]:
+        """Return replay-relevant fields, excluding first-receipt time."""
+
+        return (
+            self.binding,
+            self.kind,
+            self.authority,
+            self.relationship_reference,
+        )
+
+    def is_claimed_by(self, revision: EmailRevisionMetadata) -> bool:
+        """Check that this relationship exists in the exact raw revision."""
+
+        if self.kind is GmailRelationshipKind.PROVIDER_THREAD:
+            return self.relationship_reference == revision.provider_thread_reference
+        if self.kind is GmailRelationshipKind.REFERENCES:
+            return self.relationship_reference in revision.references_claims
+        return self.relationship_reference in revision.in_reply_to_claims
+
+    def sort_key(self) -> tuple[int, str, str]:
+        rank = {
+            GmailRelationshipKind.PROVIDER_THREAD: 0,
+            GmailRelationshipKind.REFERENCES: 1,
+            GmailRelationshipKind.IN_REPLY_TO: 2,
+        }
+        return (rank[self.kind], self.relationship_reference, str(self.evidence_id))
+
 
 class GmailMessageStateRepository(Protocol):
+    async def resolve_current_binding(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        message_key: GmailMessageKey,
+    ) -> GmailMessageEvidenceBinding | None: ...
+
     async def record_label(
         self, observation: GmailLabelObservation
     ) -> GmailLabelObservationResult: ...
@@ -214,6 +258,10 @@ class InMemoryGmailMessageStateRepository:
         ] = (),
     ) -> None:
         self._targets = {_binding_key(item) for item in allowed_bindings}
+        self._current_targets = {
+            _source_key(item.workspace_id, item.environment_id, item.message_key): item
+            for item in allowed_bindings
+        }
         self._revision_evidence = {
             _binding_key(item): evidence for item, evidence in revision_evidence
         }
@@ -221,13 +269,24 @@ class InMemoryGmailMessageStateRepository:
         self._heads: dict[tuple[str, str], GmailLabelObservation] = {}
         self._relationships: dict[UUID, GmailRelationshipEvidence] = {}
 
+    async def resolve_current_binding(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        message_key: GmailMessageKey,
+    ) -> GmailMessageEvidenceBinding | None:
+        return self._current_targets.get(
+            _source_key(workspace_id, environment_id, message_key)
+        )
+
     async def record_label(
         self, observation: GmailLabelObservation
     ) -> GmailLabelObservationResult:
         self._require_target(observation.binding)
         existing = self._labels.get(observation.observation_id)
         if existing is not None:
-            if _label_semantics(existing) != _label_semantics(observation):
+            if existing.semantic_identity() != observation.semantic_identity():
                 raise ValueError("Gmail label observation identity conflicts")
             persisted = existing
             disposition = GmailLabelDisposition.DUPLICATE
@@ -258,11 +317,11 @@ class InMemoryGmailMessageStateRepository:
     ) -> GmailRelationshipEvidence:
         self._require_target(evidence.binding)
         revision = self._revision_evidence.get(_binding_key(evidence.binding))
-        if revision is None or not _relationship_is_in_revision(evidence, revision):
+        if revision is None or not evidence.is_claimed_by(revision):
             raise ValueError("Gmail relationship is absent from the bound revision")
         existing = self._relationships.get(evidence.evidence_id)
         if existing is not None:
-            if _relationship_semantics(existing) != _relationship_semantics(evidence):
+            if existing.semantic_identity() != evidence.semantic_identity():
                 raise ValueError("Gmail relationship evidence identity conflicts")
             return existing
         self._relationships[evidence.evidence_id] = evidence
@@ -287,11 +346,6 @@ class InMemoryGmailMessageStateRepository:
         self, binding: GmailMessageEvidenceBinding
     ) -> tuple[GmailRelationshipEvidence, ...]:
         self._require_target(binding)
-        rank = {
-            GmailRelationshipKind.PROVIDER_THREAD: 0,
-            GmailRelationshipKind.REFERENCES: 1,
-            GmailRelationshipKind.IN_REPLY_TO: 2,
-        }
         return tuple(
             sorted(
                 (
@@ -299,11 +353,7 @@ class InMemoryGmailMessageStateRepository:
                     for item in self._relationships.values()
                     if item.binding == binding
                 ),
-                key=lambda item: (
-                    rank[item.kind],
-                    item.relationship_reference,
-                    str(item.evidence_id),
-                ),
+                key=lambda item: item.sort_key(),
             )
         )
 
@@ -405,41 +455,27 @@ def _binding_key(binding: GmailMessageEvidenceBinding) -> str:
     return binding.model_dump_json()
 
 
+def _source_key(
+    workspace_id: UUID, environment_id: UUID, message_key: GmailMessageKey
+) -> str:
+    return json.dumps(
+        {
+            "workspace_id": str(workspace_id),
+            "environment_id": str(environment_id),
+            "message_key": message_key.model_dump(mode="json"),
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
 def _label_order(observation: GmailLabelObservation) -> tuple[int, str, str]:
     return (
         int(observation.history_id),
         observation.event_identity,
         str(observation.observation_id),
     )
-
-
-def _label_semantics(observation: GmailLabelObservation) -> tuple[object, ...]:
-    return (
-        observation.binding,
-        observation.history_id,
-        observation.event_identity,
-        observation.label_id,
-        observation.state,
-    )
-
-
-def _relationship_semantics(evidence: GmailRelationshipEvidence) -> tuple[object, ...]:
-    return (
-        evidence.binding,
-        evidence.kind,
-        evidence.authority,
-        evidence.relationship_reference,
-    )
-
-
-def _relationship_is_in_revision(
-    evidence: GmailRelationshipEvidence, revision: EmailRevisionMetadata
-) -> bool:
-    if evidence.kind is GmailRelationshipKind.PROVIDER_THREAD:
-        return evidence.relationship_reference == revision.provider_thread_reference
-    if evidence.kind is GmailRelationshipKind.REFERENCES:
-        return evidence.relationship_reference in revision.references_claims
-    return evidence.relationship_reference in revision.in_reply_to_claims
 
 
 __all__ = [

@@ -15,8 +15,16 @@ from spine.application.gmail_message_state import (
     InMemoryGmailMessageStateRepository,
     gmail_relationship_observations,
 )
-from spine.connectors.gmail_history import GmailHistoryChange, GmailHistoryChangeKind
-from spine.connectors.gmail_message_state import gmail_label_observation
+from spine.connectors.gmail_history import (
+    GmailHistoryChange,
+    GmailHistoryChangeKind,
+    GmailHistoryResult,
+    GmailHistoryState,
+)
+from spine.connectors.gmail_message_state import (
+    GmailMessageStateWriter,
+    gmail_label_observation,
+)
 from spine.domain.sources.gmail import GmailMessageKey
 from spine.domain.sources.models import EmailRevisionMetadata
 
@@ -73,8 +81,6 @@ async def test_label_changes_bind_exact_source_without_content_effects() -> None
     assert result.disposition is GmailLabelDisposition.APPLIED
     assert result.current.observation.binding == target
     assert result.current.present is True
-    assert result.content_revision_created is False
-    assert result.projection_intent_created is False
     assert result.current.observation.binding.source_revision_id == REVISION_ID
 
 
@@ -158,6 +164,78 @@ async def test_wrong_workspace_cannot_record_message_state() -> None:
         await repository.record_label(observation)
 
     assert "gmail-message-840" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_history_writer_persists_normalized_label_changes() -> None:
+    target = binding()
+    repository = InMemoryGmailMessageStateRepository((target,))
+    writer = GmailMessageStateWriter(
+        repository=repository,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        connection_id=CONNECTION_ID,
+        mailbox_binding_id=MAILBOX_ID,
+    )
+    history = GmailHistoryResult(
+        state=GmailHistoryState.COMPLETE,
+        changes=(
+            change("100", GmailHistoryChangeKind.MESSAGE_ADDED, label_id="unused"),
+            change("101", GmailHistoryChangeKind.LABEL_ADDED),
+        ),
+        terminal_history_id="102",
+        pages_read=1,
+        duplicate_count=0,
+        malformed_count=0,
+    )
+
+    receipts = await writer.record_history(history, received_at=NOW)
+
+    assert len(receipts) == 1
+    assert receipts[0].current.present is True
+
+
+@pytest.mark.asyncio
+async def test_retry_after_durable_write_converges_to_duplicate() -> None:
+    target = binding()
+    durable = InMemoryGmailMessageStateRepository((target,))
+
+    class FailAfterFirstDurableWrite:
+        def __init__(self) -> None:
+            self.failed = False
+
+        async def record_label(self, observation):
+            result = await durable.record_label(observation)
+            if not self.failed:
+                self.failed = True
+                raise RuntimeError("synthetic post-commit interruption")
+            return result
+
+        async def resolve_current_binding(self, **values):
+            return await durable.resolve_current_binding(**values)
+
+    writer = GmailMessageStateWriter(
+        repository=FailAfterFirstDurableWrite(),  # type: ignore[arg-type]
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        connection_id=CONNECTION_ID,
+        mailbox_binding_id=MAILBOX_ID,
+    )
+    history = GmailHistoryResult(
+        state=GmailHistoryState.COMPLETE,
+        changes=(change("101", GmailHistoryChangeKind.LABEL_ADDED),),
+        terminal_history_id="102",
+        pages_read=1,
+        duplicate_count=0,
+        malformed_count=0,
+    )
+
+    with pytest.raises(RuntimeError, match="post-commit interruption"):
+        await writer.record_history(history, received_at=NOW)
+    replay = await writer.record_history(history, received_at=NOW + timedelta(minutes=1))
+
+    assert replay[0].disposition is GmailLabelDisposition.DUPLICATE
+    assert len(await durable.list_label_observations(target)) == 1
 
 
 def test_header_relationship_cannot_be_upgraded_to_provider_authority() -> None:
