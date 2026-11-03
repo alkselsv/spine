@@ -10,6 +10,7 @@ from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from spine.domain.common import DefinitionModel
 from spine.domain.connections.google import GoogleConnection
+from spine.domain.connections.email_scope import EmailProviderOperation
 
 
 def _normalize_crm_entity_types(values: tuple[str, ...]) -> tuple[str, ...]:
@@ -19,6 +20,25 @@ def _normalize_crm_entity_types(values: tuple[str, ...]) -> tuple[str, ...]:
     if len(set(normalized)) != len(normalized):
         raise ValueError("approved CRM entity types must be unique")
     return tuple(sorted(normalized))
+
+
+def _normalize_permitted_operations(
+    values: tuple[EmailProviderOperation, ...],
+) -> tuple[EmailProviderOperation, ...]:
+    if len(set(values)) != len(values):
+        raise ValueError("permitted operations must be unique")
+    return tuple(sorted(values, key=lambda item: item.value))
+
+
+def _require_email_provider_operations(
+    provider_kind: "ProviderKind",
+    operations: tuple[EmailProviderOperation, ...],
+) -> None:
+    if operations and provider_kind not in {
+        ProviderKind.GOOGLE,
+        ProviderKind.YANDEX_MAIL,
+    }:
+        raise ValueError("mail operations require an email provider")
 
 
 def _non_nil_uuid(value: UUID, info: ValidationInfo) -> UUID:
@@ -137,6 +157,9 @@ class ProviderConnection(DefinitionModel):
         min_length=1
     )
     approved_crm_entity_types: tuple[str, ...] = ()
+    permitted_operations: tuple[EmailProviderOperation, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
     authorization_generation: int = Field(ge=1)
     configuration_generation: int = Field(ge=1)
     status: ProviderConnectionStatus
@@ -177,8 +200,18 @@ class ProviderConnection(DefinitionModel):
     def _validate_crm_entity_types(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         return _normalize_crm_entity_types(values)
 
+    @field_validator("permitted_operations")
+    @classmethod
+    def _validate_permitted_operations(
+        cls, values: tuple[EmailProviderOperation, ...]
+    ) -> tuple[EmailProviderOperation, ...]:
+        return _normalize_permitted_operations(values)
+
     @model_validator(mode="after")
     def _validate_version_history(self) -> "ProviderConnection":
+        _require_email_provider_operations(
+            self.provider_kind, self.permitted_operations
+        )
         if self.version == 1:
             if self.predecessor_version_id is not None:
                 raise ValueError("connection version 1 cannot have a predecessor")
@@ -216,6 +249,9 @@ class ProviderConnectionApproval(DefinitionModel):
         min_length=1
     )
     approved_crm_entity_types: tuple[str, ...] = ()
+    permitted_operations: tuple[EmailProviderOperation, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
     authorization_generation: int = Field(ge=1)
     configuration_generation: int = Field(ge=1)
     status: ProviderConnectionStatus
@@ -244,6 +280,20 @@ class ProviderConnectionApproval(DefinitionModel):
     def _validate_crm_entity_types(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         return _normalize_crm_entity_types(values)
 
+    @field_validator("permitted_operations")
+    @classmethod
+    def _validate_permitted_operations(
+        cls, values: tuple[EmailProviderOperation, ...]
+    ) -> tuple[EmailProviderOperation, ...]:
+        return _normalize_permitted_operations(values)
+
+    @model_validator(mode="after")
+    def _validate_mail_provider(self) -> "ProviderConnectionApproval":
+        _require_email_provider_operations(
+            self.provider_kind, self.permitted_operations
+        )
+        return self
+
 
 def google_v1_connection_to_v2(
     connection: GoogleConnection,
@@ -270,6 +320,7 @@ def google_v1_connection_to_v2(
             OpaqueProviderReference(value=item.value)
             for item in connection.approved_resource_scope_references
         ),
+        permitted_operations=(),
         authorization_generation=connection.authorization_generation,
         configuration_generation=connection.configuration_generation,
         status=ProviderConnectionStatus(connection.status.value),

@@ -14,5 +14,6 @@ def test_provider_connection_tables_are_owned_by_connection_adapter() -> None:
         "capabilities",
         "health",
         "diagnostic_codes",
+        "permitted_operations",
         "receipt_id",
     }.issubset(provider_connection_versions.c.keys())

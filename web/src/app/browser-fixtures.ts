@@ -257,7 +257,7 @@ function fixtureDocuments(scope: FixtureScope) {
 
 function fixtureProviderConnections(scope: FixtureScope) {
   return [{
-    schema_version: 1,
+    schema_version: 2,
     connection_id: stableUuid(`${scope.workspaceId}:connection`, 1),
     connection_version_id: stableUuid(`${scope.workspaceId}:connection-version`, 2),
     approval_id: stableUuid(`${scope.workspaceId}:approval`, 3),
@@ -268,6 +268,7 @@ function fixtureProviderConnections(scope: FixtureScope) {
     authorization_generation: 2,
     configuration_generation: 3,
     approved_resource_scope_references: [stableUuid(`${scope.workspaceId}:scope`, 4)],
+    permitted_operations: [],
     capabilities: [
       { kind: 'binary_read', status: 'supported', qualification_reference: stableUuid('binary-read', 5) },
       { kind: 'incremental_change_discovery', status: 'unsupported', qualification_reference: null },
@@ -277,6 +278,7 @@ function fixtureProviderConnections(scope: FixtureScope) {
     observed_at: '2026-10-29T17:00:00Z',
     cursor_lag_seconds: 4,
     last_successful_reconciliation_at: '2026-10-29T16:00:00Z',
+    mailbox_sync: null,
   }];
 }
 

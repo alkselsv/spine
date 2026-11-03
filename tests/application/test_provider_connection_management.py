@@ -6,12 +6,15 @@ from uuid import UUID
 import pytest
 
 from spine.application.connections.management import (
+    MailboxConnectionSyncState,
     ProviderConnectionConfigurationAdmission,
     ProviderConnectionConfigurationRequest,
     ProviderConnectionManager,
     ProviderConnectionNotFoundError,
     ProviderRuntimeObservation,
+    classify_mailbox_connection_sync,
 )
+from spine.application.email_sync import EmailSyncStatus
 from spine.application.persistence.context import (
     EnvironmentScope,
     PersistenceOperation,
@@ -31,6 +34,7 @@ from spine.domain.connections.provider import (
     ProviderDiagnosticCode,
     ProviderKind,
 )
+from spine.domain.connections.email_scope import EmailProviderOperation
 
 
 def _id(value: int) -> UUID:
@@ -38,6 +42,69 @@ def _id(value: int) -> UUID:
 
 
 NOW = datetime(2026, 10, 29, 15, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize(
+    ("connection_status", "attempt_status", "stale", "expected"),
+    (
+        (
+            ProviderConnectionStatus.ACTIVE,
+            None,
+            False,
+            MailboxConnectionSyncState.NOT_STARTED,
+        ),
+        *(
+            (ProviderConnectionStatus.ACTIVE, source.value, False, expected)
+            for source, expected in (
+                (EmailSyncStatus.PENDING, MailboxConnectionSyncState.PENDING),
+                (EmailSyncStatus.RUNNING, MailboxConnectionSyncState.RUNNING),
+                (EmailSyncStatus.INCOMPLETE, MailboxConnectionSyncState.PARTIAL),
+                (EmailSyncStatus.COMPLETE, MailboxConnectionSyncState.COMPLETE),
+                (
+                    EmailSyncStatus.RECONCILIATION_REQUIRED,
+                    MailboxConnectionSyncState.RECONCILIATION_REQUIRED,
+                ),
+                (EmailSyncStatus.SUSPENDED, MailboxConnectionSyncState.SUSPENDED),
+                (EmailSyncStatus.FAILED, MailboxConnectionSyncState.FAILED),
+            )
+        ),
+        (
+            ProviderConnectionStatus.ACTIVE,
+            "unknown",
+            False,
+            MailboxConnectionSyncState.FAILED,
+        ),
+        (
+            ProviderConnectionStatus.ACTIVE,
+            EmailSyncStatus.COMPLETE.value,
+            True,
+            MailboxConnectionSyncState.STALE,
+        ),
+        (
+            ProviderConnectionStatus.SUSPENDED,
+            EmailSyncStatus.COMPLETE.value,
+            True,
+            MailboxConnectionSyncState.SUSPENDED,
+        ),
+        (
+            ProviderConnectionStatus.REVOKED,
+            EmailSyncStatus.COMPLETE.value,
+            True,
+            MailboxConnectionSyncState.REVOKED,
+        ),
+    ),
+)
+def test_mailbox_sync_inputs_classify_safe_operator_state(
+    connection_status: ProviderConnectionStatus,
+    attempt_status: str | None,
+    stale: bool,
+    expected: MailboxConnectionSyncState,
+) -> None:
+    assert classify_mailbox_connection_sync(
+        connection_status=connection_status,
+        attempt_status=attempt_status,
+        stale=stale,
+    ) is expected
 
 
 def _context(
@@ -194,6 +261,39 @@ async def test_approved_configuration_creates_immutable_refs_only_version() -> N
     assert result.inspection.health is ProviderConnectionHealth.HEALTHY
     assert result.replay is False
     assert provider.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_mailbox_configuration_copies_only_server_owned_operations() -> None:
+    approval = _approval().model_copy(
+        update={
+            "provider_kind": ProviderKind.YANDEX_MAIL,
+            "permitted_operations": (
+                EmailProviderOperation.ENUMERATE_MAILBOX,
+                EmailProviderOperation.SYNCHRONIZE,
+            ),
+        }
+    )
+    repository = _Repository(approval)
+    manager = ProviderConnectionManager(
+        repository=repository,
+        provider=_Provider(_observation()),
+    )
+
+    result = await manager.configure(
+        _request(),
+        _context("provider_connection_configure"),
+    )
+
+    assert result.inspection.connection.permitted_operations == (
+        EmailProviderOperation.ENUMERATE_MAILBOX,
+        EmailProviderOperation.SYNCHRONIZE,
+    )
+    assert result.inspection.mailbox_sync is not None
+    assert (
+        result.inspection.mailbox_sync.state
+        is MailboxConnectionSyncState.NOT_STARTED
+    )
 
 
 @pytest.mark.asyncio

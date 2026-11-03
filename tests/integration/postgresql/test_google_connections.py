@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import pytest
@@ -23,6 +23,7 @@ from spine.application.connections.google import (
     GoogleProviderQuotaError,
 )
 from spine.application.connections.management import (
+    MailboxConnectionSyncState,
     ProviderConnectionConfigurationRequest,
     ProviderConnectionManager,
     ProviderConnectionNotFoundError,
@@ -48,6 +49,7 @@ from spine.domain.connections.google import (
     GoogleConnectionStatus,
     OpaqueGoogleReference,
 )
+from spine.domain.connections.email_scope import EmailProviderOperation
 from spine.domain.connections.provider import (
     OpaqueProviderReference,
     ProviderCapability,
@@ -72,6 +74,7 @@ from spine.infrastructure.connections.postgresql_provider_management import (
 from spine.infrastructure.persistence.postgresql_google_sheets_sync import (
     PostgreSQLGoogleSheetsSyncRepository,
 )
+from spine.infrastructure.persistence.postgresql_mappings import email_sync_attempts
 from spine.application.persistence.google_sheets_sync import (
     GoogleSheetsIdentityDisposition,
     GoogleSheetsIdentityDispositionCommand,
@@ -941,6 +944,180 @@ async def test_provider_neutral_management_persists_replay_and_isolates_workspac
     with pytest.raises(ProviderConnectionNotFoundError):
         await manager.configure(request, foreign_context)
     assert provider.calls == 2
+
+
+async def test_mailbox_management_reads_safe_latest_sync_status(
+    google_database: GoogleDatabase,
+) -> None:
+    approval = ProviderConnectionApproval(
+        approval_id=_id(9930),
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        service_principal_id=SERVICE_PRINCIPAL_ID,
+        provider_kind=ProviderKind.YANDEX_MAIL,
+        credential_reference=OpaqueProviderReference(value=_id(9931)),
+        grant_reference=OpaqueProviderReference(value=_id(9932)),
+        approved_resource_scope_references=(OpaqueProviderReference(value=_id(9933)),),
+        permitted_operations=(
+            EmailProviderOperation.ENUMERATE_MAILBOX,
+            EmailProviderOperation.SYNCHRONIZE,
+        ),
+        authorization_generation=2,
+        configuration_generation=3,
+        status=ProviderConnectionStatus.ACTIVE,
+    )
+    async with google_database.migration_engine.begin() as connection:
+        await connection.execute(
+            insert(provider_connection_approvals).values(
+                approval_id=approval.approval_id,
+                workspace_id=approval.workspace_id,
+                environment_id=approval.environment_id,
+                service_principal_id=approval.service_principal_id,
+                provider_kind=approval.provider_kind.value,
+                credential_reference=approval.credential_reference.value,
+                grant_reference=approval.grant_reference.value,
+                approved_resource_scope_references=[_id(9933)],
+                permitted_operations=[
+                    operation.value for operation in approval.permitted_operations
+                ],
+                authorization_generation=2,
+                configuration_generation=3,
+                status=ProviderConnectionStatus.ACTIVE.value,
+                recorded_at=OCCURRED_AT,
+            )
+        )
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=_id(9934), secret=b"mailbox-status-postgresql-management"
+    )
+    repository = PostgreSQLProviderConnectionManagementRepository(
+        session_factory=async_sessionmaker(
+            google_database.runtime_engine, expire_on_commit=False
+        ),
+        context_verifier=boundary,
+    )
+    observation = ProviderRuntimeObservation(
+        capabilities=(),
+        health=ProviderConnectionHealth.DEGRADED,
+        diagnostic_codes=(ProviderDiagnosticCode.PROVIDER_DEGRADED,),
+        observed_at=OCCURRED_AT,
+        cursor_lag_seconds=90,
+    )
+
+    class ProviderFake:
+        async def inspect_approved(self, approved):
+            assert approved == approval
+            return observation
+
+        async def inspect_connection(self, configured):
+            del configured
+            return observation
+
+    manager = ProviderConnectionManager(repository=repository, provider=ProviderFake())
+    configure_context = boundary.interactive(
+        scope=EnvironmentScope(
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+        ),
+        acting_subject_id=_id(9935),
+        purpose=PersistencePurpose("source_connection_control"),
+        operation=PersistenceOperation("provider_connection_configure"),
+        trace_id=_id(9936),
+    )
+    created = await manager.configure(
+        ProviderConnectionConfigurationRequest(
+            approval_id=approval.approval_id,
+            connection_id=_id(9937),
+            expected_version=0,
+            expected_predecessor_version_id=None,
+            idempotency_key="mailbox-status-postgresql-1",
+            occurred_at=OCCURRED_AT,
+        ),
+        configure_context,
+    )
+    version = created.inspection.connection
+    later = OCCURRED_AT + timedelta(minutes=5)
+    admission = {
+        "workspace_id": str(WORKSPACE_ID),
+        "environment_id": str(ENVIRONMENT_ID),
+        "connection_id": str(version.connection_id),
+        "connection_version_id": str(version.connection_version_id),
+    }
+    async with google_database.migration_engine.begin() as connection:
+        for attempt_id, key, status, updated_at in (
+            (_id(9938), "mailbox-complete", "complete", OCCURRED_AT),
+            (_id(9939), "mailbox-partial", "incomplete", later),
+        ):
+            await connection.execute(
+                insert(email_sync_attempts).values(
+                    workspace_id=WORKSPACE_ID,
+                    environment_id=ENVIRONMENT_ID,
+                    attempt_id=attempt_id,
+                    attempt_key=key,
+                    revision=1,
+                    authorization_generation=2,
+                    configuration_generation=3,
+                    scope_generation=1,
+                    committed_checkpoint=None,
+                    record={"admission": admission, "status": status},
+                    created_at=OCCURRED_AT,
+                    updated_at=updated_at,
+                )
+            )
+        await connection.execute(
+            insert(email_sync_attempts).values(
+                workspace_id=OTHER_WORKSPACE_ID,
+                environment_id=OTHER_ENVIRONMENT_ID,
+                attempt_id=_id(9941),
+                attempt_key="foreign-mailbox-failed",
+                revision=1,
+                authorization_generation=2,
+                configuration_generation=3,
+                scope_generation=1,
+                committed_checkpoint=None,
+                record={
+                    "admission": {
+                        **admission,
+                        "workspace_id": str(OTHER_WORKSPACE_ID),
+                        "environment_id": str(OTHER_ENVIRONMENT_ID),
+                    },
+                    "status": "failed",
+                },
+                created_at=OCCURRED_AT,
+                updated_at=later + timedelta(minutes=5),
+            )
+        )
+    list_context = boundary.interactive(
+        scope=EnvironmentScope(
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+        ),
+        acting_subject_id=_id(9935),
+        purpose=PersistencePurpose("source_connection_control"),
+        operation=PersistenceOperation("provider_connection_list"),
+        trace_id=_id(9940),
+    )
+
+    page = await manager.list(context=list_context)
+
+    mailbox = next(
+        item for item in page.items if item.connection.connection_id == _id(9937)
+    )
+    assert mailbox.mailbox_sync is not None
+    assert mailbox.mailbox_sync.state is MailboxConnectionSyncState.PARTIAL
+    assert mailbox.mailbox_sync.last_complete_at == OCCURRED_AT
+    assert mailbox.mailbox_sync.lag_seconds == 90
+
+    foreign_list_context = boundary.interactive(
+        scope=EnvironmentScope(
+            workspace_id=OTHER_WORKSPACE_ID,
+            environment_id=OTHER_ENVIRONMENT_ID,
+        ),
+        acting_subject_id=_id(9942),
+        purpose=PersistencePurpose("source_connection_control"),
+        operation=PersistenceOperation("provider_connection_list"),
+        trace_id=_id(9943),
+    )
+    assert (await manager.list(context=foreign_list_context)).items == ()
 
 
 async def test_provider_neutral_read_admits_only_exact_current_yandex_scope(

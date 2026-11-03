@@ -26,6 +26,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.exc import IntegrityError
 
 from spine.application.connections.management import (
+    MailboxConnectionSyncStatus,
     ProviderConnectionConfigurationAdmission,
     ProviderConnectionConfigurationRequest,
     ProviderConnectionConfigurationResult,
@@ -34,6 +35,7 @@ from spine.application.connections.management import (
     ProviderConnectionNotFoundError,
     ProviderRuntimeObservation,
     build_provider_connection_audit,
+    classify_mailbox_connection_sync,
     provider_connection_command_digest,
     require_provider_connection_successor,
 )
@@ -41,6 +43,7 @@ from spine.application.connections.provider import (
     ProviderReadCommand,
     ProviderReadDeniedError,
 )
+from spine.application.email_sync import EmailSyncStatus
 from spine.application.persistence.context import (
     EnvironmentScope,
     TrustedContextVerifier,
@@ -62,8 +65,12 @@ from spine.domain.connections.provider import (
     ProviderDiagnosticCode,
     ProviderKind,
 )
+from spine.domain.connections.email_scope import EmailProviderOperation
 from spine.infrastructure.db.engine import SessionFactory
-from spine.infrastructure.persistence.postgresql_mappings import audit_events
+from spine.infrastructure.persistence.postgresql_mappings import (
+    audit_events,
+    email_sync_attempts,
+)
 
 
 _metadata = MetaData(schema="spine")
@@ -83,6 +90,12 @@ provider_connection_approvals = Table(
         "approved_resource_scope_references",
         ARRAY(PostgreSQLUUID(as_uuid=True)),
         nullable=False,
+    ),
+    Column(
+        "permitted_operations",
+        ARRAY(String(64)),
+        nullable=False,
+        server_default=text("'{}'::varchar[]"),
     ),
     Column("authorization_generation", BigInteger, nullable=False),
     Column("configuration_generation", BigInteger, nullable=False),
@@ -113,6 +126,12 @@ provider_connection_versions = Table(
         "approved_resource_scope_references",
         ARRAY(PostgreSQLUUID(as_uuid=True)),
         nullable=False,
+    ),
+    Column(
+        "permitted_operations",
+        ARRAY(String(64)),
+        nullable=False,
+        server_default=text("'{}'::varchar[]"),
     ),
     Column("authorization_generation", BigInteger, nullable=False),
     Column("configuration_generation", BigInteger, nullable=False),
@@ -278,7 +297,14 @@ class PostgreSQLProviderConnectionManagementRepository:
                         statement.order_by(ranked.c.connection_id).limit(limit)
                     )
                 ).mappings().all()
-                return tuple(_inspection_from_row(row) for row in rows)
+                return tuple(
+                    [
+                        await _with_mailbox_sync(
+                            session, _inspection_from_row(row)
+                        )
+                        for row in rows
+                    ]
+                )
 
     async def get_current(
         self,
@@ -289,7 +315,10 @@ class PostgreSQLProviderConnectionManagementRepository:
         async with self._session_factory() as session:
             async with session.begin():
                 await session.execute(_BIND_SCOPE, _scope_parameters(trusted.scope))
-                return await _find_current(session, connection_id)
+                current = await _find_current(session, connection_id)
+                if current is None:
+                    return None
+                return await _with_mailbox_sync(session, current)
 
     def _configuration_context(
         self, context: TrustedPersistenceContext
@@ -477,12 +506,13 @@ async def _find_command(
         environment_id=context.scope.environment_id,
     ):
         raise IdempotencyConflictError()
+    inspection = await _with_mailbox_sync(session, _inspection_from_row(row))
     return ProviderConnectionConfigurationResult(
         receipt_id=row.receipt_id,
-        inspection=_inspection_from_row(row),
+        inspection=inspection,
         audit=build_provider_connection_audit(
             request=replace(request, occurred_at=row.recorded_at),
-            connection=_inspection_from_row(row).connection,
+            connection=inspection.connection,
             context=context,
             receipt_id=row.receipt_id,
         ),
@@ -523,6 +553,9 @@ def _version_values(
         "grant_reference": connection.grant_reference.value,
         "approved_resource_scope_references": [
             item.value for item in connection.approved_resource_scope_references
+        ],
+        "permitted_operations": [
+            operation.value for operation in connection.permitted_operations
         ],
         "authorization_generation": connection.authorization_generation,
         "configuration_generation": connection.configuration_generation,
@@ -585,6 +618,9 @@ def _approval_from_row(row) -> ProviderConnectionApproval:
             OpaqueProviderReference(value=value)
             for value in row.approved_resource_scope_references
         ),
+        permitted_operations=tuple(
+            EmailProviderOperation(value) for value in row.permitted_operations
+        ),
         authorization_generation=row.authorization_generation,
         configuration_generation=row.configuration_generation,
         status=ProviderConnectionStatus(row.status),
@@ -608,6 +644,9 @@ def _inspection_from_row(row) -> ProviderConnectionInspection:
             OpaqueProviderReference(value=value)
             for value in row.approved_resource_scope_references
         ),
+        permitted_operations=tuple(
+            EmailProviderOperation(value) for value in row.permitted_operations
+        ),
         authorization_generation=row.authorization_generation,
         configuration_generation=row.configuration_generation,
         status=ProviderConnectionStatus(row.status),
@@ -624,6 +663,64 @@ def _inspection_from_row(row) -> ProviderConnectionInspection:
         observed_at=row.observed_at,
         cursor_lag_seconds=row.cursor_lag_seconds,
         last_successful_reconciliation_at=row.last_successful_reconciliation_at,
+    )
+
+
+async def _with_mailbox_sync(
+    session,
+    inspection: ProviderConnectionInspection,
+) -> ProviderConnectionInspection:
+    connection = inspection.connection
+    if not connection.permitted_operations:
+        return inspection
+    connection_id = str(connection.connection_id)
+    statement = (
+        select(
+            email_sync_attempts.c.record,
+            email_sync_attempts.c.updated_at,
+            email_sync_attempts.c.authorization_generation,
+            email_sync_attempts.c.configuration_generation,
+        )
+        .where(
+            email_sync_attempts.c.record["admission"]["connection_id"]
+            .astext
+            == connection_id
+        )
+        .order_by(email_sync_attempts.c.updated_at.desc())
+    )
+    rows = (await session.execute(statement)).mappings().all()
+    last_complete_at = next(
+        (
+            row.updated_at
+            for row in rows
+            if row.record.get("status") == EmailSyncStatus.COMPLETE.value
+        ),
+        None,
+    )
+    attempt_status = None
+    stale = False
+    if rows:
+        latest = rows[0]
+        attempt_status = latest.record.get("status")
+        admission = latest.record.get("admission", {})
+        current_version_id = str(connection.connection_version_id)
+        stale = (
+            admission.get("connection_version_id") != current_version_id
+            or latest.authorization_generation != connection.authorization_generation
+            or latest.configuration_generation != connection.configuration_generation
+        )
+    state = classify_mailbox_connection_sync(
+        connection_status=connection.status,
+        attempt_status=attempt_status,
+        stale=stale,
+    )
+    return replace(
+        inspection,
+        mailbox_sync=MailboxConnectionSyncStatus(
+            state=state,
+            last_complete_at=last_complete_at,
+            lag_seconds=inspection.cursor_lag_seconds,
+        ),
     )
 
 

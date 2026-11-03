@@ -32,6 +32,7 @@ from spine.application.connections.management import (
     ProviderConnectionConfigurationRequest,
     ProviderConnectionInspection,
     ProviderConnectionManager,
+    MailboxConnectionSyncState,
 )
 from spine.application.persistence import PersistenceOperation, PersistencePurpose
 from spine.application.persistence.context import TrustedPersistenceContext
@@ -49,6 +50,7 @@ from spine.domain.connections.provider import (
     ProviderDiagnosticCode,
     ProviderKind,
 )
+from spine.domain.connections.email_scope import EmailProviderOperation
 
 
 _IDEMPOTENCY_HEADER = "Idempotency-Key"
@@ -84,7 +86,7 @@ class ProviderCapabilityResponse(BaseModel):
 class ProviderConnectionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     connection_id: UUID
     connection_version_id: UUID
     approval_id: UUID
@@ -95,12 +97,22 @@ class ProviderConnectionResponse(BaseModel):
     authorization_generation: int = Field(ge=1)
     configuration_generation: int = Field(ge=1)
     approved_resource_scope_references: tuple[UUID, ...]
+    permitted_operations: tuple[EmailProviderOperation, ...]
     capabilities: tuple[ProviderCapabilityResponse, ...]
     health: ProviderConnectionHealth
     diagnostic_codes: tuple[ProviderDiagnosticCode, ...]
     observed_at: datetime
     cursor_lag_seconds: int | None = Field(default=None, ge=0)
     last_successful_reconciliation_at: datetime | None = None
+    mailbox_sync: "MailboxConnectionSyncResponse | None" = None
+
+
+class MailboxConnectionSyncResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    state: MailboxConnectionSyncState
+    last_complete_at: datetime | None = None
+    lag_seconds: int | None = Field(default=None, ge=0)
 
 
 def install_provider_connection_routes(
@@ -269,6 +281,7 @@ def _response(item: ProviderConnectionInspection) -> ProviderConnectionResponse:
             reference.value
             for reference in connection.approved_resource_scope_references
         ),
+        permitted_operations=connection.permitted_operations,
         capabilities=tuple(
             ProviderCapabilityResponse(
                 kind=capability.kind,
@@ -288,6 +301,15 @@ def _response(item: ProviderConnectionInspection) -> ProviderConnectionResponse:
         last_successful_reconciliation_at=(
             item.last_successful_reconciliation_at
         ),
+        mailbox_sync=(
+            MailboxConnectionSyncResponse(
+                state=item.mailbox_sync.state,
+                last_complete_at=item.mailbox_sync.last_complete_at,
+                lag_seconds=item.mailbox_sync.lag_seconds,
+            )
+            if item.mailbox_sync is not None
+            else None
+        ),
     )
 
 
@@ -302,6 +324,7 @@ def _policy(operation: str) -> RouteAuthorizationPolicy:
 
 __all__ = [
     "ProviderCapabilityResponse",
+    "MailboxConnectionSyncResponse",
     "ProviderConnectionConfigurationBody",
     "ProviderConnectionResponse",
     "install_provider_connection_routes",
