@@ -1300,6 +1300,36 @@ async def test_offline_composition_reports_failure_before_transport_retry() -> N
 
 
 @pytest.mark.asyncio
+async def test_offline_composition_reports_cancelled_before_transport() -> None:
+    config = _config(opt_in=True)
+    transport_calls: list[object] = []
+
+    class Resolver:
+        async def resolve(self, credential_reference, grant_reference):
+            del credential_reference, grant_reference
+            raise asyncio.CancelledError
+
+    class Transport:
+        async def request(self, request):
+            transport_calls.append(request)
+            raise AssertionError("cancelled credential resolution must stop transport")
+
+    report = await _composed_runner(
+        config,
+        Transport(),
+        credential_resolver=Resolver(),
+    ).run(environment_opt_in=True)
+
+    assert report.failure_code == "cancelled"
+    assert report.failure_stage == "harness"
+    assert report.failure_class == "cancelled"
+    assert report.retry_disposition == "not_applicable"
+    assert report.oauth_request_attempts == 0
+    assert report.drive_request_attempts == 0
+    assert transport_calls == []
+
+
+@pytest.mark.asyncio
 async def test_offline_composition_reports_nonretryable_drive_policy_denial() -> None:
     config = _config(opt_in=True)
     config = config.model_copy(
