@@ -10,6 +10,7 @@ from typing import Literal, Protocol, TYPE_CHECKING
 
 from pydantic import ConfigDict, Field, StrictFloat, StrictInt
 
+from spine.application.connections.google import GoogleProviderExecutionError
 from spine.domain.common import DefinitionModel
 
 if TYPE_CHECKING:
@@ -54,11 +55,11 @@ class GoogleExecutionApprovalVerifier(Protocol):
     def is_approved(self, envelope_fingerprint: str) -> bool: ...
 
 
-class GoogleExecutionDeadlineExceeded(RuntimeError):
+class GoogleExecutionDeadlineExceeded(GoogleProviderExecutionError):
     """The injected monotonic deadline elapsed."""
 
 
-class GoogleExecutionLimitExceeded(RuntimeError):
+class GoogleExecutionLimitExceeded(GoogleProviderExecutionError):
     """Sanitized limit error; never carries provider payload or source content."""
 
 

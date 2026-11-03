@@ -10,7 +10,7 @@ from datetime import datetime
 import hashlib
 import json
 import re
-from typing import Generic, Protocol, TypeVar
+from typing import Generic, Literal, Protocol, TypeVar
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from spine.application.diagnostics import (
@@ -65,42 +65,134 @@ class GoogleConnectionSuspensionError(GoogleConnectionError):
         super().__init__("Google connection suspension could not be recorded.")
 
 
+GoogleProviderFailureClass = Literal[
+    "authorization",
+    "credential_resolution",
+    "http_5xx",
+    "not_found",
+    "policy",
+    "quota",
+    "timeout",
+    "transport",
+    "unclassified",
+]
+GoogleProviderRetryDisposition = Literal[
+    "attempts_exhausted",
+    "not_retryable",
+    "stopped_before_retry",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class GoogleProviderFailureEvidence:
+    """Closed, disclosure-safe provider failure evidence kept as one value."""
+
+    failure_code: str
+    failure_class: GoogleProviderFailureClass
+    retry_disposition: GoogleProviderRetryDisposition
+
+
 class GoogleProviderReadError(GoogleConnectionError):
-    def __init__(self, *, failure_code: str = "provider_unavailable") -> None:
-        self.failure_code = failure_code
+    def __init__(
+        self,
+        *,
+        failure_code: str = "provider_unavailable",
+        failure_class: GoogleProviderFailureClass = "unclassified",
+        retry_disposition: GoogleProviderRetryDisposition = "stopped_before_retry",
+    ) -> None:
+        self.evidence = GoogleProviderFailureEvidence(
+            failure_code=failure_code,
+            failure_class=failure_class,
+            retry_disposition=retry_disposition,
+        )
         super().__init__("Google provider read failed.")
+
+    @property
+    def failure_code(self) -> str:
+        return self.evidence.failure_code
+
+    @property
+    def failure_class(self) -> GoogleProviderFailureClass:
+        return self.evidence.failure_class
+
+    @property
+    def retry_disposition(self) -> GoogleProviderRetryDisposition:
+        return self.evidence.retry_disposition
+
+    def with_retry_disposition(
+        self, retry_disposition: GoogleProviderRetryDisposition
+    ) -> "GoogleProviderReadError":
+        if isinstance(self, GoogleProviderAuthorizationError):
+            return GoogleProviderAuthorizationError(
+                retry_disposition=retry_disposition
+            )
+        if isinstance(self, GoogleProviderQuotaError):
+            return GoogleProviderQuotaError(retry_disposition=retry_disposition)
+        return GoogleProviderReadError(
+            failure_code=self.failure_code,
+            failure_class=self.failure_class,
+            retry_disposition=retry_disposition,
+        )
 
 
 class GoogleProviderAuthorizationError(GoogleProviderReadError):
     """The provider rejected a grant or credential that needs reauthorization."""
 
-    def __init__(self) -> None:
-        super().__init__(failure_code="authorization_revoked")
+    def __init__(
+        self,
+        *,
+        retry_disposition: GoogleProviderRetryDisposition = "not_retryable",
+    ) -> None:
+        super().__init__(
+            failure_code="authorization_revoked",
+            failure_class="authorization",
+            retry_disposition=retry_disposition,
+        )
 
 
 class GoogleProviderQuotaError(GoogleProviderReadError):
     """A provider quota or transient limit was reached."""
 
-    def __init__(self) -> None:
-        super().__init__(failure_code="provider_quota_exhausted")
+    def __init__(
+        self,
+        *,
+        retry_disposition: GoogleProviderRetryDisposition = "not_retryable",
+    ) -> None:
+        super().__init__(
+            failure_code="provider_quota_exhausted",
+            failure_class="quota",
+            retry_disposition=retry_disposition,
+        )
 
 
 class GoogleProviderPolicyError(GoogleProviderReadError):
     """A provider policy or scope denial that requires operator action."""
 
     def __init__(self) -> None:
-        super().__init__(failure_code="provider_policy_denied")
+        super().__init__(
+            failure_code="provider_policy_denied",
+            failure_class="policy",
+            retry_disposition="not_retryable",
+        )
 
 
 class GoogleProviderNotFoundError(GoogleProviderReadError):
     """The exact approved provider resource was not found."""
 
     def __init__(self) -> None:
-        super().__init__(failure_code="provider_not_found")
+        super().__init__(
+            failure_code="provider_not_found",
+            failure_class="not_found",
+            retry_disposition="not_retryable",
+        )
 
 
 class GoogleProviderContractError(GoogleConnectionError):
     """A provider response violated a typed, fail-closed reader contract."""
+
+
+class GoogleProviderExecutionError(RuntimeError):
+    """A typed execution boundary stopped provider work safely."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,7 +360,7 @@ class GoogleReadAdmission(Generic[ProviderResultT]):
                     result = await self._provider.read(connection, command)
                 except asyncio.CancelledError:
                     raise
-                except GoogleProviderContractError:
+                except (GoogleProviderContractError, GoogleProviderExecutionError):
                     raise
                 except Exception as error:
                     classified = _classify_google_provider_error(error)
@@ -557,6 +649,8 @@ __all__ = [
     "GoogleConnectionRepository",
     "GoogleProvider",
     "GoogleProviderContractError",
+    "GoogleProviderExecutionError",
+    "GoogleProviderFailureEvidence",
     "GoogleProviderReadError",
     "GoogleProviderAuthorizationError",
     "GoogleProviderQuotaError",

@@ -107,6 +107,7 @@ def _service(
     retry_observer=None,
     drive_id: str | None = None,
     max_requests_per_run: int = 500,
+    max_attempts: int = 2,
     jitter=None,
 ) -> GoogleApiService:
     return GoogleApiService(
@@ -123,10 +124,12 @@ def _service(
         ),
         request_policy=GoogleApiRequestPolicy(
             timeout_seconds=7.5,
-            max_attempts=2,
+            max_attempts=max_attempts,
             max_requests_per_run=max_requests_per_run,
             max_concurrent_requests=2,
-            backoff_ceiling_seconds=(1.0,),
+            backoff_ceiling_seconds=tuple(
+                float(2**attempt) for attempt in range(max_attempts - 1)
+            ),
             drive_page_size=100,
             sheets_page_size=sheets_page_size,
         ),
@@ -1146,6 +1149,34 @@ async def test_provider_unauthorized_invalidates_token_and_refreshes_once() -> N
 
 
 @pytest.mark.asyncio
+async def test_second_provider_unauthorized_stops_after_single_refresh() -> None:
+    resolver = RecordingCredentialResolver()
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "first-token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(status_code=401, json_body={}),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "second-token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(status_code=401, json_body={}),
+        ]
+    )
+
+    with pytest.raises(GoogleProviderAuthorizationError) as captured:
+        await _service(resolver, transport, max_attempts=4).get_metadata_for_file(
+            _connection(), RESOURCE_SCOPE, "file-1"
+        )
+
+    assert captured.value.retry_disposition == "not_retryable"
+    assert len(resolver.calls) == 2
+    assert len(transport.requests) == 4
+
+
+@pytest.mark.asyncio
 async def test_provider_timeout_retries_only_to_explicit_attempt_limit() -> None:
     resolver = RecordingCredentialResolver()
     transport = RecordingTransport(
@@ -1516,6 +1547,43 @@ async def test_httpx_transport_maps_request_without_exposing_raw_request_errors(
 
     assert response.json_body == {"id": "file-1"}
     assert seen[0].url == "https://google.test/files/file-1?fields=id"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error_type", "failure_class"),
+    (
+        (httpx.ConnectError, "transport"),
+        (httpx.ReadTimeout, "timeout"),
+    ),
+)
+async def test_httpx_transport_classifies_failures_without_raw_details(
+    error_type, failure_class
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise error_type(
+            "raw-provider-error provider-id-sentinel",
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(GoogleProviderReadError) as captured:
+            await HttpxGoogleApiTransport(client).request(
+                GoogleApiRequest(
+                    method="GET",
+                    url="https://google.test/files/provider-id-sentinel",
+                    headers={"Authorization": "Bearer credential-sentinel"},
+                    query={},
+                    form=None,
+                    timeout_seconds=3.0,
+                )
+            )
+
+    assert captured.value.failure_class == failure_class
+    assert captured.value.retry_disposition == "stopped_before_retry"
+    assert "raw-provider-error" not in str(captured.value)
+    assert "provider-id-sentinel" not in str(captured.value)
+    assert "credential-sentinel" not in str(captured.value)
 
 
 def test_google_endpoints_reject_non_https_provider_origins() -> None:
