@@ -191,7 +191,7 @@ class GoogleProviderContractError(GoogleConnectionError):
     """A provider response violated a typed, fail-closed reader contract."""
 
 
-class GoogleProviderExecutionError(GoogleConnectionError):
+class GoogleProviderExecutionError(RuntimeError):
     """A typed execution boundary stopped provider work safely."""
 
 

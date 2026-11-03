@@ -1331,6 +1331,101 @@ async def test_offline_composition_reports_nonretryable_drive_policy_denial() ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scenario", "failure_code", "failure_stage", "failure_class", "disposition"),
+    (
+        (
+            "quota",
+            "provider_quota_exhausted",
+            "drive",
+            "quota",
+            "not_retryable",
+        ),
+        (
+            "not_found",
+            "provider_not_found",
+            "sheets",
+            "not_found",
+            "not_retryable",
+        ),
+        (
+            "unclassified",
+            "provider_unavailable",
+            "drive",
+            "unclassified",
+            "stopped_before_retry",
+        ),
+    ),
+)
+async def test_offline_composition_reports_remaining_closed_failure_classes(
+    scenario: str,
+    failure_code: str,
+    failure_stage: str,
+    failure_class: str,
+    disposition: str,
+) -> None:
+    config = _config(opt_in=True)
+    responses: list[GoogleApiResponse | Exception] = [
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"access_token": "synthetic-token", "expires_in": 3600},
+        )
+    ]
+    if scenario == "quota":
+        responses.append(
+            GoogleApiResponse(
+                status_code=429,
+                json_body={
+                    "error": {"errors": [{"reason": "dailyLimitExceeded"}]}
+                },
+            )
+        )
+    elif scenario == "not_found":
+        config = config.model_copy(
+            update={
+                "resource_scope": config.resource_scope.model_copy(
+                    update={
+                        "allowed_file_ids": (),
+                        "allowed_spreadsheet_ids": ("synthetic-sheet",),
+                    }
+                ),
+                "file_targets": (),
+                "sheet_targets": (
+                    _sheet_target("synthetic-sheet", 1, ("'Synthetic'!A1:A2",)),
+                ),
+            }
+        )
+        responses.extend(
+            (
+                GoogleApiResponse(
+                    status_code=200,
+                    json_body={"id": "synthetic-sheet", "version": "1"},
+                ),
+                GoogleApiResponse(status_code=404),
+            )
+        )
+    else:
+        responses.append(RuntimeError("raw-provider-detail-sentinel"))
+
+    class Transport:
+        async def request(self, request):
+            del request
+            response = responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+    report = await _composed_runner(config, Transport()).run(environment_opt_in=True)
+
+    assert report.failure_code == failure_code
+    assert report.failure_stage == failure_stage
+    assert report.failure_class == failure_class
+    assert report.retry_disposition == disposition
+    assert "raw-provider-detail-sentinel" not in report.model_dump_json()
+    assert responses == []
+
+
+@pytest.mark.asyncio
 async def test_offline_composition_preserves_completed_operations_before_failure() -> (
     None
 ):
