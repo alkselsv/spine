@@ -3111,6 +3111,67 @@ async def test_governed_reprocessing_catalog_has_exact_tenant_foreign_keys(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_processing_admission_and_selector_history_are_immutable(
+    migrated_database: MigratedDatabase,
+) -> None:
+    tables = (
+        "source_processing_admissions",
+        "trusted_canonical_acceptance_selector_versions",
+    )
+    async with _connection(migrated_database.migration.url) as connection:
+        triggers = {
+            row.table_name: row.trigger_name
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT relation.relname AS table_name, "
+                        "trigger.tgname AS trigger_name "
+                        "FROM pg_trigger AS trigger "
+                        "JOIN pg_class AS relation ON relation.oid = trigger.tgrelid "
+                        "JOIN pg_namespace AS namespace "
+                        "ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' "
+                        "AND NOT trigger.tgisinternal "
+                        "AND relation.relname = ANY(:tables) "
+                        "AND trigger.tgname LIKE '%immutable'"
+                    ),
+                    {"tables": list(tables)},
+                )
+            ).all()
+        }
+        privileges = {
+            row.table_name: (row.can_insert, row.can_update, row.can_delete)
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT relation.relname AS table_name, "
+                        "has_table_privilege(:runtime, relation.oid, 'INSERT') AS can_insert, "
+                        "has_table_privilege(:runtime, relation.oid, 'UPDATE') AS can_update, "
+                        "has_table_privilege(:runtime, relation.oid, 'DELETE') AS can_delete "
+                        "FROM pg_class AS relation "
+                        "JOIN pg_namespace AS namespace "
+                        "ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' "
+                        "AND relation.relname = ANY(:tables)"
+                    ),
+                    {"runtime": RUNTIME_ROLE, "tables": list(tables)},
+                )
+            ).all()
+        }
+
+    assert triggers == {
+        "source_processing_admissions": "trg_source_processing_admissions_immutable",
+        "trusted_canonical_acceptance_selector_versions": (
+            "trg_trusted_canonical_acceptance_selector_immutable"
+        ),
+    }
+    assert privileges == {
+        "source_processing_admissions": (True, False, False),
+        "trusted_canonical_acceptance_selector_versions": (True, False, False),
+    }
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_ingestion_ledger_catalog_has_immutable_and_deferred_integrity_triggers(
     migrated_database: MigratedDatabase,
 ) -> None:
