@@ -12,6 +12,7 @@ from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 
 from spine.application.email_artifacts import (
+    AcceptedEmailParent,
     EmailArtifactCommand,
     EmailArtifactConflict,
     EmailArtifactPersistenceResult,
@@ -44,9 +45,7 @@ class AuthorizedReadEmailParentReader:
     async def resolve_accepted_email_parent(
         self, *, workspace_id: UUID, environment_id: UUID, source_object_id: UUID,
         source_revision_id: UUID,
-    ):
-        from spine.application.email_artifacts import AcceptedEmailParent
-
+    ) -> AcceptedEmailParent | None:
         try:
             target = await self._resolver.resolve_original_read_target(
                 workspace_id=workspace_id,

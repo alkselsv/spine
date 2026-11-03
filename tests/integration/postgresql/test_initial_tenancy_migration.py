@@ -3242,7 +3242,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                                 "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'yandex_disk_reconciliation_runs', 'mounted_fs_reconciliation_runs', 'mounted_fs_removal_policies', 'mounted_fs_removal_authorities', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'google_sheets_absence_candidates', 'google_sheets_removal_decisions', 'register_link_claims', 'register_association_acceptances', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records', 'email_message_artifacts'))"
+                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records'))"
                     )
                 )
             ).scalars()
@@ -3286,7 +3286,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                             "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'yandex_disk_reconciliation_runs', 'mounted_fs_reconciliation_runs', 'mounted_fs_removal_policies', 'mounted_fs_removal_authorities', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'google_sheets_absence_candidates', 'google_sheets_removal_decisions', 'register_link_claims', 'register_association_acceptances', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records', 'email_message_artifacts')"
+                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records')"
                     )
                 )
             ).mappings()
@@ -3324,7 +3324,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                             "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'yandex_disk_reconciliation_runs', 'mounted_fs_reconciliation_runs', 'mounted_fs_removal_policies', 'mounted_fs_removal_authorities', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'google_sheets_absence_candidates', 'google_sheets_removal_decisions', 'register_link_claims', 'register_association_acceptances', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                            "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records', 'email_message_artifacts')"
+                            "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records')"
                     )
                 )
             ).scalars()
@@ -3361,7 +3361,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                             "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'yandex_disk_reconciliation_runs', 'mounted_fs_reconciliation_runs', 'mounted_fs_removal_policies', 'mounted_fs_removal_authorities', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'google_sheets_absence_candidates', 'google_sheets_removal_decisions', 'register_link_claims', 'register_association_acceptances', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records', 'email_message_artifacts')"
+                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records')"
                     )
                 )
             ).scalars()
@@ -3397,7 +3397,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                             "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'yandex_disk_reconciliation_runs', 'mounted_fs_reconciliation_runs', 'mounted_fs_removal_policies', 'mounted_fs_removal_authorities', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records', 'email_message_artifacts')"
+                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records')"
                     )
                 )
             ).scalars()
@@ -3690,11 +3690,6 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "pk_email_sync_effect_receipts",
         "pk_email_message_artifacts",
         "uq_email_message_artifacts_command",
-        "fk_email_message_artifacts_environment",
-        "fk_email_message_artifacts_acceptance",
-        "fk_email_message_artifacts_revision",
-        "ck_email_message_artifacts_ck_email_message_artifacts_digests",
-        "ck_email_message_artifacts_ck_email_message_artifacts_record",
         "uq_email_sync_attempts_key",
         "ix_email_sync_attempts_active",
         "pk_context_profiles",
