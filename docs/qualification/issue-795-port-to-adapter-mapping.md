@@ -1,6 +1,8 @@
 # Issue #795 private ASR storage: port-to-adapter mapping
 
-Reviewed main base: `c3a7feb200cd352d90f23853c4bc131efd4f7d4b`.
+Reviewed main base: `6d2984a6fa3efddb39fedef9ce773724a9d286c2`.
+The intervening Yandex incremental-polling commit adds no migration and does not
+touch the private ASR storage contracts.
 Hardening checkpoint: migration chain resequenced after email revision metadata;
 full-suite qualification completed on the implementation tree before commit.
 
@@ -121,7 +123,7 @@ publication remains disabled until canonical privacy/release authority and
 external revocation fencing are available.
 
 Verification on the rebased working tree (base
-`c3a7feb200cd352d90f23853c4bc131efd4f7d4b`):
+`6d2984a6fa3efddb39fedef9ce773724a9d286c2`):
 
 - Restricted PostgreSQL storage/readiness qualification on the current branch:
   `78 passed in 82.09s`, using restricted `spine_runtime` and migration head
@@ -136,14 +138,15 @@ Verification on the rebased working tree (base
   offline traceability/full gates repeat baseline failures. Its artifact-diff
   gate also fails while the re-sequencing changes are uncommitted; rerun that
   gate against the clean committed tree. No ASR-specific test failed.
-- On exact current main `c3a7feb2`, focused baseline runs reproduce the Google
+- On previous main `c3a7feb2`, focused baseline runs reproduce the Google
   desktop loopback OAuth failure and #680 wizard failure. The current branch's
   full-suite invocation reached approximately 95%, but its exec session ended
   without a final summary or exit code after reporting failures; treat the
   local full-suite result as `NOT_VERIFIED`. The exact-head GitHub
-  `r1-regression-gate` passed.
-- Exact-head GitHub checks all passed. The clean-tree #68 artifact gate passed
-  after the migration resequence commit.
+  `r1-regression-gate` passed on the prior rebased code head. Exact-head CI on
+  the newly rebased `6d2984a6` base is pending.
+- The clean-tree #68 artifact gate passed after the migration resequence
+  commit. Final migration head remains `20270105_104`.
 
 Production manifest authority (#811), deletion authority (#812), and external
 approval/revocation fencing (#813) remain separate production gates. One

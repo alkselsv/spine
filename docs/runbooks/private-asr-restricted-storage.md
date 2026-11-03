@@ -220,7 +220,8 @@ environment; backup deletion, encryption, physical erasure and restart/restore
 qualification. No actual retention duration or approval is invented here.
 
 Verification on the rebased working tree, based on current main
-`c3a7feb200cd352d90f23853c4bc131efd4f7d4b`:
+`6d2984a6fa3efddb39fedef9ce773724a9d286c2`. This latest main commit adds
+Yandex incremental polling without a migration or ASR storage overlap.
 
 - Restricted PostgreSQL ASR storage and readiness on current head:
   `78 passed in 82.09s` using restricted `spine_runtime`.
@@ -234,15 +235,16 @@ Verification on the rebased working tree, based on current main
   nested #68 traceability/full gates repeat baseline failures. The artifact-diff
   check also failed because migration resequencing changes were uncommitted
   during this run; rerun it on the clean committed tree. No ASR storage test
-  failed. Focused tests on exact current main `c3a7feb2` reproduce the Google
+  failed. Focused tests on previous main `c3a7feb2` reproduce the Google
   desktop loopback OAuth and #680 wizard failures. The current branch full-suite
   invocation reached about 95%, then its exec session ended without final output
   or exit code after reporting failures; local full-suite status is
   `NOT_VERIFIED`.
 - `python -m compileall -q src tests`, `uv lock --check` with `/tmp` cache, and
   `git diff --check`: PASS.
-- All seven GitHub checks on exact PR HEAD `1d74ee13` passed, including
-  `r1-regression-gate` (21m51s). The clean-tree #68 artifact gate passed.
+- All seven GitHub checks passed on the prior rebased code HEAD `1d74ee13`,
+  including `r1-regression-gate` (21m51s). The clean-tree #68 artifact gate
+  passed. Exact-head checks after the latest main rebase are pending.
 
 PR #797 stays OPEN/DRAFT and Issue #795 stays OPEN. Source-head replacement,
 AccessPolicy activation, lifecycle withdrawal, retention CAS, multi-source
