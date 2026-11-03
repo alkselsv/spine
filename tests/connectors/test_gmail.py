@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 from contextlib import asynccontextmanager
 from uuid import UUID
 
@@ -21,6 +23,8 @@ from spine.connectors.gmail import (
     GmailHistoryReadCommand,
     GmailHistoryPageReadRequest,
     GmailMessageIdPage,
+    GmailRawMessageResponse,
+    GmailRawMessageStatus,
     GmailReadRequest,
     compose_gmail_history_reader,
     compose_gmail_mailbox_reader,
@@ -151,6 +155,25 @@ class _RecordingGmailClient:
         return "synthetic-gmail-result"
 
 
+class _RawGmailClient(_RecordingGmailClient):
+    def __init__(self, response: GmailRawMessageResponse | None = None) -> None:
+        super().__init__()
+        self.response = response
+
+    async def read(self, request: GmailReadRequest) -> GmailRawMessageResponse:
+        self.requests.append(request)
+        if self.failure is not None:
+            raise self.failure
+        assert self.response is not None
+        return self.response
+
+
+class _HttpFailure(RuntimeError):
+    def __init__(self, status_code: int) -> None:
+        super().__init__("provider payload secret subject@example.test")
+        self.status_code = status_code
+
+
 class _RecordingGmailHistoryClient:
     def __init__(self, pages: tuple[dict[str, object], ...]) -> None:
         self.pages = pages
@@ -183,6 +206,50 @@ def _compose(
         folder_or_label_reference=_id(11),
     )
     return reader, command, scopes, connections, client
+
+
+def _raw_response(**changes: object) -> GmailRawMessageResponse:
+    payload = b"From: synthetic@example.test\r\n\r\nSynthetic body."
+    values: dict[str, object] = {
+        "http_status": 200,
+        "message_id": "gmail-message-123",
+        "raw_data": base64.urlsafe_b64encode(payload).decode("ascii").rstrip("="),
+        "label_references": (_id(11),),
+        "internal_date_ms": 1_800_000_000_000,
+        "history_id": "987654321",
+        "thread_id": "gmail-thread-456",
+    }
+    values.update(changes)
+    return GmailRawMessageResponse(**values)
+
+
+def _compose_raw(
+    *,
+    response: GmailRawMessageResponse | None = None,
+    connection: ProviderConnection | None = None,
+    max_raw_message_bytes: int | None = 4096,
+    **scope_changes: object,
+):
+    exact_scope = _scope(
+        allowed_operations=(EmailProviderOperation.READ_RAW_MESSAGE,), **scope_changes
+    )
+    scopes = _Scopes(exact_scope)
+    connections = _Connections(connection or _connection())
+    client = _RawGmailClient(response or _raw_response())
+    reader = compose_gmail_mailbox_reader(
+        scopes=scopes,
+        connections=connections,
+        client=client,
+        max_raw_message_bytes=max_raw_message_bytes,
+    )
+    command = MailboxReadCommand(
+        scope=exact_scope,
+        operation=EmailOperation.READ_RAW_MESSAGE,
+        mailbox_subject_reference=exact_scope.mailbox_subject_reference,
+        folder_or_label_reference=_id(11),
+        message_id="gmail-message-123",
+    )
+    return reader, command, client
 
 
 @pytest.mark.asyncio
@@ -517,4 +584,105 @@ async def test_gmail_history_without_sync_capability_never_reaches_client() -> N
         await reader.read(command, _context())
 
     assert connections.calls == 1
+    assert client.requests == []
+
+
+@pytest.mark.asyncio
+async def test_raw_message_returns_bytes_digest_and_provider_revision_evidence() -> None:
+    reader, command, client = _compose_raw()
+    payload = base64.urlsafe_b64decode(_raw_response().raw_data + "==")
+
+    result = await reader.read(command, _context())
+
+    assert result.status is GmailRawMessageStatus.ACCEPTED
+    assert result.raw_mime == payload
+    assert result.sha256 == hashlib.sha256(payload).hexdigest()
+    assert result.byte_length == len(payload)
+    assert result.history_id == "987654321"
+    assert result.internal_date_ms == 1_800_000_000_000
+    assert client.requests[0].message_id == command.message_id
+    assert client.requests[0].format == "RAW"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    (
+        ({"http_status": 404}, GmailRawMessageStatus.NOT_FOUND),
+        ({"http_status": 401}, GmailRawMessageStatus.UNAUTHORIZED),
+        ({"http_status": 403}, GmailRawMessageStatus.FORBIDDEN),
+        ({"http_status": 429}, GmailRawMessageStatus.THROTTLED),
+        ({"http_status": 503}, GmailRawMessageStatus.PROVIDER_UNAVAILABLE),
+        ({"raw_data": "%%%"}, GmailRawMessageStatus.MALFORMED_ENCODING),
+        ({"raw_data": "Y"}, GmailRawMessageStatus.TRUNCATED_DATA),
+        ({"message_id": "other"}, GmailRawMessageStatus.MESSAGE_ID_MISMATCH),
+        ({"label_references": (_id(99),)}, GmailRawMessageStatus.OUT_OF_SCOPE),
+    ),
+)
+async def test_raw_message_maps_invalid_provider_results_to_safe_outcomes(
+    changes: dict[str, object], expected: GmailRawMessageStatus
+) -> None:
+    reader, command, _ = _compose_raw(response=_raw_response(**changes))
+
+    result = await reader.read(command, _context())
+
+    assert result.status is expected
+    assert result.raw_mime is None
+    assert result.sha256 is None
+    assert result.byte_length is None
+    assert "Synthetic body" not in str(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "expected"),
+    (
+        (401, GmailRawMessageStatus.UNAUTHORIZED),
+        (403, GmailRawMessageStatus.FORBIDDEN),
+        (429, GmailRawMessageStatus.THROTTLED),
+        (503, GmailRawMessageStatus.PROVIDER_UNAVAILABLE),
+    ),
+)
+async def test_raw_message_sanitizes_provider_exceptions(
+    status_code: int, expected: GmailRawMessageStatus
+) -> None:
+    reader, command, client = _compose_raw()
+    client.failure = _HttpFailure(status_code)
+
+    result = await reader.read(command, _context())
+
+    assert result.status is expected
+    assert "provider payload" not in str(result)
+    assert "subject@example.test" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_raw_message_enforces_byte_bound_and_rejects_revoked_connection() -> None:
+    reader, command, _ = _compose_raw(max_raw_message_bytes=2)
+
+    result = await reader.read(command, _context())
+
+    assert result.status is GmailRawMessageStatus.TOO_LARGE
+    assert result.raw_mime is None
+
+    reader, command, client = _compose_raw(
+        connection=_connection(status=ProviderConnectionStatus.REVOKED)
+    )
+    with pytest.raises(MailboxReadDeniedError):
+        await reader.read(command, _context())
+    assert client.requests == []
+
+
+@pytest.mark.asyncio
+async def test_raw_message_does_not_fetch_without_a_size_bound_or_exact_id() -> None:
+    reader, command, client = _compose_raw(max_raw_message_bytes=None)
+
+    result = await reader.read(command, _context())
+
+    assert result.status is GmailRawMessageStatus.LIMIT_NOT_CONFIGURED
+    assert client.requests == []
+
+    reader, command, client = _compose_raw()
+    with pytest.raises(MailboxReadDeniedError):
+        await reader.read(command.model_copy(update={"message_id": None}), _context())
     assert client.requests == []
