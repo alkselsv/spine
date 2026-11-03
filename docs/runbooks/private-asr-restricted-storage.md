@@ -105,12 +105,20 @@ The lock order is:
 
 Canonical retention updates use row lock and generation compare-and-swap.
 The PostgreSQL integration test exercises report publication against source
-lifecycle withdrawal and retention applicability replacement using barriers.
-The full matrix for AccessPolicy activation/revocation, every canonical writer,
-opposite transaction entry orders and deadlock handling remains incomplete.
-An external approval authority is not atomically fenced unless its revocation
-protocol participates in this database transaction or supplies an established
-coordinated version fence.
+lifecycle withdrawal and retention applicability replacement using barriers;
+separate tests cover AccessPolicy activation and opposite lock entry orders.
+Report publication retries only translated PostgreSQL deadlock/serialization
+failures through the repository's bounded policy (three total attempts). Every
+retry opens a fresh UoW and re-resolves current source head, lifecycle,
+AccessPolicy, retention applicability, manifest, and commit authorization using
+the same idempotency identity. Authorization denials and unknown commit
+outcomes are not treated as transient success. A same-key request reconciles a
+possibly committed result after an unknown outcome. The integration test
+injects a translated deadlock at the commit boundary to prove rollback and
+reauthorization; it does not claim to qualify PostgreSQL server deadlock
+scheduling. An external approval authority is not atomically fenced unless its
+revocation protocol participates in this database transaction or supplies an
+established coordinated version fence.
 
 Detailed report content is never part of aggregate output. The synthetic
 aggregate path revalidates the strict sanitizer model, derives the expected
@@ -190,7 +198,8 @@ scope denials; authorized expiration/tombstone/audit;
 deadline and missing-authority denial; exact staging cleanup and generic
 cleanup denials; process death before/after commit and fresh-process replay;
 sanitized aggregate publication with canonical audit; aggregate visibility
-fencing after report expiry/source revocation; and rejection of a staging
+fencing after report expiry/source revocation; bounded report deadlock retry
+with fresh authorization; and rejection of a staging
 payload mutation combined with an unauthorized commit transition.
 
 Synthetic aggregate publication and its report/audit transaction are
@@ -206,40 +215,34 @@ classes and legal/data approvals; runtime database grants in a named
 environment; backup deletion, encryption, physical erasure and restart/restore
 qualification. No actual retention duration or approval is invented here.
 
-Storage implementation evidence is from HEAD
-`32145f5ae6f58f25bdbcd130e9ef47b929af05ad`, based on
-`151ebe89287a934b44bd7d23c934482ae9313063`. The later readiness-only change
-updates shared privilege verification for the least-privilege column grants.
+Verification on the rebased working tree, based on current main
+`7ef504916b9d1b8be0d11dd2e421208af5d232e3`:
 
-- PostgreSQL private-ASR module: `58 passed` on PostgreSQL 17 with
-  `spine_runtime`, including process restart, aggregate revocation visibility,
-  and staging forgery checks.
-- Source/lifecycle/AccessPolicy/retention/private-ASR app/domain regressions:
-  `199 passed`.
-- `python -m compileall -q src tests`: PASS; `git diff --check`: PASS;
-  Alembic has one head, `20261230_98`.
-- The shared readiness check now requires no table-wide artifact UPDATE and
-  exactly seven allowed artifact-column UPDATE grants. The exact-head readiness
-  integration test passed after this adjustment.
-- Initial-tenancy migration suite on the previous base: `56 passed, 1 failed`
-  because its expected RLS policy inventory omitted the new restrictive
-  aggregate policy. The policy inventory was updated; its focused assertion
-  passed before the rebase. Full suite on this exact base is pending.
-- Full repository pytest and exact-head GitHub CI have not completed on this
-  final readiness adjustment. The preceding full suite completed with 6013
-  passed, 7 skipped, 4 failed and 1 warning; one failure was the readiness
-  mismatch fixed above, and the other three were OAuth/#680 plus the nested #68
-  gate. Earlier baseline failures are not represented as #795 regressions.
+- PostgreSQL private-ASR module: `60 passed in 55.85s` with restricted
+  `spine_runtime`, including report/aggregate atomicity, RLS, process restart,
+  aggregate revocation visibility, staging forgery and bounded retry checks.
+- Migration, PostgreSQL readiness, canonical retention and audit suites:
+  `103 passed in 516.11s` through Alembic head `20261231_99`.
+- Source lifecycle, AccessPolicy, retention, audit, retry and related contracts:
+  `196 passed in 11.56s`.
+- `uv run python -m compileall -q src tests` and `git diff --check`: PASS.
+- Full repository `pytest -q`: `6166 passed, 7 skipped, 5 failed, 1 warning`
+  in `1317.52s`. Google desktop loopback OAuth and the #680 wizard failures
+  reproduced on exact current main. The #68 artifact assertion passed on main
+  but failed during this run because `git mv` left migration renames staged;
+  verify again after commit on a clean tree. Nested #68 failures include the
+  known OAuth/#680 failures and that staged-diff assertion.
+- Existing PR checks are from pre-rebase head `7441583`. Exact-head GitHub CI
+  remains pending until this branch is pushed.
 
-PR #797 remains OPEN/DRAFT and Issue #795 remains OPEN. Source-head replacement,
-AccessPolicy activation, canonical lifecycle withdrawal, retention CAS and
-multi-source lock ordering have focused PostgreSQL evidence. Process
-termination/restart recovery and synthetic aggregate publication also have
-focused PostgreSQL evidence. The complete AccessPolicy revocation matrix,
-bounded deadlock retry/reauthorization, post-publication external approval
-revocation, production manifest/deletion/approval authorities and named-
-environment qualification remain unresolved. This runbook does not alter #690
-`NO-GO / NOT_VERIFIED` or any human approval state.
+PR #797 stays OPEN/DRAFT and Issue #795 stays OPEN. Source-head replacement,
+AccessPolicy activation, lifecycle withdrawal, retention CAS, multi-source
+ordering, bounded report retry, process restart and synthetic aggregate
+publication have focused PostgreSQL evidence. External manifest/deletion/
+approval authorities (#811/#812/#813), physical aggregate cleanup, backup and
+replica disposition, server crash/restore and named-environment qualification
+remain unverified. This runbook does not alter #690 `NO-GO / NOT_VERIFIED` or
+any human approval state.
 
 ## Operator qualification checklist
 

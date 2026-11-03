@@ -20,6 +20,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from spine.application.persistence.context import EnvironmentScope, TrustedContextVerifier, TrustedPersistenceContext
+from spine.application.persistence.retry import RetryEligibility, run_with_transaction_retry
 from spine.application.persistence.unit_of_work import UnitOfWorkFactory
 from spine.application.private_asr_corpus import (
     AccessPolicyPort,
@@ -649,6 +650,41 @@ class PostgreSQLPrivateASRStorage:
         return self._ref(original_id, "original")
 
     async def store_private_report(self, payload: bytes, *, report_id: UUID, idempotency_key: str,
+                                   source_bindings: tuple[PrivateReportSourceBinding, ...],
+                                   retention_profile_ref: PrivateReference,
+                                   audit_receipt_ref: PrivateReference, context: TrustedPersistenceContext,
+                                   authorize_commit: Callable[[], Any]) -> PrivateReportReceipt:
+        """Retry a reproducible report transaction after canonical PG aborts.
+
+        Every attempt creates a fresh UoW and re-resolves source, policy,
+        retention, manifest, and commit authorization. The caller's idempotency
+        key keeps publication identity stable across attempts.
+        """
+        if not idempotency_key:
+            raise PrivateASRStorageDenied("Private ASR report rejected.")
+
+        async def attempt(_: int) -> PrivateReportReceipt:
+            return await self._store_private_report_once(
+                payload,
+                report_id=report_id,
+                idempotency_key=idempotency_key,
+                source_bindings=source_bindings,
+                retention_profile_ref=retention_profile_ref,
+                audit_receipt_ref=audit_receipt_ref,
+                context=context,
+                authorize_commit=authorize_commit,
+            )
+
+        return await run_with_transaction_retry(
+            attempt,
+            eligibility=RetryEligibility(
+                idempotent=True,
+                has_idempotency_key=True,
+                reproducible=True,
+            ),
+        )
+
+    async def _store_private_report_once(self, payload: bytes, *, report_id: UUID, idempotency_key: str,
                                    source_bindings: tuple[PrivateReportSourceBinding, ...],
                                    retention_profile_ref: PrivateReference,
                                    audit_receipt_ref: PrivateReference, context: TrustedPersistenceContext,

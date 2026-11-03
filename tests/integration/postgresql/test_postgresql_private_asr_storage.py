@@ -24,6 +24,7 @@ from spine.application.persistence.context import (
     EnvironmentScope, PersistenceOperation, PersistencePurpose, WorkspaceScope,
     TrustedPersistenceContext,
 )
+from spine.application.persistence.errors import TransactionDeadlockError
 from spine.application.persistence.canonical import CanonicalAcceptanceCommand
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.repositories import SourceObservationCommand
@@ -2481,6 +2482,65 @@ async def test_postgresql_private_asr_authorized_synthetic_report_commit(
     assert disposition.terms_digest == "d" * 64
     assert disposition.expires_at == NOW + timedelta(minutes=30)
     assert report_count == receipt_count == 1
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_deadlock_retry_rechecks_and_publishes_once(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799201)
+    before_commit_attempts = 0
+
+    async def fail_first_commit(stage: PostgreSQLTransactionStage) -> None:
+        nonlocal before_commit_attempts
+        if stage is PostgreSQLTransactionStage.BEFORE_COMMIT:
+            before_commit_attempts += 1
+            if before_commit_attempts == 1:
+                raise TransactionDeadlockError("synthetic PostgreSQL deadlock")
+
+    persistence = PostgreSQLPersistence(
+        session_factory=prepared.runtime_sessions,
+        context_verifier=prepared.boundary,
+        outbox_events=create_outbox_event_registry(),
+        transaction_probe=fail_first_commit,
+    )
+    store = _storage_for_transaction_probe(
+        prepared, uow_factory=persistence.uow_factory,
+    )
+    authorization_calls = 0
+
+    async def authorize_commit() -> None:
+        nonlocal authorization_calls
+        authorization_calls += 1
+
+    receipt = await _store_synthetic_report(
+        store,
+        prepared,
+        idempotency_key="deadlock-fresh-authorization",
+        callback=authorize_commit,
+    )
+
+    assert before_commit_attempts == 2
+    assert authorization_calls == 2
+    assert receipt.report_ref.reference_id == uuid5(
+        NAMESPACE_URL,
+        f"spine-private-asr-report:v1:{prepared.case.source.workspace_id}:"
+        f"{prepared.case.source.environment_id}:deadlock-fresh-authorization",
+    )
+    async with prepared.runtime_sessions() as session, session.begin():
+        await store._set_scope(session, prepared.context)
+        report_count = (await session.execute(select(func.count()).select_from(
+            private_asr_artifacts
+        ).where(
+            private_asr_artifacts.c.idempotency_key == "deadlock-fresh-authorization",
+            private_asr_artifacts.c.status == "committed",
+        ))).scalar_one()
+        audit_count = (await session.execute(select(func.count()).select_from(
+            audit_events
+        ).where(
+            audit_events.c.audit_event_id == prepared.report_receipt_ref.reference_id,
+        ))).scalar_one()
+    assert report_count == audit_count == 1
 
 
 @pytest.mark.parametrize(
