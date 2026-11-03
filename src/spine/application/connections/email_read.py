@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Generic, Protocol, TypeVar
+from typing import Generic, Literal, Protocol, TypeVar
 from uuid import UUID
 
-from pydantic import field_validator
+from pydantic import Field, field_validator, model_validator
 
 from spine.application.connections.provider import (
     ProviderConnectionRepository,
@@ -33,10 +33,15 @@ class MailboxReadDeniedError(PermissionError):
 
 
 class MailboxReadCommand(DefinitionModel):
+    schema_version: Literal["mailbox-read-command:v1"] = "mailbox-read-command:v1"
     scope: MailboxReadScope
     operation: EmailOperation
     mailbox_subject_reference: UUID
     folder_or_label_reference: UUID | None = None
+    enumeration_max_items: int | None = Field(default=None, ge=1, le=5000)
+    enumeration_max_response_bytes: int | None = Field(
+        default=None, ge=1024, le=8_388_608
+    )
 
     @field_validator("mailbox_subject_reference", "folder_or_label_reference")
     @classmethod
@@ -44,6 +49,16 @@ class MailboxReadCommand(DefinitionModel):
         if value is not None and value.int == 0:
             raise ValueError("mailbox read references must be non-zero")
         return value
+
+    @model_validator(mode="after")
+    def _validate_enumeration_bounds(self) -> "MailboxReadCommand":
+        has_item_limit = self.enumeration_max_items is not None
+        has_byte_limit = self.enumeration_max_response_bytes is not None
+        if has_item_limit != has_byte_limit:
+            raise ValueError("mailbox enumeration bounds must be provided together")
+        if has_item_limit and self.operation is not EmailOperation.ENUMERATE_MAILBOX:
+            raise ValueError("enumeration bounds apply only to mailbox enumeration")
+        return self
 
 
 class MailboxScopeRepository(Protocol):

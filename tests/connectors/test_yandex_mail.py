@@ -23,6 +23,15 @@ from spine.connectors.yandex_mail import (
     YandexMailOAuthCredential,
     compose_yandex_mail_reader,
 )
+from spine.connectors.yandex_mail_folders import (
+    YandexMailFolderBinding,
+    YandexMailFolderDiscoveryCode,
+    YandexMailFolderDiscoveryDeniedError,
+    YandexMailFolderDiscoveryProfile,
+    YandexMailFolderListing,
+    YandexMailListedFolder,
+    discover_approved_yandex_mail_folders,
+)
 from spine.domain.common import ContextOrigin
 from spine.domain.connections.email_scope import (
     EmailOperation,
@@ -191,6 +200,7 @@ class _Imap:
         self.read_calls = []
         self.open_failure: Exception | None = None
         self.authentication_failure: Exception | None = None
+        self.read_result: object = "synthetic-result"
 
     async def open_tls(self, *, host, port, server_hostname, ssl_context):
         self.tls_calls.append((host, port, server_hostname, ssl_context))
@@ -212,7 +222,7 @@ class _ImapSession:
 
     async def read(self, request):
         self.transport.read_calls.append(request)
-        return "synthetic-result"
+        return self.transport.read_result
 
     async def close(self):
         return None
@@ -438,3 +448,376 @@ async def test_imap_failures_and_credential_repr_do_not_disclose_secrets(
     assert _TOKEN not in str(error.value)
     assert _MAILBOX not in str(error.value)
     assert imap.read_calls == []
+
+
+class _FolderReader:
+    def __init__(self, listing: object) -> None:
+        self.listing = listing
+        self.calls = 0
+        self.last_command: MailboxReadCommand | None = None
+
+    async def read(self, command, context):
+        del context
+        self.calls += 1
+        self.last_command = command
+        if isinstance(self.listing, Exception):
+            raise self.listing
+        return self.listing
+
+
+class _FolderBindings:
+    def __init__(
+        self,
+        scope: MailboxReadScope,
+        *,
+        wrong_generation: bool = False,
+        records: tuple[YandexMailFolderBinding, ...] | None = None,
+    ) -> None:
+        self.scope = scope
+        self.wrong_generation = wrong_generation
+        self.records = records
+
+    async def resolve_exact(self, scope, context):
+        del scope, context
+        if self.records is not None:
+            return self.records
+        return (
+            _folder_binding(self.scope, _id(11), "INBOX"),
+            _folder_binding(
+                self.scope,
+                _id(12),
+                "Excluded/Secret",
+                scope_generation=99 if self.wrong_generation else self.scope.scope_generation,
+            ),
+        )
+
+
+def _folder_binding(
+    scope: MailboxReadScope,
+    reference: UUID,
+    name: str,
+    **changes: object,
+) -> YandexMailFolderBinding:
+    values: dict[str, object] = {
+        "workspace_id": scope.workspace_id,
+        "environment_id": scope.environment_id,
+        "connection_id": scope.connection_id,
+        "connection_version_id": scope.connection_version_id,
+        "mailbox_binding_id": scope.mailbox_binding_id,
+        "mailbox_subject_reference": scope.mailbox_subject_reference,
+        "folder_reference": reference,
+        "authorization_generation": scope.authorization_generation,
+        "configuration_generation": scope.configuration_generation,
+        "scope_generation": scope.scope_generation,
+        "folder_name": name,
+    }
+    values.update(changes)
+    return YandexMailFolderBinding(**values)
+
+
+def _modified_utf7(value: str) -> bytes:
+    import base64
+
+    encoded = base64.b64encode(value.encode("utf-16-be")).decode("ascii")
+    return ("&" + encoded.rstrip("=").replace("/", ",") + "-").encode("ascii")
+
+
+@pytest.mark.asyncio
+async def test_yandex_folder_discovery_decodes_nested_unicode_and_returns_only_approved_refs() -> None:
+    scope = _scope(
+        allowed_folder_references=(_id(11), _id(13)),
+        excluded_folder_references=(_id(12),),
+    )
+    listing = YandexMailFolderListing(
+        folders=(
+            YandexMailListedFolder(flags=b"(\\HasNoChildren)", delimiter=b"/", name=b"INBOX"),
+            YandexMailListedFolder(
+                flags=b"()", delimiter=b"/", name=_modified_utf7("Customers/日本語")
+            ),
+            YandexMailListedFolder(flags=b"()", delimiter=b"/", name=b"INBOX"),
+            YandexMailListedFolder(
+                flags=b"()", delimiter=b"/", name=b"Excluded/Secret"
+            ),
+        ),
+        complete=True,
+    )
+    reader = _FolderReader(listing)
+    bindings = _FolderBindings(
+        scope,
+        records=(
+            _folder_binding(scope, _id(11), "INBOX"),
+            _folder_binding(scope, _id(13), "Customers/日本語"),
+            _folder_binding(scope, _id(12), "Excluded/Secret"),
+        ),
+    )
+    result = await discover_approved_yandex_mail_folders(
+        reader=reader,
+        bindings=bindings,
+        command=_command(scope, EmailOperation.ENUMERATE_MAILBOX, location=None),
+        context=_context(),
+    )
+
+    assert result.complete is True
+    assert result.code is YandexMailFolderDiscoveryCode.COMPLETE
+    assert result.discovered_count == 3
+    assert result.approved_count == 2
+    assert result.folders == (_id(11), _id(13))
+    assert "Customers" not in repr(result)
+    assert "Excluded" not in repr(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("listing", "code"),
+    (
+        (
+            YandexMailFolderListing(
+                folders=(YandexMailListedFolder(flags=b"()", delimiter=b"/", name=b"INBOX"),),
+                complete=False,
+            ),
+            YandexMailFolderDiscoveryCode.PARTIAL_RESPONSE,
+        ),
+        (
+            YandexMailFolderListing(
+                folders=(YandexMailListedFolder(flags=b"()", delimiter=b"/", name=b"INBOX&"),),
+                complete=True,
+            ),
+            YandexMailFolderDiscoveryCode.MALFORMED_RESPONSE,
+        ),
+        (
+            YandexMailFolderListing(
+                folders=(YandexMailListedFolder(flags=b"()", delimiter=b"/", name=b"Other"),),
+                complete=True,
+            ),
+            YandexMailFolderDiscoveryCode.APPROVED_FOLDER_MISSING,
+        ),
+    ),
+)
+async def test_incomplete_or_malformed_folder_discovery_never_claims_complete(
+    listing: YandexMailFolderListing,
+    code: YandexMailFolderDiscoveryCode,
+) -> None:
+    scope = _scope()
+    result = await discover_approved_yandex_mail_folders(
+        reader=_FolderReader(listing),
+        bindings=_FolderBindings(scope),
+        command=_command(scope, EmailOperation.ENUMERATE_MAILBOX, location=None),
+        context=_context(),
+    )
+
+    assert result.complete is False
+    assert result.code is code
+    assert result.folders == ()
+
+
+@pytest.mark.asyncio
+async def test_folder_discovery_provider_failure_returns_safe_incomplete_diagnostic() -> None:
+    scope = _scope()
+    secret_server_line = "private folder raw server response"
+    result = await discover_approved_yandex_mail_folders(
+        reader=_FolderReader(RuntimeError(secret_server_line)),
+        bindings=_FolderBindings(scope),
+        command=_command(scope, EmailOperation.ENUMERATE_MAILBOX, location=None),
+        context=_context(),
+    )
+
+    assert result.complete is False
+    assert result.code is YandexMailFolderDiscoveryCode.DISCOVERY_UNAVAILABLE
+    assert secret_server_line not in repr(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", (RuntimeError("outage"), PermissionError("auth lost")))
+async def test_folder_discovery_outage_or_auth_loss_cannot_claim_complete(
+    failure: Exception,
+) -> None:
+    scope = _scope()
+    result = await discover_approved_yandex_mail_folders(
+        reader=_FolderReader(failure),
+        bindings=_FolderBindings(scope),
+        command=_command(scope, EmailOperation.ENUMERATE_MAILBOX, location=None),
+        context=_context(),
+    )
+
+    assert result.complete is False
+    assert result.code is YandexMailFolderDiscoveryCode.DISCOVERY_UNAVAILABLE
+    assert str(failure) not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_folder_discovery_response_limit_never_claims_complete() -> None:
+    scope = _scope()
+    reader = _FolderReader(
+        YandexMailFolderListing(
+            folders=(
+                YandexMailListedFolder(flags=b"()", delimiter=b"/", name=b"INBOX"),
+                YandexMailListedFolder(flags=b"()", delimiter=b"/", name=b"INBOX"),
+            ),
+            complete=True,
+        )
+    )
+    result = await discover_approved_yandex_mail_folders(
+        reader=reader,
+        bindings=_FolderBindings(scope),
+        command=_command(scope, EmailOperation.ENUMERATE_MAILBOX, location=None),
+        context=_context(),
+        profile=YandexMailFolderDiscoveryProfile(max_folders=1),
+    )
+
+    assert result.complete is False
+    assert result.code is YandexMailFolderDiscoveryCode.RESPONSE_LIMIT_EXCEEDED
+    assert result.folders == ()
+    assert reader.last_command is not None
+    assert reader.last_command.enumeration_max_items == 1
+    assert reader.last_command.enumeration_max_response_bytes == 1_048_576
+
+
+@pytest.mark.asyncio
+async def test_folder_discovery_byte_limit_is_sent_before_listing_is_returned() -> None:
+    scope = _scope()
+    reader = _FolderReader(
+        YandexMailFolderListing(
+            folders=(YandexMailListedFolder(flags=b"()", delimiter=b"/", name=b"A" * 1100),),
+            complete=True,
+        )
+    )
+    result = await discover_approved_yandex_mail_folders(
+        reader=reader,
+        bindings=_FolderBindings(scope),
+        command=_command(scope, EmailOperation.ENUMERATE_MAILBOX, location=None),
+        context=_context(),
+        profile=YandexMailFolderDiscoveryProfile(max_response_bytes=1024),
+    )
+
+    assert result.complete is False
+    assert result.code is YandexMailFolderDiscoveryCode.RESPONSE_LIMIT_EXCEEDED
+    assert reader.last_command is not None
+    assert reader.last_command.enumeration_max_response_bytes == 1024
+
+
+@pytest.mark.asyncio
+async def test_yandex_imap_request_receives_limits_before_folder_listing() -> None:
+    scope = _scope()
+    connection = _connection(
+        capabilities=(
+            ProviderCapability(
+                kind=ProviderCapabilityKind.MAILBOX_ENUMERATION,
+                status=ProviderCapabilityStatus.SUPPORTED,
+                qualification_reference=OpaqueProviderReference(value=_id(31)),
+            ),
+        )
+    )
+    credential = _credential(connection, scope)
+    composition, _, _, _, imap = _composition(
+        scope=scope, connection=connection, credential=credential
+    )
+    imap.read_result = YandexMailFolderListing(
+        folders=(YandexMailListedFolder(flags=b"()", delimiter=b"/", name=b"INBOX"),),
+        complete=True,
+    )
+    result = await discover_approved_yandex_mail_folders(
+        reader=composition,
+        bindings=_FolderBindings(scope),
+        command=_command(scope, EmailOperation.ENUMERATE_MAILBOX, location=None),
+        context=_context(),
+    )
+
+    assert result.complete is True
+    assert imap.read_calls[0].enumeration_max_items == 500
+    assert imap.read_calls[0].enumeration_max_response_bytes == 1_048_576
+
+
+@pytest.mark.asyncio
+async def test_duplicate_approved_folder_name_is_ambiguous_and_not_admitted() -> None:
+    scope = _scope(allowed_folder_references=(_id(11), _id(13)))
+    bindings = _FolderBindings(
+        scope,
+        records=(
+            _folder_binding(scope, _id(11), "INBOX"),
+            _folder_binding(scope, _id(13), "INBOX"),
+        ),
+    )
+
+    result = await discover_approved_yandex_mail_folders(
+        reader=_FolderReader(
+            YandexMailFolderListing(
+                folders=(YandexMailListedFolder(flags=b"()", delimiter=b"/", name=b"INBOX"),),
+                complete=True,
+            )
+        ),
+        bindings=bindings,
+        command=_command(scope, EmailOperation.ENUMERATE_MAILBOX, location=None),
+        context=_context(),
+    )
+
+    assert result.complete is False
+    assert result.code is YandexMailFolderDiscoveryCode.APPROVED_FOLDER_AMBIGUOUS
+    assert result.folders == ()
+
+
+@pytest.mark.asyncio
+async def test_missing_binding_for_allowed_folder_never_starts_provider_discovery() -> None:
+    scope = _scope(allowed_folder_references=(_id(11), _id(13)))
+    bindings = _FolderBindings(
+        scope,
+        records=(_folder_binding(scope, _id(11), "INBOX"),),
+    )
+    reader = _FolderReader(YandexMailFolderListing(folders=(), complete=True))
+
+    result = await discover_approved_yandex_mail_folders(
+        reader=reader,
+        bindings=bindings,
+        command=_command(scope, EmailOperation.ENUMERATE_MAILBOX, location=None),
+        context=_context(),
+    )
+
+    assert result.complete is False
+    assert result.code is YandexMailFolderDiscoveryCode.APPROVED_FOLDER_MISSING
+    assert result.folders == ()
+    assert reader.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_wrong_folder_binding_generation_is_rejected_before_provider_enumeration() -> None:
+    scope = _scope()
+    reader = _FolderReader(YandexMailFolderListing(folders=(), complete=True))
+    with pytest.raises(YandexMailFolderDiscoveryDeniedError):
+        await discover_approved_yandex_mail_folders(
+            reader=reader,
+            bindings=_FolderBindings(scope, wrong_generation=True),
+            command=_command(scope, EmailOperation.ENUMERATE_MAILBOX, location=None),
+            context=_context(),
+        )
+
+    assert reader.calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "binding_changes",
+    (
+        {"workspace_id": _id(99)},
+        {"mailbox_binding_id": _id(99)},
+        {"mailbox_subject_reference": _id(99)},
+        {"connection_version_id": _id(99)},
+    ),
+)
+async def test_wrong_workspace_or_mailbox_binding_is_denied_before_enumeration(
+    binding_changes: dict[str, object],
+) -> None:
+    scope = _scope()
+    bindings = _FolderBindings(
+        scope,
+        records=(_folder_binding(scope, _id(11), "INBOX", **binding_changes),),
+    )
+    reader = _FolderReader(YandexMailFolderListing(folders=(), complete=True))
+
+    with pytest.raises(YandexMailFolderDiscoveryDeniedError):
+        await discover_approved_yandex_mail_folders(
+            reader=reader,
+            bindings=bindings,
+            command=_command(scope, EmailOperation.ENUMERATE_MAILBOX, location=None),
+            context=_context(),
+        )
+
+    assert reader.calls == 0
