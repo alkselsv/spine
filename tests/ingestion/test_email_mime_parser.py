@@ -108,6 +108,36 @@ def test_mixed_inline_nested_and_embedded_message_have_stable_paths() -> None:
     assert embedded.children[0].text == "embedded body"
 
 
+def test_attachment_extraction_returns_exact_decoded_bytes_and_part_identity() -> None:
+    raw = (FIXTURES / "golden_mixed.eml").read_bytes()
+
+    result = _parser().parse_with_attachments(raw)
+
+    assert result.artifact.disposition is MimeParseDisposition.COMPLETE
+    assert len(result.attachments) == 1
+    attachment = result.attachments[0]
+    assert attachment.part_path == "1.2"
+    assert attachment.media_type == "application/octet-stream"
+    assert attachment.filename == "synthetic.txt"
+    assert attachment.content == b"synthetic"
+    assert attachment.sha256 == "b3cc0475bb78a5026098858e9889acf666d31062d513d303314eca31d36e72f2"
+
+
+def test_inline_parts_are_extracted_separately_from_body_parts() -> None:
+    raw = (
+        b'MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary="b"\r\n\r\n'
+        b"--b\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
+        b"--b\r\nContent-Type: image/png\r\nContent-Disposition: inline\r\n"
+        b"Content-ID: <i>\r\nContent-Transfer-Encoding: base64\r\n\r\ncG5n\r\n--b--\r\n"
+    )
+
+    result = _parser().parse_with_attachments(raw)
+
+    assert [(part.part_path, part.content, part.disposition) for part in result.attachments] == [
+        ("1.2", b"png", "inline")
+    ]
+
+
 def test_total_byte_limit_returns_content_free_typed_disposition() -> None:
     raw = b"Subject: protected subject\r\n\r\nprotected message body"
 

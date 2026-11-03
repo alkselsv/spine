@@ -959,6 +959,42 @@ email_message_artifacts = Table(
     ),
 )
 
+email_attachment_artifacts = Table(
+    "email_attachment_artifacts", metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("artifact_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("canonical_acceptance_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("mime_part_path", Text, nullable=False),
+    Column("content_sha256", String(64), nullable=False),
+    Column("extraction_profile", Text, nullable=False),
+    Column("artifact_digest", String(64), nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("workspace_id", "environment_id", "artifact_id", name="pk_email_attachment_artifacts"),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "source_revision_id", "mime_part_path",
+        "extraction_profile", name="uq_email_attachment_artifacts_part_profile",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "canonical_acceptance_id", "source_object_id", "source_revision_id"],
+        ["spine.canonical_acceptances.workspace_id", "spine.canonical_acceptances.environment_id", "spine.canonical_acceptances.canonical_acceptance_id", "spine.canonical_acceptances.source_object_id", "spine.canonical_acceptances.source_revision_id"],
+        name="fk_email_attachment_artifacts_acceptance",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "source_object_id", "source_revision_id"],
+        ["spine.source_revisions.workspace_id", "spine.source_revisions.environment_id", "spine.source_revisions.source_object_id", "spine.source_revisions.revision_id"],
+        name="fk_email_attachment_artifacts_revision",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id"],
+        ["spine.environments.workspace_id", "spine.environments.id"],
+        name="fk_email_attachment_artifacts_environment",
+    ),
+)
+
 transcription_jobs = Table(
     "transcription_jobs",
     metadata,
@@ -2693,6 +2729,7 @@ current_trusted_canonical_acceptance_selectors = Table(
 )
 
 __all__ = [
+    "email_attachment_artifacts",
     "email_message_artifacts",
     "email_sync_attempts",
     "email_sync_pages",

@@ -32,6 +32,10 @@ from spine.infrastructure.persistence.email_artifacts import (
     InMemoryEmailArtifactRepository,
     PostgreSQLEmailArtifactRepository,
 )
+from spine.infrastructure.persistence.email_attachments import (
+    InMemoryEmailAttachmentRepository,
+    PostgreSQLEmailAttachmentRepository,
+)
 from spine.infrastructure.persistence.postgresql_register_associations import (
     PostgreSQLRegisterAssociationRepository,
 )
@@ -83,6 +87,8 @@ __all__ = [
     "PostgreSQLEmailSyncRepository",
     "InMemoryEmailArtifactRepository",
     "PostgreSQLEmailArtifactRepository",
+    "InMemoryEmailAttachmentRepository",
+    "PostgreSQLEmailAttachmentRepository",
     "PostgreSQLRegisterAssociationRepository",
     "PostgreSQLBitrix24CrmMaterialAssociationRepository",
     "PostgreSQLCrmRelationshipV2Repository",
