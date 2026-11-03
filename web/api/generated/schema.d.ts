@@ -3257,6 +3257,12 @@ export interface components {
             schema_version: 1;
         };
         /**
+         * EmailProviderOperation
+         * @description Provider-side reads admitted independently for a mailbox scope.
+         * @enum {string}
+         */
+        EmailProviderOperation: "enumerate_mailbox" | "enumerate_folder_uids" | "read_message_metadata" | "read_raw_message" | "read_attachment" | "synchronize" | "observe_folder_generation";
+        /**
          * EvidenceLocator
          * @description Closed, content-free locator contract for evidence revalidation.
          */
@@ -3656,6 +3662,20 @@ export interface components {
              */
             status: "ok";
         };
+        /** MailboxConnectionSyncResponse */
+        MailboxConnectionSyncResponse: {
+            /** Lag Seconds */
+            lag_seconds?: number | null;
+            /** Last Complete At */
+            last_complete_at?: string | null;
+            state: components["schemas"]["MailboxConnectionSyncState"];
+        };
+        /**
+         * MailboxConnectionSyncState
+         * @description Content-free operator state for an approved mailbox connection.
+         * @enum {string}
+         */
+        MailboxConnectionSyncState: "not_started" | "pending" | "running" | "complete" | "partial" | "stale" | "suspended" | "failed" | "revoked" | "reconciliation_required";
         /**
          * MetricCoverageState
          * @enum {string}
@@ -4467,20 +4487,23 @@ export interface components {
             health: components["schemas"]["ProviderConnectionHealth"];
             /** Last Successful Reconciliation At */
             last_successful_reconciliation_at?: string | null;
+            mailbox_sync?: components["schemas"]["MailboxConnectionSyncResponse"] | null;
             /**
              * Observed At
              * Format: date-time
              */
             observed_at: string;
+            /** Permitted Operations */
+            permitted_operations: components["schemas"]["EmailProviderOperation"][];
             /** Predecessor Version Id */
             predecessor_version_id: string | null;
             provider_kind: components["schemas"]["ProviderKind"];
             /**
              * Schema Version
-             * @default 1
+             * @default 2
              * @constant
              */
-            schema_version: 1;
+            schema_version: 2;
             status: components["schemas"]["ProviderConnectionStatus"];
             /** Version */
             version: number;

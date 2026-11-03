@@ -4512,6 +4512,20 @@
         "title": "EditRequirementWorkflowCommandRequestV1",
         "type": "object"
       },
+      "EmailProviderOperation": {
+        "description": "Provider-side reads admitted independently for a mailbox scope.",
+        "enum": [
+          "enumerate_mailbox",
+          "enumerate_folder_uids",
+          "read_message_metadata",
+          "read_raw_message",
+          "read_attachment",
+          "synchronize",
+          "observe_folder_generation"
+        ],
+        "title": "EmailProviderOperation",
+        "type": "string"
+      },
       "EvidenceLocator": {
         "additionalProperties": false,
         "description": "Closed, content-free locator contract for evidence revalidation.",
@@ -5563,6 +5577,60 @@
         ],
         "title": "LivenessResponse",
         "type": "object"
+      },
+      "MailboxConnectionSyncResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "lag_seconds": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lag Seconds"
+          },
+          "last_complete_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Complete At"
+          },
+          "state": {
+            "$ref": "#/components/schemas/MailboxConnectionSyncState"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "MailboxConnectionSyncResponse",
+        "type": "object"
+      },
+      "MailboxConnectionSyncState": {
+        "description": "Content-free operator state for an approved mailbox connection.",
+        "enum": [
+          "not_started",
+          "pending",
+          "running",
+          "complete",
+          "partial",
+          "stale",
+          "suspended",
+          "failed",
+          "revoked",
+          "reconciliation_required"
+        ],
+        "title": "MailboxConnectionSyncState",
+        "type": "string"
       },
       "MetricCoverageState": {
         "enum": [
@@ -7634,10 +7702,27 @@
             ],
             "title": "Last Successful Reconciliation At"
           },
+          "mailbox_sync": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MailboxConnectionSyncResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "observed_at": {
             "format": "date-time",
             "title": "Observed At",
             "type": "string"
+          },
+          "permitted_operations": {
+            "items": {
+              "$ref": "#/components/schemas/EmailProviderOperation"
+            },
+            "title": "Permitted Operations",
+            "type": "array"
           },
           "predecessor_version_id": {
             "anyOf": [
@@ -7655,8 +7740,8 @@
             "$ref": "#/components/schemas/ProviderKind"
           },
           "schema_version": {
-            "const": 1,
-            "default": 1,
+            "const": 2,
+            "default": 2,
             "title": "Schema Version",
             "type": "integer"
           },
@@ -7680,6 +7765,7 @@
           "authorization_generation",
           "configuration_generation",
           "approved_resource_scope_references",
+          "permitted_operations",
           "capabilities",
           "health",
           "diagnostic_codes",

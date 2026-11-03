@@ -4,9 +4,12 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 import httpx
+import pytest
 
 from spine.api.provider_connections import install_provider_connection_routes
 from spine.application.connections.management import (
+    MailboxConnectionSyncState,
+    MailboxConnectionSyncStatus,
     ProviderConnectionConfigurationResult,
     ProviderConnectionInspection,
     ProviderConnectionManager,
@@ -26,8 +29,9 @@ from spine.domain.connections.provider import (
     ProviderDiagnosticCode,
     ProviderKind,
 )
-from spine.infrastructure.connections import (
-    FakeProviderConnectionObserver,
+from spine.domain.connections.email_scope import EmailProviderOperation
+from spine.infrastructure.connections.fake_provider import FakeProviderConnectionObserver
+from spine.infrastructure.connections.provider_management import (
     InMemoryProviderConnectionManagementRepository,
 )
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
@@ -76,6 +80,45 @@ def _inspection() -> ProviderConnectionInspection:
         observed_at=NOW,
         cursor_lag_seconds=4,
         last_successful_reconciliation_at=NOW,
+    )
+
+
+def _mail_inspection(
+    state: MailboxConnectionSyncState = MailboxConnectionSyncState.PARTIAL,
+) -> ProviderConnectionInspection:
+    base = _inspection()
+    connection = base.connection.model_copy(
+        update={
+            "provider_kind": ProviderKind.YANDEX_MAIL,
+            "permitted_operations": (
+                EmailProviderOperation.ENUMERATE_MAILBOX,
+                EmailProviderOperation.READ_MESSAGE_METADATA,
+                EmailProviderOperation.SYNCHRONIZE,
+            ),
+            "capabilities": (
+                ProviderCapability(
+                    kind=ProviderCapabilityKind.MAILBOX_ENUMERATION,
+                    status=ProviderCapabilityStatus.SUPPORTED,
+                    qualification_reference=OpaqueProviderReference(value=_id(8)),
+                ),
+                ProviderCapability(
+                    kind=ProviderCapabilityKind.RAW_MESSAGE_READ,
+                    status=ProviderCapabilityStatus.UNQUALIFIED,
+                ),
+            ),
+        }
+    )
+    return ProviderConnectionInspection(
+        connection=connection,
+        health=ProviderConnectionHealth.DEGRADED,
+        diagnostic_codes=(ProviderDiagnosticCode.PROVIDER_DEGRADED,),
+        observed_at=NOW,
+        cursor_lag_seconds=75,
+        mailbox_sync=MailboxConnectionSyncStatus(
+            state=state,
+            last_complete_at=NOW,
+            lag_seconds=75,
+        ),
     )
 
 
@@ -161,6 +204,128 @@ async def test_operator_configures_and_inspects_safe_connection_summary() -> Non
     assert str(_id(4)) not in safe_output
     assert service.configure_calls[0][0].idempotency_key == "configure-yandex-1"
     assert service.configure_calls[0][1].operation.value == "provider_connection_configure"
+
+
+async def test_mailbox_response_exposes_only_approved_operations_and_safe_sync_status() -> None:
+    service = _Service()
+    service.inspection = _mail_inspection()
+    application = authorized_app([])
+    install_provider_connection_routes(
+        application,
+        service=service,
+        cursor_secret=b"provider-connections-test-secret",
+        clock=lambda: NOW,
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            f"/api/v1/source-connections/{_id(2)}", headers=_headers()
+        )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["schema_version"] == 2
+    assert data["provider_kind"] == "yandex_mail"
+    assert data["permitted_operations"] == [
+        "enumerate_mailbox",
+        "read_message_metadata",
+        "synchronize",
+    ]
+    assert data["capabilities"] == [
+        {
+            "kind": "mailbox_enumeration",
+            "status": "supported",
+            "qualification_reference": str(_id(8)),
+        },
+        {
+            "kind": "raw_message_read",
+            "status": "unqualified",
+            "qualification_reference": None,
+        },
+    ]
+    assert data["mailbox_sync"] == {
+        "state": "partial",
+        "last_complete_at": NOW.isoformat().replace("+00:00", "Z"),
+        "lag_seconds": 75,
+    }
+    protected = (
+        "subject: acquisition",
+        "person@example.test",
+        "INBOX/private",
+        "proposal-secret.docx",
+        "oauth-token-secret",
+        "provider raw failure",
+    )
+    assert all(value not in response.text for value in protected)
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        MailboxConnectionSyncState.PARTIAL,
+        MailboxConnectionSyncState.STALE,
+        MailboxConnectionSyncState.REVOKED,
+        MailboxConnectionSyncState.RECONCILIATION_REQUIRED,
+    ),
+)
+async def test_mailbox_sync_states_remain_distinct_and_content_free(
+    state: MailboxConnectionSyncState,
+) -> None:
+    service = _Service()
+    service.inspection = _mail_inspection(state)
+    application = authorized_app([])
+    install_provider_connection_routes(
+        application,
+        service=service,
+        cursor_secret=b"provider-connections-test-secret",
+        clock=lambda: NOW,
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            f"/api/v1/source-connections/{_id(2)}", headers=_headers()
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["mailbox_sync"]["state"] == state.value
+    assert "provider raw failure" not in response.text
+
+
+async def test_mailbox_configuration_rejects_client_supplied_authority() -> None:
+    service = _Service()
+    application = authorized_app([])
+    install_provider_connection_routes(
+        application,
+        service=service,
+        cursor_secret=b"provider-connections-test-secret",
+        clock=lambda: NOW,
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/v1/source-connections",
+            headers=_headers(idempotency_key="client-authority-forbidden"),
+            json={
+                "approval_id": str(_id(3)),
+                "connection_id": str(_id(2)),
+                "expected_version": 0,
+                "expected_predecessor_version_id": None,
+                "permitted_operations": ["read_raw_message"],
+                "credential": "oauth-token-secret",
+                "mailbox": "person@example.test",
+            },
+        )
+
+    assert response.status_code == 422
+    assert service.configure_calls == []
+    assert "oauth-token-secret" not in response.text
+    assert "person@example.test" not in response.text
 
 
 async def test_connection_routes_deny_foreign_scope_before_service_execution() -> None:
@@ -328,6 +493,16 @@ async def test_http_flow_crosses_application_repository_and_provider_fake() -> N
             headers=_headers(idempotency_key="api-provider-fake-contract"),
             json=body,
         )
+        idempotency_conflict = await client.post(
+            "/api/v1/source-connections",
+            headers=_headers(idempotency_key="api-provider-fake-contract"),
+            json={**body, "connection_id": str(_id(36))},
+        )
+        optimistic_conflict = await client.post(
+            "/api/v1/source-connections",
+            headers=_headers(idempotency_key="api-provider-fake-stale-version"),
+            json=body,
+        )
         inspected = await client.get(
             f"/api/v1/source-connections/{_id(35)}", headers=_headers()
         )
@@ -336,6 +511,14 @@ async def test_http_flow_crosses_application_repository_and_provider_fake() -> N
     assert replay.status_code == 201
     assert replay.json()["replay"] is True
     assert replay.json()["command_id"] == created.json()["command_id"]
+    assert idempotency_conflict.status_code == 409
+    assert idempotency_conflict.json()["code"] == (
+        "spine.persistence.idempotency_conflict"
+    )
+    assert optimistic_conflict.status_code == 409
+    assert optimistic_conflict.json()["code"] == "spine.persistence.optimistic_conflict"
+    assert "connection_id" not in idempotency_conflict.text
+    assert "connection_id" not in optimistic_conflict.text
     assert inspected.status_code == 200
     assert inspected.json()["data"]["health"] == "healthy"
     assert inspected.json()["data"]["capabilities"][0]["kind"] == "health_diagnostics"

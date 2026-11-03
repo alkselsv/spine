@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime
+from enum import Enum
 import hashlib
 import json
 from typing import Protocol
@@ -21,6 +22,7 @@ from spine.application.diagnostics import (
     AuditOutcome,
     CommandAuditPayload,
 )
+from spine.application.email_sync import EmailSyncStatus
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.application.persistence.errors import OptimisticConflictError
 from spine.domain.connections.provider import (
@@ -92,6 +94,73 @@ class ProviderRuntimeObservation:
             raise ValueError("last_successful_reconciliation_at must be timezone-aware")
 
 
+class MailboxConnectionSyncState(str, Enum):
+    """Content-free operator state for an approved mailbox connection."""
+
+    NOT_STARTED = "not_started"
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+    STALE = "stale"
+    SUSPENDED = "suspended"
+    FAILED = "failed"
+    REVOKED = "revoked"
+    RECONCILIATION_REQUIRED = "reconciliation_required"
+
+
+_EMAIL_SYNC_STATES = {
+    EmailSyncStatus.PENDING: MailboxConnectionSyncState.PENDING,
+    EmailSyncStatus.RUNNING: MailboxConnectionSyncState.RUNNING,
+    EmailSyncStatus.INCOMPLETE: MailboxConnectionSyncState.PARTIAL,
+    EmailSyncStatus.RECONCILIATION_REQUIRED: (
+        MailboxConnectionSyncState.RECONCILIATION_REQUIRED
+    ),
+    EmailSyncStatus.SUSPENDED: MailboxConnectionSyncState.SUSPENDED,
+    EmailSyncStatus.FAILED: MailboxConnectionSyncState.FAILED,
+    EmailSyncStatus.COMPLETE: MailboxConnectionSyncState.COMPLETE,
+}
+
+
+def classify_mailbox_connection_sync(
+    *,
+    connection_status: ProviderConnectionStatus,
+    attempt_status: str | None,
+    stale: bool,
+) -> MailboxConnectionSyncState:
+    """Classify disclosure-safe mailbox state from typed lifecycle inputs."""
+
+    if connection_status is ProviderConnectionStatus.REVOKED:
+        return MailboxConnectionSyncState.REVOKED
+    if connection_status is ProviderConnectionStatus.SUSPENDED:
+        return MailboxConnectionSyncState.SUSPENDED
+    if attempt_status is None:
+        return MailboxConnectionSyncState.NOT_STARTED
+    if stale:
+        return MailboxConnectionSyncState.STALE
+    try:
+        status = EmailSyncStatus(attempt_status)
+    except ValueError:
+        return MailboxConnectionSyncState.FAILED
+    return _EMAIL_SYNC_STATES[status]
+
+
+@dataclass(frozen=True, slots=True)
+class MailboxConnectionSyncStatus:
+    state: MailboxConnectionSyncState
+    last_complete_at: datetime | None = None
+    lag_seconds: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.last_complete_at is not None and (
+            self.last_complete_at.tzinfo is None
+            or self.last_complete_at.utcoffset() is None
+        ):
+            raise ValueError("last_complete_at must be timezone-aware")
+        if self.lag_seconds is not None and self.lag_seconds < 0:
+            raise ValueError("lag_seconds must be non-negative")
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderConnectionInspection:
     connection: ProviderConnection
@@ -100,6 +169,7 @@ class ProviderConnectionInspection:
     observed_at: datetime
     cursor_lag_seconds: int | None = None
     last_successful_reconciliation_at: datetime | None = None
+    mailbox_sync: MailboxConnectionSyncStatus | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,7 +286,11 @@ class ProviderConnectionManager:
         if current.connection.status is not ProviderConnectionStatus.ACTIVE:
             return current
         observation = await self._provider.inspect_connection(current.connection)
-        return self._inspection(current.connection, observation)
+        return self._inspection(
+            current.connection,
+            observation,
+            mailbox_sync=current.mailbox_sync,
+        )
 
     @staticmethod
     def build_result(
@@ -250,6 +324,7 @@ class ProviderConnectionManager:
             approved_resource_scope_references=(
                 approval.approved_resource_scope_references
             ),
+            permitted_operations=approval.permitted_operations,
             authorization_generation=approval.authorization_generation,
             configuration_generation=approval.configuration_generation,
             status=approval.status,
@@ -263,7 +338,17 @@ class ProviderConnectionManager:
         )
         return ProviderConnectionConfigurationResult(
             receipt_id=receipt_id,
-            inspection=ProviderConnectionManager._inspection(connection, observation),
+            inspection=ProviderConnectionManager._inspection(
+                connection,
+                observation,
+                mailbox_sync=(
+                    MailboxConnectionSyncStatus(
+                        state=MailboxConnectionSyncState.NOT_STARTED
+                    )
+                    if connection.permitted_operations
+                    else None
+                ),
+            ),
             audit=audit,
             replay=replay,
         )
@@ -272,6 +357,8 @@ class ProviderConnectionManager:
     def _inspection(
         connection: ProviderConnection,
         observation: ProviderRuntimeObservation,
+        *,
+        mailbox_sync: MailboxConnectionSyncStatus | None = None,
     ) -> ProviderConnectionInspection:
         return ProviderConnectionInspection(
             connection=connection,
@@ -282,6 +369,7 @@ class ProviderConnectionManager:
             last_successful_reconciliation_at=(
                 observation.last_successful_reconciliation_at
             ),
+            mailbox_sync=mailbox_sync,
         )
 
 
@@ -381,7 +469,10 @@ __all__ = [
     "ProviderConnectionObserver",
     "ProviderConnectionPage",
     "ProviderRuntimeObservation",
+    "MailboxConnectionSyncState",
+    "MailboxConnectionSyncStatus",
     "build_provider_connection_audit",
+    "classify_mailbox_connection_sync",
     "provider_connection_command_digest",
     "require_provider_connection_successor",
 ]
