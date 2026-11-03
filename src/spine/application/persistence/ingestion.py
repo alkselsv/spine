@@ -301,7 +301,7 @@ RUN_TRANSITIONS: dict[IngestionRunState, frozenset[IngestionRunState]] = {
 
 
 ITEM_TRANSITIONS: dict[IngestionItemState, frozenset[IngestionItemState]] = {
-    IngestionItemState.RECEIVED: frozenset({IngestionItemState.STORED, IngestionItemState.OBSERVED, IngestionItemState.PROCESSING_READY, IngestionItemState.PROCESSING_FAILED}),
+    IngestionItemState.RECEIVED: frozenset({IngestionItemState.STORED, IngestionItemState.OBSERVED, IngestionItemState.QUARANTINED, IngestionItemState.PROCESSING_READY, IngestionItemState.PROCESSING_FAILED}),
     IngestionItemState.STORED: frozenset({IngestionItemState.OBSERVED, IngestionItemState.ADMISSION_PENDING, IngestionItemState.PROCESSING_FAILED}),
     IngestionItemState.OBSERVED: frozenset({IngestionItemState.ADMISSION_PENDING, IngestionItemState.QUARANTINED, IngestionItemState.REJECTED, IngestionItemState.ACCEPTED, IngestionItemState.PROCESSING_FAILED}),
     IngestionItemState.ADMISSION_PENDING: frozenset({IngestionItemState.QUARANTINED, IngestionItemState.REJECTED, IngestionItemState.ACCEPTED, IngestionItemState.PROCESSING_FAILED}),
