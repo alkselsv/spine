@@ -62,7 +62,7 @@ async function installMailboxRuntime(page: Page): Promise<void> {
   }, { environmentId: localEnvironment, primaryId: primaryWorkspace, salesId: salesWorkspace });
 }
 
-test('test_mailbox_connection_renders_every_safe_sync_state_without_protected_metadata', async ({ page }) => {
+test('test_synthetic_ui_qualification_renders_safe_sync_states_without_provider_pass_claims', async ({ page }) => {
   const stateCopy: Record<components['schemas']['MailboxConnectionSyncState'], string> = {
     not_started: 'Синхронизация не запускалась',
     pending: 'Синхронизация ожидает запуска',
@@ -74,6 +74,12 @@ test('test_mailbox_connection_renders_every_safe_sync_state_without_protected_me
     failed: 'Синхронизация завершилась с ошибкой',
     revoked: 'Доступ отозван',
     reconciliation_required: 'Требуется сверка',
+  };
+  const guidanceByState: Partial<Record<components['schemas']['MailboxConnectionSyncState'], string>> = {
+    partial: 'Не считайте выборку полной. Обновите статус после следующей попытки синхронизации.',
+    stale: 'Сверьте время последней полной синхронизации перед использованием данных и обновите статус.',
+    revoked: 'Остановите ожидание синхронизации и запросите новое одобрение подключения у владельца доступа.',
+    reconciliation_required: 'Не запускайте ручной импорт. Дождитесь безопасной полной сверки и затем обновите статус.',
   };
   let state: components['schemas']['MailboxConnectionSyncState'] = 'not_started';
   let healthOverride: components['schemas']['ProviderConnectionHealth'] | undefined;
@@ -113,6 +119,12 @@ test('test_mailbox_connection_renders_every_safe_sync_state_without_protected_me
     await expect(page.locator('body')).not.toContainText('socket ECONNRESET at provider');
     await expect(page.locator('body')).not.toContainText('oauth-token-secret');
     await expect(page.locator('body')).not.toContainText('provider raw failure');
+    await expect(page.locator('body')).not.toContainText(/(gmail|yandex).{0,40}pass/i);
+
+    if (guidanceByState[state]) {
+      await expect(page.getByRole('status', { name: expected })).toContainText(guidanceByState[state]!);
+      await page.getByRole('button', { name: 'Все коннекторы' }).click();
+    }
   }
 
   state = 'complete';
