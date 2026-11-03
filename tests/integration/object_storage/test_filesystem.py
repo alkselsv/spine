@@ -20,6 +20,7 @@ from spine.infrastructure.object_storage import (
     ObjectCorrupt,
     ObjectNotFound,
     IntegrityStatus,
+    ObjectReference,
     ObjectUnavailable,
     OriginalUploadCommandInput,
     PreWriteRequestDigest,
@@ -245,6 +246,58 @@ async def test_symlink_and_untrusted_metadata_fail_closed_without_escape(
     assert outside.read_bytes() == b"sentinel"
     with pytest.raises(StorageIntegrityIndeterminate):
         await store.reconciliation_inventory()
+
+
+async def test_unfinalized_staged_email_bytes_cannot_be_read(
+    filesystem_store: tuple[FilesystemOriginalObjectStore, AuthorizedReadGrantRegistry],
+) -> None:
+    store, registry = filesystem_store
+    raw_mime = b"From: synthetic@example.test\r\n\r\nSynthetic email body.\r\n"
+    upload_command = command(
+        raw_mime,
+        filename="synthetic-message.eml",
+        media_type="message/rfc822",
+    )
+    active = await store.begin_or_resume_upload(upload_command, state())
+    observed = await store.write_chunks(
+        active.upload_id, chunks(*split_chunks(raw_mime, 8))
+    )
+    staged_payload = next((store._root / "staged").rglob("payload"))
+    assert staged_payload.read_bytes() == raw_mime
+
+    guessed_reference = ObjectReference(
+        schema_version=1,
+        object_id=OBJECT_ID,
+        storage_generation=UUID("50000000-0000-4000-8000-000000000001"),
+        digest_algorithm="sha256",
+        digest_hex=observed.observed_sha256,
+        byte_length=observed.observed_byte_length,
+    )
+    grant = registry.issue(
+        workspace_id=WORKSPACE_ID,
+        environment_id=None,
+        source_revision_id=SOURCE_REVISION_ID,
+        object_reference=guessed_reference,
+        purpose="read.original",
+        authorization_decision_version="policy-v1",
+        expires_at=NOW + timedelta(minutes=1),
+    )
+    lease = registry.consume(
+        grant,
+        workspace_id=WORKSPACE_ID,
+        environment_id=None,
+        source_revision_id=SOURCE_REVISION_ID,
+        object_reference=guessed_reference,
+        now=NOW,
+    )
+
+    with pytest.raises(ObjectNotFound):
+        b"".join(
+            [
+                part
+                async for part in store.open_bounded_read(lease, max_bytes=64)
+            ]
+        )
 
 
 async def test_corrupt_and_missing_finalized_bytes_fail_closed(

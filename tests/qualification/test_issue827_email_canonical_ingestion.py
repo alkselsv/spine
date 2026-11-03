@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 from collections.abc import AsyncIterable
 from dataclasses import replace
-from typing import Any
 
 import pytest
 
@@ -16,8 +15,12 @@ from spine.application.connector_ingestion import (
 from spine.application.persistence.canonical import (
     CANONICAL_ACCEPTANCE_OUTBOX_EVENT_TYPE,
 )
-from spine.application.persistence.context import PersistenceOperation
+from spine.application.persistence.context import (
+    PersistenceOperation,
+    TrustedPersistenceContext,
+)
 from spine.application.persistence.errors import IdempotencyConflictError
+from spine.application.storage import OriginalUploadOutcome
 from spine.connectors.observations import ConnectorCoverage
 from spine.connectors.observations_v2 import (
     BinaryObservationRepresentation,
@@ -31,6 +34,7 @@ from spine.domain.connections.provider import (
     OpaqueProviderReference,
     ProviderKind,
 )
+from spine.infrastructure.object_storage.contracts import OriginalUploadCommandInput
 from tests.qualification.canonical_ingestion_harness import (
     build_canonical_ingestion_harness,
     ingestion_command,
@@ -104,6 +108,7 @@ def email_observation(
 @pytest.mark.asyncio
 async def test_synthetic_email_observation_reaches_canonical_acceptance_and_outbox() -> None:
     observation = email_observation()
+    raw_digest = hashlib.sha256(RAW_MIME).hexdigest()
     harness = await build_canonical_ingestion_harness()
     command = ingestion_command(observation, identity="email-827")
 
@@ -112,10 +117,10 @@ async def test_synthetic_email_observation_reaches_canonical_acceptance_and_outb
     assert isinstance(first, ConnectorIngestionResult)
     assert first.canonical_acceptance is not None
     assert first.canonical_acceptance.acceptance is not None
-    assert first.revision.original_sha256 == hashlib.sha256(RAW_MIME).hexdigest()
+    assert first.revision.original_sha256 == raw_digest
     assert first.revision.byte_length == len(RAW_MIME)
     assert first.revision.original_reference is not None
-    assert first.revision.original_reference.digest_hex == hashlib.sha256(RAW_MIME).hexdigest()
+    assert first.revision.original_reference.digest_hex == raw_digest
     assert harness.uploader.objects[first.revision.original_reference.object_id] == RAW_MIME
     assert first.source.external_namespace == "synthetic_mail_message"
     assert first.source.external_object_id == "synthetic-message-827"
@@ -137,7 +142,7 @@ async def test_synthetic_email_observation_reaches_canonical_acceptance_and_outb
         await uow.rollback()
     assert stored_provenance == (first.provenance,)
     assert len(receipt_associations) == 1
-    assert receipt_associations[0].original_sha256 == hashlib.sha256(RAW_MIME).hexdigest()
+    assert receipt_associations[0].original_sha256 == raw_digest
     assert receipt_associations[0].byte_length == len(RAW_MIME)
     assert receipt_associations[0].verification_status == "verified"
     assert harness.projection_intent_count == 1
@@ -188,10 +193,10 @@ async def test_unfinalized_email_upload_never_reaches_canonical_acceptance() -> 
 
         async def upload(
             self,
-            context: Any,
-            command: Any,
+            context: TrustedPersistenceContext,
+            command: OriginalUploadCommandInput,
             chunks: AsyncIterable[bytes],
-        ) -> Any:
+        ) -> OriginalUploadOutcome:
             del context, command
             self.staged.append(b"".join([chunk async for chunk in chunks]))
             raise RuntimeError("original upload was not finalized")
