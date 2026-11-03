@@ -567,6 +567,18 @@ async def test_postgresql_private_asr_source_revocation_tombstones_derivatives(
     assert fence is True
     assert states
     assert all(status == "tombstoned" and payload == b"" for status, payload in states)
+    for forged_values in ({"revoked": False}, {"epoch": 0}):
+        with pytest.raises(DBAPIError):
+            async with prepared.runtime_sessions() as session, session.begin():
+                await prepared.store._set_scope(session, revocation_context)
+                await session.execute(update(private_asr_source_fences).where(
+                    private_asr_source_fences.c.workspace_id
+                    == prepared.case.source.workspace_id,
+                    private_asr_source_fences.c.environment_id
+                    == prepared.case.source.environment_id,
+                    private_asr_source_fences.c.source_revision_id
+                    == prepared.case.revision.revision_id,
+                ).values(**forged_values))
     with pytest.raises(PrivateASRStorageDenied):
         await prepared.store.read_private_reference(report.report_ref, context=prepared.context)
 
@@ -765,7 +777,7 @@ async def test_postgresql_private_asr_runtime_role_enforces_forced_rls(
 
 
 @pytest.mark.asyncio
-async def test_postgresql_private_asr_runtime_has_only_artifact_update_columns(
+async def test_postgresql_private_asr_runtime_has_only_scoped_update_columns(
     private_asr_database: _Database,
 ) -> None:
     prepared = await _prepare_synthetic_report_case(private_asr_database, seed=797451)
@@ -783,11 +795,25 @@ async def test_postgresql_private_asr_runtime_has_only_artifact_update_columns(
             "AND has_column_privilege(current_user, "
             "'spine.private_asr_artifacts', attribute.attname, 'UPDATE')"
         ))).scalars())
+        fence_table_update = await session.scalar(text(
+            "SELECT has_table_privilege(current_user, "
+            "'spine.private_asr_source_fences', 'UPDATE')"
+        ))
+        fence_update_columns = set((await session.execute(text(
+            "SELECT attribute.attname "
+            "FROM pg_attribute AS attribute "
+            "WHERE attribute.attrelid = 'spine.private_asr_source_fences'::regclass "
+            "AND attribute.attnum > 0 AND NOT attribute.attisdropped "
+            "AND has_column_privilege(current_user, "
+            "'spine.private_asr_source_fences', attribute.attname, 'UPDATE')"
+        ))).scalars())
     assert table_update is False
     assert update_columns == {
         "status", "payload", "byte_length", "content_sha256", "expires_at",
         "tombstoned_at", "audit_receipt_ref",
     }
+    assert fence_table_update is False
+    assert fence_update_columns == {"revoked", "epoch", "reason", "updated_at"}
 
 
 @pytest.mark.asyncio

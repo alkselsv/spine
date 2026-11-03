@@ -7,8 +7,8 @@ from sqlalchemy.dialects import postgresql
 from spine.infrastructure.db.settings import MigrationDatabaseSettings
 
 
-revision = "20261229_97"
-down_revision = "20261228_96"
+revision = "20261230_98"
+down_revision = "20261229_97"
 branch_labels = None
 depends_on = None
 SCHEMA = "spine"
@@ -48,6 +48,12 @@ def _tenant_table(name: str, *, mutable: bool, purpose_scoped: bool = False) -> 
         op.execute(
             f"GRANT UPDATE (status, payload, byte_length, content_sha256, expires_at, "
             f"tombstoned_at, audit_receipt_ref) ON TABLE {SCHEMA}.{name} TO {runtime_role}"
+        )
+    elif name == "private_asr_source_fences":
+        op.execute(f"GRANT SELECT, INSERT ON TABLE {SCHEMA}.{name} TO {runtime_role}")
+        op.execute(
+            f"GRANT UPDATE (revoked, epoch, reason, updated_at) "
+            f"ON TABLE {SCHEMA}.{name} TO {runtime_role}"
         )
     else:
         op.execute(f"GRANT {grants} ON TABLE {SCHEMA}.{name} TO {runtime_role}")
@@ -113,6 +119,8 @@ def upgrade() -> None:
                                 name="pk_private_asr_source_fences"),
         sa.CheckConstraint("reason ~ '^[a-z][a-z0-9_.:-]{0,63}$'",
                            name="ck_private_asr_fence_reason"),
+        sa.CheckConstraint("revoked AND epoch >= 1",
+                           name="ck_private_asr_fence_monotonic_origin"),
         sa.CheckConstraint("purpose = 'asr_model_evaluation'",
                            name="ck_private_asr_fence_purpose"),
         schema=SCHEMA,
@@ -248,8 +256,31 @@ def upgrade() -> None:
         BEFORE UPDATE ON {SCHEMA}.private_asr_artifacts
         FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.guard_private_asr_artifact_update()
     """)
+    op.execute(f"""
+        CREATE FUNCTION {SCHEMA}.guard_private_asr_source_fence_update()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+            IF NEW.revoked IS NOT TRUE OR NEW.epoch <> OLD.epoch + 1
+               OR NEW.workspace_id IS DISTINCT FROM OLD.workspace_id
+               OR NEW.environment_id IS DISTINCT FROM OLD.environment_id
+               OR NEW.purpose IS DISTINCT FROM OLD.purpose
+               OR NEW.source_revision_id IS DISTINCT FROM OLD.source_revision_id THEN
+                RAISE EXCEPTION 'private ASR source fence must advance monotonically'
+                    USING ERRCODE = '42501';
+            END IF;
+            RETURN NEW;
+        END;
+        $$
+    """)
+    op.execute(f"""
+        CREATE TRIGGER trg_private_asr_source_fence_monotonic
+        BEFORE UPDATE ON {SCHEMA}.private_asr_source_fences
+        FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.guard_private_asr_source_fence_update()
+    """)
     for table, mutable in (("private_asr_artifacts", True),
-                           ("private_asr_source_fences", True),
+                           ("private_asr_source_fences", False),
                            ("private_asr_report_sources", False),
                            ("private_asr_aggregate_exports", False)):
         purpose_scoped = True
@@ -288,6 +319,11 @@ def downgrade() -> None:
     )
     op.execute(f"DROP TRIGGER trg_private_asr_artifact_immutable ON {SCHEMA}.private_asr_artifacts")
     op.execute(f"DROP FUNCTION {SCHEMA}.guard_private_asr_artifact_update()")
+    op.execute(
+        f"DROP TRIGGER trg_private_asr_source_fence_monotonic "
+        f"ON {SCHEMA}.private_asr_source_fences"
+    )
+    op.execute(f"DROP FUNCTION {SCHEMA}.guard_private_asr_source_fence_update()")
     op.drop_index("uq_private_asr_report_identity", table_name="private_asr_artifacts", schema=SCHEMA)
     for table in ("private_asr_aggregate_exports",
                   "private_asr_report_sources", "private_asr_source_fences",

@@ -86,7 +86,11 @@ point. Callback denial, exception, cancellation, audit insertion error or
 transaction rollback leaves neither a visible report nor a successful
 publication receipt.
 The migration grants only required artifact update columns and a database
-trigger freezes committed non-staging rows. A committed artifact may only move
+trigger freezes committed non-staging rows. Source-fence updates are limited
+to `revoked`, `epoch`, `reason`, and `updated_at`; a database check rejects an
+initial unrevoked fence and a trigger permits only `revoked=true` with an exact
+one-step epoch increase. The restricted-role test rejects un-revoke and epoch
+rollback attempts. A committed artifact may only move
 to a terminal tombstone that clears payload bytes while preserving its identity,
 lineage, digest, retention disposition and audit reference. Tombstoned rows
 cannot be changed again. Staging rows remain in `staging` status through content
@@ -216,22 +220,20 @@ environment; backup deletion, encryption, physical erasure and restart/restore
 qualification. No actual retention duration or approval is invented here.
 
 Verification on the rebased working tree, based on current main
-`7ef504916b9d1b8be0d11dd2e421208af5d232e3`:
+`4554596ed6e4cee4ebc3fe1d2d1464ea559296b5`:
 
-- PostgreSQL private-ASR module: `60 passed in 55.85s` with restricted
+- PostgreSQL private-ASR module: `60 passed in 57.42s` with restricted
   `spine_runtime`, including report/aggregate atomicity, RLS, process restart,
   aggregate revocation visibility, staging forgery and bounded retry checks.
 - Migration, PostgreSQL readiness, canonical retention and audit suites:
-  `103 passed in 516.11s` through Alembic head `20261231_99`.
+  `103 passed in 530.16s` through Alembic head `20270101_100`.
 - Source lifecycle, AccessPolicy, retention, audit, retry and related contracts:
-  `196 passed in 11.56s`.
+  `196 passed in 11.86s`.
 - `uv run python -m compileall -q src tests` and `git diff --check`: PASS.
-- Full repository `pytest -q`: `6166 passed, 7 skipped, 5 failed, 1 warning`
-  in `1317.52s`. Google desktop loopback OAuth and the #680 wizard failures
-  reproduced on exact current main. The #68 artifact assertion passed on main
-  but failed during this run because `git mv` left migration renames staged;
-  verify again after commit on a clean tree. Nested #68 failures include the
-  known OAuth/#680 failures and that staged-diff assertion.
+- Exact current-main baseline reproduces two unrelated failures: Google desktop
+  loopback OAuth and the #680 wizard. The #68 staged-diff artifact check passes
+  on clean main. Full repository `pytest -q` on the latest rebased source-fence
+  fix remains pending.
 - Existing PR checks are from pre-rebase head `7441583`. Exact-head GitHub CI
   remains pending until this branch is pushed.
 

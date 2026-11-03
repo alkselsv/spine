@@ -437,7 +437,10 @@ class PrivateReportStoragePort(Protocol):
 
     The implementation must invoke ``authorize_commit`` after preparing the
     write and immediately before its atomic commit; a refusal must leave no
-    report visible.
+    report visible. Because a full PostgreSQL transaction can be retried after
+    a translated serialization failure, the callback must be read-only and
+    safe to invoke more than once. It must not consume a one-shot approval or
+    perform an external side effect.
     """
 
     async def store_private_report(
@@ -451,7 +454,12 @@ class PrivateReportStoragePort(Protocol):
 
 
 class ScopedPrivateReportStoragePort(Protocol):
-    """Context-aware report port; callback runs inside atomic commit transaction."""
+    """Context-aware report port; callback is read-only and retry-safe.
+
+    The callback runs inside the atomic commit transaction and may run again
+    after a bounded full-transaction retry. External approval leases require a
+    coordinated fence contract and cannot be acquired through this callback.
+    """
 
     async def store_private_report(
         self,
