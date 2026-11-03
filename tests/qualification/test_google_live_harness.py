@@ -180,6 +180,7 @@ def _valid_report() -> GoogleLiveQualificationReport:
         oauth_request_attempts=1,
         drive_request_attempts=1,
         sheets_request_attempts=0,
+        configured_max_attempts=1,
         shared_drive_status="NOT_EXERCISED",
         failure_stage=None,
     )
@@ -610,13 +611,13 @@ def test_live_config_rejects_targets_that_do_not_equal_exact_allowlist() -> None
     ("status", "failure_stage"),
     (("passed", "drive"), ("failed", None)),
 )
-def test_live_report_rejects_status_failure_stage_contradictions(
+def test_live_report_rejects_status_failure_evidence_contradictions(
     status: str, failure_stage: str | None
 ) -> None:
     valid = _valid_report().model_dump()
     valid.update({"status": status, "failure_stage": failure_stage})
 
-    with pytest.raises(ValueError, match="failure stage"):
+    with pytest.raises(ValueError, match="failure evidence"):
         GoogleLiveQualificationReport.model_validate(valid)
 
 
@@ -874,10 +875,13 @@ async def test_offline_composition_records_oauth_transport_failure_attempt() -> 
 
     report = await runner.run(environment_opt_in=True)
 
-    assert report.schema_version == "google-live-qualification-report:v2"
+    assert report.schema_version == "google-live-qualification-report:v3"
     assert report.status == "failed"
     assert report.failure_code == "provider_unavailable"
     assert report.failure_stage == "oauth_refresh"
+    assert report.failure_class == "timeout"
+    assert report.retry_disposition == "not_retryable"
+    assert report.configured_max_attempts == 1
     assert report.oauth_request_attempts == 1
     assert report.drive_request_attempts == 0
     assert report.sheets_request_attempts == 0
@@ -1067,6 +1071,68 @@ async def test_offline_composition_records_every_bounded_drive_attempt() -> None
     assert report.drive_request_attempts == 2
     assert report.sheets_request_attempts == 0
     assert report.metadata_reads == 0
+    assert responses == []
+
+
+@pytest.mark.asyncio
+async def test_offline_composition_reports_exhausted_drive_http_5xx_retries() -> None:
+    config = _config(opt_in=True)
+    config = config.model_copy(
+        update={
+            "request_policy": config.request_policy.model_copy(
+                update={
+                    "max_attempts": 4,
+                    "backoff_ceiling_seconds": (1.0, 2.0, 4.0),
+                }
+            )
+        }
+    )
+    responses = [
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"access_token": "synthetic-token", "expires_in": 3600},
+        ),
+        *(GoogleApiResponse(status_code=503) for _ in range(4)),
+    ]
+    runner = _composed_runner(config, QueuedResponseTransport(responses))
+
+    report = await runner.run(environment_opt_in=True)
+
+    assert report.failure_class == "http_5xx"
+    assert report.retry_disposition == "attempts_exhausted"
+    assert report.configured_max_attempts == 4
+    assert report.drive_request_attempts == 4
+    assert responses == []
+
+
+@pytest.mark.asyncio
+async def test_offline_composition_reports_nonretryable_drive_policy_denial() -> None:
+    config = _config(opt_in=True)
+    config = config.model_copy(
+        update={
+            "request_policy": config.request_policy.model_copy(
+                update={
+                    "max_attempts": 4,
+                    "backoff_ceiling_seconds": (1.0, 2.0, 4.0),
+                }
+            )
+        }
+    )
+    responses = [
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"access_token": "synthetic-token", "expires_in": 3600},
+        ),
+        GoogleApiResponse(status_code=403, json_body={"error": {}}),
+    ]
+    runner = _composed_runner(config, QueuedResponseTransport(responses))
+
+    report = await runner.run(environment_opt_in=True)
+
+    assert report.failure_class == "policy"
+    assert report.retry_disposition == "not_retryable"
+    assert report.configured_max_attempts == 4
+    assert report.drive_request_attempts == 1
     assert responses == []
 
 

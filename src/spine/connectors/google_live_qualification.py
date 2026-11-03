@@ -24,7 +24,9 @@ from spine.application.connections.google import (
     GoogleConnectionRepository,
     GoogleConnectionError,
     GoogleProviderContractError,
+    GoogleProviderFailureClass,
     GoogleProviderReadError,
+    GoogleProviderRetryDisposition,
     GoogleReadAdmission,
     GoogleReadCommand,
 )
@@ -225,11 +227,25 @@ class GoogleLiveQualificationConfig(DefinitionModel):
         return hashlib.sha256(encoded).hexdigest()
 
 
+GoogleLiveFailureStage = Literal["oauth_refresh", "drive", "sheets", "harness"]
+GoogleLiveFailureClass = GoogleProviderFailureClass | Literal[
+    "cancelled",
+    "contract",
+    "deadline",
+    "harness",
+    "resource_limit",
+]
+GoogleLiveRetryDisposition = GoogleProviderRetryDisposition | Literal[
+    "not_applicable",
+    "stopped_by_deadline",
+]
+
+
 class GoogleLiveQualificationReport(DefinitionModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: Literal["google-live-qualification-report:v2"] = (
-        "google-live-qualification-report:v2"
+    schema_version: Literal["google-live-qualification-report:v3"] = (
+        "google-live-qualification-report:v3"
     )
     status: Literal["passed", "failed"]
     provider: Literal["google"] = "google"
@@ -246,8 +262,11 @@ class GoogleLiveQualificationReport(DefinitionModel):
     oauth_request_attempts: int = Field(ge=0)
     drive_request_attempts: int = Field(ge=0)
     sheets_request_attempts: int = Field(ge=0)
+    configured_max_attempts: int = Field(ge=1, le=4)
     shared_drive_status: Literal["EXERCISED", "NOT_EXERCISED"]
-    failure_stage: Literal["oauth_refresh", "drive", "sheets", "harness"] | None
+    failure_stage: GoogleLiveFailureStage | None
+    failure_class: GoogleLiveFailureClass | None = None
+    retry_disposition: GoogleLiveRetryDisposition | None = None
     failure_code: (
         Literal[
             "authorization_revoked",
@@ -270,8 +289,14 @@ class GoogleLiveQualificationReport(DefinitionModel):
 
     @model_validator(mode="after")
     def validate_failure_stage(self) -> "GoogleLiveQualificationReport":
-        if (self.status == "passed") != (self.failure_stage is None):
-            raise ValueError("Google live report failure stage contradicts status")
+        evidence_is_absent = (
+            self.failure_stage is None
+            and self.failure_class is None
+            and self.retry_disposition is None
+            and self.failure_code is None
+        )
+        if (self.status == "passed") != evidence_is_absent:
+            raise ValueError("Google live report failure evidence contradicts status")
         return self
 
 
@@ -568,6 +593,8 @@ class GoogleLiveQualificationRunner:
                 status="failed",
                 failure_code=error.failure_code,
                 failure_stage=self._provider_failure_stage(),
+                failure_class=error.failure_class,
+                retry_disposition=error.retry_disposition,
                 counts=counts,
             )
         except GoogleExecutionLimitExceeded:
@@ -575,6 +602,8 @@ class GoogleLiveQualificationRunner:
                 status="failed",
                 failure_code="resource_limit_exceeded",
                 failure_stage="harness",
+                failure_class="resource_limit",
+                retry_disposition="not_applicable",
                 counts=counts,
             )
         except GoogleExecutionDeadlineExceeded:
@@ -582,6 +611,8 @@ class GoogleLiveQualificationRunner:
                 status="failed",
                 failure_code="deadline_exceeded",
                 failure_stage=self._provider_failure_stage(),
+                failure_class="deadline",
+                retry_disposition="stopped_by_deadline",
                 counts=counts,
             )
         except asyncio.CancelledError:
@@ -589,6 +620,8 @@ class GoogleLiveQualificationRunner:
                 status="failed",
                 failure_code="cancelled",
                 failure_stage="harness",
+                failure_class="cancelled",
+                retry_disposition="not_applicable",
                 counts=counts,
             )
         except GoogleLiveQualificationRefused:
@@ -598,6 +631,8 @@ class GoogleLiveQualificationRunner:
                 status="failed",
                 failure_code="provider_contract_rejected",
                 failure_stage=self._provider_failure_stage(),
+                failure_class="contract",
+                retry_disposition="not_retryable",
                 counts=counts,
             )
         except Exception:
@@ -605,10 +640,17 @@ class GoogleLiveQualificationRunner:
                 status="failed",
                 failure_code="harness_failure",
                 failure_stage="harness",
+                failure_class="harness",
+                retry_disposition="not_applicable",
                 counts=counts,
             )
         return self._report(
-            status="passed", failure_code=None, failure_stage=None, counts=counts
+            status="passed",
+            failure_code=None,
+            failure_stage=None,
+            failure_class=None,
+            retry_disposition=None,
+            counts=counts,
         )
 
     async def preflight(self, *, environment_opt_in: bool) -> None:
@@ -682,7 +724,9 @@ class GoogleLiveQualificationRunner:
         *,
         status: Literal["passed", "failed"],
         failure_code: str | None,
-        failure_stage: Literal["oauth_refresh", "drive", "sheets", "harness"] | None,
+        failure_stage: GoogleLiveFailureStage | None,
+        failure_class: GoogleLiveFailureClass | None,
+        retry_disposition: GoogleLiveRetryDisposition | None,
         counts: GoogleLiveProbeCounts,
     ) -> GoogleLiveQualificationReport:
         return GoogleLiveQualificationReport(
@@ -696,9 +740,12 @@ class GoogleLiveQualificationRunner:
             status=status,
             failure_code=failure_code,
             failure_stage=failure_stage,
+            failure_class=failure_class,
+            retry_disposition=retry_disposition,
             oauth_request_attempts=self.progress.attempt_evidence.oauth_request_attempts,
             drive_request_attempts=self.progress.attempt_evidence.drive_request_attempts,
             sheets_request_attempts=self.progress.attempt_evidence.sheets_request_attempts,
+            configured_max_attempts=self.config.request_policy.max_attempts,
             **asdict(counts),
         )
 

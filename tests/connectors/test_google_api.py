@@ -1518,6 +1518,43 @@ async def test_httpx_transport_maps_request_without_exposing_raw_request_errors(
     assert seen[0].url == "https://google.test/files/file-1?fields=id"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error_type", "failure_class"),
+    (
+        (httpx.ConnectError, "transport"),
+        (httpx.ReadTimeout, "timeout"),
+    ),
+)
+async def test_httpx_transport_classifies_failures_without_raw_details(
+    error_type, failure_class
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise error_type(
+            "raw-provider-error provider-id-sentinel",
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(GoogleProviderReadError) as captured:
+            await HttpxGoogleApiTransport(client).request(
+                GoogleApiRequest(
+                    method="GET",
+                    url="https://google.test/files/provider-id-sentinel",
+                    headers={"Authorization": "Bearer credential-sentinel"},
+                    query={},
+                    form=None,
+                    timeout_seconds=3.0,
+                )
+            )
+
+    assert captured.value.failure_class == failure_class
+    assert captured.value.retry_disposition == "stopped_before_retry"
+    assert "raw-provider-error" not in str(captured.value)
+    assert "provider-id-sentinel" not in str(captured.value)
+    assert "credential-sentinel" not in str(captured.value)
+
+
 def test_google_endpoints_reject_non_https_provider_origins() -> None:
     with pytest.raises(ValueError, match="HTTPS"):
         GoogleApiEndpoints(

@@ -415,9 +415,15 @@ class HttpxGoogleApiTransport:
                     content = b"".join(chunks)
                 stream_observed = True
         except httpx.TimeoutException:
-            raise TimeoutError("Google provider request timed out.") from None
+            raise GoogleProviderReadError(
+                failure_class="timeout",
+                retry_disposition="stopped_before_retry",
+            ) from None
         except httpx.RequestError:
-            raise GoogleProviderReadError() from None
+            raise GoogleProviderReadError(
+                failure_class="transport",
+                retry_disposition="stopped_before_retry",
+            ) from None
         content_type = response.headers.get("content-type", "")
         json_body: Mapping[str, Any] | None = None
         if "json" in content_type.lower():
@@ -1141,9 +1147,20 @@ class GoogleApiService:
                 raise
             except GoogleProviderQuotaError:
                 raise
-            except (TimeoutError, asyncio.TimeoutError, GoogleProviderReadError):
+            except (
+                TimeoutError,
+                asyncio.TimeoutError,
+                GoogleProviderReadError,
+            ) as error:
                 if attempt + 1 == self._policy.max_attempts:
-                    raise GoogleProviderReadError() from None
+                    if isinstance(error, GoogleProviderReadError):
+                        raise error.with_retry_disposition(
+                            "attempts_exhausted"
+                        ) from None
+                    raise GoogleProviderReadError(
+                        failure_class="timeout",
+                        retry_disposition="attempts_exhausted",
+                    ) from None
                 delay = self._retry_delay(attempt, None)
                 await self._record_retry(connection, "provider", "transient", attempt)
                 await self.sleep(delay)
@@ -1162,7 +1179,9 @@ class GoogleApiService:
                     refreshed_after_unauthorized
                     or attempt + 1 == self._policy.max_attempts
                 ):
-                    raise GoogleProviderAuthorizationError()
+                    raise GoogleProviderAuthorizationError(
+                        retry_disposition="attempts_exhausted"
+                    )
                 refreshed_after_unauthorized = True
                 delay = self._retry_delay(attempt, response)
                 await self._record_retry(connection, "provider", "reauthorize", attempt)
@@ -1188,10 +1207,15 @@ class GoogleApiService:
             elif response.status_code == 429:
                 failure = GoogleProviderQuotaError()
             elif response.status_code >= 500:
-                failure = GoogleProviderReadError()
+                failure = GoogleProviderReadError(
+                    failure_class="http_5xx",
+                    retry_disposition="stopped_before_retry",
+                )
             else:
                 raise GoogleProviderContractError("Google provider request failed.")
             if attempt + 1 == self._policy.max_attempts:
+                if isinstance(failure, GoogleProviderReadError):
+                    raise failure.with_retry_disposition("attempts_exhausted")
                 raise failure
             delay = self._retry_delay(attempt, response)
             await self._record_retry(
@@ -1232,10 +1256,15 @@ class GoogleApiService:
                 TimeoutError,
                 asyncio.TimeoutError,
                 GoogleProviderReadError,
-            ):
+            ) as error:
                 # A timeout or transport error leaves the POST outcome unknown.
                 # Retrying could repeat a refresh whose response was lost.
-                raise GoogleProviderReadError() from None
+                if isinstance(error, GoogleProviderReadError):
+                    raise error.with_retry_disposition("not_retryable") from None
+                raise GoogleProviderReadError(
+                    failure_class="timeout",
+                    retry_disposition="not_retryable",
+                ) from None
             if _is_terminal_provider_quota(response):
                 raise GoogleProviderQuotaError()
             if response is not None and 200 <= response.status_code < 300:
@@ -1258,11 +1287,19 @@ class GoogleApiService:
                         "Google OAuth request was rejected."
                     )
             if response.status_code != 429:
-                raise GoogleProviderReadError()
+                raise GoogleProviderReadError(
+                    failure_class="http_5xx",
+                    retry_disposition="not_retryable",
+                )
             if attempt + 1 == self._policy.max_attempts:
                 if response.status_code == 429:
-                    raise GoogleProviderQuotaError()
-                raise GoogleProviderReadError()
+                    raise GoogleProviderQuotaError(
+                        retry_disposition="attempts_exhausted"
+                    )
+                raise GoogleProviderReadError(
+                    failure_class="http_5xx",
+                    retry_disposition="attempts_exhausted",
+                )
             delay = self._retry_delay(attempt, response)
             await self._record_retry(connection, "oauth", "quota", attempt)
             await self.sleep(delay)
@@ -1328,7 +1365,10 @@ class GoogleApiService:
         except GoogleProviderReadError:
             raise
         except Exception:
-            raise GoogleProviderReadError() from None
+            raise GoogleProviderReadError(
+                failure_class="credential_resolution",
+                retry_disposition="not_retryable",
+            ) from None
         response = await self._oauth_request(
             connection,
             GoogleApiRequest(

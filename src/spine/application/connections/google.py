@@ -10,7 +10,7 @@ from datetime import datetime
 import hashlib
 import json
 import re
-from typing import Generic, Protocol, TypeVar
+from typing import Generic, Literal, Protocol, TypeVar
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from spine.application.diagnostics import (
@@ -65,38 +65,103 @@ class GoogleConnectionSuspensionError(GoogleConnectionError):
         super().__init__("Google connection suspension could not be recorded.")
 
 
+GoogleProviderFailureClass = Literal[
+    "authorization",
+    "credential_resolution",
+    "http_5xx",
+    "not_found",
+    "policy",
+    "quota",
+    "timeout",
+    "transport",
+    "unclassified",
+]
+GoogleProviderRetryDisposition = Literal[
+    "attempts_exhausted",
+    "not_retryable",
+    "stopped_before_retry",
+]
+
+
 class GoogleProviderReadError(GoogleConnectionError):
-    def __init__(self, *, failure_code: str = "provider_unavailable") -> None:
+    def __init__(
+        self,
+        *,
+        failure_code: str = "provider_unavailable",
+        failure_class: GoogleProviderFailureClass = "unclassified",
+        retry_disposition: GoogleProviderRetryDisposition = "stopped_before_retry",
+    ) -> None:
         self.failure_code = failure_code
+        self.failure_class = failure_class
+        self.retry_disposition = retry_disposition
         super().__init__("Google provider read failed.")
+
+    def with_retry_disposition(
+        self, retry_disposition: GoogleProviderRetryDisposition
+    ) -> "GoogleProviderReadError":
+        if isinstance(self, GoogleProviderAuthorizationError):
+            return GoogleProviderAuthorizationError(
+                retry_disposition=retry_disposition
+            )
+        if isinstance(self, GoogleProviderQuotaError):
+            return GoogleProviderQuotaError(retry_disposition=retry_disposition)
+        return GoogleProviderReadError(
+            failure_code=self.failure_code,
+            failure_class=self.failure_class,
+            retry_disposition=retry_disposition,
+        )
 
 
 class GoogleProviderAuthorizationError(GoogleProviderReadError):
     """The provider rejected a grant or credential that needs reauthorization."""
 
-    def __init__(self) -> None:
-        super().__init__(failure_code="authorization_revoked")
+    def __init__(
+        self,
+        *,
+        retry_disposition: GoogleProviderRetryDisposition = "not_retryable",
+    ) -> None:
+        super().__init__(
+            failure_code="authorization_revoked",
+            failure_class="authorization",
+            retry_disposition=retry_disposition,
+        )
 
 
 class GoogleProviderQuotaError(GoogleProviderReadError):
     """A provider quota or transient limit was reached."""
 
-    def __init__(self) -> None:
-        super().__init__(failure_code="provider_quota_exhausted")
+    def __init__(
+        self,
+        *,
+        retry_disposition: GoogleProviderRetryDisposition = "not_retryable",
+    ) -> None:
+        super().__init__(
+            failure_code="provider_quota_exhausted",
+            failure_class="quota",
+            retry_disposition=retry_disposition,
+        )
 
 
 class GoogleProviderPolicyError(GoogleProviderReadError):
     """A provider policy or scope denial that requires operator action."""
 
     def __init__(self) -> None:
-        super().__init__(failure_code="provider_policy_denied")
+        super().__init__(
+            failure_code="provider_policy_denied",
+            failure_class="policy",
+            retry_disposition="not_retryable",
+        )
 
 
 class GoogleProviderNotFoundError(GoogleProviderReadError):
     """The exact approved provider resource was not found."""
 
     def __init__(self) -> None:
-        super().__init__(failure_code="provider_not_found")
+        super().__init__(
+            failure_code="provider_not_found",
+            failure_class="not_found",
+            retry_disposition="not_retryable",
+        )
 
 
 class GoogleProviderContractError(GoogleConnectionError):
