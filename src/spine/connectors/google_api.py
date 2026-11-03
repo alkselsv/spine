@@ -349,7 +349,7 @@ class GoogleApiRequest:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class GoogleApiResponse:
     status_code: int
     json_body: Mapping[str, Any] | None = None

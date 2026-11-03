@@ -23,10 +23,13 @@ from spine.connectors.google_live_qualification import (
     GoogleLiveFileTarget,
     GoogleLiveQualificationConfig,
     GoogleLiveQualificationRefused,
+    GoogleLiveQualificationReport,
     GoogleLiveQualificationProvider,
     GoogleLiveQualificationRunner,
     GoogleLiveProbeCounts,
+    GoogleLiveRunProgress,
     GoogleLiveSheetTarget,
+    GoogleLiveTransportAttemptEvidence,
     GoogleSharedDriveApproval,
     GoogleSharedDrivePreflightBinding,
     compose_google_live_qualification_runner,
@@ -41,7 +44,10 @@ from spine.application.connections.google import (
     GoogleConnectionDeniedError,
     GoogleReadCommand,
 )
-from spine.connectors.google_execution_envelope import GoogleExecutionEnvelope
+from spine.connectors.google_execution_envelope import (
+    GoogleExecutionDeadlineExceeded,
+    GoogleExecutionEnvelope,
+)
 from spine.connectors.google_sheets import GoogleSheetsColumn, GoogleSheetsReadProfile
 from spine.application.diagnostics import DiagnosticEventRegistry
 from spine.application.persistence.context import (
@@ -158,6 +164,27 @@ def _config(*, opt_in: bool) -> GoogleLiveQualificationConfig:
     )
 
 
+def _valid_report() -> GoogleLiveQualificationReport:
+    return GoogleLiveQualificationReport(
+        status="passed",
+        provider_api_version="google-drive:v3+google-sheets:v4",
+        configuration_version="approved-live-config:v1",
+        authorization_generation=9,
+        configuration_generation=11,
+        metadata_reads=1,
+        downloads=0,
+        exports=0,
+        snapshot_pages=0,
+        change_pages=0,
+        sheet_pages=0,
+        oauth_request_attempts=1,
+        drive_request_attempts=1,
+        sheets_request_attempts=0,
+        shared_drive_status="NOT_EXERCISED",
+        failure_stage=None,
+    )
+
+
 class RecordingAdmission:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -220,6 +247,52 @@ def _runner(
         approval_verifier=ApprovedEnvelopeVerifier(),
         shared_drive_preflight=preflight,
     )
+
+
+class StaticCredentialResolver:
+    async def resolve(self, credential_reference, grant_reference):
+        del credential_reference, grant_reference
+        return GoogleDesktopOAuthMaterial(
+            client_id="synthetic-client",
+            client_secret="synthetic-client-secret",
+            refresh_token="synthetic-refresh-token",
+        )
+
+
+class NoOpRetryObserver:
+    async def record_retry(self, event):
+        del event
+
+
+class QueuedResponseTransport:
+    def __init__(self, responses: list[GoogleApiResponse]) -> None:
+        self.responses = responses
+
+    async def request(self, request):
+        del request
+        return self.responses.pop(0)
+
+
+def _composed_runner(
+    config: GoogleLiveQualificationConfig,
+    transport,
+    *,
+    retry_observer=None,
+    diagnostic_sink=None,
+) -> GoogleLiveQualificationRunner:
+    registry = DiagnosticEventRegistry.with_default_families()
+    return GoogleLiveQualificationBindings(
+        credential_resolver=StaticCredentialResolver(),  # type: ignore[arg-type]
+        transport=transport,
+        retry_observer=retry_observer or NoOpRetryObserver(),  # type: ignore[arg-type]
+        connection_repository=CurrentConnectionRepository(config.connection),  # type: ignore[arg-type]
+        diagnostic_sink=diagnostic_sink or RecordingDiagnosticSink(registry),
+        diagnostic_registry=registry,
+        clock=lambda: datetime(2026, 10, 29, tzinfo=timezone.utc),
+        sleep=lambda delay: asyncio.sleep(0),
+        context=_trusted_context(),
+        approval_verifier=ApprovedEnvelopeVerifier(),  # type: ignore[arg-type]
+    ).build_runner(config)
 
 
 def _shared_drive_config() -> GoogleLiveQualificationConfig:
@@ -305,9 +378,7 @@ async def test_live_harness_refuses_unapproved_envelope_before_provider_calls() 
 @pytest.mark.asyncio
 async def test_live_harness_returns_typed_cancelled_outcome() -> None:
     admission = CancelledAdmission()
-    report = await _runner(_config(opt_in=True), admission).run(
-        environment_opt_in=True
-    )
+    report = await _runner(_config(opt_in=True), admission).run(environment_opt_in=True)
 
     assert report.status == "failed"
     assert report.failure_code == "cancelled"
@@ -328,7 +399,9 @@ def _expire_provider_run(service):
 
 
 @pytest.mark.asyncio
-async def test_live_harness_deadline_cancels_provider_and_starts_no_later_calls() -> None:
+async def test_live_harness_deadline_cancels_provider_and_starts_no_later_calls() -> (
+    None
+):
     config = _config(opt_in=True)
 
     class BlockingService:
@@ -491,6 +564,10 @@ async def test_live_harness_rejects_configured_resource_caps_before_admission(
 
     assert report.status == "failed"
     assert report.failure_code == "resource_limit_exceeded"
+    assert report.failure_stage == "harness"
+    assert report.oauth_request_attempts == 0
+    assert report.drive_request_attempts == 0
+    assert report.sheets_request_attempts == 0
     assert admission.calls == []
 
 
@@ -529,6 +606,20 @@ def test_live_config_rejects_targets_that_do_not_equal_exact_allowlist() -> None
         GoogleLiveQualificationConfig.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    ("status", "failure_stage"),
+    (("passed", "drive"), ("failed", None)),
+)
+def test_live_report_rejects_status_failure_stage_contradictions(
+    status: str, failure_stage: str | None
+) -> None:
+    valid = _valid_report().model_dump()
+    valid.update({"status": status, "failure_stage": failure_stage})
+
+    with pytest.raises(ValueError, match="failure stage"):
+        GoogleLiveQualificationReport.model_validate(valid)
+
+
 def test_live_effective_fingerprint_includes_every_envelope_field() -> None:
     config = _config(opt_in=True)
     changed = config.model_copy(
@@ -539,7 +630,10 @@ def test_live_effective_fingerprint_includes_every_envelope_field() -> None:
         }
     )
 
-    assert config.effective_configuration_fingerprint != changed.effective_configuration_fingerprint
+    assert (
+        config.effective_configuration_fingerprint
+        != changed.effective_configuration_fingerprint
+    )
 
 
 @pytest.mark.asyncio
@@ -632,7 +726,10 @@ async def test_shared_drive_preflight_denies_missing_or_mismatched_binding_befor
     if approved:
         assert len(preflight.approval_bindings) == 1
         assert preflight.approval_bindings[0].workspace_id == _connection().workspace_id
-        assert preflight.approval_bindings[0].environment_id == _connection().environment_id
+        assert (
+            preflight.approval_bindings[0].environment_id
+            == _connection().environment_id
+        )
         assert preflight.approval_bindings[0].shared_drive_id == "synthetic-drive"
         assert preflight.approval_bindings[0].allowed_file_ids == ("synthetic-file",)
         assert len(preflight.authorization_bindings) == (0 if mismatch else 1)
@@ -655,7 +752,8 @@ async def test_shared_drive_fake_run_keeps_status_not_exercised() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "stale_field", ("connection_version", "authorization_generation", "configuration_generation")
+    "stale_field",
+    ("connection_version", "authorization_generation", "configuration_generation"),
 )
 async def test_offline_composition_fails_stale_admission_closed(
     stale_field: str,
@@ -728,12 +826,16 @@ def test_offline_composition_rejects_mismatched_context_scope_before_runner_crea
     mismatched_context = replace(
         context,
         scope=EnvironmentScope(
-            _id(104)
-            if mismatched_scope == "workspace"
-            else config.connection.workspace_id,
-            _id(105)
-            if mismatched_scope == "environment"
-            else config.connection.environment_id,
+            (
+                _id(104)
+                if mismatched_scope == "workspace"
+                else config.connection.workspace_id
+            ),
+            (
+                _id(105)
+                if mismatched_scope == "environment"
+                else config.connection.environment_id
+            ),
         ),
     )
     bindings = GoogleLiveQualificationBindings(
@@ -754,15 +856,321 @@ def test_offline_composition_rejects_mismatched_context_scope_before_runner_crea
 
 
 @pytest.mark.asyncio
-async def test_offline_composition_uses_injected_provider_ports_after_admission() -> None:
+async def test_offline_composition_records_oauth_transport_failure_attempt() -> None:
+    config = _config(opt_in=True)
+
+    class Transport:
+        async def request(self, request):
+            raise TimeoutError(
+                "synthetic-refresh-token provider-payload-sentinel "
+                f"unavailable at {request.url}"
+            )
+
+    class RetryObserver:
+        async def record_retry(self, event):
+            raise AssertionError(f"OAuth transport failure must not retry: {event!r}")
+
+    runner = _composed_runner(config, Transport(), retry_observer=RetryObserver())
+
+    report = await runner.run(environment_opt_in=True)
+
+    assert report.schema_version == "google-live-qualification-report:v2"
+    assert report.status == "failed"
+    assert report.failure_code == "provider_unavailable"
+    assert report.failure_stage == "oauth_refresh"
+    assert report.oauth_request_attempts == 1
+    assert report.drive_request_attempts == 0
+    assert report.sheets_request_attempts == 0
+    assert report.metadata_reads == 0
+
+
+@pytest.mark.asyncio
+async def test_live_evidence_surfaces_do_not_disclose_private_values() -> None:
+    config = _config(opt_in=True)
+    provider_response = GoogleApiResponse(
+        status_code=503,
+        json_body={"error": {"message": "drive-provider-payload-sentinel"}},
+        content=b"drive-source-content-sentinel",
+    )
+    responses = [
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"access_token": "synthetic-token", "expires_in": 3600},
+        ),
+        provider_response,
+    ]
+    registry = DiagnosticEventRegistry.with_default_families()
+    sink = RecordingDiagnosticSink(registry)
+    runner = _composed_runner(
+        config,
+        QueuedResponseTransport(responses),
+        diagnostic_sink=sink,
+    )
+    provider = GoogleLiveQualificationProvider(
+        config=config,
+        service=RecordingService(config.api_configuration_fingerprint),  # type: ignore[arg-type]
+        monotonic=lambda: 0.0,
+    )
+
+    report = await runner.run(environment_opt_in=True)
+
+    safe_evidence = "\n".join(
+        (
+            report.model_dump_json(),
+            repr(config),
+            repr(runner),
+            repr(provider),
+            repr(provider_response),
+            *(str(event.payload_json()) for event in sink.events),
+        )
+    )
+    for forbidden in (
+        "synthetic-client-secret",
+        "synthetic-refresh-token",
+        "drive-provider-payload-sentinel",
+        "drive-source-content-sentinel",
+        "synthetic-file",
+        config.endpoints.oauth_token_url,
+    ):
+        assert forbidden not in safe_evidence
+
+
+@pytest.mark.asyncio
+async def test_offline_composition_attributes_post_provider_failure_to_harness() -> (
+    None
+):
+    config = _config(opt_in=True)
+    responses = [
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"access_token": "synthetic-token", "expires_in": 3600},
+        ),
+        GoogleApiResponse(
+            status_code=200,
+            json_body={
+                "id": "synthetic-file",
+                "name": "Synthetic file.txt",
+                "mimeType": "text/plain",
+                "version": "1",
+            },
+        ),
+    ]
+    runner = _composed_runner(config, QueuedResponseTransport(responses))
+
+    async def fail_after_provider(awaitable, timeout: float):
+        del timeout
+        await awaitable
+        raise RuntimeError("synthetic harness failure")
+
+    runner = replace(runner, wait_for=fail_after_provider)
+
+    report = await runner.run(environment_opt_in=True)
+
+    assert report.failure_code == "harness_failure"
+    assert report.failure_stage == "harness"
+    assert report.oauth_request_attempts == 1
+    assert report.drive_request_attempts == 1
+    assert report.metadata_reads == 1
+
+
+@pytest.mark.asyncio
+async def test_offline_composition_attributes_inflight_deadline_to_provider() -> None:
+    config = _config(opt_in=True)
+    evidence = GoogleLiveTransportAttemptEvidence()
+
+    class DeadlineAdmission:
+        async def read(self, command, context):
+            del command, context
+            evidence.record("drive")
+            raise GoogleExecutionDeadlineExceeded(
+                "Google qualification deadline exceeded."
+            )
+
+    runner = GoogleLiveQualificationRunner(
+        config=config,
+        admission=DeadlineAdmission(),  # type: ignore[arg-type]
+        context=object(),  # type: ignore[arg-type]
+        approval_verifier=ApprovedEnvelopeVerifier(),
+        progress=GoogleLiveRunProgress(attempt_evidence=evidence),
+    )
+
+    report = await runner.run(environment_opt_in=True)
+
+    assert report.failure_code == "deadline_exceeded"
+    assert report.failure_stage == "drive"
+    assert report.drive_request_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_offline_composition_resets_per_run_progress() -> None:
+    config = _config(opt_in=True)
+    responses = [
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"access_token": "synthetic-token", "expires_in": 3600},
+        ),
+        GoogleApiResponse(
+            status_code=200,
+            json_body={
+                "id": "synthetic-file",
+                "name": "Synthetic file.txt",
+                "mimeType": "text/plain",
+                "version": "1",
+            },
+        ),
+        GoogleApiResponse(
+            status_code=200,
+            json_body={
+                "id": "synthetic-file",
+                "name": "Synthetic file.txt",
+                "mimeType": "text/plain",
+                "version": "1",
+            },
+        ),
+    ]
+    runner = _composed_runner(config, QueuedResponseTransport(responses))
+
+    first = await runner.run(environment_opt_in=True)
+    second = await runner.run(environment_opt_in=True)
+
+    assert (first.oauth_request_attempts, first.drive_request_attempts) == (1, 1)
+    assert (second.oauth_request_attempts, second.drive_request_attempts) == (0, 1)
+    assert first.metadata_reads == second.metadata_reads == 1
+
+
+@pytest.mark.asyncio
+async def test_offline_composition_records_every_bounded_drive_attempt() -> None:
+    config = _config(opt_in=True)
+    config = config.model_copy(
+        update={
+            "request_policy": config.request_policy.model_copy(
+                update={"max_attempts": 2, "backoff_ceiling_seconds": (1.0,)}
+            )
+        }
+    )
+    responses = [
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"access_token": "synthetic-token", "expires_in": 3600},
+        ),
+        GoogleApiResponse(status_code=503),
+        GoogleApiResponse(status_code=503),
+    ]
+    transport = QueuedResponseTransport(responses)
+    runner = _composed_runner(config, transport)
+
+    report = await runner.run(environment_opt_in=True)
+
+    assert report.status == "failed"
+    assert report.failure_stage == "drive"
+    assert report.oauth_request_attempts == 1
+    assert report.drive_request_attempts == 2
+    assert report.sheets_request_attempts == 0
+    assert report.metadata_reads == 0
+    assert responses == []
+
+
+@pytest.mark.asyncio
+async def test_offline_composition_preserves_completed_operations_before_failure() -> (
+    None
+):
+    config = _config(opt_in=True)
+    config = config.model_copy(
+        update={
+            "resource_scope": config.resource_scope.model_copy(
+                update={"allowed_file_ids": ("first-file", "second-file")}
+            ),
+            "file_targets": (
+                GoogleLiveFileTarget(file_id="first-file", download=False),
+                GoogleLiveFileTarget(file_id="second-file", download=False),
+            ),
+        }
+    )
+    responses = [
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"access_token": "synthetic-token", "expires_in": 3600},
+        ),
+        GoogleApiResponse(
+            status_code=200,
+            json_body={
+                "id": "first-file",
+                "name": "First synthetic file.txt",
+                "mimeType": "text/plain",
+                "version": "1",
+            },
+        ),
+        GoogleApiResponse(status_code=503),
+    ]
+    runner = _composed_runner(config, QueuedResponseTransport(responses))
+
+    report = await runner.run(environment_opt_in=True)
+
+    assert report.status == "failed"
+    assert report.failure_stage == "drive"
+    assert report.oauth_request_attempts == 1
+    assert report.drive_request_attempts == 2
+    assert report.metadata_reads == 1
+    assert responses == []
+
+
+@pytest.mark.asyncio
+async def test_offline_composition_records_every_bounded_sheets_attempt() -> None:
+    config = _config(opt_in=True)
+    config = config.model_copy(
+        update={
+            "resource_scope": config.resource_scope.model_copy(
+                update={
+                    "allowed_file_ids": (),
+                    "allowed_spreadsheet_ids": ("synthetic-sheet",),
+                }
+            ),
+            "file_targets": (),
+            "sheet_targets": (
+                _sheet_target("synthetic-sheet", 1, ("'Synthetic'!A1:A2",)),
+            ),
+            "request_policy": config.request_policy.model_copy(
+                update={"max_attempts": 2, "backoff_ceiling_seconds": (1.0,)}
+            ),
+        }
+    )
+    responses = [
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"access_token": "synthetic-token", "expires_in": 3600},
+        ),
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"id": "synthetic-sheet", "version": "1"},
+        ),
+        GoogleApiResponse(status_code=503),
+        GoogleApiResponse(status_code=503),
+    ]
+    transport = QueuedResponseTransport(responses)
+    runner = _composed_runner(config, transport)
+
+    report = await runner.run(environment_opt_in=True)
+
+    assert report.status == "failed"
+    assert report.failure_code == "provider_unavailable"
+    assert report.failure_stage == "sheets"
+    assert report.oauth_request_attempts == 1
+    assert report.drive_request_attempts == 1
+    assert report.sheets_request_attempts == 2
+    assert report.sheet_pages == 0
+    assert responses == []
+
+
+@pytest.mark.asyncio
+async def test_offline_composition_uses_injected_provider_ports_after_admission() -> (
+    None
+):
     config = _config(opt_in=True)
     request_policy = GoogleApiRequestPolicy.model_validate(
         config.request_policy.model_dump()
         | {"max_attempts": 2, "backoff_ceiling_seconds": (1.0,)}
     )
-    config = config.model_copy(
-        update={"request_policy": request_policy}
-    )
+    config = config.model_copy(update={"request_policy": request_policy})
     repository = CurrentConnectionRepository(config.connection)
     resolver_calls: list[tuple[object, object]] = []
     retry_events = []
@@ -830,6 +1238,10 @@ async def test_offline_composition_uses_injected_provider_ports_after_admission(
     report = await bindings.build_runner(config).run(environment_opt_in=True)
 
     assert report.status == "passed", report.failure_code
+    assert report.failure_stage is None
+    assert report.oauth_request_attempts == 1
+    assert report.drive_request_attempts == 2
+    assert report.sheets_request_attempts == 0
     assert report.metadata_reads == 1
     assert resolver_calls == [
         (config.connection.credential_reference, config.connection.grant_reference)
@@ -884,9 +1296,7 @@ async def test_offline_composition_uses_injected_sanitized_diagnostic_sink() -> 
 
     assert report.failure_code == "provider_contract_rejected"
     assert len(sink.events) == 1
-    assert sink.events[0].payload_json() == {
-        "failure_code": "authorization.denied"
-    }
+    assert sink.events[0].payload_json() == {"failure_code": "authorization.denied"}
 
 
 def test_offline_composition_requires_a_shared_drive_preflight_binding() -> None:
