@@ -307,6 +307,31 @@ async def test_gmail_enumeration_preserves_continuation_at_item_limit() -> None:
 
 
 @pytest.mark.asyncio
+async def test_gmail_enumeration_rejects_repeated_page_token_without_exposing_it() -> None:
+    exact_scope = _scope(allowed_operations=(EmailProviderOperation.ENUMERATE_MAILBOX,))
+
+    class Pages:
+        async def read(self, request: GmailReadRequest) -> GmailMessageIdPage:
+            return GmailMessageIdPage(
+                message_ids=("m1",), next_page_token="sensitive-repeated-token"
+            )
+
+    reader = compose_gmail_mailbox_reader(
+        scopes=_Scopes(exact_scope), connections=_Connections(_connection()), client=Pages()
+    )
+    command = MailboxReadCommand(
+        scope=exact_scope, operation=EmailOperation.ENUMERATE_MAILBOX,
+        mailbox_subject_reference=exact_scope.mailbox_subject_reference,
+    )
+
+    with pytest.raises(MailboxReadDeniedError) as error:
+        await reader.read(command, _context())
+
+    assert str(error.value) == "Mailbox read denied."
+    assert "sensitive-repeated-token" not in str(error.value)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "connection_changes",
     (

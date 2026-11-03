@@ -122,29 +122,29 @@ class GmailMailboxReader(Generic[ResultT]):
         ):
             raise MailboxReadDeniedError()
         request = GmailReadRequest(
-                operation=command.operation,
-                workspace_id=scope.workspace_id,
-                environment_id=scope.environment_id,
-                connection_id=scope.connection_id,
-                connection_version_id=scope.connection_version_id,
-                credential_reference=connection.credential_reference,
-                grant_reference=connection.grant_reference,
-                resource_scope_reference=OpaqueProviderReference(
-                    value=scope.resource_scope_reference
-                ),
-                mailbox_subject_reference=scope.mailbox_subject_reference,
-                mailbox_binding_id=scope.mailbox_binding_id,
-                authorization_generation=scope.authorization_generation,
-                configuration_generation=scope.configuration_generation,
-                scope_generation=scope.scope_generation,
-                label_references=(
-                    scope.allowed_label_references
-                    if is_enumeration
-                    else (command.folder_or_label_reference,)
-                    if command.folder_or_label_reference is not None
-                    else ()
-                ),
-            )
+            operation=command.operation,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            connection_id=scope.connection_id,
+            connection_version_id=scope.connection_version_id,
+            credential_reference=connection.credential_reference,
+            grant_reference=connection.grant_reference,
+            resource_scope_reference=OpaqueProviderReference(
+                value=scope.resource_scope_reference
+            ),
+            mailbox_subject_reference=scope.mailbox_subject_reference,
+            mailbox_binding_id=scope.mailbox_binding_id,
+            authorization_generation=scope.authorization_generation,
+            configuration_generation=scope.configuration_generation,
+            scope_generation=scope.scope_generation,
+            label_references=(
+                scope.allowed_label_references
+                if is_enumeration
+                else (command.folder_or_label_reference,)
+                if command.folder_or_label_reference is not None
+                else ()
+            ),
+        )
         if not is_enumeration:
             return await self._client.read(request)
 
@@ -160,14 +160,21 @@ class GmailMailboxReader(Generic[ResultT]):
         pages = 0
         while pages < self._max_pages and len(ids) < self._max_items:
             response = await self._client.read(
-                request.model_copy(update={"page_token": token, "max_results": min(500, self._max_items - len(ids))})
+                request.model_copy(
+                    update={
+                        "page_token": token,
+                        "max_results": min(500, self._max_items - len(ids)),
+                    }
+                )
             )
             if not isinstance(response, GmailMessageIdPage):
                 raise MailboxReadDeniedError()
             pages += 1
             if not response.message_ids:
                 return GmailEnumerationResult(
-                    message_ids=tuple(ids), complete=False, pages_read=pages,
+                    message_ids=tuple(ids),
+                    complete=False,
+                    pages_read=pages,
                     continuation_token=response.next_page_token,
                 )
             truncated = False
@@ -184,7 +191,9 @@ class GmailMailboxReader(Generic[ResultT]):
                 return GmailEnumerationResult(message_ids=tuple(ids), complete=True, pages_read=pages)
             if truncated:
                 return GmailEnumerationResult(
-                    message_ids=tuple(ids), complete=False, pages_read=pages,
+                    message_ids=tuple(ids),
+                    complete=False,
+                    pages_read=pages,
                     continuation_token=next_token,
                 )
             if next_token in seen_tokens:
