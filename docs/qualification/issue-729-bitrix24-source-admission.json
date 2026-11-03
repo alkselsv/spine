@@ -3,7 +3,7 @@
   "ticket": 729,
   "status": "offline_pass",
   "qualified_base_commit": "00c4b911f36bbf973cae108b3665fd13fc3c9170",
-  "qualification_commit": "c8166129789fd2f5e424e73a54ef3465c3be519f",
+  "qualification_commit": "5a3a65c0e3c0c389792b77663259c15abc199a5d",
   "migration_revision": "20261230_98",
   "qualification_boundary": "synthetic-source-admission-through-current-disclosure-with-isolated-postgresql",
   "required_scenarios": [
