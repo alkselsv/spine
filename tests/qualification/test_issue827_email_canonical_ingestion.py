@@ -142,6 +142,7 @@ async def test_synthetic_email_observation_reaches_canonical_acceptance_and_outb
         await uow.rollback()
     assert stored_provenance == (first.provenance,)
     assert len(receipt_associations) == 1
+    assert receipt_associations[0].original_receipt_id == first.binding.original_receipt_id
     assert receipt_associations[0].original_sha256 == raw_digest
     assert receipt_associations[0].byte_length == len(RAW_MIME)
     assert receipt_associations[0].verification_status == "verified"
