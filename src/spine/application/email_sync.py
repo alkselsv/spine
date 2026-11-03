@@ -377,6 +377,7 @@ class EmailSyncCoordinator:
                     if known.terminal
                     else EmailSyncStatus.RUNNING
                 ),
+                "failure_code": None,
             }
         )
         return await self._replace_page(attempt, known)
@@ -399,6 +400,75 @@ class EmailSyncCoordinator:
             )
         )
 
+    async def get_attempt(
+        self,
+        attempt_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+    ) -> EmailSyncAttempt:
+        """Load one tenant-scoped durable attempt for a provider coordinator."""
+
+        return await self._require(attempt_id, workspace_id, environment_id)
+
+    async def hold(
+        self,
+        attempt_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        status: EmailSyncStatus,
+        failure_code: str,
+    ) -> EmailSyncAttempt:
+        """Hold the checkpoint at a typed retry or reconciliation boundary."""
+
+        if status not in {
+            EmailSyncStatus.INCOMPLETE,
+            EmailSyncStatus.RECONCILIATION_REQUIRED,
+            EmailSyncStatus.SUSPENDED,
+        }:
+            raise ValueError("email sync hold status is invalid")
+        self._validate_failure_code(failure_code)
+        attempt = await self._require(attempt_id, workspace_id, environment_id)
+        if attempt.status in {EmailSyncStatus.COMPLETE, EmailSyncStatus.FAILED}:
+            return attempt
+        if attempt.status in {
+            EmailSyncStatus.RECONCILIATION_REQUIRED,
+            EmailSyncStatus.SUSPENDED,
+        }:
+            return attempt
+        return await self._save(
+            attempt.model_copy(
+                update={"status": status, "failure_code": failure_code}
+            )
+        )
+
+    async def resume(
+        self,
+        attempt_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+    ) -> EmailSyncAttempt:
+        """Clear a retryable hold after rechecking the exact admission binding."""
+
+        attempt = await self._require(attempt_id, workspace_id, environment_id)
+        if attempt.status in {
+            EmailSyncStatus.COMPLETE,
+            EmailSyncStatus.FAILED,
+            EmailSyncStatus.RECONCILIATION_REQUIRED,
+            EmailSyncStatus.SUSPENDED,
+        }:
+            return attempt
+        admission_state = await self._check_admission(attempt)
+        if admission_state is not EmailSyncAdmissionState.ALLOWED:
+            return await self._stop_for_admission(attempt, admission_state)
+        return await self._save(
+            attempt.model_copy(
+                update={"status": EmailSyncStatus.RUNNING, "failure_code": None}
+            )
+        )
+
     async def fail(
         self,
         attempt_id: UUID,
@@ -409,12 +479,7 @@ class EmailSyncCoordinator:
     ) -> EmailSyncAttempt:
         """Record a safe, caller-supplied failure code for the attempt."""
 
-        if (
-            not failure_code
-            or len(failure_code) > 64
-            or not all(char.islower() or char.isdigit() or char == "_" for char in failure_code)
-        ):
-            raise ValueError("failure code must be a bounded non-empty value")
+        self._validate_failure_code(failure_code)
         attempt = await self._require(attempt_id, workspace_id, environment_id)
         if attempt.status in {EmailSyncStatus.COMPLETE, EmailSyncStatus.SUSPENDED}:
             return attempt
@@ -482,6 +547,18 @@ class EmailSyncCoordinator:
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("clock must return a timezone-aware datetime")
         return now
+
+    @staticmethod
+    def _validate_failure_code(failure_code: str) -> None:
+        if (
+            not failure_code
+            or len(failure_code) > 64
+            or not all(
+                char.islower() or char.isdigit() or char == "_"
+                for char in failure_code
+            )
+        ):
+            raise ValueError("failure code must be a bounded non-empty value")
 
     @staticmethod
     def _page(attempt: EmailSyncAttempt, page_id: str) -> EmailSyncPageState | None:
