@@ -57,7 +57,10 @@ class MailboxReadCommand(DefinitionModel):
         has_byte_limit = self.enumeration_max_response_bytes is not None
         if has_item_limit != has_byte_limit:
             raise ValueError("mailbox enumeration bounds must be provided together")
-        if has_item_limit and self.operation is not EmailOperation.ENUMERATE_MAILBOX:
+        if has_item_limit and self.operation not in (
+            EmailOperation.ENUMERATE_MAILBOX,
+            EmailOperation.ENUMERATE_FOLDER_UIDS,
+        ):
             raise ValueError("enumeration bounds apply only to mailbox enumeration")
         if (
             self.expected_uid_validity is not None
@@ -88,6 +91,7 @@ class MailboxProviderReader(Protocol[ReadResultT]):
 
 _REQUIRED_CAPABILITY: dict[EmailOperation, ProviderCapabilityKind] = {
     EmailOperation.ENUMERATE_MAILBOX: ProviderCapabilityKind.MAILBOX_ENUMERATION,
+    EmailOperation.ENUMERATE_FOLDER_UIDS: ProviderCapabilityKind.MAILBOX_ENUMERATION,
     EmailOperation.READ_MESSAGE_METADATA: ProviderCapabilityKind.MESSAGE_METADATA_READ,
     EmailOperation.READ_RAW_MESSAGE: ProviderCapabilityKind.RAW_MESSAGE_READ,
     EmailOperation.READ_ATTACHMENT: ProviderCapabilityKind.ATTACHMENT_READ,

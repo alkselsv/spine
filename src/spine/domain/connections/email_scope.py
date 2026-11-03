@@ -15,6 +15,7 @@ class EmailProviderOperation(str, Enum):
     """Provider-side reads admitted independently for a mailbox scope."""
 
     ENUMERATE_MAILBOX = "enumerate_mailbox"
+    ENUMERATE_FOLDER_UIDS = "enumerate_folder_uids"
     READ_MESSAGE_METADATA = "read_message_metadata"
     READ_RAW_MESSAGE = "read_raw_message"
     READ_ATTACHMENT = "read_attachment"
@@ -26,6 +27,7 @@ class EmailOperation(str, Enum):
     """Requested email actions, including explicitly separate content authority."""
 
     ENUMERATE_MAILBOX = "enumerate_mailbox"
+    ENUMERATE_FOLDER_UIDS = "enumerate_folder_uids"
     READ_MESSAGE_METADATA = "read_message_metadata"
     READ_RAW_MESSAGE = "read_raw_message"
     READ_ATTACHMENT = "read_attachment"

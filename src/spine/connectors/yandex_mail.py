@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Protocol, TypeVar
 from uuid import UUID
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr, StrictInt
 
 from spine.application.connections.email_read import MailboxReadCommand
 from spine.application.connections.email_read import (
@@ -29,6 +29,13 @@ from spine.connectors.yandex_mail_generation import (
     YandexMailFolderGenerationCode,
     failed_yandex_mail_folder_generation_observation,
     observe_yandex_mail_folder_generation,
+)
+from spine.connectors.yandex_mail_uid_enumeration import (
+    YandexMailUidEnumerationPageRequest,
+    YandexMailUidEnumerationPageTranscript,
+    YandexMailUidPageCode,
+    failed_yandex_mail_uid_page,
+    normalize_yandex_mail_uid_page,
 )
 
 
@@ -101,6 +108,25 @@ class YandexMailImapReadRequest(DefinitionModel):
     security: YandexMailImapSecurity = YandexMailImapSecurity()
 
 
+class YandexMailUidImapReadRequest(YandexMailImapReadRequest):
+    """Versioned, bounded IMAP request for one UID SEARCH/FETCH interval."""
+
+    schema_version: Literal["yandex-mail-uid-enumeration-imap-read-request:v1"] = (
+        "yandex-mail-uid-enumeration-imap-read-request:v1"
+    )
+    uid_validity: StrictInt = Field(ge=1, le=2**32 - 1)
+    uid_next: StrictInt = Field(ge=1, le=2**32 - 1)
+    uid_start: StrictInt = Field(ge=1, le=2**32 - 1)
+    uid_end: StrictInt = Field(ge=0, le=2**32 - 1)
+    selection_command: Literal["EXAMINE"] = "EXAMINE"
+    command_allowlist: tuple[Literal["EXAMINE", "UID SEARCH", "UID FETCH"], ...] = (
+        "EXAMINE",
+        "UID SEARCH",
+        "UID FETCH",
+    )
+    fetch_data_items: Literal["UID FLAGS RFC822.SIZE"] = "UID FLAGS RFC822.SIZE"
+
+
 class YandexMailCredentialResolver(Protocol):
     async def resolve(
         self,
@@ -117,7 +143,9 @@ class YandexMailImapSession(Protocol[ReadResultT]):
         access_token: SecretStr,
     ) -> None: ...
 
-    async def read(self, request: YandexMailImapReadRequest) -> ReadResultT: ...
+    async def read(
+        self, request: YandexMailImapReadRequest | YandexMailUidImapReadRequest
+    ) -> ReadResultT: ...
 
     async def close(self) -> None: ...
 
@@ -154,6 +182,10 @@ class _YandexMailProviderAdapter:
         required_capability = _required_capability(command.operation)
         if not _connection_matches_scope(connection, command, required_capability):
             raise YandexMailAuthorityDeniedError()
+        if command.operation is EmailOperation.ENUMERATE_FOLDER_UIDS and not isinstance(
+            command, YandexMailUidEnumerationPageRequest
+        ):
+            raise YandexMailAuthorityDeniedError()
 
         try:
             credential = await self._credentials.resolve(connection, scope)
@@ -164,7 +196,7 @@ class _YandexMailProviderAdapter:
         ):
             raise YandexMailAuthorityDeniedError()
 
-        request = YandexMailImapReadRequest(
+        request_values = dict(
             workspace_id=scope.workspace_id,
             environment_id=scope.environment_id,
             connection_id=scope.connection_id,
@@ -179,13 +211,27 @@ class _YandexMailProviderAdapter:
             folder_reference=command.folder_or_label_reference,
             selection_command=(
                 "EXAMINE"
-                if command.operation is EmailOperation.OBSERVE_FOLDER_GENERATION
+                if command.operation
+                in (
+                    EmailOperation.OBSERVE_FOLDER_GENERATION,
+                    EmailOperation.ENUMERATE_FOLDER_UIDS,
+                )
                 else None
             ),
             enumeration_max_items=command.enumeration_max_items,
             enumeration_max_response_bytes=command.enumeration_max_response_bytes,
             expected_uid_validity=command.expected_uid_validity,
         )
+        if isinstance(command, YandexMailUidEnumerationPageRequest):
+            request = YandexMailUidImapReadRequest(
+                **request_values,
+                uid_validity=command.uid_validity,
+                uid_next=command.uid_next,
+                uid_start=command.start_uid,
+                uid_end=command.end_uid,
+            )
+        else:
+            request = YandexMailImapReadRequest(**request_values)
         ssl_context = ssl.create_default_context()
         if (
             not ssl_context.check_hostname
@@ -212,6 +258,12 @@ class _YandexMailProviderAdapter:
                         scope=scope,
                         code=YandexMailFolderGenerationCode.SERVER_REJECTED,
                     )  # type: ignore[return-value]
+                if command.operation is EmailOperation.ENUMERATE_FOLDER_UIDS:
+                    assert isinstance(command, YandexMailUidEnumerationPageRequest)
+                    return failed_yandex_mail_uid_page(
+                        request=command,
+                        code=YandexMailUidPageCode.SERVER_REJECTED,
+                    )  # type: ignore[return-value]
                 raise
             if command.operation is EmailOperation.OBSERVE_FOLDER_GENERATION:
                 if not isinstance(result, YandexMailFolderExamineTranscript):
@@ -225,6 +277,17 @@ class _YandexMailProviderAdapter:
                     folder_reference=command.folder_or_label_reference,
                     transcript=result,
                     expected_uid_validity=command.expected_uid_validity,
+                )  # type: ignore[return-value]
+            if command.operation is EmailOperation.ENUMERATE_FOLDER_UIDS:
+                assert isinstance(command, YandexMailUidEnumerationPageRequest)
+                if not isinstance(result, YandexMailUidEnumerationPageTranscript):
+                    return failed_yandex_mail_uid_page(
+                        request=command,
+                        code=YandexMailUidPageCode.MALFORMED_RESPONSE,
+                    )  # type: ignore[return-value]
+                return normalize_yandex_mail_uid_page(
+                    request=command,
+                    transcript=result,
                 )  # type: ignore[return-value]
             return result
         except Exception:
@@ -257,6 +320,7 @@ def compose_yandex_mail_reader(
 def _required_capability(operation: EmailOperation) -> ProviderCapabilityKind | None:
     return {
         EmailOperation.ENUMERATE_MAILBOX: ProviderCapabilityKind.MAILBOX_ENUMERATION,
+        EmailOperation.ENUMERATE_FOLDER_UIDS: ProviderCapabilityKind.MAILBOX_ENUMERATION,
         EmailOperation.READ_MESSAGE_METADATA: ProviderCapabilityKind.MESSAGE_METADATA_READ,
         EmailOperation.READ_RAW_MESSAGE: ProviderCapabilityKind.RAW_MESSAGE_READ,
         EmailOperation.READ_ATTACHMENT: ProviderCapabilityKind.ATTACHMENT_READ,
@@ -272,6 +336,7 @@ def _connection_matches_scope(
 ) -> bool:
     scope = command.scope
     is_enumeration = command.operation is EmailOperation.ENUMERATE_MAILBOX
+    is_uid_enumeration = command.operation is EmailOperation.ENUMERATE_FOLDER_UIDS
     return (
         required_capability is not None
         and connection.status is ProviderConnectionStatus.ACTIVE
@@ -291,6 +356,14 @@ def _connection_matches_scope(
             not is_enumeration
             or (
                 command.enumeration_max_items is not None
+                and command.enumeration_max_response_bytes is not None
+            )
+        )
+        and (
+            not is_uid_enumeration
+            or (
+                isinstance(command, YandexMailUidEnumerationPageRequest)
+                and command.enumeration_max_items is not None
                 and command.enumeration_max_response_bytes is not None
             )
         )
@@ -332,6 +405,7 @@ __all__ = [
     "YandexMailAuthorityDeniedError",
     "YandexMailCredentialResolver",
     "YandexMailImapReadRequest",
+    "YandexMailUidImapReadRequest",
     "YandexMailImapSecurity",
     "YandexMailImapSession",
     "YandexMailImapTransport",
