@@ -222,18 +222,24 @@ qualification. No actual retention duration or approval is invented here.
 Verification on the rebased working tree, based on current main
 `7bc81928d80f88c4d35d86eca83964de103ef60d`:
 
-- PostgreSQL private-ASR module: `60 passed in 57.42s` with restricted
+- PostgreSQL private-ASR module: `60 passed in 83.38s` with restricted
   `spine_runtime`, including report/aggregate atomicity, RLS, process restart,
   aggregate revocation visibility, staging forgery and bounded retry checks.
-- On previous base `00c4b91`, fresh-database initial-tenancy migration suite:
-  `58 passed in 752.29s` through Alembic head `20270102_101`; the restricted ASR
-  module passed `60 tests in 80.75s`.
+- Current rebased graph: fresh-database initial-tenancy migration suite
+  `59 passed in 805.64s` through Alembic head `20270103_102`.
 - Source lifecycle, AccessPolicy, retention, audit, retry and related contracts:
   `196 passed in 11.86s`.
-- `uv run python -m compileall -q src tests` and `git diff --check`: PASS.
-- Previous full suite on `00c4b91`/`bb81d14`: `6340 passed, 7 skipped, 3 failed`;
-  the failures were the Google OAuth loopback test, #680 wizard and nested #68
-  gate. Exact `7bc8192` full suite and migration tests remain pending.
+- `python -m compileall -q src tests` and `git diff --check`: PASS.
+- Full repository suite on exact current-main base `7bc8192`, code HEAD
+  `dc076392`: `6408 passed, 7 skipped, 3 failed, 1 warning` in `1820.18s`.
+  The two direct failures were the Google OAuth loopback test and #680 wizard;
+  nested #68 repeats them. Both direct failures reproduced on a clean detached
+  `7bc8192` worktree (`2 failed in 2.61s`), so they are inherited baseline
+  defects. No PR-specific full-suite failure was observed.
+- The clean-tree #68 artifact gate passed (`1 passed in 1.88s`) before these
+  final documentation updates; it must be rerun after commit.
+- `python -m compileall -q src tests`, `uv lock --check` with `/tmp` cache, and
+  `git diff --check`: PASS.
 - Exact-head GitHub CI is pending until this branch is pushed.
 
 PR #797 stays OPEN/DRAFT and Issue #795 stays OPEN. Source-head replacement,
