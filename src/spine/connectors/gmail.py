@@ -44,7 +44,25 @@ class GmailReadRequest(DefinitionModel):
     authorization_generation: int = Field(ge=1)
     configuration_generation: int = Field(ge=1)
     scope_generation: int = Field(ge=1)
-    label_reference: UUID | None = None
+    label_references: tuple[UUID, ...] = ()
+    page_token: str | None = None
+    max_results: int = Field(default=100, ge=1, le=500)
+
+
+class GmailMessageIdPage(DefinitionModel):
+    """Metadata-free response shape for Gmail messages.list."""
+
+    message_ids: tuple[str, ...] = ()
+    next_page_token: str | None = None
+
+
+class GmailEnumerationResult(DefinitionModel):
+    """Bounded ID inventory with explicit coverage evidence."""
+
+    message_ids: tuple[str, ...]
+    complete: bool
+    pages_read: int = Field(ge=0)
+    continuation_token: str | None = None
 
 
 ResultT = TypeVar("ResultT")
@@ -59,8 +77,18 @@ class GmailReadClient(Protocol[ResultT]):
 class GmailMailboxReader(Generic[ResultT]):
     """Translate an admitted mail read into a bounded Gmail client request."""
 
-    def __init__(self, client: GmailReadClient[ResultT]) -> None:
+    def __init__(
+        self,
+        client: GmailReadClient[ResultT],
+        *,
+        max_pages: int = 100,
+        max_items: int = 10_000,
+    ) -> None:
+        if max_pages < 1 or max_items < 1:
+            raise ValueError("Gmail enumeration bounds must be positive")
         self._client = client
+        self._max_pages = max_pages
+        self._max_items = max_items
 
     async def read(
         self,
@@ -93,8 +121,7 @@ class GmailMailboxReader(Generic[ResultT]):
             or not connection.supports(capability)
         ):
             raise MailboxReadDeniedError()
-        return await self._client.read(
-            GmailReadRequest(
+        request = GmailReadRequest(
                 operation=command.operation,
                 workspace_id=scope.workspace_id,
                 environment_id=scope.environment_id,
@@ -110,8 +137,62 @@ class GmailMailboxReader(Generic[ResultT]):
                 authorization_generation=scope.authorization_generation,
                 configuration_generation=scope.configuration_generation,
                 scope_generation=scope.scope_generation,
-                label_reference=command.folder_or_label_reference,
+                label_references=(
+                    scope.allowed_label_references
+                    if is_enumeration
+                    else (command.folder_or_label_reference,)
+                    if command.folder_or_label_reference is not None
+                    else ()
+                ),
             )
+        if not is_enumeration:
+            return await self._client.read(request)
+
+        # Enumeration uses only messages.list metadata and an exact approved label.
+        if not request.label_references or any(
+            label not in scope.allowed_label_references for label in request.label_references
+        ):
+            raise MailboxReadDeniedError()
+        ids: list[str] = []
+        seen_ids: set[str] = set()
+        seen_tokens: set[str] = set()
+        token: str | None = None
+        pages = 0
+        while pages < self._max_pages and len(ids) < self._max_items:
+            response = await self._client.read(
+                request.model_copy(update={"page_token": token, "max_results": min(500, self._max_items - len(ids))})
+            )
+            if not isinstance(response, GmailMessageIdPage):
+                raise MailboxReadDeniedError()
+            pages += 1
+            if not response.message_ids:
+                return GmailEnumerationResult(
+                    message_ids=tuple(ids), complete=False, pages_read=pages,
+                    continuation_token=response.next_page_token,
+                )
+            truncated = False
+            for message_id in response.message_ids:
+                if not message_id or len(message_id) > 512:
+                    raise MailboxReadDeniedError()
+                if message_id not in seen_ids and len(ids) < self._max_items:
+                    seen_ids.add(message_id)
+                    ids.append(message_id)
+                elif message_id not in seen_ids:
+                    truncated = True
+            next_token = response.next_page_token
+            if not next_token and not truncated:
+                return GmailEnumerationResult(message_ids=tuple(ids), complete=True, pages_read=pages)
+            if truncated:
+                return GmailEnumerationResult(
+                    message_ids=tuple(ids), complete=False, pages_read=pages,
+                    continuation_token=next_token,
+                )
+            if next_token in seen_tokens:
+                raise MailboxReadDeniedError()
+            seen_tokens.add(next_token)
+            token = next_token
+        return GmailEnumerationResult(
+            message_ids=tuple(ids), complete=False, pages_read=pages, continuation_token=token
         )
 
 
@@ -120,19 +201,23 @@ def compose_gmail_mailbox_reader(
     scopes: MailboxScopeRepository,
     connections: ProviderConnectionRepository,
     client: GmailReadClient[ResultT],
+    max_pages: int = 100,
+    max_items: int = 10_000,
 ) -> MailboxReadAdmission[ResultT]:
     """Compose Gmail behind the provider-neutral, exact-scope admission gate."""
 
     return MailboxReadAdmission(
         scopes=scopes,
         connections=connections,
-        provider=GmailMailboxReader(client),
+        provider=GmailMailboxReader(client, max_pages=max_pages, max_items=max_items),
     )
 
 
 __all__ = [
     "GmailMailboxReader",
     "GmailReadClient",
+    "GmailMessageIdPage",
+    "GmailEnumerationResult",
     "GmailReadRequest",
     "compose_gmail_mailbox_reader",
 ]
