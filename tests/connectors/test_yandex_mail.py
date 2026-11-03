@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import ssl
 from contextlib import asynccontextmanager
 from uuid import UUID
@@ -21,6 +22,7 @@ from spine.application.persistence.context import (
 from spine.connectors.yandex_mail import (
     YANDEX_MAIL_OAUTH_SCOPE,
     YandexMailOAuthCredential,
+    YandexMailUidImapReadRequest,
     compose_yandex_mail_reader,
 )
 from spine.connectors.yandex_mail_folders import (
@@ -35,6 +37,13 @@ from spine.connectors.yandex_mail_folders import (
 from spine.connectors.yandex_mail_generation import (
     YandexMailFolderExamineTranscript,
     YandexMailFolderGenerationCode,
+    YandexMailFolderGenerationObservation,
+)
+from spine.connectors.yandex_mail_uid_enumeration import (
+    YandexMailUidEnumerationPageRequest,
+    YandexMailUidEnumerationPageTranscript,
+    YandexMailUidMessageMetadata,
+    YandexMailUidPageCode,
 )
 from spine.domain.common import ContextOrigin
 from spine.domain.connections.email_scope import (
@@ -77,6 +86,7 @@ def _scope(**changes: object) -> MailboxReadScope:
         "allowed_folder_references": (_id(11),),
         "allowed_operations": (
             EmailProviderOperation.ENUMERATE_MAILBOX,
+            EmailProviderOperation.ENUMERATE_FOLDER_UIDS,
             EmailProviderOperation.OBSERVE_FOLDER_GENERATION,
             EmailProviderOperation.READ_MESSAGE_METADATA,
             EmailProviderOperation.READ_RAW_MESSAGE,
@@ -259,6 +269,216 @@ def _command(
         folder_or_label_reference=location,
         expected_uid_validity=expected_uid_validity,
     )
+
+
+def _generation_observation(
+    scope: MailboxReadScope, folder_reference: UUID, *, uid_validity: int, uid_next: int
+) -> YandexMailFolderGenerationObservation:
+    return YandexMailFolderGenerationObservation(
+        complete=True,
+        code=YandexMailFolderGenerationCode.COMPLETE,
+        workspace_id=scope.workspace_id,
+        environment_id=scope.environment_id,
+        connection_id=scope.connection_id,
+        connection_version_id=scope.connection_version_id,
+        mailbox_binding_id=scope.mailbox_binding_id,
+        folder_reference=folder_reference,
+        authorization_generation=scope.authorization_generation,
+        configuration_generation=scope.configuration_generation,
+        scope_generation=scope.scope_generation,
+        uid_validity=uid_validity,
+        uid_next=uid_next,
+        selection_command="EXAMINE",
+        read_only=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_uid_enumeration_uses_bounded_folder_read_and_returns_coverage() -> None:
+    scope = _scope()
+    composition, _, _, _, imap = _composition(scope=scope)
+    imap.read_result = YandexMailUidEnumerationPageTranscript(
+        workspace_id=scope.workspace_id,
+        environment_id=scope.environment_id,
+        connection_id=scope.connection_id,
+        connection_version_id=scope.connection_version_id,
+        mailbox_binding_id=scope.mailbox_binding_id,
+        folder_reference=_id(11),
+        authorization_generation=scope.authorization_generation,
+        configuration_generation=scope.configuration_generation,
+        scope_generation=scope.scope_generation,
+        uid_validity=101,
+        command_names=("UID SEARCH", "UID FETCH"),
+        search_uids=(4, 7),
+        fetched_messages=(
+            YandexMailUidMessageMetadata(uid=4, flags=(), size_octets=120),
+            YandexMailUidMessageMetadata(uid=7, flags=(), size_octets=240),
+        ),
+        response_bytes=512,
+        search_complete=True,
+        fetch_complete=True,
+    )
+    command = YandexMailUidEnumerationPageRequest(
+        scope=scope,
+        operation=EmailOperation.ENUMERATE_FOLDER_UIDS,
+        mailbox_subject_reference=scope.mailbox_subject_reference,
+        folder_or_label_reference=_id(11),
+        generation=_generation_observation(
+            scope, _id(11), uid_validity=101, uid_next=21
+        ),
+        start_uid=1,
+        enumeration_max_items=10,
+        enumeration_max_response_bytes=4096,
+    )
+
+    result = await composition.read(command, _context())
+
+    assert result.code is YandexMailUidPageCode.COMPLETE
+    request = imap.read_calls[0]
+    assert isinstance(request, YandexMailUidImapReadRequest)
+    assert request.operation is EmailOperation.ENUMERATE_FOLDER_UIDS
+    assert request.selection_command == "EXAMINE"
+    assert request.uid_validity == 101
+    assert request.uid_start == 1
+    assert request.uid_end == 10
+    assert request.enumeration_max_response_bytes == 4096
+    assert request.command_allowlist == ("EXAMINE", "UID SEARCH", "UID FETCH")
+    assert request.fetch_data_items == "UID FLAGS RFC822.SIZE"
+    assert result.continuation_uid == 11
+
+
+@pytest.mark.asyncio
+async def test_uid_pages_continue_contiguously_after_reconnect() -> None:
+    scope = _scope()
+    composition, _, _, _, imap = _composition(scope=scope)
+
+    async def read_page(start_uid: int, uids: tuple[int, ...]):
+        imap.read_result = YandexMailUidEnumerationPageTranscript(
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            connection_id=scope.connection_id,
+            connection_version_id=scope.connection_version_id,
+            mailbox_binding_id=scope.mailbox_binding_id,
+            folder_reference=_id(11),
+            authorization_generation=scope.authorization_generation,
+            configuration_generation=scope.configuration_generation,
+            scope_generation=scope.scope_generation,
+            uid_validity=101,
+            command_names=("UID SEARCH", "UID FETCH"),
+            search_uids=uids,
+            fetched_messages=tuple(
+                YandexMailUidMessageMetadata(uid=uid, size_octets=uid * 10)
+                for uid in uids
+            ),
+            response_bytes=256,
+            search_complete=True,
+            fetch_complete=True,
+        )
+        command = YandexMailUidEnumerationPageRequest(
+            scope=scope,
+            operation=EmailOperation.ENUMERATE_FOLDER_UIDS,
+            mailbox_subject_reference=scope.mailbox_subject_reference,
+            folder_or_label_reference=_id(11),
+            generation=_generation_observation(
+                scope, _id(11), uid_validity=101, uid_next=21
+            ),
+            start_uid=start_uid,
+            enumeration_max_items=10,
+            enumeration_max_response_bytes=4096,
+        )
+        return await composition.read(command, _context())
+
+    first = await read_page(1, (4, 7))
+    second = await read_page(first.continuation_uid, (12, 20))
+
+    assert first.complete is True
+    assert first.covered_uid_range == (1, 10)
+    assert first.continuation_uid == 11
+    assert second.complete is True
+    assert second.covered_uid_range == (11, 20)
+    assert second.continuation_uid is None
+    assert len(imap.tls_calls) == 2
+    assert imap.closed_sessions == 2
+
+
+@pytest.mark.asyncio
+async def test_uid_enumeration_cancellation_propagates_without_complete_page() -> None:
+    scope = _scope()
+    composition, _, _, _, imap = _composition(scope=scope)
+    imap.read_failure = asyncio.CancelledError()
+    command = YandexMailUidEnumerationPageRequest(
+        scope=scope,
+        operation=EmailOperation.ENUMERATE_FOLDER_UIDS,
+        mailbox_subject_reference=scope.mailbox_subject_reference,
+        folder_or_label_reference=_id(11),
+        generation=_generation_observation(
+            scope, _id(11), uid_validity=101, uid_next=21
+        ),
+        start_uid=1,
+        enumeration_max_items=10,
+        enumeration_max_response_bytes=4096,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await composition.read(command, _context())
+
+    assert imap.closed_sessions == 1
+
+
+@pytest.mark.asyncio
+async def test_uid_enumeration_provider_failure_is_safe_and_has_no_cursor() -> None:
+    scope = _scope()
+    composition, _, _, _, imap = _composition(scope=scope)
+    imap.read_failure = RuntimeError(
+        "private subject sender@example.test raw IMAP payload"
+    )
+    command = YandexMailUidEnumerationPageRequest(
+        scope=scope,
+        operation=EmailOperation.ENUMERATE_FOLDER_UIDS,
+        mailbox_subject_reference=scope.mailbox_subject_reference,
+        folder_or_label_reference=_id(11),
+        generation=_generation_observation(
+            scope, _id(11), uid_validity=101, uid_next=21
+        ),
+        start_uid=1,
+        enumeration_max_items=10,
+        enumeration_max_response_bytes=4096,
+    )
+
+    result = await composition.read(command, _context())
+
+    assert result.complete is False
+    assert result.code is YandexMailUidPageCode.SERVER_REJECTED
+    assert result.continuation_uid is None
+    assert "private subject" not in repr(result)
+    assert "sender@example.test" not in repr(result)
+    assert "raw IMAP payload" not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_uid_enumeration_without_exact_operation_authority_never_reaches_imap() -> None:
+    scope = _scope(
+        allowed_operations=(EmailProviderOperation.ENUMERATE_MAILBOX,)
+    )
+    composition, _, _, resolver, imap = _composition(scope=scope)
+    command = YandexMailUidEnumerationPageRequest(
+        scope=scope,
+        operation=EmailOperation.ENUMERATE_FOLDER_UIDS,
+        mailbox_subject_reference=scope.mailbox_subject_reference,
+        folder_or_label_reference=_id(11),
+        generation=_generation_observation(
+            scope, _id(11), uid_validity=101, uid_next=21
+        ),
+        start_uid=1,
+        enumeration_max_items=10,
+        enumeration_max_response_bytes=4096,
+    )
+
+    with pytest.raises(MailboxReadDeniedError):
+        await composition.read(command, _context())
+
+    assert resolver.calls == 0
+    assert imap.tls_calls == []
 
 
 def _composition(
