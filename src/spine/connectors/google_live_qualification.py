@@ -101,6 +101,16 @@ class GoogleSharedDrivePreflightPort(Protocol):
     ) -> GoogleLiveExecutionAuthorization | None: ...
 
 
+class GoogleCredentialPreflightPort(Protocol):
+    """Verify reference-backed credentials after exact read admission."""
+
+    async def verify(
+        self,
+        command: GoogleReadCommand,
+        context: TrustedPersistenceContext,
+    ) -> None: ...
+
+
 class GoogleLiveFileTarget(DefinitionModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -417,6 +427,7 @@ class GoogleLiveQualificationRunner:
         [Awaitable[GoogleLiveProbeCounts], float], Awaitable[GoogleLiveProbeCounts]
     ] = asyncio.wait_for
     shared_drive_preflight: GoogleSharedDrivePreflightPort | None = None
+    credential_preflight: GoogleCredentialPreflightPort | None = None
 
     async def run(self, *, environment_opt_in: bool) -> GoogleLiveQualificationReport:
         counts = GoogleLiveProbeCounts()
@@ -496,48 +507,62 @@ class GoogleLiveQualificationRunner:
                 "the effective Google execution envelope is not approved"
             )
         scope = self.config.resource_scope
-        if scope.drive_id is None:
-            return
-        preflight = self.shared_drive_preflight
-        if preflight is None:
-            raise GoogleLiveQualificationRefused(
-                "Shared Drive qualification requires an externally approved preflight"
+        if scope.drive_id is not None:
+            preflight = self.shared_drive_preflight
+            if preflight is None:
+                raise GoogleLiveQualificationRefused(
+                    "Shared Drive qualification requires an externally approved preflight"
+                )
+            binding = GoogleSharedDrivePreflightBinding(
+                workspace_id=scope.workspace_id,
+                environment_id=scope.environment_id,
+                resource_scope_reference=scope.reference,
+                shared_drive_id=scope.drive_id,
+                connection_id=scope.connection_id,
+                authorization_generation=scope.authorization_generation,
+                configuration_generation=scope.configuration_generation,
+                allowed_file_ids=scope.allowed_file_ids,
+                allowed_spreadsheet_ids=scope.allowed_spreadsheet_ids,
             )
-        binding = GoogleSharedDrivePreflightBinding(
-            workspace_id=scope.workspace_id,
-            environment_id=scope.environment_id,
-            resource_scope_reference=scope.reference,
-            shared_drive_id=scope.drive_id,
-            connection_id=scope.connection_id,
-            authorization_generation=scope.authorization_generation,
-            configuration_generation=scope.configuration_generation,
-            allowed_file_ids=scope.allowed_file_ids,
-            allowed_spreadsheet_ids=scope.allowed_spreadsheet_ids,
-        )
-        try:
-            approval = await preflight.resolve_approval(binding)
-        except Exception:
-            raise GoogleLiveQualificationRefused(
-                "Shared Drive qualification preflight could not be verified"
-            ) from None
-        if (
-            approval is None
-            or not approval.approved
-            or approval.binding != binding
-        ):
-            raise GoogleLiveQualificationRefused(
-                "Shared Drive qualification lacks exact external approval"
+            try:
+                approval = await preflight.resolve_approval(binding)
+            except Exception:
+                raise GoogleLiveQualificationRefused(
+                    "Shared Drive qualification preflight could not be verified"
+                ) from None
+            if (
+                approval is None
+                or not approval.approved
+                or approval.binding != binding
+            ):
+                raise GoogleLiveQualificationRefused(
+                    "Shared Drive qualification lacks exact external approval"
+                )
+            try:
+                authorization = await preflight.resolve_execution_authorization(binding)
+            except Exception:
+                raise GoogleLiveQualificationRefused(
+                    "Shared Drive execution authorization could not be verified"
+                ) from None
+            if authorization is None or authorization.binding != binding:
+                raise GoogleLiveQualificationRefused(
+                    "Shared Drive qualification lacks exact live execution authorization"
+                )
+        if self.credential_preflight is not None:
+            command = GoogleReadCommand(
+                connection_id=self.config.connection.connection_id,
+                resource_scope_reference=self.config.resource_scope.reference,
+                authorization_generation=self.config.connection.authorization_generation,
+                configuration_generation=self.config.connection.configuration_generation,
             )
-        try:
-            authorization = await preflight.resolve_execution_authorization(binding)
-        except Exception:
-            raise GoogleLiveQualificationRefused(
-                "Shared Drive execution authorization could not be verified"
-            ) from None
-        if authorization is None or authorization.binding != binding:
-            raise GoogleLiveQualificationRefused(
-                "Shared Drive qualification lacks exact live execution authorization"
-            )
+            try:
+                await self.credential_preflight.verify(command, self.context)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                raise GoogleLiveQualificationRefused(
+                    "Google live credentials could not be verified"
+                ) from None
 
     def _report(
         self,
@@ -575,6 +600,7 @@ def compose_google_live_qualification_runner(
         [Awaitable[GoogleLiveProbeCounts], float], Awaitable[GoogleLiveProbeCounts]
     ] = asyncio.wait_for,
     shared_drive_preflight: GoogleSharedDrivePreflightPort | None = None,
+    credential_preflight: GoogleCredentialPreflightPort | None = None,
 ) -> GoogleLiveQualificationRunner:
     """Wire the manual probe through the same trusted read admission as production."""
 
@@ -594,6 +620,7 @@ def compose_google_live_qualification_runner(
         approval_verifier=approval_verifier,
         monotonic=monotonic,
         shared_drive_preflight=shared_drive_preflight,
+        credential_preflight=credential_preflight,
     )
 
 
@@ -608,6 +635,7 @@ def write_google_live_report(path: Path, report: GoogleLiveQualificationReport) 
 
 __all__ = [
     "GoogleLiveCredentialEnvironment",
+    "GoogleCredentialPreflightPort",
     "GoogleLiveFileTarget",
     "GoogleLiveQualificationConfig",
     "GoogleLiveQualificationProvider",

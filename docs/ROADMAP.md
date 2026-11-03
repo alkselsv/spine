@@ -233,11 +233,13 @@ target.
       command receipts, disclosure-safe snapshot/event feed с stable cursor и
       восстановление минимальной web timeline после reload (#639).
 - [ ] Google Sheets connector для реестра смет и Google Drive/file connector для материалов.
-      `implemented: concrete governed Drive v3 / Sheets v4 REST and Desktop OAuth
-      reference adapters with deterministic offline qualification (#652)`;
+      `implemented: concrete governed Drive v3 / Sheets v4 REST and
+      registration-neutral OAuth reference adapters with deterministic offline
+      qualification (#652, #887)`;
       `implemented: private local Google Desktop credential store, manual
       loopback consent and approval-bound reauthorization/revocation lifecycle
-      with offline fakes (#754)`;
+      with offline fakes (#754), retained as compatibility; implemented: Web
+      OAuth fixed-callback and env-backed isolated qualification runtime (#887)`;
       `implemented: provider-neutral connection configuration and safe operator
       inspection through PostgreSQL, /api/v1 and product UI with fake-provider
       qualification (#664)`;
