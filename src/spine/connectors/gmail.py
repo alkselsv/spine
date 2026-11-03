@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Generic, Literal, Protocol, TypeVar
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from spine.application.connections.email_read import (
     MailboxReadAdmission,
@@ -23,6 +24,13 @@ from spine.domain.connections.provider import (
     ProviderConnection,
     ProviderConnectionStatus,
     ProviderKind,
+)
+from spine.connectors.gmail_history import (
+    GmailHistoryId,
+    GmailHistoryPageRequest,
+    GmailHistoryPageSource,
+    GmailHistoryReader,
+    GmailHistoryResult,
 )
 
 
@@ -47,6 +55,22 @@ class GmailReadRequest(DefinitionModel):
     label_references: tuple[UUID, ...] = ()
     page_token: str | None = None
     max_results: int = Field(default=100, ge=1, le=500)
+    start_history_id: str | None = None
+
+
+class GmailHistoryReadCommand(MailboxReadCommand):
+    """An admitted Gmail history drain with caller-owned cursor and bounds."""
+
+    schema_version: Literal["gmail-history-read:v1"] = "gmail-history-read:v1"
+    start_history_id: GmailHistoryId
+    max_results: int = Field(ge=1, le=500)
+    max_pages: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_history_operation(self) -> "GmailHistoryReadCommand":
+        if self.operation is not EmailOperation.SYNCHRONIZE:
+            raise ValueError("Gmail history reads require synchronize operation")
+        return self
 
 
 class GmailMessageIdPage(DefinitionModel):
@@ -95,62 +119,15 @@ class GmailMailboxReader(Generic[ResultT]):
         connection: ProviderConnection,
         command: MailboxReadCommand,
     ) -> ResultT:
-        scope = command.scope
-        capability = required_mailbox_capability(command.operation)
+        request = self._build_request(connection, command)
         is_enumeration = command.operation is EmailOperation.ENUMERATE_MAILBOX
-        if (
-            capability is None
-            or connection.status is not ProviderConnectionStatus.ACTIVE
-            or connection.provider_kind is not ProviderKind.GOOGLE
-            or scope.provider_kind != ProviderKind.GOOGLE.value
-            or not scope.allows(command.operation)
-            or command.mailbox_subject_reference != scope.mailbox_subject_reference
-            or (is_enumeration and command.folder_or_label_reference is not None)
-            or (
-                not is_enumeration
-                and not scope.allows_location(command.folder_or_label_reference)
-            )
-            or connection.workspace_id != scope.workspace_id
-            or connection.environment_id != scope.environment_id
-            or connection.connection_id != scope.connection_id
-            or connection.connection_version_id != scope.connection_version_id
-            or connection.authorization_generation != scope.authorization_generation
-            or connection.configuration_generation != scope.configuration_generation
-            or OpaqueProviderReference(value=scope.resource_scope_reference)
-            not in connection.approved_resource_scope_references
-            or not connection.supports(capability)
-        ):
-            raise MailboxReadDeniedError()
-        request = GmailReadRequest(
-            operation=command.operation,
-            workspace_id=scope.workspace_id,
-            environment_id=scope.environment_id,
-            connection_id=scope.connection_id,
-            connection_version_id=scope.connection_version_id,
-            credential_reference=connection.credential_reference,
-            grant_reference=connection.grant_reference,
-            resource_scope_reference=OpaqueProviderReference(
-                value=scope.resource_scope_reference
-            ),
-            mailbox_subject_reference=scope.mailbox_subject_reference,
-            mailbox_binding_id=scope.mailbox_binding_id,
-            authorization_generation=scope.authorization_generation,
-            configuration_generation=scope.configuration_generation,
-            scope_generation=scope.scope_generation,
-            label_references=(
-                scope.allowed_label_references
-                if is_enumeration
-                else (command.folder_or_label_reference,)
-                if command.folder_or_label_reference is not None
-                else ()
-            ),
-        )
         if not is_enumeration:
             return await self._client.read(request)
 
         # Enumeration uses only messages.list metadata and an exact approved label.
         if not request.label_references or any(
-            label not in scope.allowed_label_references for label in request.label_references
+            label not in command.scope.allowed_label_references
+            for label in request.label_references
         ):
             raise MailboxReadDeniedError()
         ids: list[str] = []
@@ -188,7 +165,9 @@ class GmailMailboxReader(Generic[ResultT]):
                     truncated = True
             next_token = response.next_page_token
             if not next_token and not truncated:
-                return GmailEnumerationResult(message_ids=tuple(ids), complete=True, pages_read=pages)
+                return GmailEnumerationResult(
+                    message_ids=tuple(ids), complete=True, pages_read=pages
+                )
             if truncated:
                 return GmailEnumerationResult(
                     message_ids=tuple(ids),
@@ -201,7 +180,141 @@ class GmailMailboxReader(Generic[ResultT]):
             seen_tokens.add(next_token)
             token = next_token
         return GmailEnumerationResult(
-            message_ids=tuple(ids), complete=False, pages_read=pages, continuation_token=token
+            message_ids=tuple(ids),
+            complete=False,
+            pages_read=pages,
+            continuation_token=token,
+        )
+
+    async def read_history_page(
+        self,
+        connection: ProviderConnection,
+        command: GmailHistoryReadCommand,
+        page_request: GmailHistoryPageRequest,
+    ) -> ResultT:
+        if (
+            page_request.start_history_id != command.start_history_id
+            or page_request.max_results != command.max_results
+        ):
+            raise MailboxReadDeniedError()
+        request = self._build_request(
+            connection,
+            command,
+            start_history_id=page_request.start_history_id,
+            page_token=page_request.page_token,
+            max_results=page_request.max_results,
+        )
+        return await self._client.read(request)
+
+    @staticmethod
+    def _build_request(
+        connection: ProviderConnection,
+        command: MailboxReadCommand,
+        *,
+        start_history_id: str | None = None,
+        page_token: str | None = None,
+        max_results: int | None = None,
+    ) -> GmailReadRequest:
+        scope = command.scope
+        capability = required_mailbox_capability(command.operation)
+        is_enumeration = command.operation is EmailOperation.ENUMERATE_MAILBOX
+        if (
+            capability is None
+            or connection.status is not ProviderConnectionStatus.ACTIVE
+            or connection.provider_kind is not ProviderKind.GOOGLE
+            or scope.provider_kind != ProviderKind.GOOGLE.value
+            or not scope.allows(command.operation)
+            or command.mailbox_subject_reference != scope.mailbox_subject_reference
+            or (is_enumeration and command.folder_or_label_reference is not None)
+            or (
+                not is_enumeration
+                and not scope.allows_location(command.folder_or_label_reference)
+            )
+            or connection.workspace_id != scope.workspace_id
+            or connection.environment_id != scope.environment_id
+            or connection.connection_id != scope.connection_id
+            or connection.connection_version_id != scope.connection_version_id
+            or connection.authorization_generation != scope.authorization_generation
+            or connection.configuration_generation != scope.configuration_generation
+            or OpaqueProviderReference(value=scope.resource_scope_reference)
+            not in connection.approved_resource_scope_references
+            or not connection.supports(capability)
+        ):
+            raise MailboxReadDeniedError()
+        return GmailReadRequest(
+            operation=command.operation,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            connection_id=scope.connection_id,
+            connection_version_id=scope.connection_version_id,
+            credential_reference=connection.credential_reference,
+            grant_reference=connection.grant_reference,
+            resource_scope_reference=OpaqueProviderReference(
+                value=scope.resource_scope_reference
+            ),
+            mailbox_subject_reference=scope.mailbox_subject_reference,
+            mailbox_binding_id=scope.mailbox_binding_id,
+            authorization_generation=scope.authorization_generation,
+            configuration_generation=scope.configuration_generation,
+            scope_generation=scope.scope_generation,
+            label_references=(
+                scope.allowed_label_references
+                if is_enumeration
+                else (command.folder_or_label_reference,)
+                if command.folder_or_label_reference is not None
+                else ()
+            ),
+            start_history_id=start_history_id,
+            page_token=page_token,
+            max_results=(
+                max_results
+                if max_results is not None
+                else 100
+            ),
+        )
+
+
+class _AdmittedGmailHistoryPageSource:
+    def __init__(
+        self,
+        *,
+        reader: GmailMailboxReader[Mapping[str, object]],
+        connection: ProviderConnection,
+        command: GmailHistoryReadCommand,
+    ) -> None:
+        self._reader = reader
+        self._connection = connection
+        self._command = command
+
+    async def list_history(
+        self, request: GmailHistoryPageRequest
+    ) -> Mapping[str, object]:
+        return await self._reader.read_history_page(
+            self._connection,
+            self._command,
+            request,
+        )
+
+
+class _GmailHistoryProviderReader:
+    def __init__(self, client: GmailReadClient[Mapping[str, object]]) -> None:
+        self._mailbox_reader = GmailMailboxReader(client)
+
+    async def read(
+        self,
+        connection: ProviderConnection,
+        command: MailboxReadCommand,
+    ) -> GmailHistoryResult:
+        if not isinstance(command, GmailHistoryReadCommand):
+            raise MailboxReadDeniedError()
+        source = _AdmittedGmailHistoryPageSource(
+            reader=self._mailbox_reader,
+            connection=connection,
+            command=command,
+        )
+        return await GmailHistoryReader(source, max_pages=command.max_pages).read(
+            start_history_id=command.start_history_id,
+            max_results=command.max_results,
         )
 
 
@@ -222,11 +335,29 @@ def compose_gmail_mailbox_reader(
     )
 
 
+def compose_gmail_history_reader(
+    *,
+    scopes: MailboxScopeRepository,
+    connections: ProviderConnectionRepository,
+    client: GmailReadClient[Mapping[str, object]],
+) -> MailboxReadAdmission[GmailHistoryResult]:
+    """Compose bounded history paging behind exact mailbox read admission."""
+
+    return MailboxReadAdmission(
+        scopes=scopes,
+        connections=connections,
+        provider=_GmailHistoryProviderReader(client),
+    )
+
+
 __all__ = [
     "GmailMailboxReader",
+    "GmailHistoryReadCommand",
     "GmailReadClient",
+    "GmailHistoryPageReadRequest",
     "GmailMessageIdPage",
     "GmailEnumerationResult",
     "GmailReadRequest",
+    "compose_gmail_history_reader",
     "compose_gmail_mailbox_reader",
 ]

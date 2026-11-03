@@ -5,11 +5,20 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from enum import Enum
-from typing import Protocol
+from typing import Annotated, Literal, Protocol, TypeGuard
 
-from pydantic import Field, field_validator
+from pydantic import AfterValidator, Field
 
 from spine.domain.common import DefinitionModel
+
+
+def _validate_history_id(value: str) -> str:
+    if not value.isascii() or not value.isdecimal():
+        raise ValueError("Gmail history IDs must be decimal strings")
+    return value
+
+
+GmailHistoryId = Annotated[str, AfterValidator(_validate_history_id)]
 
 
 class GmailHistoryState(str, Enum):
@@ -28,22 +37,19 @@ class GmailHistoryChangeKind(str, Enum):
 class GmailHistoryPageRequest(DefinitionModel):
     """One bounded request for a page in the same history interval."""
 
-    start_history_id: str
+    schema_version: Literal["gmail-history-page-request:v1"] = (
+        "gmail-history-page-request:v1"
+    )
+    start_history_id: GmailHistoryId
     page_token: str | None = None
     max_results: int = Field(gt=0)
-
-    @field_validator("start_history_id")
-    @classmethod
-    def _validate_history_id(cls, value: str) -> str:
-        if not value.isascii() or not value.isdecimal():
-            raise ValueError("Gmail history IDs must be decimal strings")
-        return value
 
 
 class GmailHistoryChange(DefinitionModel):
     """One message or label observation tied to its provider history record."""
 
-    history_id: str
+    schema_version: Literal["gmail-history-change:v1"] = "gmail-history-change:v1"
+    history_id: GmailHistoryId
     kind: GmailHistoryChangeKind
     message_id: str
     label_id: str | None = None
@@ -62,9 +68,10 @@ class GmailHistoryChange(DefinitionModel):
 class GmailHistoryResult(DefinitionModel):
     """Safe outcome for a bounded history drain, including usable partial data."""
 
+    schema_version: Literal["gmail-history-result:v1"] = "gmail-history-result:v1"
     state: GmailHistoryState
     changes: tuple[GmailHistoryChange, ...] = ()
-    terminal_history_id: str | None = None
+    terminal_history_id: GmailHistoryId | None = None
     pages_read: int = Field(ge=0)
     duplicate_count: int = Field(ge=0)
     malformed_count: int = Field(ge=0)
@@ -270,8 +277,14 @@ def _normalize_record(
     return tuple(changes), malformed
 
 
-def _valid_history_id(value: object) -> bool:
-    return isinstance(value, str) and value.isascii() and value.isdecimal()
+def _valid_history_id(value: object) -> TypeGuard[str]:
+    if not isinstance(value, str):
+        return False
+    try:
+        _validate_history_id(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _valid_identifier(value: object) -> bool:
@@ -279,6 +292,7 @@ def _valid_identifier(value: object) -> bool:
 
 
 __all__ = [
+    "GmailHistoryId",
     "GmailHistoryChange",
     "GmailHistoryChangeKind",
     "GmailHistoryPageRequest",

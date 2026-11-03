@@ -90,6 +90,7 @@ async def test_history_reader_normalizes_each_change_kind_across_pages() -> None
     )
 
     assert result.state is GmailHistoryState.COMPLETE
+    assert result.schema_version == "gmail-history-result:v1"
     assert result.terminal_history_id == "103"
     assert result.pages_read == 2
     assert result.duplicate_count == 2
@@ -106,6 +107,10 @@ async def test_history_reader_normalizes_each_change_kind_across_pages() -> None
     assert [request.page_token for request in provider.requests] == [None, "page-2"]
     assert all(request.start_history_id == "98" for request in provider.requests)
     assert all(request.max_results == 25 for request in provider.requests)
+    assert all(
+        request.schema_version == "gmail-history-page-request:v1"
+        for request in provider.requests
+    )
     assert result.changes[0].event_id == '["99","label_added","message-a","INBOX"]'
 
 
