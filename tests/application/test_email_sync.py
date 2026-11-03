@@ -79,6 +79,18 @@ class FakeEffects:
         return self.receipts[effect.effect_key]
 
 
+class FailOnceAfterReceiptRepository(InMemoryEmailSyncRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.interrupted = False
+
+    async def save(self, attempt: EmailSyncAttempt) -> EmailSyncAttempt:
+        if attempt.pages and attempt.pages[0].effect_receipts and not self.interrupted:
+            self.interrupted = True
+            raise RuntimeError("synthetic interruption")
+        return await super().save(attempt)
+
+
 def mailbox_scope() -> MailboxReadScope:
     return MailboxReadScope(
         workspace_id=WORKSPACE_ID,
@@ -129,9 +141,10 @@ def coordinator(
     admission_state: EmailSyncAdmissionState = EmailSyncAdmissionState.ALLOWED,
     effects: FakeEffects | None = None,
     clock: FakeClock | None = None,
+    repository: InMemoryEmailSyncRepository | None = None,
 ) -> tuple[EmailSyncCoordinator, FakeAdmission, FakeEffects, InMemoryEmailSyncRepository]:
     effect_port = effects or FakeEffects()
-    repository = InMemoryEmailSyncRepository()
+    repository = repository or InMemoryEmailSyncRepository()
     admission = FakeAdmission(admission_state)
     service = EmailSyncCoordinator(
         repository=repository,
@@ -251,28 +264,17 @@ async def test_duplicate_page_and_effect_replay_return_stable_receipts() -> None
 
 @pytest.mark.asyncio
 async def test_retry_after_effect_receipt_before_checkpoint_commit_converges() -> None:
-    service, _, effects, repository = coordinator()
+    repository = FailOnceAfterReceiptRepository()
+    service, _, effects, _ = coordinator(repository=repository)
     attempt = await service.create_attempt(mailbox_scope(), attempt_key="sync-crash")
     submitted_page = page()
 
     # Simulate a process interruption after the external effect is durable but
     # before the coordinator records that receipt.
     effect_port = effects
-    original_save = repository.save
-    interrupted = False
-
-    async def save_with_one_interruption(record):  # type: ignore[no-untyped-def]
-        nonlocal interrupted
-        if record.pages and record.pages[0].effect_receipts and not interrupted:
-            interrupted = True
-            raise RuntimeError("synthetic interruption")
-        return await original_save(record)
-
-    repository.save = save_with_one_interruption  # type: ignore[method-assign]
     with pytest.raises(RuntimeError, match="synthetic interruption"):
         await apply_page(service, attempt.attempt_id, submitted_page)
 
-    repository.save = original_save  # type: ignore[method-assign]
     result = await apply_page(service, attempt.attempt_id, submitted_page)
 
     assert result.status is EmailSyncStatus.RUNNING
