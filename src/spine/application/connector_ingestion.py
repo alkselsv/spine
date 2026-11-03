@@ -42,7 +42,10 @@ from spine.application.lifecycle import (
     LifecycleEligibilityQuery,
     require_current_read_eligibility,
 )
-from spine.application.persistence.errors import OptimisticConflictError
+from spine.application.persistence.errors import (
+    IdempotencyConflictError,
+    OptimisticConflictError,
+)
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.ingestion import (
     IngestionBindingCommand,
@@ -67,6 +70,8 @@ from spine.domain.audit import (
 )
 from spine.domain.common import ContextOrigin, VersionIdentifier
 from spine.domain.ingestion import (
+    FailureStage,
+    IngestionFailure,
     IngestionItemState,
     IngestionRun,
     IngestionRunSource,
@@ -76,6 +81,7 @@ from spine.domain.ingestion import (
     IngestionTransition,
     ProcessingCoverage,
     ProcessingReceipt,
+    SafeDiagnosticDetail,
 )
 from spine.domain.sources import (
     AdmissionDecision,
@@ -110,6 +116,7 @@ from spine.connectors.observations_v2 import (
     LifecycleObservationRepresentation,
     NormalizedExternalObservationV2,
     ProviderFileKey,
+    ProviderImapMessageKey,
     ProviderTabularRecordKey,
 )
 from spine.connectors.google_observation_compatibility import (
@@ -363,7 +370,18 @@ class ConnectorIngestionOrchestrator:
                 "Lifecycle-only observations cannot enter content ingestion."
             )
 
-        run, item, replay = await self._ensure_run(command, observation)
+        try:
+            run, item, replay = await self._ensure_run(command, observation)
+        except IdempotencyConflictError:
+            if _is_immutable_imap_observation(observation):
+                conflict_item = await self._create_imap_conflict_item(
+                    command, observation
+                )
+                if conflict_item is not None:
+                    await self._quarantine_observation_conflict(
+                        command, conflict_item
+                    )
+            raise
         upload = await self._upload(command, observation)
         await self._require_lifecycle_eligibility(command, read_context)
         source, revision, provenance, binding, observation_command = self._build_observation(
@@ -441,7 +459,14 @@ class ConnectorIngestionOrchestrator:
                 idempotency_key=observation_command.idempotency_key,
                 receipt_association=association,
             )
-        source = await self._bind_source(command, item, binding, observation_command, source)
+        try:
+            source = await self._bind_source(
+                command, item, binding, observation_command, source
+            )
+        except IdempotencyConflictError:
+            if _is_immutable_imap_observation(observation):
+                await self._quarantine_observation_conflict(command, item)
+            raise
         admission = await self._record_admission(command, item, revision, provenance, observation)
         canonical_command = self.canonical_command_factory(
             command=command,
@@ -816,6 +841,119 @@ class ConnectorIngestionOrchestrator:
             await uow.commit()
             return decision
 
+    async def _quarantine_observation_conflict(
+        self,
+        command: ConnectorIngestionCommand,
+        item: IngestionRunSource,
+    ) -> None:
+        """Record a content mismatch under one immutable IMAP identity."""
+
+        context = self.context_factory(
+            PersistenceOperation("ingestion_run"), _id(command, "quarantine")
+        )
+        async with self.uow_factory(context) as uow:
+            head = await uow.ingestion.resolve_item_head(
+                item.ingestion_run_source_id
+            )
+            if head is None:
+                await uow.rollback()
+                return
+
+            failures = await uow.ingestion.resolve_failures(
+                item.ingestion_run_source_id
+            )
+            if not any(failure.code == "observation_conflict" for failure in failures):
+                await uow.ingestion.append_failure(
+                    IngestionFailure(
+                        ingestion_failure_id=uuid5(
+                            NAMESPACE_URL,
+                            (
+                                "spine:connector-ingestion-failure:v1:"
+                                f"{item.ingestion_run_source_id}:observation_conflict"
+                            ),
+                        ),
+                        workspace_id=item.workspace_id,
+                        environment_id=item.environment_id,
+                        ingestion_run_source_id=item.ingestion_run_source_id,
+                        attempt=head.attempt,
+                        stage=FailureStage.OBSERVING,
+                        code="observation_conflict",
+                        retryable=False,
+                        safe_detail=SafeDiagnosticDetail(
+                            schema_version="ingestion-safe-detail:v1",
+                            retryable=False,
+                        ),
+                        occurred_at=self._now(),
+                    )
+                )
+
+            if head.state in {
+                IngestionItemState.RECEIVED,
+                IngestionItemState.OBSERVED,
+                IngestionItemState.ADMISSION_PENDING,
+            }:
+                await self._append_transition(
+                    uow, item, IngestionItemState.QUARANTINED, self._now()
+                )
+            await uow.commit()
+
+    async def _create_imap_conflict_item(
+        self,
+        command: ConnectorIngestionCommand,
+        observation: ConnectorObservation,
+    ) -> IngestionRunSource | None:
+        """Create a distinct ledger item for a conflicting replay attempt."""
+
+        digest = _observation_digest(command, observation)
+        context = self.context_factory(
+            PersistenceOperation("ingestion_run"),
+            _id(command, "quarantine-item-context"),
+        )
+        async with self.uow_factory(context) as uow:
+            accepted_item = await uow.ingestion.resolve_item(_id(command, "item"))
+            if (
+                accepted_item is None
+                or accepted_item.input_identity
+                != observation.external_identity.external_object_id
+            ):
+                await uow.rollback()
+                return None
+
+            conflict_item_id = _stable_id(
+                "quarantine-item",
+                accepted_item.ingestion_run_source_id,
+                observation.event_digest,
+            )
+            existing_conflict = await uow.ingestion.resolve_item(conflict_item_id)
+            if existing_conflict is not None:
+                if (
+                    existing_conflict.ingestion_run_id != accepted_item.ingestion_run_id
+                    or existing_conflict.input_digest != digest
+                ):
+                    raise IdempotencyConflictError(
+                        "IMAP quarantine item identity conflicts."
+                    )
+                await uow.rollback()
+                return existing_conflict
+
+            conflict_item = IngestionRunSource(
+                ingestion_run_source_id=conflict_item_id,
+                ingestion_run_id=accepted_item.ingestion_run_id,
+                workspace_id=accepted_item.workspace_id,
+                environment_id=accepted_item.environment_id,
+                input_ordinal=2 + int(observation.event_digest[:7], 16),
+                input_identity=f"quarantine.{observation.event_digest[:52]}",
+                input_digest=digest,
+                command_identity=_identifier(
+                    command, f"quarantine-{observation.event_digest[:12]}"
+                ),
+                command_digest=digest,
+                created_at=self._now(),
+            )
+            stored = await uow.ingestion.create_item(conflict_item)
+            await uow.commit()
+            return stored
+
     async def _record_processing(
         self,
         *,
@@ -1116,6 +1254,38 @@ def _revision_metadata(observation: ConnectorObservation) -> RevisionMetadata:
                 observation.external_identity.assurance_evidence_reference
             ),
         )
+    if (
+        isinstance(observation, NormalizedExternalObservationV2)
+        and isinstance(observation.representation, BinaryObservationRepresentation)
+        and observation.representation.imap_revision_evidence is not None
+    ):
+        evidence = observation.representation.imap_revision_evidence
+        provider_payload = evidence.canonical_payload()
+        provider_payload_digest = hashlib.sha256(
+            json.dumps(
+                provider_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        external_file_revision = ExternalFileRevisionMetadata(
+            provider_kind=observation.provider_kind.value,
+            provider_revision=(
+                f"imap:{evidence.uid_validity}:{evidence.uid}:"
+                f"{evidence.content_sha256}"
+            ),
+            provider_resource_id=observation.external_identity.external_object_id,
+            content_sha256=evidence.content_sha256,
+            byte_length=evidence.byte_length,
+            modified_at=evidence.internal_date,
+            provider_payload=provider_payload,
+            provider_payload_digest=provider_payload_digest,
+            identity_assurance=observation.external_identity.assurance.value,
+            assurance_evidence_reference=(
+                observation.external_identity.assurance_evidence_reference
+            ),
+        )
     return RevisionMetadata(
         representation_profile=observation.extraction_profile,
         external_file_revision=external_file_revision,
@@ -1201,6 +1371,16 @@ def _has_stable_lifecycle_identity(observation: ConnectorObservation) -> bool:
             ExternalIdentityAssurance.SCOPE_STABLE,
         }
         and isinstance(key, (ProviderFileKey, ProviderTabularRecordKey))
+    )
+
+
+def _is_immutable_imap_observation(observation: ConnectorObservation) -> bool:
+    return (
+        isinstance(observation, NormalizedExternalObservationV2)
+        and isinstance(
+            observation.external_identity.provider_key,
+            ProviderImapMessageKey,
+        )
     )
 
 

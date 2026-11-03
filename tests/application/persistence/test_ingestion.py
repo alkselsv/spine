@@ -18,6 +18,7 @@ from spine.application.persistence.ingestion import (
     IngestionBindingCommand,
     IngestionRunCommand,
     deterministic_receipt_id,
+    validate_transition,
 )
 from spine.application.persistence.repositories import SourceObservationCommand
 from spine.application.persistence.outbox import OutboxEventRegistry
@@ -59,6 +60,40 @@ def context(boundary: TrustedContextBoundary, operation: str):
         operation=PersistenceOperation(operation),
         trace_id=uuid5(NAMESPACE_URL, f"trace-{operation}"),
     )
+
+
+def test_received_item_can_transition_directly_to_quarantine() -> None:
+    run_id = uuid5(NAMESPACE_URL, "quarantine-run")
+    item_id = uuid5(NAMESPACE_URL, "quarantine-item")
+    received = IngestionTransition(
+        ingestion_transition_id=uuid5(NAMESPACE_URL, "quarantine-received"),
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        target_kind=IngestionTargetKind.ITEM,
+        ingestion_run_id=run_id,
+        ingestion_run_source_id=item_id,
+        state=IngestionItemState.RECEIVED,
+        attempt=1,
+        actor_or_service="ingestion-ledger",
+        trace_id=uuid5(NAMESPACE_URL, "quarantine-trace"),
+        occurred_at=NOW,
+    )
+    quarantined = IngestionTransition(
+        ingestion_transition_id=uuid5(NAMESPACE_URL, "quarantine-terminal"),
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        target_kind=IngestionTargetKind.ITEM,
+        ingestion_run_id=run_id,
+        ingestion_run_source_id=item_id,
+        predecessor_transition_id=received.ingestion_transition_id,
+        state=IngestionItemState.QUARANTINED,
+        attempt=2,
+        actor_or_service="connector-ingestion",
+        trace_id=received.trace_id,
+        occurred_at=NOW,
+    )
+
+    validate_transition(received, quarantined)
 
 
 @pytest.fixture
