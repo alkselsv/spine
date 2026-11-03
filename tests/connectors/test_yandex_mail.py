@@ -32,6 +32,10 @@ from spine.connectors.yandex_mail_folders import (
     YandexMailListedFolder,
     discover_approved_yandex_mail_folders,
 )
+from spine.connectors.yandex_mail_generation import (
+    YandexMailFolderExamineTranscript,
+    YandexMailFolderGenerationCode,
+)
 from spine.domain.common import ContextOrigin
 from spine.domain.connections.email_scope import (
     EmailOperation,
@@ -73,6 +77,7 @@ def _scope(**changes: object) -> MailboxReadScope:
         "allowed_folder_references": (_id(11),),
         "allowed_operations": (
             EmailProviderOperation.ENUMERATE_MAILBOX,
+            EmailProviderOperation.OBSERVE_FOLDER_GENERATION,
             EmailProviderOperation.READ_MESSAGE_METADATA,
             EmailProviderOperation.READ_RAW_MESSAGE,
             EmailProviderOperation.READ_ATTACHMENT,
@@ -113,7 +118,14 @@ def _connection(
         "authorization_generation": 8,
         "configuration_generation": 9,
         "status": status,
-        "capabilities": (capability,),
+        "capabilities": (
+            capability,
+            ProviderCapability(
+                kind=ProviderCapabilityKind.MAILBOX_ENUMERATION,
+                status=ProviderCapabilityStatus.SUPPORTED,
+                qualification_reference=OpaqueProviderReference(value=_id(31)),
+            ),
+        ),
     }
     values.update(changes)
     return ProviderConnection(**values)
@@ -196,11 +208,13 @@ class _Credentials:
 class _Imap:
     def __init__(self) -> None:
         self.tls_calls = []
+        self.closed_sessions = 0
         self.authentication_transcript = []
         self.read_calls = []
         self.open_failure: Exception | None = None
         self.authentication_failure: Exception | None = None
         self.read_result: object = "synthetic-result"
+        self.read_failure: Exception | None = None
 
     async def open_tls(self, *, host, port, server_hostname, ssl_context):
         self.tls_calls.append((host, port, server_hostname, ssl_context))
@@ -222,9 +236,12 @@ class _ImapSession:
 
     async def read(self, request):
         self.transport.read_calls.append(request)
+        if self.transport.read_failure is not None:
+            raise self.transport.read_failure
         return self.transport.read_result
 
     async def close(self):
+        self.transport.closed_sessions += 1
         return None
 
 
@@ -233,12 +250,14 @@ def _command(
     operation: EmailOperation = EmailOperation.READ_MESSAGE_METADATA,
     *,
     location: UUID | None = _id(11),
+    expected_uid_validity: int | None = None,
 ) -> MailboxReadCommand:
     return MailboxReadCommand(
         scope=scope,
         operation=operation,
         mailbox_subject_reference=scope.mailbox_subject_reference,
         folder_or_label_reference=location,
+        expected_uid_validity=expected_uid_validity,
     )
 
 
@@ -287,6 +306,138 @@ async def test_yandex_mail_composition_uses_tls_verified_xoauth2_and_read_only_s
     assert tls_context.verify_mode is ssl.CERT_REQUIRED
     assert imap.authentication_transcript == ["AUTHENTICATE XOAUTH2"]
     assert _TOKEN not in repr(imap.authentication_transcript)
+
+
+@pytest.mark.asyncio
+async def test_folder_generation_observation_issues_only_examine_and_retains_evidence() -> None:
+    scope = _scope()
+    composition, _, _, _, imap = _composition(scope=scope)
+    imap.read_result = YandexMailFolderExamineTranscript(
+        workspace_id=scope.workspace_id,
+        environment_id=scope.environment_id,
+        connection_id=scope.connection_id,
+        connection_version_id=scope.connection_version_id,
+        mailbox_binding_id=scope.mailbox_binding_id,
+        folder_reference=_id(11),
+        authorization_generation=scope.authorization_generation,
+        configuration_generation=scope.configuration_generation,
+        scope_generation=scope.scope_generation,
+        command_names=("EXAMINE",),
+        response_lines=(
+            b"* OK [UIDVALIDITY 101] synthetic generation",
+            b"* OK [UIDNEXT 42] synthetic next UID",
+            b"A001 OK [READ-ONLY] EXAMINE complete",
+        ),
+    )
+
+    result = await composition.read(
+        _command(scope, EmailOperation.OBSERVE_FOLDER_GENERATION), _context()
+    )
+
+    assert result.code is YandexMailFolderGenerationCode.COMPLETE
+    assert result.connection_id == scope.connection_id
+    assert result.authorization_generation == scope.authorization_generation
+    assert result.configuration_generation == scope.configuration_generation
+    assert result.uid_validity == 101
+    assert result.uid_next == 42
+    request = imap.read_calls[0]
+    assert request.operation is EmailOperation.OBSERVE_FOLDER_GENERATION
+    assert request.selection_command == "EXAMINE"
+    assert request.folder_reference == _id(11)
+    assert request.security.read_only is True
+
+
+@pytest.mark.asyncio
+async def test_folder_generation_raw_server_failure_is_typed_and_disclosure_safe() -> None:
+    scope = _scope()
+    composition, _, _, _, imap = _composition(scope=scope)
+    imap.read_failure = RuntimeError(
+        "private subject sender@example.test raw provider payload"
+    )
+
+    result = await composition.read(
+        _command(scope, EmailOperation.OBSERVE_FOLDER_GENERATION), _context()
+    )
+
+    assert result.complete is False
+    assert result.code is YandexMailFolderGenerationCode.SERVER_REJECTED
+    assert "private subject" not in repr(result)
+    assert "sender@example.test" not in repr(result)
+    assert "raw provider payload" not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_folder_generation_reset_is_typed_when_prior_generation_is_supplied() -> None:
+    scope = _scope()
+    composition, _, _, _, imap = _composition(scope=scope)
+    imap.read_result = YandexMailFolderExamineTranscript(
+        workspace_id=scope.workspace_id,
+        environment_id=scope.environment_id,
+        connection_id=scope.connection_id,
+        connection_version_id=scope.connection_version_id,
+        mailbox_binding_id=scope.mailbox_binding_id,
+        folder_reference=_id(11),
+        authorization_generation=scope.authorization_generation,
+        configuration_generation=scope.configuration_generation,
+        scope_generation=scope.scope_generation,
+        command_names=("EXAMINE",),
+        response_lines=(
+            b"* OK [UIDVALIDITY 102] reset generation",
+            b"* OK [UIDNEXT 1] next available UID",
+            b"A001 OK [READ-ONLY] EXAMINE complete",
+        ),
+    )
+
+    result = await composition.read(
+        _command(
+            scope,
+            EmailOperation.OBSERVE_FOLDER_GENERATION,
+            expected_uid_validity=101,
+        ),
+        _context(),
+    )
+
+    assert result.complete is False
+    assert result.code is YandexMailFolderGenerationCode.UIDVALIDITY_CHANGED
+    assert result.uid_validity == 102
+    assert result.uid_next == 1
+    assert imap.read_calls[0].expected_uid_validity == 101
+
+
+@pytest.mark.asyncio
+async def test_folder_generation_is_reobserved_after_reconnect() -> None:
+    scope = _scope()
+    composition, _, _, _, imap = _composition(scope=scope)
+    imap.read_result = YandexMailFolderExamineTranscript(
+        workspace_id=scope.workspace_id,
+        environment_id=scope.environment_id,
+        connection_id=scope.connection_id,
+        connection_version_id=scope.connection_version_id,
+        mailbox_binding_id=scope.mailbox_binding_id,
+        folder_reference=_id(11),
+        authorization_generation=scope.authorization_generation,
+        configuration_generation=scope.configuration_generation,
+        scope_generation=scope.scope_generation,
+        command_names=("EXAMINE",),
+        response_lines=(
+            b"* OK [UIDVALIDITY 101] synthetic generation",
+            b"* OK [UIDNEXT 42] synthetic next UID",
+            b"A001 OK [READ-ONLY] EXAMINE complete",
+        ),
+    )
+
+    first = await composition.read(
+        _command(scope, EmailOperation.OBSERVE_FOLDER_GENERATION), _context()
+    )
+    after_reconnect = await composition.read(
+        _command(scope, EmailOperation.OBSERVE_FOLDER_GENERATION), _context()
+    )
+
+    assert first == after_reconnect
+    assert first.code is YandexMailFolderGenerationCode.COMPLETE
+    assert len(imap.tls_calls) == 2
+    assert len(imap.read_calls) == 2
+    assert imap.closed_sessions == 2
 
 
 @pytest.mark.asyncio

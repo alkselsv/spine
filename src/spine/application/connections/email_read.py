@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Generic, Literal, Protocol, TypeVar
 from uuid import UUID
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StrictInt, field_validator, model_validator
 
 from spine.application.connections.provider import (
     ProviderConnectionRepository,
@@ -42,6 +42,7 @@ class MailboxReadCommand(DefinitionModel):
     enumeration_max_response_bytes: int | None = Field(
         default=None, ge=1024, le=8_388_608
     )
+    expected_uid_validity: StrictInt | None = Field(default=None, ge=1, le=2**32 - 1)
 
     @field_validator("mailbox_subject_reference", "folder_or_label_reference")
     @classmethod
@@ -58,6 +59,11 @@ class MailboxReadCommand(DefinitionModel):
             raise ValueError("mailbox enumeration bounds must be provided together")
         if has_item_limit and self.operation is not EmailOperation.ENUMERATE_MAILBOX:
             raise ValueError("enumeration bounds apply only to mailbox enumeration")
+        if (
+            self.expected_uid_validity is not None
+            and self.operation is not EmailOperation.OBSERVE_FOLDER_GENERATION
+        ):
+            raise ValueError("expected UIDVALIDITY applies only to generation observation")
         return self
 
 
@@ -86,6 +92,7 @@ _REQUIRED_CAPABILITY: dict[EmailOperation, ProviderCapabilityKind] = {
     EmailOperation.READ_RAW_MESSAGE: ProviderCapabilityKind.RAW_MESSAGE_READ,
     EmailOperation.READ_ATTACHMENT: ProviderCapabilityKind.ATTACHMENT_READ,
     EmailOperation.SYNCHRONIZE: ProviderCapabilityKind.INCREMENTAL_CHANGE_DISCOVERY,
+    EmailOperation.OBSERVE_FOLDER_GENERATION: ProviderCapabilityKind.MAILBOX_ENUMERATION,
 }
 
 

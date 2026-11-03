@@ -24,6 +24,12 @@ from spine.domain.connections.provider import (
     ProviderKind,
     OpaqueProviderReference,
 )
+from spine.connectors.yandex_mail_generation import (
+    YandexMailFolderExamineTranscript,
+    YandexMailFolderGenerationCode,
+    failed_yandex_mail_folder_generation_observation,
+    observe_yandex_mail_folder_generation,
+)
 
 
 YANDEX_MAIL_IMAP_HOST = "imap.yandex.ru"
@@ -90,6 +96,8 @@ class YandexMailImapReadRequest(DefinitionModel):
     )
     enumeration_max_items: int | None = None
     enumeration_max_response_bytes: int | None = None
+    expected_uid_validity: int | None = None
+    selection_command: Literal["EXAMINE"] | None = None
     security: YandexMailImapSecurity = YandexMailImapSecurity()
 
 
@@ -169,8 +177,14 @@ class _YandexMailProviderAdapter:
             scope_generation=scope.scope_generation,
             operation=command.operation,
             folder_reference=command.folder_or_label_reference,
+            selection_command=(
+                "EXAMINE"
+                if command.operation is EmailOperation.OBSERVE_FOLDER_GENERATION
+                else None
+            ),
             enumeration_max_items=command.enumeration_max_items,
             enumeration_max_response_bytes=command.enumeration_max_response_bytes,
+            expected_uid_validity=command.expected_uid_validity,
         )
         ssl_context = ssl.create_default_context()
         if (
@@ -190,7 +204,29 @@ class _YandexMailProviderAdapter:
                 mailbox_login=credential.mailbox_login,
                 access_token=credential.access_token,
             )
-            return await session.read(request)
+            try:
+                result = await session.read(request)
+            except Exception:
+                if command.operation is EmailOperation.OBSERVE_FOLDER_GENERATION:
+                    return failed_yandex_mail_folder_generation_observation(
+                        scope=scope,
+                        code=YandexMailFolderGenerationCode.SERVER_REJECTED,
+                    )  # type: ignore[return-value]
+                raise
+            if command.operation is EmailOperation.OBSERVE_FOLDER_GENERATION:
+                if not isinstance(result, YandexMailFolderExamineTranscript):
+                    return failed_yandex_mail_folder_generation_observation(
+                        scope=scope,
+                        code=YandexMailFolderGenerationCode.MALFORMED_RESPONSE,
+                    )  # type: ignore[return-value]
+                assert command.folder_or_label_reference is not None
+                return observe_yandex_mail_folder_generation(
+                    scope=scope,
+                    folder_reference=command.folder_or_label_reference,
+                    transcript=result,
+                    expected_uid_validity=command.expected_uid_validity,
+                )  # type: ignore[return-value]
+            return result
         except Exception:
             raise YandexMailAuthorityDeniedError() from None
         finally:
@@ -225,6 +261,7 @@ def _required_capability(operation: EmailOperation) -> ProviderCapabilityKind | 
         EmailOperation.READ_RAW_MESSAGE: ProviderCapabilityKind.RAW_MESSAGE_READ,
         EmailOperation.READ_ATTACHMENT: ProviderCapabilityKind.ATTACHMENT_READ,
         EmailOperation.SYNCHRONIZE: ProviderCapabilityKind.INCREMENTAL_CHANGE_DISCOVERY,
+        EmailOperation.OBSERVE_FOLDER_GENERATION: ProviderCapabilityKind.MAILBOX_ENUMERATION,
     }.get(operation)
 
 
