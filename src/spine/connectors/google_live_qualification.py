@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 import asyncio
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 import json
@@ -32,8 +32,11 @@ from spine.application.diagnostics import DiagnosticEventRegistry, DiagnosticSin
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.connectors.google_api import (
     GoogleApiEndpoints,
+    GoogleApiRequest,
     GoogleApiRequestPolicy,
+    GoogleApiResponse,
     GoogleApiService,
+    GoogleApiTransport,
     GoogleResourceScope,
     google_api_configuration_fingerprint,
 )
@@ -153,6 +156,9 @@ class GoogleLiveQualificationConfig(DefinitionModel):
     shared_drive_approved: StrictBool
     execution_envelope: GoogleExecutionEnvelope
 
+    def __repr__(self) -> str:
+        return "GoogleLiveQualificationConfig(<redacted>)"
+
     @model_validator(mode="after")
     def validate_exact_scope(self) -> "GoogleLiveQualificationConfig":
         if self.connection.status is not GoogleConnectionStatus.ACTIVE:
@@ -208,8 +214,12 @@ class GoogleLiveQualificationConfig(DefinitionModel):
         material = {
             "api_configuration_fingerprint": self.api_configuration_fingerprint,
             "execution_envelope": self.execution_envelope.model_dump(mode="json"),
-            "file_targets": [target.model_dump(mode="json") for target in self.file_targets],
-            "sheet_targets": [target.model_dump(mode="json") for target in self.sheet_targets],
+            "file_targets": [
+                target.model_dump(mode="json") for target in self.file_targets
+            ],
+            "sheet_targets": [
+                target.model_dump(mode="json") for target in self.sheet_targets
+            ],
         }
         encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
@@ -218,8 +228,8 @@ class GoogleLiveQualificationConfig(DefinitionModel):
 class GoogleLiveQualificationReport(DefinitionModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: Literal["google-live-qualification-report:v1"] = (
-        "google-live-qualification-report:v1"
+    schema_version: Literal["google-live-qualification-report:v2"] = (
+        "google-live-qualification-report:v2"
     )
     status: Literal["passed", "failed"]
     provider: Literal["google"] = "google"
@@ -233,7 +243,11 @@ class GoogleLiveQualificationReport(DefinitionModel):
     snapshot_pages: int = Field(ge=0)
     change_pages: int = Field(ge=0)
     sheet_pages: int = Field(ge=0)
+    oauth_request_attempts: int = Field(ge=0)
+    drive_request_attempts: int = Field(ge=0)
+    sheets_request_attempts: int = Field(ge=0)
     shared_drive_status: Literal["EXERCISED", "NOT_EXERCISED"]
+    failure_stage: Literal["oauth_refresh", "drive", "sheets", "harness"] | None
     failure_code: (
         Literal[
             "authorization_revoked",
@@ -254,8 +268,14 @@ class GoogleLiveQualificationReport(DefinitionModel):
     source_content_recorded: Literal[False] = False
     raw_errors_recorded: Literal[False] = False
 
+    @model_validator(mode="after")
+    def validate_failure_stage(self) -> "GoogleLiveQualificationReport":
+        if (self.status == "passed") != (self.failure_stage is None):
+            raise ValueError("Google live report failure stage contradicts status")
+        return self
 
-@dataclass(frozen=True, slots=True)
+
+@dataclass(slots=True)
 class GoogleLiveProbeCounts:
     metadata_reads: int = 0
     downloads: int = 0
@@ -264,8 +284,81 @@ class GoogleLiveProbeCounts:
     change_pages: int = 0
     sheet_pages: int = 0
 
+    def reset(self) -> None:
+        self.metadata_reads = 0
+        self.downloads = 0
+        self.exports = 0
+        self.snapshot_pages = 0
+        self.change_pages = 0
+        self.sheet_pages = 0
 
-@dataclass(frozen=True, slots=True)
+
+GoogleLiveProviderStage = Literal["oauth_refresh", "drive", "sheets"]
+
+
+@dataclass(slots=True)
+class GoogleLiveTransportAttemptEvidence:
+    """Closed, in-memory counters shared by one qualification run."""
+
+    oauth_request_attempts: int = 0
+    drive_request_attempts: int = 0
+    sheets_request_attempts: int = 0
+    last_stage: GoogleLiveProviderStage | None = None
+
+    def record(self, stage: GoogleLiveProviderStage) -> None:
+        self.last_stage = stage
+        if stage == "oauth_refresh":
+            self.oauth_request_attempts += 1
+        elif stage == "drive":
+            self.drive_request_attempts += 1
+        else:
+            self.sheets_request_attempts += 1
+
+    def reset(self) -> None:
+        self.oauth_request_attempts = 0
+        self.drive_request_attempts = 0
+        self.sheets_request_attempts = 0
+        self.last_stage = None
+
+
+@dataclass(slots=True)
+class GoogleLiveRunProgress:
+    """Mutable evidence owned by exactly one qualification runner."""
+
+    attempt_evidence: GoogleLiveTransportAttemptEvidence = field(
+        default_factory=GoogleLiveTransportAttemptEvidence
+    )
+    probe_counts: GoogleLiveProbeCounts = field(default_factory=GoogleLiveProbeCounts)
+
+    def reset(self) -> None:
+        self.attempt_evidence.reset()
+        self.probe_counts.reset()
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class GoogleLiveAttemptCountingTransport:
+    """Count a bounded provider attempt immediately before transport I/O."""
+
+    transport: GoogleApiTransport
+    endpoints: GoogleApiEndpoints
+    evidence: GoogleLiveTransportAttemptEvidence
+
+    async def request(self, request: GoogleApiRequest) -> GoogleApiResponse:
+        stage = self._stage(request.url)
+        self.evidence.record(stage)
+        return await self.transport.request(request)
+
+    def _stage(self, url: str) -> GoogleLiveProviderStage:
+        if url == self.endpoints.oauth_token_url:
+            return "oauth_refresh"
+        if _is_provider_endpoint(url, self.endpoints.drive_base_url):
+            return "drive"
+        if _is_provider_endpoint(url, self.endpoints.sheets_base_url):
+            return "sheets"
+        raise GoogleProviderContractError()
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class GoogleLiveQualificationProvider:
     """Execute a live probe only with the repository-admitted connection version."""
 
@@ -275,13 +368,17 @@ class GoogleLiveQualificationProvider:
     wait_for: Callable[
         [Awaitable[GoogleLiveProbeCounts], float], Awaitable[GoogleLiveProbeCounts]
     ] = asyncio.wait_for
+    progress: GoogleLiveRunProgress = field(default_factory=GoogleLiveRunProgress)
 
     async def read(
         self, connection: GoogleConnection, command: GoogleReadCommand
     ) -> GoogleLiveProbeCounts:
+        self.progress.probe_counts.reset()
         duration = self.config.execution_envelope.max_run_duration_seconds
         deadline = self.monotonic() + duration
-        run_task = asyncio.create_task(self._read_with_budget(connection, command, deadline))
+        run_task = asyncio.create_task(
+            self._read_with_budget(connection, command, deadline)
+        )
         try:
             return await self.wait_for(run_task, duration)
         except asyncio.TimeoutError:
@@ -312,8 +409,13 @@ class GoogleLiveQualificationProvider:
             raise GoogleProviderContractError()
         _validate_configured_limits(self.config)
         budget = GoogleExecutionBudget(self.config.execution_envelope)
+        counting_transport = GoogleLiveAttemptCountingTransport(
+            transport=self.service.transport,
+            endpoints=self.config.endpoints,
+            evidence=self.progress.attempt_evidence,
+        )
         bounded_transport = GoogleBoundedResponseTransport(
-            self.service.transport,
+            counting_transport,
             budget,
             deadline=deadline,
             monotonic=self.monotonic,
@@ -335,8 +437,8 @@ class GoogleLiveQualificationProvider:
                         "Google qualification deadline exceeded."
                     ) from None
                 raise
-        metadata_reads = downloads = exports = 0
-        snapshot_pages = change_pages = sheet_pages = 0
+
+        counts = self.progress.probe_counts
         with (
             self.service.using_run_request_budget(),
             self.service.using_transport(bounded_transport, sleep=bounded_sleep),
@@ -347,7 +449,7 @@ class GoogleLiveQualificationProvider:
                     self.config.resource_scope.reference,
                     target.file_id,
                 )
-                metadata_reads += 1
+                counts.metadata_reads += 1
                 if target.download:
                     await self.service.download(
                         connection,
@@ -355,7 +457,7 @@ class GoogleLiveQualificationProvider:
                         target.file_id,
                         metadata.version,
                     )
-                    downloads += 1
+                    counts.downloads += 1
                 for media_type in target.export_mime_types:
                     await self.service.export(
                         connection,
@@ -364,7 +466,7 @@ class GoogleLiveQualificationProvider:
                         metadata.version,
                         media_type,
                     )
-                    exports += 1
+                    counts.exports += 1
             if (
                 self.config.resource_scope.folder_id is not None
                 or self.config.resource_scope.drive_id is not None
@@ -378,14 +480,14 @@ class GoogleLiveQualificationProvider:
                     self.config.resource_scope.reference,
                     None,
                 )
-                snapshot_pages += 1
+                counts.snapshot_pages += 1
                 budget.reserve_page()
                 await self.service.list_changes(
                     connection,
                     self.config.resource_scope.reference,
                     start_token,
                 )
-                change_pages += 1
+                counts.change_pages += 1
             for target in self.config.sheet_targets:
                 for a1_range in target.a1_ranges:
                     token: str | None = None
@@ -400,23 +502,16 @@ class GoogleLiveQualificationProvider:
                             token,
                         )
                         budget.add_rows(len(page.rows))
-                        sheet_pages += 1
+                        counts.sheet_pages += 1
                         if page.complete:
                             break
                         if page.next_page_token is None:
                             raise GoogleProviderContractError()
                         token = page.next_page_token
-        return GoogleLiveProbeCounts(
-            metadata_reads=metadata_reads,
-            downloads=downloads,
-            exports=exports,
-            snapshot_pages=snapshot_pages,
-            change_pages=change_pages,
-            sheet_pages=sheet_pages,
-        )
+        return counts
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class GoogleLiveQualificationRunner:
     config: GoogleLiveQualificationConfig
     admission: GoogleReadAdmission[GoogleLiveProbeCounts]
@@ -428,9 +523,11 @@ class GoogleLiveQualificationRunner:
     ] = asyncio.wait_for
     shared_drive_preflight: GoogleSharedDrivePreflightPort | None = None
     credential_preflight: GoogleCredentialPreflightPort | None = None
+    progress: GoogleLiveRunProgress = field(default_factory=GoogleLiveRunProgress)
 
     async def run(self, *, environment_opt_in: bool) -> GoogleLiveQualificationReport:
-        counts = GoogleLiveProbeCounts()
+        self.progress.reset()
+        counts = self.progress.probe_counts
         try:
             run_started = self.monotonic()
             await self.preflight(environment_opt_in=environment_opt_in)
@@ -468,31 +565,51 @@ class GoogleLiveQualificationRunner:
                 raise
         except GoogleProviderReadError as error:
             return self._report(
-                status="failed", failure_code=error.failure_code, counts=counts
+                status="failed",
+                failure_code=error.failure_code,
+                failure_stage=self._provider_failure_stage(),
+                counts=counts,
             )
         except GoogleExecutionLimitExceeded:
             return self._report(
-                status="failed", failure_code="resource_limit_exceeded", counts=counts
+                status="failed",
+                failure_code="resource_limit_exceeded",
+                failure_stage="harness",
+                counts=counts,
             )
         except GoogleExecutionDeadlineExceeded:
             return self._report(
-                status="failed", failure_code="deadline_exceeded", counts=counts
+                status="failed",
+                failure_code="deadline_exceeded",
+                failure_stage=self._provider_failure_stage(),
+                counts=counts,
             )
         except asyncio.CancelledError:
-            return self._report(status="failed", failure_code="cancelled", counts=counts)
+            return self._report(
+                status="failed",
+                failure_code="cancelled",
+                failure_stage="harness",
+                counts=counts,
+            )
         except GoogleLiveQualificationRefused:
             raise
         except GoogleConnectionError:
             return self._report(
                 status="failed",
                 failure_code="provider_contract_rejected",
+                failure_stage=self._provider_failure_stage(),
                 counts=counts,
             )
         except Exception:
             return self._report(
-                status="failed", failure_code="harness_failure", counts=counts
+                status="failed",
+                failure_code="harness_failure",
+                failure_stage="harness",
+                counts=counts,
             )
-        return self._report(status="passed", failure_code=None, counts=counts)
+        return self._report(
+            status="passed", failure_code=None, failure_stage=None, counts=counts
+        )
 
     async def preflight(self, *, environment_opt_in: bool) -> None:
         if not self.config.opt_in or not environment_opt_in:
@@ -530,11 +647,7 @@ class GoogleLiveQualificationRunner:
                 raise GoogleLiveQualificationRefused(
                     "Shared Drive qualification preflight could not be verified"
                 ) from None
-            if (
-                approval is None
-                or not approval.approved
-                or approval.binding != binding
-            ):
+            if approval is None or not approval.approved or approval.binding != binding:
                 raise GoogleLiveQualificationRefused(
                     "Shared Drive qualification lacks exact external approval"
                 )
@@ -569,6 +682,7 @@ class GoogleLiveQualificationRunner:
         *,
         status: Literal["passed", "failed"],
         failure_code: str | None,
+        failure_stage: Literal["oauth_refresh", "drive", "sheets", "harness"] | None,
         counts: GoogleLiveProbeCounts,
     ) -> GoogleLiveQualificationReport:
         return GoogleLiveQualificationReport(
@@ -581,8 +695,17 @@ class GoogleLiveQualificationRunner:
             shared_drive_status="NOT_EXERCISED",
             status=status,
             failure_code=failure_code,
+            failure_stage=failure_stage,
+            oauth_request_attempts=self.progress.attempt_evidence.oauth_request_attempts,
+            drive_request_attempts=self.progress.attempt_evidence.drive_request_attempts,
+            sheets_request_attempts=self.progress.attempt_evidence.sheets_request_attempts,
             **asdict(counts),
         )
+
+    def _provider_failure_stage(
+        self,
+    ) -> Literal["oauth_refresh", "drive", "sheets", "harness"]:
+        return self.progress.attempt_evidence.last_stage or "harness"
 
 
 def compose_google_live_qualification_runner(
@@ -604,10 +727,15 @@ def compose_google_live_qualification_runner(
 ) -> GoogleLiveQualificationRunner:
     """Wire the manual probe through the same trusted read admission as production."""
 
+    progress = GoogleLiveRunProgress()
     admission: GoogleReadAdmission[GoogleLiveProbeCounts] = GoogleReadAdmission(
         repository=repository,
         provider=GoogleLiveQualificationProvider(
-            config=config, service=service, monotonic=monotonic, wait_for=wait_for
+            config=config,
+            service=service,
+            monotonic=monotonic,
+            wait_for=wait_for,
+            progress=progress,
         ),
         diagnostic_sink=diagnostic_sink,
         diagnostic_registry=diagnostic_registry,
@@ -621,6 +749,7 @@ def compose_google_live_qualification_runner(
         monotonic=monotonic,
         shared_drive_preflight=shared_drive_preflight,
         credential_preflight=credential_preflight,
+        progress=progress,
     )
 
 
@@ -675,3 +804,7 @@ def _validate_configured_limits(config: GoogleLiveQualificationConfig) -> None:
         or len(ranges) > envelope.max_configured_ranges
     ):
         raise GoogleExecutionLimitExceeded("Google qualification limit exceeded.")
+
+
+def _is_provider_endpoint(url: str, base_url: str) -> bool:
+    return url == base_url or url.startswith(f"{base_url}/")

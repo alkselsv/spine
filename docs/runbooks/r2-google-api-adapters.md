@@ -136,11 +136,24 @@ SPINE_GOOGLE_LIVE_OPT_IN=1 \
   --report /approved/path/google-live-report.json
 ```
 
-The report contains only the provider/API/configuration versions, connection
-generations, bounded operation counts, status and a closed safe failure code.
-It never contains credentials, provider bodies, source bytes or raw exceptions.
-Do not commit the caller's live config or report if its resource identifiers are
-not approved for repository disclosure.
+The `google-live-qualification-report:v2` report separates completed logical
+operations from low-level transport attempts. It records bounded attempt counts
+for OAuth refresh, Drive and Sheets, plus a closed failure stage of
+`oauth_refresh`, `drive`, `sheets` or `harness`; a successful run has no failure
+stage. An attempt is counted immediately before the bounded transport delegates
+the request, so a transport exception still leaves independently checkable
+evidence. Completed operation counters keep their previous meaning and advance
+only after the logical operation succeeds.
+
+Migration note: v1 reports contain completed-operation counters only. Consumers
+must not infer transport attempts or a provider stage from v1 fields; they must
+require v2 before reading the new attempt counters or `failure_stage`.
+
+The report otherwise contains only provider/API/configuration versions,
+connection generations, status and a closed safe failure code. It never contains
+credentials, provider bodies, source bytes, resource IDs, endpoint URLs or raw
+exceptions. Do not commit the caller's live config or report if any future report
+schema includes identifiers that are not approved for repository disclosure.
 
 Shared Drive remains `NOT_EXERCISED` unless a separately approved accessible
 synthetic Shared Drive is supplied, exactly allowlisted and
