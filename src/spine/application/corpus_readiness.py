@@ -446,6 +446,7 @@ class CanonicalCorpusReadinessService:
                 and head.state is IngestionItemState.PROJECTION_REQUESTED
                 and receipt is not None
                 and receipt.coverage in {ProcessingCoverage.COMPLETE, ProcessingCoverage.PARTIAL}
+                and getattr(receipt, "processing_scope", "ordinary") == "ordinary"
                 and self._scope_matches(receipt, expected)
                 and receipt.source_revision_id == expected.source_revision_id
             ):

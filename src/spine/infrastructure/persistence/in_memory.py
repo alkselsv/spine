@@ -3258,6 +3258,70 @@ class _InMemoryIngestionRepository:
             != (lineage.workspace_id, lineage.environment_id)
         ):
             self._uow._fail(ConstraintConflictError("Process-only lineage references are invalid."))
+        if lineage.schema_version == 2:
+            acceptance = self._uow._base_canonical_acceptances.get(
+                lineage.canonical_acceptance_id
+            )
+            admission = self._uow._base_source_processing_admissions.get(
+                lineage.processing_admission_id
+            )
+            association = self._uow._base_source_receipt_associations.get(
+                lineage.receipt_association_id
+            )
+            authorization_audit = (
+                self._uow._pending_audit_events.get(
+                    lineage.authorization_audit_event_id
+                )
+                or self._uow._base_audit_events.get(
+                    lineage.authorization_audit_event_id
+                )
+            )
+            if (
+                acceptance is None
+                or admission is None
+                or association is None
+                or authorization_audit is None
+                or (acceptance.workspace_id, acceptance.environment_id)
+                != (lineage.workspace_id, lineage.environment_id)
+                or (admission.workspace_id, admission.environment_id)
+                != (lineage.workspace_id, lineage.environment_id)
+                or (association.workspace_id, association.environment_id)
+                != (lineage.workspace_id, lineage.environment_id)
+                or (
+                    authorization_audit.workspace_id,
+                    authorization_audit.environment_id,
+                )
+                != (lineage.workspace_id, lineage.environment_id)
+                or acceptance.processing_admission_id
+                != lineage.processing_admission_id
+                or acceptance.accepted_generation
+                != lineage.canonical_accepted_generation
+                or acceptance.access_policy_version_id
+                != lineage.processing_policy_version_id
+                or acceptance.source_object_id != lineage.source_object_id
+                or acceptance.source_revision_id != lineage.source_revision_id
+                or admission.receipt_association_id != lineage.receipt_association_id
+                or admission.verified_sha256 != lineage.original_receipt_digest
+                or admission.verified_byte_length != lineage.verified_byte_length
+                or admission.lifecycle_eligibility_reference
+                != lineage.lifecycle_eligibility_reference
+                or admission.lifecycle_eligibility_generation
+                != lineage.lifecycle_eligibility_generation
+                or admission.retention_applicability_reference
+                != lineage.retention_applicability_reference
+                or admission.retention_applicability_generation
+                != lineage.retention_applicability_generation
+                or association.source_object_id != lineage.source_object_id
+                or association.revision_id != lineage.source_revision_id
+                or association.original_receipt_id != lineage.original_receipt_id
+                or association.original_sha256 != lineage.original_receipt_digest
+                or association.byte_length != lineage.verified_byte_length
+            ):
+                self._uow._fail(
+                    ConstraintConflictError(
+                        "Governed reprocessing authority references are invalid."
+                    )
+                )
         existing = self._uow._base_process_only_lineages.get(lineage.operation_id) or self._uow._pending_process_only_lineages.get(lineage.operation_id)
         if existing is not None:
             if existing != lineage:
@@ -3374,6 +3438,17 @@ class _InMemoryIngestionRepository:
             or binding.source_object_id != receipt.source_object_id
             or binding.source_revision_id != receipt.source_revision_id
             or revision.original_sha256 != receipt.original_sha256
+            or (
+                receipt.processing_scope == "process_only"
+                and (
+                    receipt.process_only_operation_id is None
+                    or receipt.process_only_operation_id
+                    not in (
+                        self._uow._base_process_only_lineages
+                        | self._uow._pending_process_only_lineages
+                    )
+                )
+            )
         ):
             self._uow._fail(ConstraintConflictError("Processing receipt references are invalid."))
         if any(

@@ -4550,6 +4550,8 @@ class _PostgreSQLIngestionRepository:
             output_kind=receipt.output_kind, output_reference=receipt.output_reference, output_digest=receipt.output_digest, coverage=receipt.coverage.value, exclusions=[item.model_dump(mode="json") for item in receipt.exclusions],
             warning_ids=[str(item) for item in receipt.warning_ids], failure_ids=[str(item) for item in receipt.failure_ids], command_identity=receipt.command_identity, command_digest=receipt.command_digest,
             idempotency_receipt_id=receipt.idempotency_receipt_id, completed_at=receipt.completed_at,
+            processing_scope=receipt.processing_scope,
+            process_only_operation_id=receipt.process_only_operation_id,
         ))
         result = OpaqueResultReference(result_type="processing_receipt", result_id=receipt.processing_receipt_id, schema_version=1)
         await self._uow.idempotency.complete(claim, result)

@@ -97,6 +97,14 @@ def test_generation_export_matches_backend_openapi_document(tmp_path: Path) -> N
     reprocess_operation = document["paths"]["/api/v1/documents/processing/reprocess"]["post"]
     assert retry_operation["operationId"] == "ingestion.processing.retry"
     assert reprocess_operation["operationId"] == "ingestion.processing.reprocess"
+    reprocess_schema = document["components"]["schemas"]["ReprocessProcessingRequest"]
+    assert {
+        "canonical_acceptance_id",
+        "canonical_accepted_generation",
+        "processing_admission_id",
+        "receipt_association_id",
+        "verified_byte_length",
+    } <= set(reprocess_schema["required"])
     assert any(
         parameter["name"] == "Idempotency-Key"
         and parameter["required"] is True

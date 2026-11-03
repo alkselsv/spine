@@ -4172,8 +4172,12 @@ export interface components {
              * Format: uuid
              */
             ingestion_run_id: string;
+            /** Process Only Operation Id */
+            process_only_operation_id?: string | null;
             /** Processing Receipt Id */
             processing_receipt_id?: string | null;
+            /** Processing Scope */
+            processing_scope?: ("ordinary" | "process_only") | null;
             state: components["schemas"]["IngestionItemState"];
         };
         /** ProjectionAsOfResponse */
@@ -5250,14 +5254,31 @@ export interface components {
         /** ReprocessProcessingRequest */
         ReprocessProcessingRequest: {
             /**
+             * Canonical Acceptance Id
+             * Format: uuid
+             */
+            canonical_acceptance_id: string;
+            /** Canonical Accepted Generation */
+            canonical_accepted_generation: number;
+            /**
              * Expected Current Revision Id
              * Format: uuid
              */
             expected_current_revision_id: string;
             /** Parent Processing Receipt Id */
             parent_processing_receipt_id?: string | null;
+            /**
+             * Processing Admission Id
+             * Format: uuid
+             */
+            processing_admission_id: string;
             /** Processing Profile Reference */
             processing_profile_reference: string;
+            /**
+             * Receipt Association Id
+             * Format: uuid
+             */
+            receipt_association_id: string;
             /**
              * Source Object Id
              * Format: uuid
@@ -5268,6 +5289,8 @@ export interface components {
              * Format: uuid
              */
             source_revision_id: string;
+            /** Verified Byte Length */
+            verified_byte_length: number;
         };
         /** RequestRequirementsReworkWorkflowCommandRequestV1 */
         RequestRequirementsReworkWorkflowCommandRequestV1: {
@@ -5918,6 +5941,8 @@ export interface components {
             /** Accepted Generation */
             accepted_generation?: number | null;
             admission_status?: components["schemas"]["AdmissionDisposition"] | null;
+            /** Canonical Acceptance Id */
+            canonical_acceptance_id?: string | null;
             content?: components["schemas"]["RevisionContentSnapshot"] | null;
             /** Deletion Reason */
             deletion_reason?: string | null;
@@ -5930,6 +5955,8 @@ export interface components {
             observed_at: string;
             /** Predecessor Revision Id */
             predecessor_revision_id?: string | null;
+            /** Processing Admission Id */
+            processing_admission_id?: string | null;
             /**
              * Processing References
              * @default []
@@ -5940,6 +5967,8 @@ export interface components {
              * @default []
              */
             projection_references: components["schemas"]["ProjectionReferenceSnapshot"][];
+            /** Receipt Association Id */
+            receipt_association_id?: string | null;
             /**
              * Schema Version
              * @default 1
@@ -5953,6 +5982,8 @@ export interface components {
             source_revision_id: string;
             /** Superseded By Revision Id */
             superseded_by_revision_id?: string | null;
+            /** Verified Byte Length */
+            verified_byte_length?: number | null;
         };
         /** SaveRequirementsReviewWorkflowCommandRequestV1 */
         SaveRequirementsReviewWorkflowCommandRequestV1: {

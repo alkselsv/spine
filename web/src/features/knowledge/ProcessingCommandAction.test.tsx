@@ -197,6 +197,16 @@ function renderAction(
   fetch: typeof globalThis.fetch,
   mode: { kind: 'retry'; failureId: string; retryable: boolean } | { kind: 'reprocess' },
 ) {
+  const commandMode = mode.kind === 'reprocess'
+    ? {
+        ...mode,
+        canonicalAcceptanceId: '90000000-0000-4000-8000-000000000001',
+        canonicalAcceptedGeneration: 7,
+        processingAdmissionId: '90000000-0000-4000-8000-000000000002',
+        receiptAssociationId: '90000000-0000-4000-8000-000000000003',
+        verifiedByteLength: 42,
+      }
+    : mode;
   const client = createScopedApiClient({
     baseUrl: 'https://spine.test',
     fetch,
@@ -211,7 +221,7 @@ function renderAction(
           <ProcessingCommandAction
             client={client}
             currentRevisionId={sourceRevisionId}
-            mode={mode}
+            mode={commandMode}
             processingReceiptId="80000000-0000-4000-8000-000000000001"
             queryKey={['spine', 'history', workspaceId, environmentId]}
             sourceObjectId={sourceObjectId}

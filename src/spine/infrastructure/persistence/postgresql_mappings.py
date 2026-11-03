@@ -716,6 +716,17 @@ source_revision_receipt_associations = Table(
         "byte_length",
         name="uq_source_receipt_associations_verifier_binding",
     ),
+    UniqueConstraint(
+        "association_id",
+        "workspace_id",
+        "environment_id",
+        "source_object_id",
+        "revision_id",
+        "original_receipt_id",
+        "original_sha256",
+        "byte_length",
+        name="uq_source_receipt_associations_reprocess_receipt",
+    ),
 )
 
 trusted_content_verification_evidence = Table(
@@ -1609,12 +1620,13 @@ ingestion_failures = Table(
 
 processing_receipts = Table(
     "processing_receipts", metadata,
-    Column("processing_receipt_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("ingestion_run_source_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("binding_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("processor_kind", Text, nullable=False), Column("parser_name", Text, nullable=False), Column("parser_version", Text, nullable=False), Column("parser_config_reference", Text, nullable=False), Column("locator_contract_version", Text, nullable=False), Column("original_sha256", String(64), nullable=False), Column("output_kind", Text), Column("output_reference", PostgreSQLUUID(as_uuid=True)), Column("output_digest", String(64)), Column("coverage", Text, nullable=False), Column("exclusions", JSONB, nullable=False), Column("warning_ids", JSONB, nullable=False), Column("failure_ids", JSONB, nullable=False), Column("command_identity", Text, nullable=False), Column("command_digest", String(64), nullable=False), Column("idempotency_receipt_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("completed_at", DateTime(timezone=True), nullable=False),
+    Column("processing_receipt_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("ingestion_run_source_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("binding_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("processor_kind", Text, nullable=False), Column("parser_name", Text, nullable=False), Column("parser_version", Text, nullable=False), Column("parser_config_reference", Text, nullable=False), Column("locator_contract_version", Text, nullable=False), Column("original_sha256", String(64), nullable=False), Column("output_kind", Text), Column("output_reference", PostgreSQLUUID(as_uuid=True)), Column("output_digest", String(64)), Column("coverage", Text, nullable=False), Column("exclusions", JSONB, nullable=False), Column("warning_ids", JSONB, nullable=False), Column("failure_ids", JSONB, nullable=False), Column("command_identity", Text, nullable=False), Column("command_digest", String(64), nullable=False), Column("idempotency_receipt_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("completed_at", DateTime(timezone=True), nullable=False), Column("processing_scope", Text, nullable=False, server_default="ordinary"), Column("process_only_operation_id", PostgreSQLUUID(as_uuid=True)),
 )
 
 process_only_operation_lineages = Table(
     "process_only_operation_lineages", metadata,
     Column("operation_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("schema_version", Integer, nullable=False, server_default="1"),
     Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("ingestion_run_id", PostgreSQLUUID(as_uuid=True), nullable=False),
@@ -1629,6 +1641,21 @@ process_only_operation_lineages = Table(
     Column("pinned_processing_profile_reference", Text, nullable=False),
     Column("command_digest", String(64), nullable=False),
     Column("idempotency_receipt_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("canonical_acceptance_id", PostgreSQLUUID(as_uuid=True)),
+    Column("canonical_accepted_generation", Integer),
+    Column("processing_admission_id", PostgreSQLUUID(as_uuid=True)),
+    Column("receipt_association_id", PostgreSQLUUID(as_uuid=True)),
+    Column("verified_byte_length", BigInteger),
+    Column("processing_policy_version_id", PostgreSQLUUID(as_uuid=True)),
+    Column("lifecycle_eligibility_reference", PostgreSQLUUID(as_uuid=True)),
+    Column("lifecycle_eligibility_generation", Integer),
+    Column("retention_applicability_reference", PostgreSQLUUID(as_uuid=True)),
+    Column("retention_applicability_generation", Integer),
+    Column("process_only_authorization_id", PostgreSQLUUID(as_uuid=True)),
+    Column("process_only_authorization_version", Text),
+    Column("process_only_authorization_digest", String(64)),
+    Column("authorization_audit_event_id", PostgreSQLUUID(as_uuid=True)),
+    Column("authorized_at", DateTime(timezone=True)),
 )
 admission_decisions = Table(
     "admission_decisions", metadata,

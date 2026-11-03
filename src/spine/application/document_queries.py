@@ -147,6 +147,8 @@ class ProcessingReferenceSnapshot(BaseModel):
     state: IngestionItemState
     processing_receipt_id: UUID | None = None
     coverage: ProcessingCoverage | None = None
+    processing_scope: Literal["ordinary", "process_only"] | None = None
+    process_only_operation_id: UUID | None = None
 
 
 class ProjectionReferenceSnapshot(BaseModel):
@@ -199,6 +201,18 @@ class RevisionSnapshot(BaseModel):
     deletion_reason: str | None = None
     accepted_generation: int | None = Field(default=None, ge=1)
     accepted_at: datetime | None = None
+    canonical_acceptance_id: UUID | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    processing_admission_id: UUID | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    receipt_association_id: UUID | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    verified_byte_length: int | None = Field(
+        default=None, ge=0, exclude_if=lambda value: value is None
+    )
     processing_references: tuple[ProcessingReferenceSnapshot, ...] = ()
     projection_references: tuple[ProjectionReferenceSnapshot, ...] = ()
     content: RevisionContentSnapshot | None = Field(
@@ -699,6 +713,19 @@ class CanonicalDocumentQueryService:
             None,
         )
         admission = await uow.admissions.resolve_effective(revision.revision_id)
+        processing_acceptance = None
+        if acceptance is not None and acceptance.processing_admission_id is not None:
+            try:
+                processing_acceptance = await uow.canonical.resolve_acceptance_read(
+                    acceptance.canonical_acceptance_id
+                )
+            except Exception:
+                processing_acceptance = None
+        processing_admission = (
+            processing_acceptance.processing_admission
+            if processing_acceptance is not None
+            else None
+        )
         processing = await self._processing_references(uow, revision)
         projections = await self._projection_references(uow, revision)
         return RevisionSnapshot(
@@ -717,6 +744,24 @@ class CanonicalDocumentQueryService:
             deletion_reason=revision.deletion_reason,
             accepted_generation=(acceptance.accepted_generation if acceptance else None),
             accepted_at=(acceptance.accepted_at if acceptance else None),
+            canonical_acceptance_id=(
+                acceptance.canonical_acceptance_id if processing_admission else None
+            ),
+            processing_admission_id=(
+                processing_admission.processing_admission_id
+                if processing_admission
+                else None
+            ),
+            receipt_association_id=(
+                processing_admission.receipt_association_id
+                if processing_admission
+                else None
+            ),
+            verified_byte_length=(
+                processing_admission.verified_byte_length
+                if processing_admission
+                else None
+            ),
             processing_references=processing,
             projection_references=projections,
             content=(
@@ -746,6 +791,10 @@ class CanonicalDocumentQueryService:
                     state=(head.state if head is not None else IngestionItemState.RECEIVED),
                     processing_receipt_id=(receipt.processing_receipt_id if receipt else None),
                     coverage=(receipt.coverage if receipt else None),
+                    processing_scope=(receipt.processing_scope if receipt else None),
+                    process_only_operation_id=(
+                        receipt.process_only_operation_id if receipt else None
+                    ),
                 )
             )
         return tuple(results)

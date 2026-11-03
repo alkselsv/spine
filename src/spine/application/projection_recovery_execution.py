@@ -527,6 +527,7 @@ class PersistenceCanonicalProjectionRecoveryResolver:
                     and receipt.workspace_id == boundary.workspace_id
                     and receipt.environment_id == boundary.environment_id
                     and receipt.coverage is not ProcessingCoverage.FAILED
+                    and getattr(receipt, "processing_scope", "ordinary") == "ordinary"
                     and receipt.output_reference is not None
                     and receipt.output_digest is not None
                 ):

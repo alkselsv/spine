@@ -324,6 +324,8 @@ class ProcessingReceipt(_FrozenRecord):
     command_digest: DigestHex
     completed_at: datetime
     idempotency_receipt_id: UUID | None = None
+    processing_scope: Literal["ordinary", "process_only"] = "ordinary"
+    process_only_operation_id: UUID | None = None
 
     @model_validator(mode="after")
     def validate_receipt(self) -> "ProcessingReceipt":
@@ -338,6 +340,9 @@ class ProcessingReceipt(_FrozenRecord):
             "source_revision_id",
         )
         _require_optional_id(self.idempotency_receipt_id, "idempotency_receipt_id")
+        _require_optional_id(
+            self.process_only_operation_id, "process_only_operation_id"
+        )
         _require_time(self.completed_at)
         if self.output_reference is not None and self.output_reference.int == 0:
             raise ValueError("output_reference must be a non-zero UUID")
@@ -355,12 +360,22 @@ class ProcessingReceipt(_FrozenRecord):
             raise ValueError("successful or partial processing requires an output reference")
         if self.coverage is ProcessingCoverage.COMPLETE and self.locator_contract_version == "":
             raise ValueError("complete processing requires a locator contract version")
+        if self.processing_scope == "process_only":
+            if self.process_only_operation_id is None:
+                raise ValueError(
+                    "process-only processing requires an operation lineage"
+                )
+        elif self.process_only_operation_id is not None:
+            raise ValueError(
+                "ordinary processing cannot reference process-only lineage"
+            )
         return self
 
 
 class ProcessOnlyOperationLineage(_FrozenRecord):
     """Immutable lineage for a retry, reprocess, or replacement operation."""
 
+    schema_version: Literal[1, 2] = 1
     operation_id: UUID
     workspace_id: UUID
     environment_id: UUID
@@ -376,6 +391,21 @@ class ProcessOnlyOperationLineage(_FrozenRecord):
     pinned_processing_profile_reference: VersionIdentifier
     command_digest: DigestHex
     idempotency_receipt_id: UUID
+    canonical_acceptance_id: UUID | None = None
+    canonical_accepted_generation: PositiveInt | None = None
+    processing_admission_id: UUID | None = None
+    receipt_association_id: UUID | None = None
+    verified_byte_length: NonNegativeInt | None = None
+    processing_policy_version_id: UUID | None = None
+    lifecycle_eligibility_reference: UUID | None = None
+    lifecycle_eligibility_generation: PositiveInt | None = None
+    retention_applicability_reference: UUID | None = None
+    retention_applicability_generation: PositiveInt | None = None
+    process_only_authorization_id: UUID | None = None
+    process_only_authorization_version: VersionIdentifier | None = None
+    process_only_authorization_digest: DigestHex | None = None
+    authorization_audit_event_id: UUID | None = None
+    authorized_at: datetime | None = None
 
     @model_validator(mode="after")
     def validate_lineage(self) -> "ProcessOnlyOperationLineage":
@@ -396,10 +426,67 @@ class ProcessOnlyOperationLineage(_FrozenRecord):
             self.parent_processing_receipt_id,
             "parent_processing_receipt_id",
         )
+        for name in (
+            "canonical_acceptance_id",
+            "processing_admission_id",
+            "receipt_association_id",
+            "processing_policy_version_id",
+            "lifecycle_eligibility_reference",
+            "retention_applicability_reference",
+            "process_only_authorization_id",
+            "authorization_audit_event_id",
+        ):
+            _require_optional_id(getattr(self, name), name)
         if self.trigger_kind == "retry" and self.parent_failure_id is None:
             raise ValueError("retry lineage requires parent_failure_id")
         if self.trigger_kind == "replacement" and self.parent_failure_id is not None:
             raise ValueError("replacement lineage cannot contain parent_failure_id")
+        governed_fields = (
+            self.canonical_acceptance_id,
+            self.canonical_accepted_generation,
+            self.processing_admission_id,
+            self.receipt_association_id,
+            self.verified_byte_length,
+            self.processing_policy_version_id,
+            self.lifecycle_eligibility_reference,
+            self.lifecycle_eligibility_generation,
+            self.retention_applicability_reference,
+            self.retention_applicability_generation,
+            self.authorization_audit_event_id,
+            self.authorized_at,
+        )
+        if self.schema_version == 2:
+            if self.trigger_kind != "reprocess":
+                raise ValueError(
+                    "governed process-only lineage is reserved for reprocessing"
+                )
+            if any(value is None for value in governed_fields):
+                raise ValueError(
+                    "governed reprocessing requires exact admission authority lineage"
+                )
+            _require_time(self.authorized_at)  # type: ignore[arg-type]
+            opaque_authorization = (
+                self.process_only_authorization_id,
+                self.process_only_authorization_version,
+                self.process_only_authorization_digest,
+            )
+            if any(value is None for value in opaque_authorization) and any(
+                value is not None for value in opaque_authorization
+            ):
+                raise ValueError(
+                    "process-only authorization reference must be complete"
+                )
+        elif any(value is not None for value in governed_fields) or any(
+            value is not None
+            for value in (
+                self.process_only_authorization_id,
+                self.process_only_authorization_version,
+                self.process_only_authorization_digest,
+            )
+        ):
+            raise ValueError(
+                "legacy process-only lineage cannot carry governed reprocessing fields"
+            )
         return self
 
 

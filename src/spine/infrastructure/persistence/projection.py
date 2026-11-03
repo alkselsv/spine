@@ -487,6 +487,7 @@ class InMemoryProjectionRepository(ProjectionRepository):
                     or processing_receipt.environment_id != reference.environment_id
                     or processing_receipt.source_object_id != reference.source_object_id
                     or processing_receipt.source_revision_id != reference.source_revision_id
+                    or processing_receipt.processing_scope != "ordinary"
                 ):
                     self._uow._fail(ConstraintConflictError("Processing receipt lineage is invalid."))
             values = self._all("_base_projection_references", "_pending_projection_references")

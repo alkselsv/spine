@@ -24,7 +24,14 @@ type ProcessingCommandActionProps = {
   processingReceiptId?: string | null;
   mode:
     | { kind: 'retry'; failureId: string; retryable: boolean }
-    | { kind: 'reprocess' };
+    | {
+        kind: 'reprocess';
+        canonicalAcceptanceId: string;
+        canonicalAcceptedGeneration: number;
+        processingAdmissionId: string;
+        receiptAssociationId: string;
+        verifiedByteLength: number;
+      };
 };
 
 const ACTIVE_STATUSES: readonly components['schemas']['ProcessingCommandStatus'][] = [
@@ -58,11 +65,16 @@ export function ProcessingCommandAction(props: ProcessingCommandActionProps) {
       return reprocessDocument(
         props.client,
         {
+          canonical_acceptance_id: props.mode.canonicalAcceptanceId,
+          canonical_accepted_generation: props.mode.canonicalAcceptedGeneration,
           expected_current_revision_id: props.currentRevisionId,
           parent_processing_receipt_id: props.processingReceiptId ?? null,
+          processing_admission_id: props.mode.processingAdmissionId,
           processing_profile_reference: DEFAULT_PROCESSING_PROFILE,
+          receipt_association_id: props.mode.receiptAssociationId,
           source_object_id: props.sourceObjectId,
           source_revision_id: props.sourceRevisionId,
+          verified_byte_length: props.mode.verifiedByteLength,
         },
         key,
         signal,

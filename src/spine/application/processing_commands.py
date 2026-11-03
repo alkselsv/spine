@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 PROCESSING_REQUEST_EVENT_TYPE = "ingestion.processing.requested"
 PROCESSING_REQUEST_SCHEMA_VERSION = 1
@@ -59,7 +59,7 @@ from spine.domain.ingestion import (
     SafeDiagnosticDetail,
     WarningStage,
 )
-from spine.domain.sources import RevisionKind
+from spine.domain.sources import ProcessingAdmissionMode, RevisionKind
 from spine.domain.sources.original_reference import ObjectReference
 from spine.domain.artifacts import ParseCoverage, ParsedDocument
 
@@ -98,12 +98,113 @@ class RetryProcessingCommand(_ProcessingCommand):
 
 
 class ReprocessProcessingCommand(_ProcessingCommand):
+    canonical_acceptance_id: UUID
+    canonical_accepted_generation: int = Field(ge=1)
+    processing_admission_id: UUID
+    receipt_association_id: UUID
+    verified_byte_length: int = Field(ge=0)
     parent_processing_receipt_id: UUID | None = None
     processing_profile_reference: str = Field(
         min_length=1,
         max_length=128,
         pattern=r"^[a-z][a-z0-9_.:-]{0,127}$",
     )
+
+
+class ReprocessingAuthorityDecision(BaseModel):
+    """Current, content-free authority pinned by one governed reprocess."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    workspace_id: UUID
+    environment_id: UUID
+    source_object_id: UUID
+    source_revision_id: UUID
+    canonical_acceptance_id: UUID
+    canonical_accepted_generation: int = Field(ge=1)
+    processing_admission_id: UUID
+    receipt_association_id: UUID
+    verified_byte_length: int = Field(ge=0)
+    processing_policy_version_id: UUID
+    lifecycle_eligibility_reference: UUID
+    lifecycle_eligibility_generation: int = Field(ge=1)
+    retention_applicability_reference: UUID
+    retention_applicability_generation: int = Field(ge=1)
+    process_only_authorization_id: UUID | None = None
+    process_only_authorization_version: str | None = Field(
+        default=None, min_length=1, max_length=128
+    )
+    process_only_authorization_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    authorization_audit_event_id: UUID
+    authorized_at: datetime
+
+    @model_validator(mode="after")
+    def validate_decision(self) -> "ReprocessingAuthorityDecision":
+        identifiers = (
+            self.workspace_id,
+            self.environment_id,
+            self.source_object_id,
+            self.source_revision_id,
+            self.canonical_acceptance_id,
+            self.processing_admission_id,
+            self.receipt_association_id,
+            self.processing_policy_version_id,
+            self.lifecycle_eligibility_reference,
+            self.retention_applicability_reference,
+            self.authorization_audit_event_id,
+        )
+        if any(value.int == 0 for value in identifiers):
+            raise ValueError("reprocessing authority identifiers must be non-zero")
+        if self.authorized_at.tzinfo is None or self.authorized_at.utcoffset() is None:
+            raise ValueError("authorized_at must be timezone-aware")
+        opaque_reference = (
+            self.process_only_authorization_id,
+            self.process_only_authorization_version,
+            self.process_only_authorization_digest,
+        )
+        if any(value is None for value in opaque_reference) and any(
+            value is not None for value in opaque_reference
+        ):
+            raise ValueError("process-only authorization reference must be complete")
+        return self
+
+    def matches_lineage(self, lineage: ProcessOnlyOperationLineage) -> bool:
+        return all(
+            getattr(self, name) == getattr(lineage, name)
+            for name in (
+                "workspace_id",
+                "environment_id",
+                "source_object_id",
+                "source_revision_id",
+                "canonical_acceptance_id",
+                "canonical_accepted_generation",
+                "processing_admission_id",
+                "receipt_association_id",
+                "verified_byte_length",
+                "processing_policy_version_id",
+                "lifecycle_eligibility_reference",
+                "lifecycle_eligibility_generation",
+                "retention_applicability_reference",
+                "retention_applicability_generation",
+                "process_only_authorization_id",
+                "process_only_authorization_version",
+                "process_only_authorization_digest",
+                "authorization_audit_event_id",
+                "authorized_at",
+            )
+        )
+
+
+class ReprocessingAuthorityResolver(Protocol):
+    async def authorize(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        command: ReprocessProcessingCommand,
+        processing_mode: ProcessingAdmissionMode,
+    ) -> ReprocessingAuthorityDecision | None: ...
 
 
 class ReplacementProcessingCommand(_ProcessingCommand):
@@ -195,6 +296,7 @@ class OrchestratedProcessingCommandService:
     parser: _DocumentParser
     context_factory: Callable[[PersistenceOperation, UUID], TrustedPersistenceContext]
     outbox_events: OutboxEventRegistry
+    reprocessing_authority: ReprocessingAuthorityResolver | None = None
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
     max_parse_bytes: int = 10_000_000
     service_name: str = "document-processing-command"
@@ -357,7 +459,9 @@ class OrchestratedProcessingCommandService:
             if run_result.replay:
                 lineage = await uow.ingestion.resolve_process_only_lineage(operation_id)
                 if lineage is None:
-                    evidence = await self._resolve_eligibility(uow, command, trigger_kind)
+                    evidence = await self._resolve_eligibility(
+                        uow, context, command, trigger_kind
+                    )
                     existing_item = await uow.ingestion.resolve_item(item_id)
                     if existing_item is None:
                         await uow.ingestion.create_item(item)
@@ -399,6 +503,7 @@ class OrchestratedProcessingCommandService:
                     if processing_receipt is None:
                         await self._process(
                             context=context,
+                            command=command,
                             operation_id=operation_id,
                             run=created_run,
                             item=existing_item,
@@ -412,7 +517,9 @@ class OrchestratedProcessingCommandService:
                         raise ProcessingCommandRejected()
                     return _replayed_processing_result(result)
             else:
-                evidence = await self._resolve_eligibility(uow, command, trigger_kind)
+                evidence = await self._resolve_eligibility(
+                    uow, context, command, trigger_kind
+                )
                 await uow.ingestion.create_item(item)
                 await uow.commit()
 
@@ -452,6 +559,7 @@ class OrchestratedProcessingCommandService:
                 self.service_name,
             )
             lineage = ProcessOnlyOperationLineage(
+                schema_version=2 if trigger_kind == "reprocess" else 1,
                 operation_id=operation_id,
                 workspace_id=command.workspace_id,
                 environment_id=command.environment_id,
@@ -473,11 +581,33 @@ class OrchestratedProcessingCommandService:
                 pinned_processing_profile_reference=profile,
                 command_digest=command_digest,
                 idempotency_receipt_id=created_run.idempotency_receipt_id,  # type: ignore[arg-type]
+                **(
+                    {
+                        "canonical_acceptance_id": evidence["canonical_acceptance_id"],
+                        "canonical_accepted_generation": evidence["canonical_accepted_generation"],
+                        "processing_admission_id": evidence["processing_admission_id"],
+                        "receipt_association_id": evidence["receipt_association_id"],
+                        "verified_byte_length": evidence["verified_byte_length"],
+                        "processing_policy_version_id": evidence["processing_policy_version_id"],
+                        "lifecycle_eligibility_reference": evidence["lifecycle_eligibility_reference"],
+                        "lifecycle_eligibility_generation": evidence["lifecycle_eligibility_generation"],
+                        "retention_applicability_reference": evidence["retention_applicability_reference"],
+                        "retention_applicability_generation": evidence["retention_applicability_generation"],
+                        "process_only_authorization_id": evidence["process_only_authorization_id"],
+                        "process_only_authorization_version": evidence["process_only_authorization_version"],
+                        "process_only_authorization_digest": evidence["process_only_authorization_digest"],
+                        "authorization_audit_event_id": evidence["authorization_audit_event_id"],
+                        "authorized_at": evidence["authorized_at"],
+                    }
+                    if trigger_kind == "reprocess"
+                    else {}
+                ),
             )
             await uow.ingestion.create_process_only_lineage(lineage)
             await uow.commit()
         await self._process(
             context=context,
+            command=command,
             operation_id=operation_id,
             run=created_run,
             item=item,
@@ -521,6 +651,7 @@ class OrchestratedProcessingCommandService:
     async def _resolve_eligibility(
         self,
         uow: object,
+        context: TrustedPersistenceContext,
         command: RetryProcessingCommand | ReprocessProcessingCommand | ReplacementProcessingCommand,
         trigger_kind: str,
     ) -> dict[str, object]:
@@ -533,20 +664,40 @@ class OrchestratedProcessingCommandService:
             or current is None
             or revision.kind is not RevisionKind.CONTENT
             or revision.source_object_id != command.source_object_id
-            or current.current_revision_id != command.source_revision_id
-            or command.expected_current_revision_id != command.source_revision_id
+            or current.current_revision_id != command.expected_current_revision_id
+            or (
+                trigger_kind != "reprocess"
+                and current.current_revision_id != command.source_revision_id
+            )
         ):
             raise ProcessingCommandRejected()
-        processing = await CanonicalCurrentProcessingDispositionAuthority(
-            uow.canonical  # type: ignore[attr-defined]
-        ).resolve(
-            workspace_id=command.workspace_id,
-            environment_id=command.environment_id,
-            source_object_id=command.source_object_id,
-            source_revision_id=command.source_revision_id,
-        )
-        if not processing.eligible:
+        if trigger_kind == "reprocess":
+            assert isinstance(command, ReprocessProcessingCommand)
+            processing = await self._resolve_reprocess_disposition(
+                uow.canonical, command  # type: ignore[attr-defined]
+            )
+        else:
+            processing = await CanonicalCurrentProcessingDispositionAuthority(
+                uow.canonical  # type: ignore[attr-defined]
+            ).resolve(
+                workspace_id=command.workspace_id,
+                environment_id=command.environment_id,
+                source_object_id=command.source_object_id,
+                source_revision_id=command.source_revision_id,
+            )
+        if not processing.eligible and not (
+            trigger_kind == "reprocess"
+            and processing.processing_mode is ProcessingAdmissionMode.OPAQUE_ACCEPTANCE
+        ):
             raise ProcessingCommandRejected()
+        authority: ReprocessingAuthorityDecision | None = None
+        if trigger_kind == "reprocess":
+            assert isinstance(command, ReprocessProcessingCommand)
+            authority = await self._authorize_reprocess(
+                context=context,
+                command=command,
+                processing=processing,
+            )
         parent_failure = None
         parent_item = None
         if trigger_kind == "retry":
@@ -557,7 +708,10 @@ class OrchestratedProcessingCommandService:
             parent_item = await uow.ingestion.resolve_item(parent_failure.ingestion_run_source_id)  # type: ignore[attr-defined]
             if parent_item is None:
                 raise ProcessingCommandRejected()
-        elif getattr(command, "parent_processing_receipt_id", None) is not None:
+        elif (
+            trigger_kind != "reprocess"
+            and getattr(command, "parent_processing_receipt_id", None) is not None
+        ):
             parent_receipt = await uow.ingestion.resolve_processing_receipt_by_id(command.parent_processing_receipt_id)  # type: ignore[attr-defined]
             if parent_receipt is None:
                 raise ProcessingCommandRejected()
@@ -590,13 +744,43 @@ class OrchestratedProcessingCommandService:
                 original_receipt_digest=association.original_sha256,
             )
         elif parent_item is None and trigger_kind == "reprocess":
+            associations = await uow.sources.resolve_receipt_associations(  # type: ignore[attr-defined]
+                command.source_revision_id
+            )
+            matching_associations = tuple(
+                association
+                for association in associations
+                if association.association_id == command.receipt_association_id  # type: ignore[union-attr]
+                and association.source_object_id == command.source_object_id
+                and association.revision_id == command.source_revision_id
+            )
+            if len(matching_associations) != 1:
+                raise ProcessingCommandRejected()
+            association = matching_associations[0]
             bindings = await uow.ingestion.list_bindings_for_source_revision(  # type: ignore[attr-defined]
                 command.source_object_id, command.source_revision_id
             )
-            parent_binding = bindings[0] if bindings else None
+            parent_binding = next(
+                (
+                    binding
+                    for binding in bindings
+                    if binding.original_receipt_id == association.original_receipt_id
+                    and binding.original_receipt_digest == association.original_sha256
+                ),
+                None,
+            )
             if parent_binding is not None:
                 parent_item = await uow.ingestion.resolve_item(  # type: ignore[attr-defined]
                     parent_binding.ingestion_run_source_id
+                )
+            if parent_binding is None:
+                parent_binding = SimpleNamespace(
+                    source_object_id=association.source_object_id,
+                    source_revision_id=association.revision_id,
+                    original_reference=association.original_reference,
+                    original_receipt_kind=association.original_receipt_kind,
+                    original_receipt_id=association.original_receipt_id,
+                    original_receipt_digest=association.original_sha256,
                 )
         else:
             parent_binding = await uow.ingestion.resolve_binding(parent_item.ingestion_run_source_id)  # type: ignore[union-attr,attr-defined]
@@ -611,6 +795,11 @@ class OrchestratedProcessingCommandService:
             or parent_binding.original_receipt_id is None
             or parent_binding.original_reference is None
             or parent_binding.original_receipt_digest != revision.original_sha256
+            or (
+                isinstance(command, ReprocessProcessingCommand)
+                and parent_binding.original_reference.byte_length
+                != command.verified_byte_length
+            )
         ):
             raise ProcessingCommandRejected()
         parent_receipt = await uow.ingestion.resolve_processing_receipt(parent_item.ingestion_run_source_id) if parent_item is not None else None  # type: ignore[union-attr,attr-defined]
@@ -623,12 +812,131 @@ class OrchestratedProcessingCommandService:
             assert isinstance(command, RetryProcessingCommand)
             if command.parent_processing_receipt_id != parent_receipt.processing_receipt_id:
                 raise ProcessingCommandRejected()
-        return {"revision": revision, "binding": parent_binding, "receipt": parent_receipt}
+        result = {
+            "revision": revision,
+            "binding": parent_binding,
+            "receipt": parent_receipt,
+        }
+        if authority is not None:
+            result.update(authority.model_dump(mode="python"))
+        return result
+
+    async def _resolve_reprocess_disposition(
+        self, canonical: object, command: ReprocessProcessingCommand
+    ) -> object:
+        try:
+            acceptance = await canonical.resolve_acceptance(  # type: ignore[attr-defined]
+                command.canonical_acceptance_id
+            )
+            admission = await canonical.resolve_processing_admission(  # type: ignore[attr-defined]
+                command.processing_admission_id
+            )
+        except Exception:
+            raise ProcessingCommandRejected() from None
+        if (
+            acceptance is None
+            or admission is None
+            or acceptance.canonical_acceptance_schema_version != 2
+            or acceptance.canonical_acceptance_id != command.canonical_acceptance_id
+            or acceptance.accepted_generation != command.canonical_accepted_generation
+            or acceptance.workspace_id != command.workspace_id
+            or acceptance.environment_id != command.environment_id
+            or acceptance.source_object_id != command.source_object_id
+            or acceptance.source_revision_id != command.source_revision_id
+            or acceptance.processing_admission_id != command.processing_admission_id
+            or admission.processing_admission_id != command.processing_admission_id
+            or admission.workspace_id != command.workspace_id
+            or admission.environment_id != command.environment_id
+            or admission.source_object_id != command.source_object_id
+            or admission.source_revision_id != command.source_revision_id
+            or admission.receipt_association_id != command.receipt_association_id
+            or admission.verified_byte_length != command.verified_byte_length
+        ):
+            raise ProcessingCommandRejected()
+        return SimpleNamespace(
+            eligible=admission.mode is ProcessingAdmissionMode.PROCESSOR_REQUIRED,
+            processing_mode=admission.mode,
+            canonical_acceptance_id=acceptance.canonical_acceptance_id,
+            processing_admission_id=admission.processing_admission_id,
+            processing_policy_version_id=acceptance.access_policy_version_id,
+            lifecycle_eligibility_reference=admission.lifecycle_eligibility_reference,
+            lifecycle_eligibility_generation=admission.lifecycle_eligibility_generation,
+            retention_applicability_reference=admission.retention_applicability_reference,
+            retention_applicability_generation=admission.retention_applicability_generation,
+        )
+
+    async def _authorize_reprocess(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        command: ReprocessProcessingCommand,
+        processing: object,
+    ) -> ReprocessingAuthorityDecision:
+        processing_mode = getattr(processing, "processing_mode", None)
+        if (
+            self.reprocessing_authority is None
+            or processing_mode is None
+            or getattr(processing, "canonical_acceptance_id", None)
+            != command.canonical_acceptance_id
+            or getattr(processing, "processing_admission_id", None)
+            != command.processing_admission_id
+        ):
+            raise ProcessingCommandRejected()
+        try:
+            authority = await self.reprocessing_authority.authorize(
+                context=context,
+                command=command,
+                processing_mode=processing_mode,
+            )
+        except Exception:
+            raise ProcessingCommandRejected() from None
+        if authority is None or (
+            authority.workspace_id,
+            authority.environment_id,
+            authority.source_object_id,
+            authority.source_revision_id,
+            authority.canonical_acceptance_id,
+            authority.canonical_accepted_generation,
+            authority.processing_admission_id,
+            authority.receipt_association_id,
+            authority.verified_byte_length,
+        ) != (
+            command.workspace_id,
+            command.environment_id,
+            command.source_object_id,
+            command.source_revision_id,
+            command.canonical_acceptance_id,
+            command.canonical_accepted_generation,
+            command.processing_admission_id,
+            command.receipt_association_id,
+            command.verified_byte_length,
+        ):
+            raise ProcessingCommandRejected()
+        if (
+            authority.processing_policy_version_id,
+            authority.lifecycle_eligibility_reference,
+            authority.lifecycle_eligibility_generation,
+            authority.retention_applicability_reference,
+            authority.retention_applicability_generation,
+        ) != (
+            getattr(processing, "processing_policy_version_id", None),
+            getattr(processing, "lifecycle_eligibility_reference", None),
+            getattr(processing, "lifecycle_eligibility_generation", None),
+            getattr(processing, "retention_applicability_reference", None),
+            getattr(processing, "retention_applicability_generation", None),
+        ):
+            raise ProcessingCommandRejected()
+        if (
+            processing_mode is ProcessingAdmissionMode.OPAQUE_ACCEPTANCE
+        ) != (authority.process_only_authorization_id is not None):
+            raise ProcessingCommandRejected()
+        return authority
 
     async def _process(
         self,
         *,
         context: TrustedPersistenceContext,
+        command: RetryProcessingCommand | ReprocessProcessingCommand | ReplacementProcessingCommand,
         operation_id: UUID,
         run: IngestionRun,
         item: IngestionRunSource,
@@ -646,17 +954,42 @@ class OrchestratedProcessingCommandService:
         async with self.uow_factory(
             self.context_factory(PersistenceOperation("processing_receipt"), trace_id)
         ) as uow:
-            processing = await CanonicalCurrentProcessingDispositionAuthority(
-                uow.canonical
-            ).resolve(
-                workspace_id=run.workspace_id,
-                environment_id=run.environment_id,
-                source_object_id=revision.source_object_id,  # type: ignore[attr-defined]
-                source_revision_id=revision.revision_id,  # type: ignore[attr-defined]
-            )
-            if not processing.eligible:
-                await uow.rollback()
-                raise ProcessingCommandRejected()
+            if run.trigger_kind == "reprocess":
+                if not isinstance(command, ReprocessProcessingCommand):
+                    await uow.rollback()
+                    raise ProcessingCommandRejected()
+                current = await uow.canonical.resolve_current(command.source_object_id)
+                if (
+                    current is None
+                    or current.current_revision_id
+                    != command.expected_current_revision_id
+                ):
+                    await uow.rollback()
+                    raise ProcessingCommandRejected()
+                processing = await self._resolve_reprocess_disposition(
+                    uow.canonical, command
+                )
+                authority = await self._authorize_reprocess(
+                    context=context,
+                    command=command,
+                    processing=processing,
+                )
+                lineage = await uow.ingestion.resolve_process_only_lineage(operation_id)
+                if lineage is None or not authority.matches_lineage(lineage):
+                    await uow.rollback()
+                    raise ProcessingCommandRejected()
+            else:
+                processing = await CanonicalCurrentProcessingDispositionAuthority(
+                    uow.canonical
+                ).resolve(
+                    workspace_id=run.workspace_id,
+                    environment_id=run.environment_id,
+                    source_object_id=revision.source_object_id,  # type: ignore[attr-defined]
+                    source_revision_id=revision.revision_id,  # type: ignore[attr-defined]
+                )
+                if not processing.eligible:
+                    await uow.rollback()
+                    raise ProcessingCommandRejected()
             head = await uow.ingestion.resolve_item_head(item.ingestion_run_source_id)
             if head is None:
                 await uow.rollback()
@@ -711,6 +1044,7 @@ class OrchestratedProcessingCommandService:
                 warning=warning,
                 profile=profile,
                 completed_at=self._now(),
+                process_only=run.trigger_kind == "reprocess",
             )
             if warning is not None:
                 await uow.ingestion.append_warning(warning)
@@ -732,7 +1066,11 @@ class OrchestratedProcessingCommandService:
                 await uow.ingestion.append_transition(
                     _item_transition(item, latest, target, self._now(), self.service_name, trace_id)
                 )
-            if artifact is not None and receipt.coverage is not ProcessingCoverage.FAILED:
+            if (
+                run.trigger_kind != "reprocess"
+                and artifact is not None
+                and receipt.coverage is not ProcessingCoverage.FAILED
+            ):
                 payload = IngestionRequestPayload(
                     ingestion_run_source_id=item.ingestion_run_source_id,
                     binding_id=binding.binding_id,
@@ -875,7 +1213,7 @@ def _item_transition(item: IngestionRunSource, head: IngestionTransition, state:
     )
 
 
-def _build_receipt(*, operation_id: UUID, run: IngestionRun, item: IngestionRunSource, binding: IngestionRunSourceBinding, revision: object, artifact: ParsedDocument | None, failure: IngestionFailure | None, warning: IngestionWarning | None, profile: str, completed_at: datetime) -> ProcessingReceipt:
+def _build_receipt(*, operation_id: UUID, run: IngestionRun, item: IngestionRunSource, binding: IngestionRunSourceBinding, revision: object, artifact: ParsedDocument | None, failure: IngestionFailure | None, warning: IngestionWarning | None, profile: str, completed_at: datetime, process_only: bool = False) -> ProcessingReceipt:
     from spine.application.document_ingestion import _parser_metadata
 
     status = ProcessingCoverage.COMPLETE if artifact is not None and artifact.coverage is ParseCoverage.COMPLETE else ProcessingCoverage.PARTIAL if artifact is not None else ProcessingCoverage.FAILED
@@ -929,6 +1267,8 @@ def _build_receipt(*, operation_id: UUID, run: IngestionRun, item: IngestionRunS
         command_identity=_bounded_identifier(f"{run.command_identity}.receipt"),
         command_digest="0" * 64,
         completed_at=completed_at,
+        processing_scope="process_only" if process_only else "ordinary",
+        process_only_operation_id=operation_id if process_only else None,
     )
 
 
@@ -1002,6 +1342,8 @@ __all__ = [
     "ProcessingCommandResult",
     "ProcessingCommandService",
     "ProcessingCommandStatus",
+    "ReprocessingAuthorityDecision",
+    "ReprocessingAuthorityResolver",
     "ReprocessProcessingCommand",
     "ReplacementProcessingCommand",
     "RetryProcessingCommand",
