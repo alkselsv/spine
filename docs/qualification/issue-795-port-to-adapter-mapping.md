@@ -1,6 +1,6 @@
 # Issue #795 private ASR storage: port-to-adapter mapping
 
-Reviewed main base: `c05b091452eaded3f040334ce27408297155f67f`.
+Reviewed main base: `c3a7feb200cd352d90f23853c4bc131efd4f7d4b`.
 Hardening checkpoint: migration chain resequenced after email revision metadata;
 full-suite qualification completed on the implementation tree before commit.
 
@@ -94,9 +94,10 @@ the resolver then loads and verifies the canonical database binding. UUID
 equality is not proof of policy authority.
 
 Main migrations are email artifacts `20261230_98`, mailbox connection status
-`20261231_99`, and email revision metadata `20270101_100`. The ASR chain follows
-them linearly: storage `20270102_101`, manifest metadata `20270103_102`, then
-`20270104_103`, which persists the exact per-source retention disposition on
+`20261231_99`, email revision metadata `20270101_100`, and email attachment
+artifacts `20270102_101`. The ASR chain follows them linearly: storage
+`20270103_102`, manifest metadata `20270104_103`, then
+`20270105_104`, which persists the exact per-source retention disposition on
 report artifacts. Reads and idempotent retries compare the entire current
 disposition (policy and terms IDs/digests, generation, class, start event,
 approval and cleanup/backup evidence) as well as derived expiry. This prevents
@@ -120,23 +121,24 @@ publication remains disabled until canonical privacy/release authority and
 external revocation fencing are available.
 
 Verification on the rebased working tree (base
-`c05b091452eaded3f040334ce27408297155f67f`):
+`c3a7feb200cd352d90f23853c4bc131efd4f7d4b`):
 
-- Restricted PostgreSQL storage/readiness qualification on the current base:
-  `78 passed in 83.61s`, using `spine_runtime`; Alembic head is
-  `20270104_103`. The current initial-tenancy migration suite passed
-  `59 tests in 642.04s`, including the new main email revision metadata
-  migration and injected failure rollback.
+- Restricted PostgreSQL storage/readiness qualification on the previous base:
+  `78 passed in 83.61s`, using `spine_runtime`. Rerun against the current
+  migration chain `20270105_104` is pending.
+- Initial-tenancy migration upgrade/rollback qualification against the current
+  chain is running; report its exact result before handoff.
 - `python -m compileall -q src tests`, `uv lock --check` with cache redirected
   to `/tmp`, and `git diff --check`: PASS.
-- Full repository `pytest -q` on exact current-main base `c05b0914`: `6468
+- Full repository `pytest -q` on exact previous-main base `c05b0914`: `6468
   passed, 7 skipped, 5 failed, 1 warning` in `2008.34s`. Direct failures were
   Google desktop loopback OAuth and the #680 operator wizard. The nested #68
   offline traceability/full gates repeat baseline failures. Its artifact-diff
   gate also fails while the re-sequencing changes are uncommitted; rerun that
   gate against the clean committed tree. No ASR-specific test failed.
-- Exact `c05b0914` baseline verification for the two direct failures remains
-  pending; prior main `8b99d598` reproduced them. GitHub checks for the final
+- Exact current-main baseline verification for the two direct failures and
+  full suite on this rebased branch remain pending. Prior main `8b99d598`
+  reproduced the OAuth and #680 wizard failures. GitHub checks for the final
   rebased head are pending until push.
 
 Production manifest authority (#811), deletion authority (#812), and external

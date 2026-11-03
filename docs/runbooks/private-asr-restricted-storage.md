@@ -220,24 +220,24 @@ environment; backup deletion, encryption, physical erasure and restart/restore
 qualification. No actual retention duration or approval is invented here.
 
 Verification on the rebased working tree, based on current main
-`c05b091452eaded3f040334ce27408297155f67f`:
+`c3a7feb200cd352d90f23853c4bc131efd4f7d4b`:
 
-- Restricted PostgreSQL ASR storage and readiness: `78 passed in 83.61s` with
-  restricted `spine_runtime`; Alembic head is `20270104_103`.
-- Fresh-database initial-tenancy migration suite: `59 passed in 642.04s`,
-  including new main migration `20270101_100` and failure rollback at `104`.
+- Restricted PostgreSQL ASR storage and readiness: previous base result was
+  `78 passed in 83.61s`; rerun against current head `20270105_104` is pending.
+- Fresh-database initial-tenancy migration suite against current head
+  `20270105_104` is running; record exact result before handoff.
 - `python -m compileall -q src tests` and `git diff --check`: PASS.
-- Full repository suite on exact current-main base `c05b0914`: `6468 passed,
+- Full repository suite on exact previous-main base `c05b0914`: `6468 passed,
   7 skipped, 5 failed, 1 warning` in `2008.34s`.
   The two direct failures were the Google OAuth loopback test and #680 wizard;
   nested #68 traceability/full gates repeat baseline failures. The artifact-diff
   check also failed because migration resequencing changes were uncommitted
   during this run; rerun it on the clean committed tree. No ASR storage test
-  failed. The direct baseline failures must be confirmed on exact `c05b0914`.
+  failed. Verify the direct failures against exact current base `c3a7feb2`.
 - `python -m compileall -q src tests`, `uv lock --check` with `/tmp` cache, and
   `git diff --check`: PASS.
-- GitHub CI on the previous base passed all seven checks; checks for final base
-  `c05b0914` and the pushed rebased head are pending.
+- GitHub CI on the previous base passed all seven checks; checks for current
+  base `c3a7feb2` and the pushed rebased head are pending.
 
 PR #797 stays OPEN/DRAFT and Issue #795 stays OPEN. Source-head replacement,
 AccessPolicy activation, lifecycle withdrawal, retention CAS, multi-source
