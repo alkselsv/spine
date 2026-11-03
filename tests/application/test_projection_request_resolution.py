@@ -485,14 +485,9 @@ async def test_opaque_current_revision_is_rejected_before_physical_projection() 
 
 
 @pytest.mark.asyncio
-async def test_process_only_receipt_is_rejected_without_changing_publication_state() -> None:
-    uow = _Uow(process_only_receipt=True)
-    publication_runs_before = uow._runs
-
+async def test_process_only_receipt_is_rejected_before_physical_projection() -> None:
     with pytest.raises(ProjectionMappingError, match="canonical projection request"):
-        await _resolver(uow).resolve(_request())
-
-    assert uow._runs is publication_runs_before
+        await _resolver(_Uow(process_only_receipt=True)).resolve(_request())
 
 
 @pytest.mark.asyncio

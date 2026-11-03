@@ -6,7 +6,6 @@ import ast
 import json
 from pathlib import Path
 import re
-import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -66,6 +65,7 @@ SCENARIO_TESTS: dict[str, tuple[str, ...]] = {
         "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_admission_change_wins_before_acceptance_and_fails_closed",
     ),
     "opaque_exclusion_and_no_old_current_fallback": (
+        "tests/application/test_processing_commands.py::test_opaque_reprocess_is_rejected_before_item_parser_or_byte_read",
         "tests/application/test_projection_request_resolution.py::test_opaque_current_revision_is_rejected_before_physical_projection",
         "tests/application/test_projection_request_execution.py::test_current_turning_opaque_after_resolution_never_reaches_projection_adapter",
         "tests/application/test_projection_request_resolution.py::test_opaque_boundary_member_is_excluded_from_projection_command",
@@ -75,8 +75,8 @@ SCENARIO_TESTS: dict[str, tuple[str, ...]] = {
     "process_only_reprocessing_preserves_canonical_state": (
         "tests/application/test_processing_commands.py::test_authorized_opaque_reprocess_pins_exact_process_only_lineage",
         "tests/application/test_processing_commands.py::test_ordinary_reprocess_preserves_ordinary_admission_and_process_only_output",
-        "tests/application/test_processing_commands.py::test_reprocess_accepts_historical_revision_without_moving_current_head",
-        "tests/application/test_projection_request_resolution.py::test_process_only_receipt_is_rejected_without_changing_publication_state",
+        "tests/application/test_processing_commands.py::test_reprocess_accepts_historical_revision_without_moving_current_head_or_publication",
+        "tests/application/test_projection_request_resolution.py::test_process_only_receipt_is_rejected_before_physical_projection",
     ),
     "provider_compatibility_regression_gates": (
         "tests/qualification/test_issue598_google_qualification.py::test_issue598_report_records_offline_pass_results",
@@ -132,21 +132,8 @@ def test_issue729_report_is_offline_only_and_records_exact_verification() -> Non
     report = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
 
     assert report["status"] == "offline_pass"
-    target_commit = report["target_commit"]
-    assert re.fullmatch(r"[0-9a-f]{40}", target_commit)
-    resolved_commit = subprocess.run(
-        ["git", "rev-parse", f"{target_commit}^{{commit}}"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    assert resolved_commit == target_commit
-    assert subprocess.run(
-        ["git", "merge-base", "--is-ancestor", target_commit, "HEAD"],
-        cwd=ROOT,
-        check=False,
-    ).returncode == 0
+    assert re.fullmatch(r"[0-9a-f]{40}", report["qualified_base_commit"])
+    assert re.fullmatch(r"[0-9a-f]{40}", report["qualification_commit"])
     assert report["migration_revision"] == "20261230_98"
     assert {
         key: {

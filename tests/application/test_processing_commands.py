@@ -100,11 +100,25 @@ class _Canonical:
         )
 
 
+class _Projections:
+    def __init__(self) -> None:
+        self.active_publication = SimpleNamespace(
+            projection_kind="qa",
+            projection_run_id=identifier("active-publication-run"),
+            publication_generation=3,
+        )
+
+    async def resolve_active_publication(self, projection_kind):
+        assert projection_kind == "qa"
+        return self.active_publication
+
+
 class _Uow:
-    def __init__(self, ingestion, sources, canonical) -> None:
+    def __init__(self, ingestion, sources, canonical, projections=None) -> None:
         self.ingestion = ingestion
         self.sources = sources
         self.canonical = canonical
+        self.projections = projections or _Projections()
 
     async def __aenter__(self):
         return self
@@ -551,15 +565,26 @@ async def test_ordinary_reprocess_preserves_ordinary_admission_and_process_only_
 
 
 @pytest.mark.asyncio
-async def test_reprocess_accepts_historical_revision_without_moving_current_head() -> None:
+async def test_reprocess_accepts_historical_revision_without_moving_current_head_or_publication() -> None:
     ingestion = _ResumeIngestion()
     ingestion.fail_binding_once = False
     authority = _Authority(opaque=True)
     context = trusted_context()
     canonical = _OpaqueCanonical()
     canonical.current.current_revision_id = identifier("new-current-revision")
+    projections = _Projections()
+    publication_before = await projections.resolve_active_publication("qa")
+    publication_snapshot = (
+        publication_before.projection_run_id,
+        publication_before.publication_generation,
+    )
     service = _ResumingProcessingService(
-        uow_factory=lambda _: _Uow(ingestion, _ReplacementSources(), canonical),
+        uow_factory=lambda _: _Uow(
+            ingestion,
+            _ReplacementSources(),
+            canonical,
+            projections,
+        ),
         validation_reader=object(),
         parsed_artifacts=object(),
         parser=lambda *args, **kwargs: None,
@@ -588,6 +613,11 @@ async def test_reprocess_accepts_historical_revision_without_moving_current_head
     )
 
     assert canonical.current.current_revision_id == identifier("new-current-revision")
+    publication_after = await projections.resolve_active_publication("qa")
+    assert (
+        publication_after.projection_run_id,
+        publication_after.publication_generation,
+    ) == publication_snapshot
     assert ingestion.lineage.source_revision_id == identifier("revision")
 
 

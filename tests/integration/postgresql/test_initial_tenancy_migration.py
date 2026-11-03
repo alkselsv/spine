@@ -3169,6 +3169,15 @@ async def test_processing_admission_and_selector_history_are_immutable(
         "source_processing_admissions": (True, False, False),
         "trusted_canonical_acceptance_selector_versions": (True, False, False),
     }
+    for table in tables:
+        for statement in (
+            f"UPDATE spine.{table} SET workspace_id = workspace_id",
+            f"DELETE FROM spine.{table}",
+        ):
+            async with _connection(migrated_database.runtime_url) as connection:
+                with pytest.raises(DBAPIError) as exc_info:
+                    await connection.execute(text(statement))
+                assert getattr(exc_info.value.orig, "sqlstate", None) == "42501"
 
 
 @pytest.mark.asyncio(loop_scope="session")

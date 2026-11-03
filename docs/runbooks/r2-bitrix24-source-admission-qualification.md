@@ -5,8 +5,11 @@ application, persistence and disclosure seams. The qualification is deterministi
 and synthetic except for the isolated PostgreSQL 17.6 container. It performs no
 Bitrix24 calls and does not activate production admission.
 
-Run from the repository root at the exact commit recorded in
-`docs/qualification/issue-729-bitrix24-source-admission.json`:
+Run from the repository root at the `qualification_commit` recorded in
+`docs/qualification/issue-729-bitrix24-source-admission.json`. The separate
+`qualified_base_commit` identifies the merged product revision under qualification;
+the qualification commit contains this runbook, its executable traceability test,
+and the strengthened cross-slice evidence.
 
 ```bash
 UV_CACHE_DIR=/private/tmp/spine-uv-cache uv sync --extra dev

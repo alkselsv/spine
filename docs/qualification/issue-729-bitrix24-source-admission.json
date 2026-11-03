@@ -2,7 +2,8 @@
   "schema_version": "issue-729-bitrix24-source-admission:v1",
   "ticket": 729,
   "status": "offline_pass",
-  "target_commit": "00c4b911f36bbf973cae108b3665fd13fc3c9170",
+  "qualified_base_commit": "00c4b911f36bbf973cae108b3665fd13fc3c9170",
+  "qualification_commit": "c8166129789fd2f5e424e73a54ef3465c3be519f",
   "migration_revision": "20261230_98",
   "qualification_boundary": "synthetic-source-admission-through-current-disclosure-with-isolated-postgresql",
   "required_scenarios": [
@@ -68,6 +69,7 @@
       "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_admission_change_wins_before_acceptance_and_fails_closed"
     ],
     "opaque_exclusion_and_no_old_current_fallback": [
+      "tests/application/test_processing_commands.py::test_opaque_reprocess_is_rejected_before_item_parser_or_byte_read",
       "tests/application/test_projection_request_resolution.py::test_opaque_current_revision_is_rejected_before_physical_projection",
       "tests/application/test_projection_request_execution.py::test_current_turning_opaque_after_resolution_never_reaches_projection_adapter",
       "tests/application/test_projection_request_resolution.py::test_opaque_boundary_member_is_excluded_from_projection_command",
@@ -77,8 +79,8 @@
     "process_only_reprocessing_preserves_canonical_state": [
       "tests/application/test_processing_commands.py::test_authorized_opaque_reprocess_pins_exact_process_only_lineage",
       "tests/application/test_processing_commands.py::test_ordinary_reprocess_preserves_ordinary_admission_and_process_only_output",
-      "tests/application/test_processing_commands.py::test_reprocess_accepts_historical_revision_without_moving_current_head",
-      "tests/application/test_projection_request_resolution.py::test_process_only_receipt_is_rejected_without_changing_publication_state"
+      "tests/application/test_processing_commands.py::test_reprocess_accepts_historical_revision_without_moving_current_head_or_publication",
+      "tests/application/test_projection_request_resolution.py::test_process_only_receipt_is_rejected_before_physical_projection"
     ],
     "provider_compatibility_regression_gates": [
       "tests/qualification/test_issue598_google_qualification.py::test_issue598_report_records_offline_pass_results",
