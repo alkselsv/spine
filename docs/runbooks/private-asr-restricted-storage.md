@@ -240,7 +240,10 @@ Verification on the rebased working tree, based on current main
   (`1 passed in 1.41s`).
 - `python -m compileall -q src tests`, `uv lock --check` with `/tmp` cache, and
   `git diff --check`: PASS.
-- Exact-head GitHub CI is pending until this branch is pushed.
+- GitHub CI on exact code HEAD `e249cbd` passed all seven checks: Python
+  compatibility 3.10–3.14, web, and `r1-regression-gate`. The current follow-up
+  only changes qualification documentation; it does not alter the qualified
+  implementation.
 
 PR #797 stays OPEN/DRAFT and Issue #795 stays OPEN. Source-head replacement,
 AccessPolicy activation, lifecycle withdrawal, retention CAS, multi-source

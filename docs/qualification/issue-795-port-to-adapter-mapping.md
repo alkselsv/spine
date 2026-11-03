@@ -142,7 +142,9 @@ Verification on the rebased working tree (base
   (`2 failed in 2.61s`), confirming inherited baseline failures. No PR-specific
   full-suite failure was observed.
 - Clean-tree #68 artifact gate after documentation commit: `1 passed in 1.41s`.
-- Exact-head GitHub CI awaits pushing the updated branch.
+- Exact code HEAD `e249cbd` GitHub CI: all seven checks succeeded (Python
+  compatibility 3.10–3.14, web, and `r1-regression-gate`). This paragraph is a
+  documentation-only follow-up; it does not change the qualified code.
 
 Production manifest authority (#811), deletion authority (#812), and external
 approval/revocation fencing (#813) remain separate production gates. One
