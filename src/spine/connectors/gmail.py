@@ -55,7 +55,15 @@ class GmailReadRequest(DefinitionModel):
     label_references: tuple[UUID, ...] = ()
     page_token: str | None = None
     max_results: int = Field(default=100, ge=1, le=500)
-    start_history_id: str | None = None
+
+
+class GmailHistoryPageReadRequest(GmailReadRequest):
+    """Versioned history-page request while retaining Gmail read authority."""
+
+    schema_version: Literal["gmail-history-page-read:v1"] = (
+        "gmail-history-page-read:v1"
+    )
+    start_history_id: GmailHistoryId
 
 
 class GmailHistoryReadCommand(MailboxReadCommand):
@@ -197,23 +205,22 @@ class GmailMailboxReader(Generic[ResultT]):
             or page_request.max_results != command.max_results
         ):
             raise MailboxReadDeniedError()
-        request = self._build_request(
-            connection,
-            command,
-            start_history_id=page_request.start_history_id,
-            page_token=page_request.page_token,
-            max_results=page_request.max_results,
+        base_request = self._build_request(connection, command)
+        history_request = GmailHistoryPageReadRequest(
+            **{
+                **base_request.model_dump(),
+                "schema_version": "gmail-history-page-read:v1",
+                "start_history_id": page_request.start_history_id,
+                "page_token": page_request.page_token,
+                "max_results": page_request.max_results,
+            }
         )
-        return await self._client.read(request)
+        return await self._client.read(history_request)
 
     @staticmethod
     def _build_request(
         connection: ProviderConnection,
         command: MailboxReadCommand,
-        *,
-        start_history_id: str | None = None,
-        page_token: str | None = None,
-        max_results: int | None = None,
     ) -> GmailReadRequest:
         scope = command.scope
         capability = required_mailbox_capability(command.operation)
@@ -263,13 +270,6 @@ class GmailMailboxReader(Generic[ResultT]):
                 else (command.folder_or_label_reference,)
                 if command.folder_or_label_reference is not None
                 else ()
-            ),
-            start_history_id=start_history_id,
-            page_token=page_token,
-            max_results=(
-                max_results
-                if max_results is not None
-                else 100
             ),
         )
 

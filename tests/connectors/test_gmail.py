@@ -19,6 +19,7 @@ from spine.application.persistence.context import (
 from spine.connectors.gmail import (
     GmailEnumerationResult,
     GmailHistoryReadCommand,
+    GmailHistoryPageReadRequest,
     GmailMessageIdPage,
     GmailReadRequest,
     compose_gmail_history_reader,
@@ -153,7 +154,7 @@ class _RecordingGmailClient:
 class _RecordingGmailHistoryClient:
     def __init__(self, pages: tuple[dict[str, object], ...]) -> None:
         self.pages = pages
-        self.requests: list[GmailReadRequest] = []
+        self.requests: list[GmailHistoryPageReadRequest] = []
 
     async def read(self, request: GmailReadRequest) -> dict[str, object]:
         self.requests.append(request)
