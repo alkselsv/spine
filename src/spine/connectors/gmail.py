@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from collections.abc import Mapping
-from typing import Generic, Literal, Protocol, TypeVar
+from enum import Enum
+from hashlib import sha256
+from typing import Generic, Literal, Protocol, TypeVar, cast
 from uuid import UUID
 
 from pydantic import Field, model_validator
@@ -18,7 +22,7 @@ from spine.application.connections.email_read import (
 from spine.application.connections.provider import ProviderConnectionRepository
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.domain.common import DefinitionModel
-from spine.domain.connections.email_scope import EmailOperation
+from spine.domain.connections.email_scope import EmailOperation, MailboxReadScope
 from spine.domain.connections.provider import (
     OpaqueProviderReference,
     ProviderConnection,
@@ -55,6 +59,8 @@ class GmailReadRequest(DefinitionModel):
     label_references: tuple[UUID, ...] = ()
     page_token: str | None = None
     max_results: int = Field(default=100, ge=1, le=500)
+    message_id: str | None = None
+    format: Literal["RAW"] | None = None
 
 
 class GmailHistoryPageReadRequest(GmailReadRequest):
@@ -97,6 +103,88 @@ class GmailEnumerationResult(DefinitionModel):
     continuation_token: str | None = None
 
 
+class GmailRawMessageResponse(DefinitionModel):
+    """Allowlisted fields decoded from one synthetic/transport Gmail response."""
+
+    http_status: int = Field(ge=100, le=599)
+    message_id: str | None = None
+    raw_data: str | None = None
+    label_references: tuple[UUID, ...] = ()
+    internal_date_ms: int | None = Field(default=None, ge=0)
+    history_id: str | None = Field(default=None, pattern=r"^[0-9]+$")
+    thread_id: str | None = None
+
+
+class GmailRawMessageStatus(str, Enum):
+    """Content-free outcomes for an exact Gmail RAW message read."""
+
+    ACCEPTED = "accepted"
+    MESSAGE_ID_MISMATCH = "message_id_mismatch"
+    OUT_OF_SCOPE = "out_of_scope"
+    NOT_FOUND = "not_found"
+    MALFORMED_ENCODING = "malformed_encoding"
+    TRUNCATED_DATA = "truncated_data"
+    TOO_LARGE = "too_large"
+    LIMIT_NOT_CONFIGURED = "limit_not_configured"
+    UNAUTHORIZED = "unauthorized"
+    FORBIDDEN = "forbidden"
+    THROTTLED = "throttled"
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
+    PROVIDER_ERROR = "provider_error"
+
+
+class GmailRawMessageResult(DefinitionModel):
+    """Immutable raw bytes and provider revision evidence, or a safe outcome."""
+
+    schema_version: Literal["gmail-raw-message-result:v1"] = "gmail-raw-message-result:v1"
+    status: GmailRawMessageStatus
+    mailbox_scope: MailboxReadScope
+    requested_message_id: str
+    authorized_label_reference: UUID
+    message_id: str | None = None
+    raw_mime: bytes | None = None
+    sha256: str | None = None
+    byte_length: int | None = Field(default=None, ge=0)
+    observed_label_references: tuple[UUID, ...] | None = None
+    internal_date_ms: int | None = Field(default=None, ge=0)
+    history_id: str | None = Field(default=None, pattern=r"^[0-9]+$")
+    thread_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_result(self) -> "GmailRawMessageResult":
+        if self.status == GmailRawMessageStatus.ACCEPTED:
+            if (
+                self.raw_mime is None
+                or self.sha256 is None
+                or self.byte_length != len(self.raw_mime)
+                or self.sha256 != sha256(self.raw_mime).hexdigest()
+                or self.message_id != self.requested_message_id
+                or not self.mailbox_scope.allows_location(self.authorized_label_reference)
+                or self.observed_label_references is None
+                or self.authorized_label_reference not in self.observed_label_references
+                or set(self.observed_label_references)
+                & set(self.mailbox_scope.excluded_label_references)
+                or self.internal_date_ms is None
+                or self.history_id is None
+            ):
+                raise ValueError("accepted Gmail raw result requires verified revision evidence")
+        elif any(
+            value is not None
+            for value in (
+                self.raw_mime,
+                self.sha256,
+                self.byte_length,
+                self.observed_label_references,
+                self.message_id,
+                self.internal_date_ms,
+                self.history_id,
+                self.thread_id,
+            )
+        ):
+            raise ValueError("failed Gmail raw result cannot contain provider evidence")
+        return self
+
+
 ResultT = TypeVar("ResultT")
 
 
@@ -115,12 +203,16 @@ class GmailMailboxReader(Generic[ResultT]):
         *,
         max_pages: int = 100,
         max_items: int = 10_000,
+        max_raw_message_bytes: int | None = None,
     ) -> None:
         if max_pages < 1 or max_items < 1:
             raise ValueError("Gmail enumeration bounds must be positive")
         self._client = client
         self._max_pages = max_pages
         self._max_items = max_items
+        if max_raw_message_bytes is not None and max_raw_message_bytes < 1:
+            raise ValueError("max_raw_message_bytes must be positive")
+        self._max_raw_message_bytes = max_raw_message_bytes
 
     async def read(
         self,
@@ -129,12 +221,31 @@ class GmailMailboxReader(Generic[ResultT]):
     ) -> ResultT:
         request = self._build_request(connection, command)
         is_enumeration = command.operation is EmailOperation.ENUMERATE_MAILBOX
-        if not is_enumeration:
+        if is_enumeration:
+            return await self._enumerate_messages(command.scope, request)
+        if command.operation is not EmailOperation.READ_RAW_MESSAGE:
             return await self._client.read(request)
+        label_reference = command.folder_or_label_reference
+        if label_reference is None:
+            raise MailboxReadDeniedError()
+        return cast(
+            ResultT,
+            await self._read_raw_message(
+                command.scope,
+                command.message_id or "",
+                label_reference,
+                request,
+            ),
+        )
 
+    async def _enumerate_messages(
+        self,
+        scope: MailboxReadScope,
+        request: GmailReadRequest,
+    ) -> GmailEnumerationResult:
         # Enumeration uses only messages.list metadata and an exact approved label.
         if not request.label_references or any(
-            label not in command.scope.allowed_label_references
+            label not in scope.allowed_label_references
             for label in request.label_references
         ):
             raise MailboxReadDeniedError()
@@ -194,6 +305,78 @@ class GmailMailboxReader(Generic[ResultT]):
             continuation_token=token,
         )
 
+    async def _read_raw_message(
+        self,
+        scope: MailboxReadScope,
+        message_id: str,
+        label_reference: UUID,
+        request: GmailReadRequest,
+    ) -> GmailRawMessageResult:
+        if self._max_raw_message_bytes is None:
+            return _raw_result(scope, message_id, label_reference, GmailRawMessageStatus.LIMIT_NOT_CONFIGURED)
+        try:
+            response = await self._client.read(request)
+        except Exception as error:
+            return _raw_result(scope, message_id, label_reference, _status_for_exception(error))
+        if not isinstance(response, GmailRawMessageResponse):
+            return _raw_result(scope, message_id, label_reference, GmailRawMessageStatus.PROVIDER_ERROR)
+        status = _status_for_http(response.http_status)
+        if status is not None:
+            return _raw_result(scope, message_id, label_reference, status)
+        if not 200 <= response.http_status <= 299:
+            return _raw_result(scope, message_id, label_reference, GmailRawMessageStatus.PROVIDER_ERROR)
+        if response.message_id != message_id:
+            return _raw_result(scope, message_id, label_reference, GmailRawMessageStatus.MESSAGE_ID_MISMATCH)
+        if (
+            label_reference not in response.label_references
+            or set(response.label_references) & set(scope.excluded_label_references)
+        ):
+            return _raw_result(scope, message_id, label_reference, GmailRawMessageStatus.OUT_OF_SCOPE)
+        if response.raw_data is None or response.internal_date_ms is None or response.history_id is None:
+            return _raw_result(scope, message_id, label_reference, GmailRawMessageStatus.PROVIDER_ERROR)
+
+        encoded_limit = ((self._max_raw_message_bytes + 2) // 3) * 4
+        if len(response.raw_data) > encoded_limit:
+            return _raw_result(scope, message_id, label_reference, GmailRawMessageStatus.TOO_LARGE)
+        try:
+            encoded = response.raw_data.encode("ascii")
+        except UnicodeEncodeError:
+            return _raw_result(scope, message_id, label_reference, GmailRawMessageStatus.MALFORMED_ENCODING)
+        if not encoded or any(
+            byte not in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_="
+            for byte in encoded
+        ):
+            return _raw_result(scope, message_id, label_reference, GmailRawMessageStatus.MALFORMED_ENCODING)
+        if len(encoded) % 4 == 1:
+            return _raw_result(scope, message_id, label_reference, GmailRawMessageStatus.TRUNCATED_DATA)
+        padding_length = len(encoded) - len(encoded.rstrip(b"="))
+        if padding_length and (
+            len(encoded) % 4 != 0 or padding_length > 2 or b"=" in encoded[:-padding_length]
+        ):
+            return _raw_result(scope, message_id, label_reference, GmailRawMessageStatus.MALFORMED_ENCODING)
+        try:
+            raw_mime = base64.b64decode(
+                encoded + b"=" * ((-len(encoded)) % 4), altchars=b"-_", validate=True
+            )
+        except (binascii.Error, ValueError):
+            return _raw_result(scope, message_id, label_reference, GmailRawMessageStatus.MALFORMED_ENCODING)
+        if len(raw_mime) > self._max_raw_message_bytes:
+            return _raw_result(scope, message_id, label_reference, GmailRawMessageStatus.TOO_LARGE)
+        return GmailRawMessageResult(
+            status=GmailRawMessageStatus.ACCEPTED,
+            mailbox_scope=scope,
+            requested_message_id=message_id,
+            authorized_label_reference=label_reference,
+            message_id=response.message_id,
+            raw_mime=raw_mime,
+            sha256=sha256(raw_mime).hexdigest(),
+            byte_length=len(raw_mime),
+            observed_label_references=response.label_references,
+            internal_date_ms=response.internal_date_ms,
+            history_id=response.history_id,
+            thread_id=response.thread_id,
+        )
+
     async def read_history_page(
         self,
         connection: ProviderConnection,
@@ -246,6 +429,10 @@ class GmailMailboxReader(Generic[ResultT]):
             or OpaqueProviderReference(value=scope.resource_scope_reference)
             not in connection.approved_resource_scope_references
             or not connection.supports(capability)
+            or (
+                command.operation is EmailOperation.READ_RAW_MESSAGE
+                and not command.message_id
+            )
         ):
             raise MailboxReadDeniedError()
         return GmailReadRequest(
@@ -270,6 +457,16 @@ class GmailMailboxReader(Generic[ResultT]):
                 else (command.folder_or_label_reference,)
                 if command.folder_or_label_reference is not None
                 else ()
+            ),
+            message_id=(
+                command.message_id
+                if command.operation is EmailOperation.READ_RAW_MESSAGE
+                else None
+            ),
+            format=(
+                "RAW"
+                if command.operation is EmailOperation.READ_RAW_MESSAGE
+                else None
             ),
         )
 
@@ -325,13 +522,19 @@ def compose_gmail_mailbox_reader(
     client: GmailReadClient[ResultT],
     max_pages: int = 100,
     max_items: int = 10_000,
+    max_raw_message_bytes: int | None = None,
 ) -> MailboxReadAdmission[ResultT]:
     """Compose Gmail behind the provider-neutral, exact-scope admission gate."""
 
     return MailboxReadAdmission(
         scopes=scopes,
         connections=connections,
-        provider=GmailMailboxReader(client, max_pages=max_pages, max_items=max_items),
+        provider=GmailMailboxReader(
+            client,
+            max_pages=max_pages,
+            max_items=max_items,
+            max_raw_message_bytes=max_raw_message_bytes,
+        ),
     )
 
 
@@ -350,9 +553,45 @@ def compose_gmail_history_reader(
     )
 
 
+def _raw_result(
+    scope: MailboxReadScope,
+    message_id: str,
+    label_reference: UUID,
+    status: GmailRawMessageStatus,
+) -> GmailRawMessageResult:
+    return GmailRawMessageResult(
+        status=status,
+        mailbox_scope=scope,
+        requested_message_id=message_id,
+        authorized_label_reference=label_reference,
+    )
+
+
+def _status_for_exception(error: Exception) -> GmailRawMessageStatus:
+    status = getattr(error, "status_code", getattr(error, "status", None))
+    return _status_for_http(status) or GmailRawMessageStatus.PROVIDER_ERROR
+
+
+def _status_for_http(status_code: object) -> GmailRawMessageStatus | None:
+    if status_code == 401:
+        return GmailRawMessageStatus.UNAUTHORIZED
+    if status_code == 403:
+        return GmailRawMessageStatus.FORBIDDEN
+    if status_code == 404:
+        return GmailRawMessageStatus.NOT_FOUND
+    if status_code == 429:
+        return GmailRawMessageStatus.THROTTLED
+    if isinstance(status_code, int) and 500 <= status_code <= 599:
+        return GmailRawMessageStatus.PROVIDER_UNAVAILABLE
+    return None
+
+
 __all__ = [
     "GmailMailboxReader",
     "GmailHistoryReadCommand",
+    "GmailRawMessageResponse",
+    "GmailRawMessageResult",
+    "GmailRawMessageStatus",
     "GmailReadClient",
     "GmailHistoryPageReadRequest",
     "GmailMessageIdPage",

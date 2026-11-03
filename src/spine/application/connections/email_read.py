@@ -43,6 +43,7 @@ class MailboxReadCommand(DefinitionModel):
         default=None, ge=1024, le=8_388_608
     )
     expected_uid_validity: StrictInt | None = Field(default=None, ge=1, le=2**32 - 1)
+    message_id: str | None = None
 
     @field_validator("mailbox_subject_reference", "folder_or_label_reference")
     @classmethod
@@ -65,6 +66,19 @@ class MailboxReadCommand(DefinitionModel):
         ):
             raise ValueError("expected UIDVALIDITY applies only to generation observation")
         return self
+
+    @field_validator("message_id")
+    @classmethod
+    def _validate_message_id(cls, value: str | None) -> str | None:
+        if value is not None and (
+            not value
+            or any(
+                not character.isprintable() or character.isspace()
+                for character in value
+            )
+        ):
+            raise ValueError("message_id must be a non-empty exact provider identifier")
+        return value
 
 
 class MailboxScopeRepository(Protocol):
@@ -132,6 +146,9 @@ class MailboxReadAdmission(Generic[ReadResultT]):
             or command.mailbox_subject_reference != scope.mailbox_subject_reference
             or not scope.allows(command.operation)
         ):
+            raise MailboxReadDeniedError()
+
+        if command.operation is EmailOperation.READ_RAW_MESSAGE and not command.message_id:
             raise MailboxReadDeniedError()
 
         is_enumeration = command.operation is EmailOperation.ENUMERATE_MAILBOX

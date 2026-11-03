@@ -169,6 +169,11 @@ def _command(
         operation=operation,
         mailbox_subject_reference=effective.mailbox_subject_reference,
         folder_or_label_reference=location,
+        message_id=(
+            "synthetic-gmail-message"
+            if operation is EmailOperation.READ_RAW_MESSAGE
+            else None
+        ),
     )
 
 
