@@ -25,6 +25,9 @@ from spine.infrastructure.persistence.postgresql_drive_changes import (
 from spine.infrastructure.persistence.postgresql_google_sheets_sync import (
     PostgreSQLGoogleSheetsSyncRepository,
 )
+from spine.infrastructure.persistence.postgresql_email_sync import (
+    PostgreSQLEmailSyncRepository,
+)
 from spine.infrastructure.persistence.postgresql_register_associations import (
     PostgreSQLRegisterAssociationRepository,
 )
@@ -73,6 +76,7 @@ __all__ = [
     "PostgreSQLParsedArtifactRepository",
     "PostgreSQLDriveChangeRepository",
     "PostgreSQLGoogleSheetsSyncRepository",
+    "PostgreSQLEmailSyncRepository",
     "PostgreSQLRegisterAssociationRepository",
     "PostgreSQLBitrix24CrmMaterialAssociationRepository",
     "PostgreSQLCrmRelationshipV2Repository",

@@ -138,6 +138,8 @@ class EmailSyncAttempt(DefinitionModel):
     )
     admission: EmailSyncAdmission
     status: EmailSyncStatus
+    # Optimistic concurrency token maintained by the durable repository.
+    revision: int = Field(default=1, ge=1)
     committed_checkpoint: str | None = Field(default=None, max_length=4096)
     pages: tuple[EmailSyncPageState, ...] = ()
     failure_code: str | None = Field(
@@ -160,6 +162,13 @@ class EmailSyncRepository(Protocol):
     ) -> EmailSyncAttempt | None: ...
 
     async def save(self, attempt: EmailSyncAttempt) -> EmailSyncAttempt: ...
+
+
+class EmailSyncConcurrentUpdateError(RuntimeError):
+    """A stale worker attempted to mutate a newer durable attempt revision."""
+
+    def __init__(self) -> None:
+        super().__init__("email sync attempt changed concurrently")
 
 
 class EmailSyncAdmissionPort(Protocol):
@@ -510,6 +519,7 @@ __all__ = [
     "EmailSyncAdmissionState",
     "EmailSyncAttempt",
     "EmailSyncCoordinator",
+    "EmailSyncConcurrentUpdateError",
     "EmailSyncEffect",
     "EmailSyncEffectPort",
     "EmailSyncEffectReceipt",

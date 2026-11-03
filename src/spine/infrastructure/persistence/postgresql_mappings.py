@@ -229,6 +229,61 @@ workflow_run_events = Table(
     ),
 )
 
+email_sync_attempts = Table(
+    "email_sync_attempts",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("attempt_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("attempt_key", String(255), nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("authorization_generation", Integer, nullable=False),
+    Column("configuration_generation", Integer, nullable=False),
+    Column("scope_generation", Integer, nullable=False),
+    Column("committed_checkpoint", Text, nullable=True),
+    Column("record", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("workspace_id", "environment_id", "attempt_id", name="pk_email_sync_attempts"),
+    UniqueConstraint("workspace_id", "environment_id", "attempt_key", name="uq_email_sync_attempts_key"),
+)
+
+email_sync_pages = Table(
+    "email_sync_pages",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("attempt_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("page_id", String(255), nullable=False),
+    Column("page_digest", String(64), nullable=False),
+    Column("committed", Boolean, nullable=False),
+    Column("record", JSONB, nullable=False),
+    PrimaryKeyConstraint("workspace_id", "environment_id", "attempt_id", "page_id", name="pk_email_sync_pages"),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "attempt_id"],
+        ["spine.email_sync_attempts.workspace_id", "spine.email_sync_attempts.environment_id", "spine.email_sync_attempts.attempt_id"],
+        name="fk_email_sync_pages_attempt",
+    ),
+)
+
+email_sync_effect_receipts = Table(
+    "email_sync_effect_receipts",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("attempt_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("page_id", String(255), nullable=False),
+    Column("effect_key", String(255), nullable=False),
+    Column("receipt_reference", String(255), nullable=False),
+    Column("durable", Boolean, nullable=False),
+    PrimaryKeyConstraint("workspace_id", "environment_id", "attempt_id", "page_id", "effect_key", name="pk_email_sync_effect_receipts"),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "attempt_id", "page_id"],
+        ["spine.email_sync_pages.workspace_id", "spine.email_sync_pages.environment_id", "spine.email_sync_pages.attempt_id", "spine.email_sync_pages.page_id"],
+        name="fk_email_sync_effect_receipts_page",
+    ),
+)
+
 requirements_artifact_versions = Table(
     "requirements_artifact_versions",
     metadata,
@@ -2591,6 +2646,9 @@ current_trusted_canonical_acceptance_selectors = Table(
 )
 
 __all__ = [
+    "email_sync_attempts",
+    "email_sync_pages",
+    "email_sync_effect_receipts",
     "access_policy_grants",
     "access_policy_versions",
     "source_security_domain_bindings",

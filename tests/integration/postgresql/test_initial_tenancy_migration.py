@@ -1616,6 +1616,9 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "outbox_deliveries",
         "workspace_memberships",
         "workspaces",
+        "email_sync_attempts",
+        "email_sync_pages",
+        "email_sync_effect_receipts",
         "source_canonical_tables",
         "source_canonical_unicode",
         "source_canonical_compositions",
@@ -1673,6 +1676,9 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "bitrix24_crm_material_claims",
         "bitrix24_crm_material_acceptances",
         "bitrix24_crm_material_revocations",
+        "email_sync_attempts",
+        "email_sync_pages",
+        "email_sync_effect_receipts",
     }
     expected_final_constraints = {
         "alembic_version_pkc",
@@ -2135,6 +2141,17 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
             "uq_context_bundles_exact_identity",
         "fk_context_bundles_environment",
         "fk_context_bundles_profile",
+        "pk_email_sync_attempts",
+        "pk_email_sync_pages",
+        "pk_email_sync_effect_receipts",
+        "uq_email_sync_attempts_key",
+        "fk_email_sync_attempts_environment",
+        "fk_email_sync_pages_attempt",
+        "fk_email_sync_effect_receipts_page",
+        "ck_email_sync_attempts_ck_email_sync_attempts_generations",
+        "ck_email_sync_attempts_ck_email_sync_attempts_record",
+        "ck_email_sync_pages_ck_email_sync_pages_record",
+        "ck_email_sync_effect_receipts_ck_email_sync_effect_rece_2a78",
         "ck_context_bundles_positive_versions",
         "ck_context_bundles_schema",
         "ck_context_bundles_digests",
@@ -2461,6 +2478,11 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "pk_bitrix24_crm_material_claims",
         "pk_bitrix24_crm_material_acceptances",
         "pk_bitrix24_crm_material_revocations",
+        "pk_email_sync_attempts",
+        "pk_email_sync_pages",
+        "pk_email_sync_effect_receipts",
+        "uq_email_sync_attempts_key",
+        "ix_email_sync_attempts_active",
         "uq_google_sheets_sync_runs_idempotency",
         "uq_google_sheets_identity_disposition_run_scope",
         "uq_google_sheets_absence_candidate_run_scope_source",
@@ -2693,6 +2715,9 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
     expected_rls = {
         "workspaces": (True, True),
         "environments": (True, True),
+        "email_sync_attempts": (True, True),
+        "email_sync_pages": (True, True),
+        "email_sync_effect_receipts": (True, True),
         "work_items": (True, True),
         "workflow_runs": (True, True),
         "workflow_command_receipts": (True, True),
@@ -2890,6 +2915,9 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "feedback_records": (True, True, False, False),
         "operational_metric_events": (True, True, False, False),
         "operational_correlation_records": (True, True, False, False),
+        "email_sync_attempts": (True, True, True, False),
+        "email_sync_pages": (True, True, True, False),
+        "email_sync_effect_receipts": (True, True, True, False),
         "idempotency_receipts": (True, True, False, False),
         "initial_workspace_bootstrap": (False, False, False, False),
         "outbox_intents": (False, True, False, False),
@@ -3387,6 +3415,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "outbox_deliveries",
         "workspace_memberships",
         "workspaces",
+        "email_sync_attempts",
+        "email_sync_pages",
+        "email_sync_effect_receipts",
     }
     assert constraints == {
         "alembic_version_pkc",
@@ -3401,6 +3432,17 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "fk_initial_workspace_bootstrap_workspace_id_workspaces",
         "fk_outbox_intents_scope_environments",
         "fk_outbox_intents_workspace_id_workspaces",
+        "pk_email_sync_attempts",
+        "pk_email_sync_pages",
+        "pk_email_sync_effect_receipts",
+        "uq_email_sync_attempts_key",
+        "fk_email_sync_attempts_environment",
+        "fk_email_sync_pages_attempt",
+        "fk_email_sync_effect_receipts_page",
+        "ck_email_sync_attempts_ck_email_sync_attempts_generations",
+        "ck_email_sync_attempts_ck_email_sync_attempts_record",
+        "ck_email_sync_pages_ck_email_sync_pages_record",
+        "ck_email_sync_effect_receipts_ck_email_sync_effect_rece_2a78",
         "ck_idempotency_receipts_command_digest_sha256",
         "ck_idempotency_receipts_idempotency_key_length",
         "ck_idempotency_receipts_operation_schema_version_positive",
@@ -3541,6 +3583,32 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         ("context_bundles", "projection_activation"),
         ("context_bundles", "projection_config_version"),
         ("context_bundles", "created_at"),
+        ("email_sync_attempts", "workspace_id"),
+        ("email_sync_attempts", "environment_id"),
+        ("email_sync_attempts", "attempt_id"),
+        ("email_sync_attempts", "attempt_key"),
+        ("email_sync_attempts", "revision"),
+        ("email_sync_attempts", "authorization_generation"),
+        ("email_sync_attempts", "configuration_generation"),
+        ("email_sync_attempts", "scope_generation"),
+        ("email_sync_attempts", "committed_checkpoint"),
+        ("email_sync_attempts", "record"),
+        ("email_sync_attempts", "created_at"),
+        ("email_sync_attempts", "updated_at"),
+        ("email_sync_pages", "workspace_id"),
+        ("email_sync_pages", "environment_id"),
+        ("email_sync_pages", "attempt_id"),
+        ("email_sync_pages", "page_id"),
+        ("email_sync_pages", "page_digest"),
+        ("email_sync_pages", "committed"),
+        ("email_sync_pages", "record"),
+        ("email_sync_effect_receipts", "workspace_id"),
+        ("email_sync_effect_receipts", "environment_id"),
+        ("email_sync_effect_receipts", "attempt_id"),
+        ("email_sync_effect_receipts", "page_id"),
+        ("email_sync_effect_receipts", "effect_key"),
+        ("email_sync_effect_receipts", "receipt_reference"),
+        ("email_sync_effect_receipts", "durable"),
     } | AUTHORIZATION_DIRECTORY_COLUMNS | AUDIT_COLUMNS | DELIVERY_COLUMNS | ADMISSION_COLUMNS
     assert columns[("workspaces", "id")] == ("uuid", "NO", None)
     assert columns[("environments", "id")] == ("uuid", "NO", None)
@@ -3590,6 +3658,11 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "uq_outbox_intents_environment_producer",
         "uq_outbox_intents_workspace_producer",
         "uq_workspaces_slug",
+        "pk_email_sync_attempts",
+        "pk_email_sync_pages",
+        "pk_email_sync_effect_receipts",
+        "uq_email_sync_attempts_key",
+        "ix_email_sync_attempts_active",
         "pk_context_profiles",
         "uq_context_profiles_identity_digest",
         "ix_context_profiles_lookup",
@@ -4060,7 +4133,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                         "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                         "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'yandex_disk_reconciliation_runs', 'mounted_fs_reconciliation_runs', 'mounted_fs_removal_policies', 'mounted_fs_removal_authorities', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'google_sheets_absence_candidates', 'google_sheets_removal_decisions', 'register_link_claims', 'register_association_acceptances', 'original_upload_records', "
-                        "'qa_agent_artifacts', 'qa_agent_results')"
+                        "'qa_agent_artifacts', 'qa_agent_results', 'email_sync_attempts', 'email_sync_pages', 'email_sync_effect_receipts')"
                     )
                 )
             )
@@ -4119,6 +4192,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "feedback_records": (True, True),
             "operational_metric_events": (True, True),
             "operational_correlation_records": (True, True),
+            "email_sync_attempts": (True, True),
+            "email_sync_pages": (True, True),
+            "email_sync_effect_receipts": (True, True),
         "idempotency_receipts": (True, True),
         "initial_workspace_bootstrap": (True, True),
         "outbox_intents": (True, True),
@@ -5654,13 +5730,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261226_94_canonical_acceptance_selectors.py",
         "20261227_95_processing_admission_expand.py",
         "20261228_96_governed_reprocessing.py",
+        "20261229_97_email_sync_durability.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261229_97_injected_failure.py").write_text(
+    (target / "versions" / "20261230_98_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261229_97'\n"
-        "down_revision = '20261228_96'\n"
+        "revision = '20261230_98'\n"
+        "down_revision = '20261229_97'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

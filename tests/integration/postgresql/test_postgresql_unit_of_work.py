@@ -46,6 +46,16 @@ from spine.application.document_lifecycle import (
     TombstoneDocumentCommand,
 )
 from spine.application.source_lifecycle import SourceLifecycleCoordinator
+from spine.application.email_sync import (
+    EmailSyncAdmission,
+    EmailSyncAdmissionState,
+    EmailSyncAttempt,
+    EmailSyncCoordinator,
+    EmailSyncEffect,
+    EmailSyncEffectReceipt,
+    EmailSyncPage,
+    EmailSyncStatus,
+)
 from spine.application.google_drive_lifecycle import (
     DriveLifecycleDecisionState,
     DriveLifecycleSignal,
@@ -168,6 +178,9 @@ from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.postgresql import (
     PostgreSQLPersistence,
     PostgreSQLTransactionStage,
+)
+from spine.infrastructure.persistence.postgresql_email_sync import (
+    PostgreSQLEmailSyncRepository,
 )
 from spine.infrastructure.persistence.crm_relationship_v2 import (
     PostgreSQLCrmRelationshipV2Repository,
@@ -2756,6 +2769,143 @@ async def test_postgresql_adapter_satisfies_canonical_acceptance_contract(
     contract: ContractTest,
 ) -> None:
     await contract(postgresql_adapter)
+
+
+async def test_email_sync_crash_after_canonical_acceptance_replays_before_checkpoint(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    case = await prepare_canonical_case(postgresql_adapter, 82900)
+    first_commit = True
+
+    class Admission:
+        async def check(self, admission: EmailSyncAdmission) -> EmailSyncAdmissionState:
+            return EmailSyncAdmissionState.ALLOWED
+
+    class CanonicalEffect:
+        calls = 0
+
+        async def apply(self, effect: EmailSyncEffect) -> EmailSyncEffectReceipt:
+            nonlocal first_commit
+            assert effect.effect_reference == case.command.canonical_acceptance_id
+            self.calls += 1
+            async with postgresql_adapter.uow_factory(case.context) as uow:
+                result = await uow.canonical.accept(case.command)
+                await uow.commit()
+            assert result.acceptance is not None
+            if first_commit:
+                first_commit = False
+                # Simulate process death after the canonical transaction commits but
+                # before the email sync worker can persist its effect receipt.
+                raise RuntimeError("worker stopped after canonical commit")
+            return EmailSyncEffectReceipt(
+                effect_key=effect.effect_key,
+                receipt_reference=str(result.acceptance.canonical_acceptance_id),
+                durable=True,
+            )
+
+    email_repository = PostgreSQLEmailSyncRepository(
+        postgresql_adapter.uow_factory,
+        lambda operation, trace_id: postgresql_adapter.ingestion_context(
+            case.source.workspace_id,
+            case.source.environment_id,
+            operation.value,
+        ),
+    )
+    attempt = EmailSyncAttempt(
+        attempt_id=synthetic_uuid(82901),
+        attempt_key="issue-829-replay",
+        admission=EmailSyncAdmission(
+            workspace_id=case.source.workspace_id,
+            environment_id=case.source.environment_id,
+            connection_id=synthetic_uuid(82902),
+            connection_version_id=synthetic_uuid(82903),
+            resource_scope_reference=synthetic_uuid(82904),
+            mailbox_subject_reference=synthetic_uuid(82905),
+            mailbox_binding_id=synthetic_uuid(82906),
+            authorization_generation=1,
+            configuration_generation=1,
+            scope_generation=1,
+        ),
+        status=EmailSyncStatus.PENDING,
+        created_at=datetime(2026, 10, 16, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 10, 16, tzinfo=timezone.utc),
+    )
+    await email_repository.save(attempt)
+    effect = EmailSyncEffect(
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        effect_key="canonical-acceptance",
+        effect_reference=case.command.canonical_acceptance_id,
+    )
+    page = EmailSyncPage(
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        page_id="page-after-crash",
+        requested_checkpoint=None,
+        next_checkpoint="cursor-after-acceptance",
+        effects=(effect,),
+    )
+    effects = CanonicalEffect()
+    coordinator = EmailSyncCoordinator(
+        repository=email_repository,
+        admission=Admission(),
+        effects=effects,
+        clock=lambda: datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc),
+    )
+
+    interrupted = await coordinator.apply_page(
+        attempt.attempt_id,
+        page,
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+    )
+    assert interrupted.status is EmailSyncStatus.INCOMPLETE
+    assert interrupted.committed_checkpoint is None
+    assert interrupted.pages[0].effect_receipts == ()
+
+    replayed = await coordinator.apply_page(
+        attempt.attempt_id,
+        page,
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+    )
+    assert replayed.committed_checkpoint == "cursor-after-acceptance"
+    assert replayed.pages[0].effect_receipts[0].receipt_reference == str(
+        case.command.canonical_acceptance_id
+    )
+    assert effects.calls == 2
+
+    duplicate = await coordinator.apply_page(
+        attempt.attempt_id,
+        page,
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+    )
+    assert duplicate.committed_checkpoint == "cursor-after-acceptance"
+    assert effects.calls == 2
+
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        acceptances = await uow.canonical.list_acceptances(case.source.source_object_id)
+        await uow.commit()
+    migration_engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with migration_engine.connect() as connection:
+            outbox_count = await connection.scalar(
+                text(
+                    "SELECT count(*) FROM spine.outbox_intents "
+                    "WHERE event_id = :event_id"
+                ),
+                {"event_id": case.command.outbox_event_id},
+            )
+    finally:
+        await migration_engine.dispose()
+    assert len(acceptances) == 1
+    assert acceptances[0].canonical_acceptance_id == case.command.canonical_acceptance_id
+    assert outbox_count == 1
 
 
 async def test_postgresql_document_tombstone_preserves_history_and_canonical_effects(

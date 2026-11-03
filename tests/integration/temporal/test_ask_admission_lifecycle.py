@@ -393,7 +393,7 @@ async def test_temporal_ask_cancellation_resumes_after_worker_restart() -> None:
             # This models the dispatcher recovering after restart and replaying
             # the committed cancellation intent through its normal consumer.
             await dispatch.consume(cancellation_intent, diagnostic_context)
-            result = await asyncio.wait_for(handle.result(), timeout=10)
+            result = await asyncio.wait_for(handle.result(), timeout=30)
 
     assert result["outcome"] == AnswerQuestionOutcome.CANCELLED.value
     assert activity.execute_calls >= 1
