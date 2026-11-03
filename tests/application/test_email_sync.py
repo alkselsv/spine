@@ -114,6 +114,7 @@ def page(
     requested_checkpoint: str | None = None,
     next_checkpoint: str | None = "opaque.cursor.v1:next",
     terminal: bool = False,
+    publish_checkpoint: bool = True,
     effect_keys: tuple[str, ...] = ("effect-one",),
 ) -> EmailSyncPage:
     effects_by_key = {"effect-one": EFFECT_ONE, "effect-two": EFFECT_TWO}
@@ -124,6 +125,7 @@ def page(
         requested_checkpoint=requested_checkpoint,
         next_checkpoint=next_checkpoint,
         terminal=terminal,
+        publish_checkpoint=publish_checkpoint,
         effects=tuple(
             EmailSyncEffect(
                 workspace_id=WORKSPACE_ID,
@@ -194,6 +196,45 @@ async def test_pages_commit_opaque_checkpoints_after_durable_effects() -> None:
     assert second.status is EmailSyncStatus.COMPLETE
     assert second.committed_checkpoint == "provider-cursor-is-opaque"
     assert effects.calls == ["effect-one", "effect-two"]
+
+
+@pytest.mark.asyncio
+async def test_staged_page_is_durable_without_publishing_aggregate_checkpoint() -> None:
+    service, _, effects, repository = coordinator()
+    attempt = await service.create_attempt(mailbox_scope(), attempt_key="sync-staged")
+    staged = page(next_checkpoint=None, publish_checkpoint=False).model_copy(
+        update={
+            "evidence_digest": "a" * 64,
+            "evidence_cursor": "provider-private-stage",
+        }
+    )
+
+    result = await service.apply_page(attempt.attempt_id, staged, workspace_id=WORKSPACE_ID, environment_id=ENVIRONMENT_ID)
+
+    assert result.status is EmailSyncStatus.RUNNING
+    assert result.committed_checkpoint is None
+    assert result.pages[0].committed is True
+    assert result.pages[0].evidence_cursor == "provider-private-stage"
+    assert effects.calls == ["effect-one"]
+    assert await repository.get(attempt.attempt_id, WORKSPACE_ID, ENVIRONMENT_ID) == result
+
+
+@pytest.mark.asyncio
+async def test_record_durable_page_requires_exact_receipt_coverage() -> None:
+    service, _, effects, _ = coordinator()
+    attempt = await service.create_attempt(mailbox_scope(), attempt_key="sync-receipts")
+    staged = page(next_checkpoint=None, publish_checkpoint=False)
+
+    with pytest.raises(ValueError, match="cover every effect"):
+        await service.record_durable_page(
+            attempt.attempt_id,
+            staged,
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+            receipts=(),
+        )
+
+    assert effects.calls == []
 
 
 @pytest.mark.asyncio
