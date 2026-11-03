@@ -435,4 +435,3 @@ async def test_running_attempt_can_be_cancelled_without_applying_another_page() 
     assert cancelled.status is EmailSyncStatus.SUSPENDED
     assert resumed.status is EmailSyncStatus.SUSPENDED
     assert effects.calls == ["effect-one"]
-
