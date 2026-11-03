@@ -132,13 +132,22 @@ Verification on the rebased working tree (base
 - `uv run python -m compileall -q src tests` and `git diff --check` passed.
 - Exact current-main baseline `4554596`: the Google desktop loopback OAuth and
   #680 wizard tests fail (`2 failed`); the #68 staged-diff artifact test passes.
-  Full repository `pytest -q` on the latest main rebase and source-fence fix is
-  pending. No unrelated test or artifact was changed to hide failures.
+  Full repository `pytest -q` on final implementation commit `e1e47e3`:
+  `6196 passed, 7 skipped, 3 failed, 1 warning` in `1317.18s`. The failures
+  were those two baseline tests plus nested `test_issue68_full_offline_pytest_gate`,
+  which contains the same two failures. The clean-tree #68 artifact check passed
+  (`1 passed`). No unrelated test or artifact was changed to hide failures.
 - Existing PR CI was green only on its old, pre-rebase head `7441583`; exact
   rebased-head CI has not run until the updated branch is pushed.
 
 Production manifest authority (#811), deletion authority (#812), and external
-approval/revocation fencing (#813) remain separate production gates. Report
+approval/revocation fencing (#813) remain separate production gates. One
+synthetic-scope #795 blocker remains: aggregate rows have expiry/source-revocation
+visibility fencing but no authorized tombstone/deletion lifecycle or deletion
+audit. The generic artifact deletion request supports staging, original,
+annotation and detailed report only. #812 owns production deletion authority;
+the missing synthetic aggregate transition still belongs in #795 storage.
+Report
 process restart, stable idempotency, bounded transaction retry, and synthetic
 aggregate publication have focused PostgreSQL evidence. Aggregate physical
 cleanup, current external approval on later aggregate reads, backup/replica
@@ -146,6 +155,8 @@ erasure, restore recovery, encryption-at-rest and named-environment operator
 evidence remain `NOT_VERIFIED`. #683 remains blocked for real qualification;
 this implementation grants no real-data admission and no model selection.
 
-Keep PR #797 open. Retain DRAFT until the clean exact-head gate and review
-findings are resolved. Issue #795 remains OPEN; this qualification does not
+Keep PR #797 OPEN/DRAFT. The remaining #795 implementation blocker is synthetic
+aggregate tombstone/cleanup using the existing deletion authority port, with
+restricted-role tests for expiry, audit atomicity and idempotency. Exact-head
+GitHub CI is pending. Issue #795 remains OPEN; this qualification does not
 approve production deployment or close #795.
