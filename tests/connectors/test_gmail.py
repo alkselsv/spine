@@ -18,10 +18,14 @@ from spine.application.persistence.context import (
 )
 from spine.connectors.gmail import (
     GmailEnumerationResult,
+    GmailHistoryReadCommand,
+    GmailHistoryPageReadRequest,
     GmailMessageIdPage,
     GmailReadRequest,
+    compose_gmail_history_reader,
     compose_gmail_mailbox_reader,
 )
+from spine.connectors.gmail_history import GmailHistoryState
 from spine.domain.common import ContextOrigin
 from spine.domain.connections.email_scope import (
     EmailOperation,
@@ -145,6 +149,16 @@ class _RecordingGmailClient:
         if self.failure is not None:
             raise self.failure
         return "synthetic-gmail-result"
+
+
+class _RecordingGmailHistoryClient:
+    def __init__(self, pages: tuple[dict[str, object], ...]) -> None:
+        self.pages = pages
+        self.requests: list[GmailHistoryPageReadRequest] = []
+
+    async def read(self, request: GmailReadRequest) -> dict[str, object]:
+        self.requests.append(request)
+        return self.pages[len(self.requests) - 1]
 
 
 def _compose(
@@ -426,3 +440,81 @@ async def test_google_error_details_are_sanitized_and_tokens_are_not_in_request(
     assert "subject.pdf" not in str(error.value)
     assert client.requests[0].credential_reference == OpaqueProviderReference(value=_id(24))
     assert client.requests[0].grant_reference == OpaqueProviderReference(value=_id(25))
+
+
+@pytest.mark.asyncio
+async def test_admitted_gmail_history_pages_reach_client_with_same_exact_authority() -> None:
+    scope = _scope(allowed_operations=(EmailProviderOperation.SYNCHRONIZE,))
+    connection = _connection(
+        capabilities=(
+            ProviderCapability(
+                kind=ProviderCapabilityKind.INCREMENTAL_CHANGE_DISCOVERY,
+                status=ProviderCapabilityStatus.SUPPORTED,
+                qualification_reference=OpaqueProviderReference(value=_id(32)),
+            ),
+        )
+    )
+    scopes = _Scopes(scope)
+    connections = _Connections(connection)
+    client = _RecordingGmailHistoryClient(
+        (
+            {"history": [], "nextPageToken": "page-2"},
+            {"history": [], "historyId": "103"},
+        )
+    )
+    reader = compose_gmail_history_reader(
+        scopes=scopes,
+        connections=connections,
+        client=client,
+    )
+    command = GmailHistoryReadCommand(
+        scope=scope,
+        operation=EmailOperation.SYNCHRONIZE,
+        mailbox_subject_reference=scope.mailbox_subject_reference,
+        folder_or_label_reference=_id(11),
+        start_history_id="98",
+        max_results=20,
+        max_pages=2,
+    )
+
+    result = await reader.read(command, _context())
+
+    assert result.state is GmailHistoryState.COMPLETE
+    assert result.terminal_history_id == "103"
+    assert connections.calls == 1
+    assert len(client.requests) == 2
+    assert [request.page_token for request in client.requests] == [None, "page-2"]
+    assert all(request.operation is EmailOperation.SYNCHRONIZE for request in client.requests)
+    assert all(request.start_history_id == "98" for request in client.requests)
+    assert all(request.max_results == 20 for request in client.requests)
+    assert all(request.connection_id == _id(3) for request in client.requests)
+    assert all(request.mailbox_binding_id == _id(7) for request in client.requests)
+    assert all(request.authorization_generation == 8 for request in client.requests)
+
+
+@pytest.mark.asyncio
+async def test_gmail_history_without_sync_capability_never_reaches_client() -> None:
+    scope = _scope(allowed_operations=(EmailProviderOperation.SYNCHRONIZE,))
+    scopes = _Scopes(scope)
+    connections = _Connections(_connection())
+    client = _RecordingGmailHistoryClient(({"history": [], "historyId": "103"},))
+    reader = compose_gmail_history_reader(
+        scopes=scopes,
+        connections=connections,
+        client=client,
+    )
+    command = GmailHistoryReadCommand(
+        scope=scope,
+        operation=EmailOperation.SYNCHRONIZE,
+        mailbox_subject_reference=scope.mailbox_subject_reference,
+        folder_or_label_reference=_id(11),
+        start_history_id="98",
+        max_results=20,
+        max_pages=2,
+    )
+
+    with pytest.raises(MailboxReadDeniedError):
+        await reader.read(command, _context())
+
+    assert connections.calls == 1
+    assert client.requests == []
