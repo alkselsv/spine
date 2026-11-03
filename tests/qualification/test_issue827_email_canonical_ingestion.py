@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import AsyncIterable
+from dataclasses import replace
+from typing import Any
 
 import pytest
 
@@ -54,6 +57,8 @@ RAW_MIME = (
 
 def email_observation(
     raw_mime: bytes = RAW_MIME,
+    *,
+    message_id: str = "synthetic-message-827",
 ) -> NormalizedExternalObservationV2:
     connection_id = stable_id("issue827-connection")
     return NormalizedExternalObservationV2(
@@ -71,11 +76,11 @@ def email_observation(
         external_identity=ProviderExternalIdentity(
             external_namespace="synthetic_mail_message",
             external_generation="synthetic_mailbox_epoch:v1",
-            external_object_id="synthetic-message-827",
+            external_object_id=message_id,
             provider_key=ProviderStructuredObjectKey(
                 connection_id=connection_id,
                 object_type="email_message",
-                provider_object_id="synthetic-message-827",
+                provider_object_id=message_id,
             ),
             assurance=ExternalIdentityAssurance.SCOPE_STABLE,
             assurance_evidence_reference="synthetic_email_observation:v1",
@@ -120,6 +125,7 @@ async def test_synthetic_email_observation_reaches_canonical_acceptance_and_outb
     assert replay.replay is True
     assert replay.source == first.source
     assert replay.revision == first.revision
+    assert replay.processing_receipt == first.processing_receipt
     read_context = harness.context_factory(
         PersistenceOperation("source_observation"), stable_id("email-827-lineage-read")
     )
@@ -158,6 +164,53 @@ async def test_changed_raw_email_bytes_conflict_without_disclosing_message_conte
 
     assert b"Synthetic body" not in str(error.value).encode()
     assert b"Changed body" not in str(error.value).encode()
+
+
+@pytest.mark.asyncio
+async def test_changed_message_identity_conflicts_without_disclosing_identity() -> None:
+    observation = email_observation()
+    harness = await build_canonical_ingestion_harness()
+    command = ingestion_command(observation, identity="email-827-identity-conflict")
+    await harness.orchestrator.ingest_observation(command, observation)
+    changed_identity = email_observation(message_id="synthetic-message-other")
+
+    with pytest.raises(IdempotencyConflictError) as error:
+        await harness.orchestrator.ingest_observation(command, changed_identity)
+
+    assert "synthetic-message" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_unfinalized_email_upload_never_reaches_canonical_acceptance() -> None:
+    class UnfinalizedUploader:
+        def __init__(self) -> None:
+            self.staged: list[bytes] = []
+
+        async def upload(
+            self,
+            context: Any,
+            command: Any,
+            chunks: AsyncIterable[bytes],
+        ) -> Any:
+            del context, command
+            self.staged.append(b"".join([chunk async for chunk in chunks]))
+            raise RuntimeError("original upload was not finalized")
+
+    observation = email_observation()
+    harness = await build_canonical_ingestion_harness()
+    uploader = UnfinalizedUploader()
+    harness = replace(
+        harness, orchestrator=replace(harness.orchestrator, uploader=uploader)
+    )
+
+    with pytest.raises(RuntimeError, match="not finalized") as error:
+        await harness.orchestrator.ingest_observation(
+            ingestion_command(observation, identity="email-827-staged"), observation
+        )
+
+    assert uploader.staged == [RAW_MIME]
+    assert RAW_MIME.decode() not in str(error.value)
+    assert harness.events.built_intents == []
 
 
 @pytest.mark.asyncio
