@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from spine.application.gmail_message_state import (
     GmailLabelDisposition,
     GmailMessageEvidenceBinding,
+    GmailMessageStateUnavailableError,
     GmailRelationshipAuthority,
     GmailRelationshipEvidence,
     GmailRelationshipKind,
@@ -27,6 +28,14 @@ from spine.connectors.gmail_message_state import (
 )
 from spine.domain.sources.gmail import GmailMessageKey
 from spine.domain.sources.models import EmailRevisionMetadata
+from tests.contracts.connectors.gmail_message_state_repository_contract import (
+    GmailMessageStateRepositoryScenario,
+    assert_gmail_label_convergence_contract,
+    assert_gmail_relationship_replay_contract,
+    assert_gmail_stale_revision_contract,
+    assert_gmail_tenant_denial_contract,
+    assert_gmail_tombstone_resolution_contract,
+)
 
 
 WORKSPACE_ID = UUID("10000000-0000-0000-0000-000000000001")
@@ -38,12 +47,14 @@ REVISION_ID = UUID("60000000-0000-0000-0000-000000000006")
 NOW = datetime(2026, 11, 3, 12, tzinfo=UTC)
 
 
-def binding(*, workspace_id: UUID = WORKSPACE_ID) -> GmailMessageEvidenceBinding:
+def binding(
+    *, workspace_id: UUID = WORKSPACE_ID, revision_id: UUID = REVISION_ID
+) -> GmailMessageEvidenceBinding:
     return GmailMessageEvidenceBinding(
         workspace_id=workspace_id,
         environment_id=ENVIRONMENT_ID,
         source_object_id=SOURCE_ID,
-        source_revision_id=REVISION_ID,
+        source_revision_id=revision_id,
         message_key=GmailMessageKey(
             connection_id=CONNECTION_ID,
             mailbox_binding_id=MAILBOX_ID,
@@ -64,6 +75,74 @@ def change(
         message_id="gmail-message-840",
         label_id=label_id,
     )
+
+
+def repository_scenario(
+    *, denied: bool = False
+) -> GmailMessageStateRepositoryScenario:
+    target = binding()
+    successor = binding(
+        revision_id=UUID("60000000-0000-0000-0000-000000000008")
+    )
+    evidence = EmailRevisionMetadata(
+        provider_kind="google",
+        provider_message_id=target.message_key.message_id,
+        internal_date=NOW,
+        provider_thread_reference="gmail-thread-840",
+        rfc_message_id_claims=("<message@example.test>",),
+        references_claims=("<parent@example.test>",),
+        in_reply_to_claims=("<parent@example.test>",),
+    )
+    repository = InMemoryGmailMessageStateRepository(
+        () if denied else (target, successor),
+        revision_evidence=(
+            () if denied else ((target, evidence), (successor, evidence))
+        ),
+        current_bindings=() if denied else (target,),
+    )
+
+    async def advance_current() -> None:
+        repository.set_current_binding(successor)
+
+    async def tombstone_current() -> None:
+        repository.clear_current_binding(target)
+
+    async def restore_current() -> None:
+        repository.set_current_binding(target)
+
+    return GmailMessageStateRepositoryScenario(
+        repository,
+        target,
+        evidence,
+        advance_current,
+        tombstone_current,
+        restore_current,
+    )
+
+
+@pytest.mark.asyncio
+async def test_in_memory_repository_satisfies_label_convergence_contract() -> None:
+    await assert_gmail_label_convergence_contract(repository_scenario())
+
+
+@pytest.mark.asyncio
+async def test_in_memory_repository_satisfies_relationship_replay_contract() -> None:
+    await assert_gmail_relationship_replay_contract(repository_scenario())
+
+
+@pytest.mark.asyncio
+async def test_in_memory_repository_satisfies_tenant_denial_contract() -> None:
+    await assert_gmail_tenant_denial_contract(repository_scenario(denied=True))
+
+
+@pytest.mark.asyncio
+async def test_in_memory_repository_satisfies_stale_revision_contract() -> None:
+    await assert_gmail_stale_revision_contract(repository_scenario())
+
+
+@pytest.mark.asyncio
+async def test_in_memory_repository_satisfies_tombstone_resolution_contract() -> None:
+    await assert_gmail_tombstone_resolution_contract(repository_scenario())
 
 
 @pytest.mark.asyncio
@@ -114,6 +193,52 @@ async def test_duplicate_and_out_of_order_label_observations_converge() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stale_revision_rejects_new_evidence_but_accepts_exact_replay() -> None:
+    first = binding()
+    successor = binding(
+        revision_id=UUID("60000000-0000-0000-0000-000000000007")
+    )
+    repository = InMemoryGmailMessageStateRepository((first, successor))
+    repository.set_current_binding(first)
+    accepted = gmail_label_observation(
+        first,
+        change("100", GmailHistoryChangeKind.LABEL_ADDED),
+        received_at=NOW,
+    )
+    await repository.record_label(accepted)
+    repository.set_current_binding(successor)
+    stale_new = gmail_label_observation(
+        first,
+        change("101", GmailHistoryChangeKind.LABEL_REMOVED),
+        received_at=NOW + timedelta(minutes=1),
+    )
+
+    with pytest.raises(GmailMessageStateUnavailableError):
+        await repository.record_label(stale_new)
+    replay = await repository.record_label(
+        accepted.model_copy(update={"received_at": NOW + timedelta(minutes=2)})
+    )
+
+    assert replay.disposition is GmailLabelDisposition.DUPLICATE
+    assert replay.persisted == accepted
+
+
+@pytest.mark.asyncio
+async def test_tombstoned_message_resolves_no_state_target() -> None:
+    target = binding()
+    repository = InMemoryGmailMessageStateRepository((target,))
+    repository.clear_current_binding(target)
+
+    resolved = await repository.resolve_current_binding(
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        message_key=target.message_key,
+    )
+
+    assert resolved is None
+
+
+@pytest.mark.asyncio
 async def test_thread_and_header_relationships_retain_distinct_authority() -> None:
     target = binding()
     revision_evidence = EmailRevisionMetadata(
@@ -160,10 +285,56 @@ async def test_wrong_workspace_cannot_record_message_state() -> None:
         received_at=NOW,
     )
 
-    with pytest.raises(ValueError, match="unavailable in this tenant") as error:
+    with pytest.raises(
+        GmailMessageStateUnavailableError, match="unavailable in this tenant"
+    ) as error:
         await repository.record_label(observation)
 
     assert "gmail-message-840" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_unavailable_history_target_diagnostic_discloses_no_provider_data() -> None:
+    sensitive_values = (
+        "refresh-token-value",
+        "raw-provider-payload",
+        "customer-subject",
+        "private@example.test",
+        "subject.pdf",
+        "protected-content",
+    )
+    message_id = "|".join(sensitive_values)
+    repository = InMemoryGmailMessageStateRepository()
+    writer = GmailMessageStateWriter(
+        repository=repository,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        connection_id=CONNECTION_ID,
+        mailbox_binding_id=MAILBOX_ID,
+    )
+    history = GmailHistoryResult(
+        requested_start_history_id="99",
+        admission_scope_digest="a" * 64,
+        state=GmailHistoryState.COMPLETE,
+        changes=(
+            GmailHistoryChange(
+                history_id="100",
+                kind=GmailHistoryChangeKind.LABEL_ADDED,
+                message_id=message_id,
+                label_id="INBOX",
+            ),
+        ),
+        terminal_history_id="100",
+        pages_read=1,
+        duplicate_count=0,
+        malformed_count=0,
+    )
+
+    with pytest.raises(GmailMessageStateUnavailableError) as captured:
+        await writer.record_history(history, received_at=NOW)
+
+    diagnostic = f"{captured.value!s} {captured.value!r}"
+    assert all(value not in diagnostic for value in sensitive_values)
 
 
 @pytest.mark.asyncio
@@ -178,6 +349,8 @@ async def test_history_writer_persists_normalized_label_changes() -> None:
         mailbox_binding_id=MAILBOX_ID,
     )
     history = GmailHistoryResult(
+        requested_start_history_id="99",
+        admission_scope_digest="a" * 64,
         state=GmailHistoryState.COMPLETE,
         changes=(
             change("100", GmailHistoryChangeKind.MESSAGE_ADDED, label_id="unused"),
@@ -222,6 +395,8 @@ async def test_retry_after_durable_write_converges_to_duplicate() -> None:
         mailbox_binding_id=MAILBOX_ID,
     )
     history = GmailHistoryResult(
+        requested_start_history_id="99",
+        admission_scope_digest="a" * 64,
         state=GmailHistoryState.COMPLETE,
         changes=(change("101", GmailHistoryChangeKind.LABEL_ADDED),),
         terminal_history_id="102",

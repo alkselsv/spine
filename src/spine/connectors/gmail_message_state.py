@@ -12,6 +12,7 @@ from spine.application.gmail_message_state import (
     GmailLabelState,
     GmailMessageEvidenceBinding,
     GmailMessageStateRepository,
+    GmailMessageStateUnavailableError,
     GmailRelationshipEvidence,
     gmail_relationship_observations,
 )
@@ -20,6 +21,7 @@ from spine.connectors.gmail_history import (
     GmailHistoryChangeKind,
     GmailHistoryResult,
 )
+from spine.domain.connections.email_scope import MailboxReadScope
 from spine.domain.sources.gmail import GmailMessageKey
 from spine.domain.sources.models import EmailRevisionMetadata
 
@@ -33,6 +35,17 @@ class GmailMessageStateWriter:
     environment_id: UUID
     connection_id: UUID
     mailbox_binding_id: UUID
+
+    def require_scope(self, scope: MailboxReadScope) -> None:
+        """Fail closed when composition and admitted mailbox authority differ."""
+
+        if (
+            scope.workspace_id != self.workspace_id
+            or scope.environment_id != self.environment_id
+            or scope.connection_id != self.connection_id
+            or scope.mailbox_binding_id != self.mailbox_binding_id
+        ):
+            raise GmailMessageStateUnavailableError()
 
     async def record_history(
         self, result: GmailHistoryResult, *, received_at: datetime
@@ -55,7 +68,7 @@ class GmailMessageStateWriter:
                 message_key=message_key,
             )
             if binding is None:
-                raise ValueError("Gmail history target is unavailable in this tenant")
+                raise GmailMessageStateUnavailableError()
             receipts.append(
                 await self.repository.record_label(
                     gmail_label_observation(
@@ -78,15 +91,16 @@ class GmailMessageStateWriter:
             or binding.message_key.connection_id != self.connection_id
             or binding.message_key.mailbox_binding_id != self.mailbox_binding_id
         ):
-            raise ValueError("Gmail relationship target is unavailable in this tenant")
+            raise GmailMessageStateUnavailableError()
         relationships = gmail_relationship_observations(
             binding,
             revision_evidence=revision_evidence,
             received_at=received_at,
         )
-        return tuple(
-            [await self.repository.record_relationship(item) for item in relationships]
-        )
+        persisted: list[GmailRelationshipEvidence] = []
+        for relationship in relationships:
+            persisted.append(await self.repository.record_relationship(relationship))
+        return tuple(persisted)
 
 
 def gmail_label_observation(

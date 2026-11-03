@@ -10,11 +10,18 @@ from spine.application.gmail_message_state import (
     GmailLabelDisposition,
     GmailMessageEvidenceBinding,
     InMemoryGmailMessageStateRepository,
-    gmail_relationship_observations,
 )
-from spine.connectors.gmail_history import GmailHistoryChange, GmailHistoryChangeKind
-from spine.connectors.gmail_message_state import gmail_label_observation
-from spine.connectors.gmail_observation import gmail_raw_message_observation
+from spine.connectors.gmail_history import (
+    GmailHistoryChange,
+    GmailHistoryChangeKind,
+    GmailHistoryResult,
+    GmailHistoryState,
+)
+from spine.connectors.gmail_message_state import GmailMessageStateWriter
+from spine.connectors.gmail_observation import (
+    GmailCanonicalIngestion,
+    gmail_raw_message_observation,
+)
 from spine.domain.sources.gmail import GmailMessageKey
 from tests.qualification.canonical_ingestion_harness import (
     build_canonical_ingestion_harness,
@@ -59,26 +66,44 @@ async def test_metadata_only_state_and_relationships_preserve_raw_revision() -> 
     repository = InMemoryGmailMessageStateRepository(
         (binding,), revision_evidence=((binding, revision_evidence),)
     )
-    label = gmail_label_observation(
-        binding,
-        GmailHistoryChange(
-            history_id="987654322",
-            kind=GmailHistoryChangeKind.LABEL_ADDED,
-            message_id=MESSAGE_ID,
-            label_id="INBOX",
+    writer = GmailMessageStateWriter(
+        repository=repository,
+        workspace_id=binding.workspace_id,
+        environment_id=binding.environment_id,
+        connection_id=CONNECTION_ID,
+        mailbox_binding_id=MAILBOX_BINDING_ID,
+    )
+    canonical_ingestion = GmailCanonicalIngestion(
+        orchestrator=harness.orchestrator,
+        state_writer=writer,
+        clock=lambda: NOW,
+    )
+    history = GmailHistoryResult(
+        requested_start_history_id="987654321",
+        admission_scope_digest="a" * 64,
+        state=GmailHistoryState.COMPLETE,
+        changes=(
+            GmailHistoryChange(
+                history_id="987654322",
+                kind=GmailHistoryChangeKind.LABEL_ADDED,
+                message_id=MESSAGE_ID,
+                label_id="INBOX",
+            ),
         ),
-        received_at=NOW,
+        terminal_history_id="987654322",
+        pages_read=1,
+        duplicate_count=0,
+        malformed_count=0,
     )
 
-    state = await repository.record_label(label)
-    relationships = gmail_relationship_observations(
-        binding,
-        revision_evidence=revision_evidence,
-        received_at=NOW,
+    replayed = await canonical_ingestion.ingest_observation(
+        ingestion_command(raw_observation, identity="gmail-840-content"),
+        raw_observation,
     )
-    for relationship in relationships:
-        await repository.record_relationship(relationship)
+    state = (await writer.record_history(history, received_at=NOW))[0]
+    relationships = await repository.list_relationships(binding)
 
+    assert replayed.replay is True
     assert state.disposition is GmailLabelDisposition.APPLIED
     assert state.current.observation.binding.source_revision_id == ingested.revision.revision_id
     assert len(await repository.list_relationships(binding)) == 3

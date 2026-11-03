@@ -17,6 +17,7 @@ from spine.application.gmail_message_state import (
     GmailLabelObservationResult,
     GmailLabelState,
     GmailMessageEvidenceBinding,
+    GmailMessageStateUnavailableError,
     GmailRelationshipEvidence,
 )
 from spine.application.persistence.context import PersistenceOperation, TrustedPersistenceContext
@@ -79,6 +80,7 @@ class PostgreSQLGmailMessageStateRepository:
                     source_objects.c.external_generation
                     == identity.external_generation,
                     source_objects.c.external_object_id == identity.external_object_id,
+                    current_source_heads.c.current_revision_kind == "content",
                 )
             )
             row = result.mappings().one_or_none()
@@ -359,7 +361,7 @@ class PostgreSQLGmailMessageStateRepository:
         )
         row = result.mappings().one_or_none()
         if row is None:
-            raise ValueError("Gmail message evidence target is unavailable in this tenant")
+            raise GmailMessageStateUnavailableError()
         metadata = row["revision_metadata"]
         if isinstance(metadata, str):
             metadata = json.loads(metadata)
@@ -388,10 +390,11 @@ class PostgreSQLGmailMessageStateRepository:
                     current_source_heads.c.source_object_id == binding.source_object_id,
                     current_source_heads.c.current_revision_id
                     == binding.source_revision_id,
+                    current_source_heads.c.current_revision_kind == "content",
                 )
             )
             if head.scalar_one_or_none() is None:
-                raise ValueError("Gmail message evidence target is not the current revision")
+                raise GmailMessageStateUnavailableError()
         return email
 
 

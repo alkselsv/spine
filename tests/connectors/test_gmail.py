@@ -25,6 +25,10 @@ from spine.application.gmail_initial_snapshot import (
     GmailSnapshotPage,
     gmail_snapshot_effect_key,
 )
+from spine.application.gmail_message_state import (
+    GmailMessageEvidenceBinding,
+    InMemoryGmailMessageStateRepository,
+)
 from spine.application.persistence.context import (
     EnvironmentScope,
     PersistenceOperation,
@@ -50,6 +54,7 @@ from spine.connectors.gmail_history import (
     GmailHistoryState,
     gmail_history_scope_digest,
 )
+from spine.connectors.gmail_message_state import GmailMessageStateWriter
 from spine.connectors.gmail_checkpoints import (
     decode_gmail_history_checkpoint,
     decode_gmail_snapshot_page_checkpoint,
@@ -77,6 +82,7 @@ from spine.domain.connections.provider import (
     ProviderConnectionStatus,
     ProviderKind,
 )
+from spine.domain.sources.gmail import GmailMessageKey
 from spine.workers.gmail_initial_snapshot import (
     create_gmail_initial_snapshot_operation,
 )
@@ -152,6 +158,37 @@ def _context() -> TrustedPersistenceContext:
         acting_subject_id=None,
         service_principal_id=_id(21),
         provenance=TrustedContextProvenance(issuer_id=_id(22), signature=b"trusted"),
+    )
+
+
+def _state_writer(
+    scope: MailboxReadScope, *, message_id: str | None = None
+) -> tuple[GmailMessageStateWriter, InMemoryGmailMessageStateRepository]:
+    bindings = ()
+    if message_id is not None:
+        bindings = (
+            GmailMessageEvidenceBinding(
+                workspace_id=scope.workspace_id,
+                environment_id=scope.environment_id,
+                source_object_id=_id(40),
+                source_revision_id=_id(41),
+                message_key=GmailMessageKey(
+                    connection_id=scope.connection_id,
+                    mailbox_binding_id=scope.mailbox_binding_id,
+                    message_id=message_id,
+                ),
+            ),
+        )
+    repository = InMemoryGmailMessageStateRepository(bindings)
+    return (
+        GmailMessageStateWriter(
+            repository=repository,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            connection_id=scope.connection_id,
+            mailbox_binding_id=scope.mailbox_binding_id,
+        ),
+        repository,
     )
 
 
@@ -823,9 +860,21 @@ async def test_admitted_gmail_history_pages_reach_client_with_same_exact_authori
     )
     scopes = _Scopes(scope)
     connections = _Connections(connection)
+    message_id = "message-state-840"
+    state_writer, state_repository = _state_writer(scope, message_id=message_id)
     client = _RecordingGmailHistoryClient(
         (
-            {"history": [], "nextPageToken": "page-2"},
+            {
+                "history": [
+                    {
+                        "id": "102",
+                        "labelsAdded": [
+                            {"message": {"id": message_id}, "labelIds": ["INBOX"]}
+                        ],
+                    }
+                ],
+                "nextPageToken": "page-2",
+            },
             {"history": [], "historyId": "103"},
         )
     )
@@ -833,6 +882,8 @@ async def test_admitted_gmail_history_pages_reach_client_with_same_exact_authori
         scopes=scopes,
         connections=connections,
         client=client,
+        state_writer=state_writer,
+        clock=lambda: datetime(2026, 11, 4, tzinfo=UTC),
     )
     command = GmailHistoryReadCommand(
         scope=scope,
@@ -860,6 +911,17 @@ async def test_admitted_gmail_history_pages_reach_client_with_same_exact_authori
     assert all(request.connection_id == _id(3) for request in client.requests)
     assert all(request.mailbox_binding_id == _id(7) for request in client.requests)
     assert all(request.authorization_generation == 8 for request in client.requests)
+    binding = await state_repository.resolve_current_binding(
+        workspace_id=scope.workspace_id,
+        environment_id=scope.environment_id,
+        message_key=GmailMessageKey(
+            connection_id=scope.connection_id,
+            mailbox_binding_id=scope.mailbox_binding_id,
+            message_id=message_id,
+        ),
+    )
+    assert binding is not None
+    assert len(await state_repository.list_label_observations(binding)) == 1
 
 
 @pytest.mark.asyncio
@@ -868,10 +930,12 @@ async def test_gmail_history_without_sync_capability_never_reaches_client() -> N
     scopes = _Scopes(scope)
     connections = _Connections(_connection())
     client = _RecordingGmailHistoryClient(({"history": [], "historyId": "103"},))
+    state_writer, _ = _state_writer(scope)
     reader = compose_gmail_history_reader(
         scopes=scopes,
         connections=connections,
         client=client,
+        state_writer=state_writer,
     )
     command = GmailHistoryReadCommand(
         scope=scope,
@@ -887,6 +951,43 @@ async def test_gmail_history_without_sync_capability_never_reaches_client() -> N
         await reader.read(command, _context())
 
     assert connections.calls == 1
+    assert client.requests == []
+
+
+@pytest.mark.asyncio
+async def test_gmail_history_rejects_state_writer_for_another_mailbox_scope() -> None:
+    scope = _scope(allowed_operations=(EmailProviderOperation.SYNCHRONIZE,))
+    connection = _connection(
+        capabilities=(
+            ProviderCapability(
+                kind=ProviderCapabilityKind.INCREMENTAL_CHANGE_DISCOVERY,
+                status=ProviderCapabilityStatus.SUPPORTED,
+                qualification_reference=OpaqueProviderReference(value=_id(32)),
+            ),
+        )
+    )
+    foreign_scope = scope.model_copy(update={"mailbox_binding_id": _id(700)})
+    state_writer, _ = _state_writer(foreign_scope)
+    client = _RecordingGmailHistoryClient(({"history": [], "historyId": "103"},))
+    reader = compose_gmail_history_reader(
+        scopes=_Scopes(scope),
+        connections=_Connections(connection),
+        client=client,
+        state_writer=state_writer,
+    )
+    command = GmailHistoryReadCommand(
+        scope=scope,
+        operation=EmailOperation.SYNCHRONIZE,
+        mailbox_subject_reference=scope.mailbox_subject_reference,
+        folder_or_label_reference=_id(11),
+        start_history_id="98",
+        max_results=20,
+        max_pages=2,
+    )
+
+    with pytest.raises(MailboxReadDeniedError):
+        await reader.read(command, _context())
+
     assert client.requests == []
 
 

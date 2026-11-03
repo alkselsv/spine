@@ -247,6 +247,13 @@ class GmailMessageStateRepository(Protocol):
     ) -> tuple[GmailRelationshipEvidence, ...]: ...
 
 
+class GmailMessageStateUnavailableError(RuntimeError):
+    """A disclosure-safe failure to bind state evidence to a tenant source."""
+
+    def __init__(self) -> None:
+        super().__init__("Gmail message state target is unavailable in this tenant")
+
+
 class InMemoryGmailMessageStateRepository:
     """Offline reference implementation with the same convergence semantics."""
 
@@ -256,11 +263,14 @@ class InMemoryGmailMessageStateRepository:
         revision_evidence: tuple[
             tuple[GmailMessageEvidenceBinding, EmailRevisionMetadata], ...
         ] = (),
+        current_bindings: tuple[GmailMessageEvidenceBinding, ...] | None = None,
     ) -> None:
         self._targets = {_binding_key(item) for item in allowed_bindings}
         self._current_targets = {
             _source_key(item.workspace_id, item.environment_id, item.message_key): item
-            for item in allowed_bindings
+            for item in (
+                allowed_bindings if current_bindings is None else current_bindings
+            )
         }
         self._revision_evidence = {
             _binding_key(item): evidence for item, evidence in revision_evidence
@@ -280,6 +290,22 @@ class InMemoryGmailMessageStateRepository:
             _source_key(workspace_id, environment_id, message_key)
         )
 
+    def set_current_binding(self, binding: GmailMessageEvidenceBinding) -> None:
+        """Advance the offline fake's source head for lifecycle scenarios."""
+
+        self._require_target(binding)
+        self._current_targets[
+            _source_key(binding.workspace_id, binding.environment_id, binding.message_key)
+        ] = binding
+
+    def clear_current_binding(self, binding: GmailMessageEvidenceBinding) -> None:
+        """Model a tombstoned source with no current content revision."""
+
+        self._current_targets.pop(
+            _source_key(binding.workspace_id, binding.environment_id, binding.message_key),
+            None,
+        )
+
     async def record_label(
         self, observation: GmailLabelObservation
     ) -> GmailLabelObservationResult:
@@ -291,11 +317,12 @@ class InMemoryGmailMessageStateRepository:
             persisted = existing
             disposition = GmailLabelDisposition.DUPLICATE
         else:
+            self._require_current_target(observation.binding)
             self._labels[observation.observation_id] = observation
             persisted = observation
             disposition = GmailLabelDisposition.APPLIED
 
-        head_key = (_binding_key(observation.binding), observation.label_id)
+        head_key = (_source_binding_key(observation.binding), observation.label_id)
         current = self._heads.get(head_key)
         if current is None or _label_order(observation) > _label_order(current):
             self._heads[head_key] = persisted
@@ -316,10 +343,12 @@ class InMemoryGmailMessageStateRepository:
         self, evidence: GmailRelationshipEvidence
     ) -> GmailRelationshipEvidence:
         self._require_target(evidence.binding)
+        existing = self._relationships.get(evidence.evidence_id)
+        if existing is None:
+            self._require_current_target(evidence.binding)
         revision = self._revision_evidence.get(_binding_key(evidence.binding))
         if revision is None or not evidence.is_claimed_by(revision):
             raise ValueError("Gmail relationship is absent from the bound revision")
-        existing = self._relationships.get(evidence.evidence_id)
         if existing is not None:
             if existing.semantic_identity() != evidence.semantic_identity():
                 raise ValueError("Gmail relationship evidence identity conflicts")
@@ -359,7 +388,14 @@ class InMemoryGmailMessageStateRepository:
 
     def _require_target(self, binding: GmailMessageEvidenceBinding) -> None:
         if _binding_key(binding) not in self._targets:
-            raise ValueError("Gmail message evidence target is unavailable in this tenant")
+            raise GmailMessageStateUnavailableError()
+
+    def _require_current_target(self, binding: GmailMessageEvidenceBinding) -> None:
+        current = self._current_targets.get(
+            _source_key(binding.workspace_id, binding.environment_id, binding.message_key)
+        )
+        if current != binding:
+            raise GmailMessageStateUnavailableError()
 
 
 def gmail_relationship_observations(
@@ -455,6 +491,19 @@ def _binding_key(binding: GmailMessageEvidenceBinding) -> str:
     return binding.model_dump_json()
 
 
+def _source_binding_key(binding: GmailMessageEvidenceBinding) -> str:
+    return json.dumps(
+        {
+            "workspace_id": str(binding.workspace_id),
+            "environment_id": str(binding.environment_id),
+            "source_object_id": str(binding.source_object_id),
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
 def _source_key(
     workspace_id: UUID, environment_id: UUID, message_key: GmailMessageKey
 ) -> str:
@@ -486,6 +535,7 @@ __all__ = [
     "GmailLabelState",
     "GmailMessageEvidenceBinding",
     "GmailMessageStateRepository",
+    "GmailMessageStateUnavailableError",
     "GmailRelationshipAuthority",
     "GmailRelationshipEvidence",
     "GmailRelationshipKind",

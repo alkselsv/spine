@@ -2151,43 +2151,33 @@ async def test_postgresql_source_revision_preserves_email_evidence(
     assert resolved.revision_metadata == metadata
 
 
-async def test_postgresql_gmail_message_state_converges_and_is_tenant_isolated(
+async def _postgresql_gmail_message_state_scenario(
     postgresql_adapter: PersistenceAdapter,
-) -> None:
-    from sqlalchemy import func, select
-
-    from spine.application.gmail_message_state import (
-        GmailLabelDisposition,
-        gmail_relationship_observations,
-    )
-    from spine.connectors.gmail_history import (
-        GmailHistoryChange,
-        GmailHistoryChangeKind,
-        GmailHistoryResult,
-        GmailHistoryState,
-    )
-    from spine.connectors.gmail_message_state import GmailMessageStateWriter
+    number: int,
+):
     from spine.domain.sources import (
         EMAIL_REVISION_METADATA_SCHEMA,
         EmailRevisionMetadata,
         IdentityMode,
         RevisionMetadata,
+        RevisionKind,
         SourceObject,
         content_revision,
+        tombstone_revision,
     )
     from spine.domain.sources.gmail import GmailMessageKey, gmail_source_identity
     from spine.infrastructure.persistence.postgresql_gmail_message_state import (
         PostgreSQLGmailMessageStateRepository,
     )
-    from spine.infrastructure.persistence.postgresql_mappings import (
-        outbox_intents,
-        source_revisions,
+    from tests.contracts.connectors.gmail_message_state_repository_contract import (
+        GmailMessageStateRepositoryScenario,
     )
 
-    workspace_id = synthetic_uuid(84000)
-    environment_id = synthetic_uuid(84001)
-    connection_id = synthetic_uuid(84002)
-    mailbox_id = synthetic_uuid(84003)
+    now = datetime(2026, 11, 4, 9, 30, tzinfo=timezone.utc)
+    workspace_id = synthetic_uuid(number)
+    environment_id = synthetic_uuid(number + 1)
+    connection_id = synthetic_uuid(number + 2)
+    mailbox_id = synthetic_uuid(number + 3)
     key = GmailMessageKey(
         connection_id=connection_id,
         mailbox_binding_id=mailbox_id,
@@ -2195,7 +2185,7 @@ async def test_postgresql_gmail_message_state_converges_and_is_tenant_isolated(
     )
     identity = gmail_source_identity(key)
     source = SourceObject(
-        source_object_id=synthetic_uuid(84004),
+        source_object_id=synthetic_uuid(number + 4),
         workspace_id=workspace_id,
         environment_id=environment_id,
         source_kind="email_message",
@@ -2204,21 +2194,21 @@ async def test_postgresql_gmail_message_state_converges_and_is_tenant_isolated(
         external_namespace=identity.external_namespace,
         external_generation=identity.external_generation,
         external_object_id=identity.external_object_id,
-        created_at=NOW,
+        created_at=now,
     )
     metadata = RevisionMetadata(
         representation_profile="raw_email_mime:v1",
         email_revision=EmailRevisionMetadata(
             provider_kind="google",
             provider_message_id=key.message_id,
-            internal_date=NOW,
+            internal_date=now,
             provider_thread_reference="gmail-thread-840",
             rfc_message_id_claims=("<message@example.invalid>",),
             references_claims=("<parent@example.invalid>",),
             in_reply_to_claims=("<parent@example.invalid>",),
         ),
     )
-    base_revision = source_contract_revision(source, synthetic_uuid(84005))
+    base_revision = source_contract_revision(source, synthetic_uuid(number + 5))
     revision_values = base_revision.model_dump(
         mode="python", exclude={"revision_digest", "revision_metadata_digest"}
     )
@@ -2230,7 +2220,7 @@ async def test_postgresql_gmail_message_state_converges_and_is_tenant_isolated(
     source_revision = content_revision(**revision_values)
     case = await prepare_canonical_case(
         postgresql_adapter,
-        84000,
+        number,
         source_object=source,
         source_revision=source_revision,
     )
@@ -2245,48 +2235,6 @@ async def test_postgresql_gmail_message_state_converges_and_is_tenant_isolated(
     repository = PostgreSQLGmailMessageStateRepository(
         postgresql_adapter.uow_factory, context_factory
     )
-    writer = GmailMessageStateWriter(
-        repository=repository,
-        workspace_id=workspace_id,
-        environment_id=environment_id,
-        connection_id=connection_id,
-        mailbox_binding_id=mailbox_id,
-    )
-    history = GmailHistoryResult(
-        state=GmailHistoryState.COMPLETE,
-        changes=(
-            GmailHistoryChange(
-                history_id="102",
-                kind=GmailHistoryChangeKind.LABEL_REMOVED,
-                message_id=key.message_id,
-                label_id="INBOX",
-            ),
-            GmailHistoryChange(
-                history_id="101",
-                kind=GmailHistoryChangeKind.LABEL_ADDED,
-                message_id=key.message_id,
-                label_id="INBOX",
-            ),
-        ),
-        terminal_history_id="103",
-        pages_read=1,
-        duplicate_count=0,
-        malformed_count=0,
-    )
-    async with postgresql_adapter.uow_factory(
-        postgresql_adapter.source_context(workspace_id, environment_id)
-    ) as uow:
-        revisions_before = await uow._execute(
-            select(func.count()).select_from(source_revisions)
-        )
-        outbox_before = await uow._execute(
-            select(func.count()).select_from(outbox_intents)
-        )
-        before = (revisions_before.scalar_one(), outbox_before.scalar_one())
-        await uow.rollback()
-
-    first = await writer.record_history(history, received_at=NOW)
-    replay = await writer.record_history(history, received_at=NOW + timedelta(seconds=1))
     binding = await repository.resolve_current_binding(
         workspace_id=workspace_id,
         environment_id=environment_id,
@@ -2294,50 +2242,274 @@ async def test_postgresql_gmail_message_state_converges_and_is_tenant_isolated(
     )
     assert binding is not None
     assert metadata.email_revision is not None
-    relationships = gmail_relationship_observations(
-        binding, revision_evidence=metadata.email_revision, received_at=NOW
-    )
-    for relationship in relationships:
-        await repository.record_relationship(relationship)
 
-    async with postgresql_adapter.uow_factory(
-        postgresql_adapter.source_context(workspace_id, environment_id)
-    ) as uow:
-        revisions_after = await uow._execute(
-            select(func.count()).select_from(source_revisions)
+    async def accept_successor(
+        revision,
+        provenance,
+        *,
+        admission_id: UUID | None,
+        access_policy_version_id: UUID | None,
+        transition: str,
+    ) -> None:
+        acceptance_id = synthetic_uuid(number + 28002)
+        audit_event_id = synthetic_uuid(number + 28003)
+        outbox_event_id = synthetic_uuid(number + 28004)
+        audit = AuditEventRegistry.with_default_families().build_event(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            event_type="canonical.transition",
+            schema_version=1,
+            payload=CanonicalTransitionAuditPayload(transition=transition),
+            origin=ContextOrigin.WORKER,
+            acting_subject_id=None,
+            service_principal_id=case.context.service_principal_id,
+            trace_id=case.context.trace_id,
+            occurred_at=now + timedelta(seconds=1),
+            outcome=AuditOutcome.COMMITTED,
+            reason={
+                "source.accepted": "source_accepted",
+                "source.tombstoned": "source_tombstoned",
+            }[transition],
+            target=AuditObjectReference(
+                object_type="source_revision",
+                object_id=revision.revision_id,
+                schema_version=1,
+            ),
+            producer_deduplication_id=f"gmail-lifecycle:{acceptance_id}",
+            audit_event_id=audit_event_id,
         )
-        outbox_after = await uow._execute(
-            select(func.count()).select_from(outbox_intents)
+        command = CanonicalAcceptanceCommand.create(
+            source=source,
+            revision=revision,
+            provenance=provenance,
+            admission_decision_id=admission_id,
+            access_policy_version_id=access_policy_version_id,
+            expected_current_revision_id=source_revision.revision_id,
+            idempotency_key=IdempotencyKey(f"gmail-lifecycle-{number}"),
+            canonical_acceptance_id=acceptance_id,
+            audit_event_id=audit_event_id,
+            outbox_event_id=outbox_event_id,
+            accepted_at=now + timedelta(seconds=1),
+            audit_event=audit,
+            outbox_intent=_canonical_outbox(
+                postgresql_adapter,
+                context=case.context,
+                source_object_id=source.source_object_id,
+                source_revision_id=revision.revision_id,
+                acceptance_id=acceptance_id,
+                generation=2,
+                audit_event_id=audit_event_id,
+                event_id=outbox_event_id,
+                transition=transition,
+            ),
+            operation=case.context.operation,
         )
-        after = (revisions_after.scalar_one(), outbox_after.scalar_one())
-        await uow.rollback()
+        async with postgresql_adapter.uow_factory(case.context) as uow:
+            await uow.canonical.accept(command)
+            await uow.commit()
 
-    assert [item.disposition for item in first] == [
-        GmailLabelDisposition.APPLIED,
-        GmailLabelDisposition.OUT_OF_ORDER,
-    ]
-    assert all(
-        item.disposition is GmailLabelDisposition.DUPLICATE for item in replay
+    async def advance_current() -> None:
+        successor_values = source_revision.model_dump(
+            mode="python",
+            exclude={"revision_digest", "revision_metadata_digest"},
+        )
+        original_reference = source_revision.original_reference
+        assert original_reference is not None
+        successor_values.update(
+            revision_id=synthetic_uuid(number + 6),
+            original_reference=original_reference.model_copy(
+                update={"digest_hex": "e" * 64}
+            ),
+            original_sha256="e" * 64,
+            observed_at=now + timedelta(seconds=1),
+        )
+        successor = content_revision(**successor_values)
+        provenance = source_contract_provenance(
+            source, successor.revision_id, "event-2"
+        )
+        receipt_id = await _original_receipt(
+            postgresql_adapter, case.context, number + 900000
+        )
+        association = _receipt_association(
+            source,
+            successor,
+            provenance,
+            receipt_id=receipt_id,
+            number=number + 900000,
+        )
+        async with postgresql_adapter.uow_factory(case.context) as uow:
+            await uow.sources.record_observation(
+                SourceObservationCommand.create(
+                    source=source,
+                    revision=successor,
+                    provenance=provenance,
+                    idempotency_key=IdempotencyKey(f"gmail-successor-{number}"),
+                    receipt_association=association,
+                    operation=case.context.operation,
+                )
+            )
+            await uow.commit()
+        admission_id = synthetic_uuid(number + 27000)
+        async with postgresql_adapter.uow_factory(case.context) as uow:
+            await uow.admissions.append_decision(
+                AdmissionDecision(
+                    decision_id=admission_id,
+                    source_object_id=source.source_object_id,
+                    revision_id=successor.revision_id,
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                    decision_version=1,
+                    disposition=AdmissionDisposition.ADMITTED,
+                    validator_profile_version="admission:r1",
+                    reason_schema_version="reason.v1",
+                    reason_codes=("clean",),
+                    authority_reference={
+                        "reference_type": "validator",
+                        "reference_id": synthetic_uuid(number + 27001),
+                        "schema_version": 1,
+                    },
+                    trace_id=case.context.trace_id,
+                    audit_event_id=synthetic_uuid(number + 27002),
+                    decided_at=now + timedelta(seconds=1),
+                )
+            )
+            await uow.commit()
+        await accept_successor(
+            successor,
+            provenance,
+            admission_id=admission_id,
+            access_policy_version_id=case.policy_id,
+            transition="source.accepted",
+        )
+
+    async def tombstone_current() -> None:
+        tombstone = tombstone_revision(
+            revision_id=synthetic_uuid(number + 7),
+            source_object_id=source.source_object_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            kind=RevisionKind.TOMBSTONE,
+            revision_schema_version="source-revision:v1",
+            revision_metadata_schema="revision-metadata:r1-document-v1",
+            deletion_reason="source_deleted",
+            deletion_provenance="gmail-contract",
+            observed_at=now + timedelta(seconds=1),
+        )
+        provenance = source_contract_provenance(
+            source, tombstone.revision_id, "event-2"
+        )
+        async with postgresql_adapter.uow_factory(case.context) as uow:
+            await uow.sources.record_observation(
+                SourceObservationCommand.create(
+                    source=source,
+                    revision=tombstone,
+                    provenance=provenance,
+                    idempotency_key=IdempotencyKey(f"gmail-tombstone-{number}"),
+                    operation=case.context.operation,
+                )
+            )
+            await uow.commit()
+        await accept_successor(
+            tombstone,
+            provenance,
+            admission_id=None,
+            access_policy_version_id=None,
+            transition="source.tombstoned",
+        )
+
+    return GmailMessageStateRepositoryScenario(
+        repository=repository,
+        binding=binding,
+        revision_evidence=metadata.email_revision,
+        advance_current=advance_current,
+        tombstone_current=tombstone_current,
     )
-    assert first[0].current.present is False
-    assert len(await repository.list_label_observations(binding)) == 2
-    assert len(await repository.list_relationships(binding)) == 3
-    assert after == before
 
-    foreign_workspace_id = synthetic_uuid(84090)
-    foreign_environment_id = synthetic_uuid(84091)
+
+async def test_postgresql_gmail_repository_satisfies_label_convergence_contract(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    from tests.contracts.connectors.gmail_message_state_repository_contract import (
+        assert_gmail_label_convergence_contract,
+    )
+
+    scenario = await _postgresql_gmail_message_state_scenario(
+        postgresql_adapter, 84000
+    )
+    await assert_gmail_label_convergence_contract(scenario)
+
+
+async def test_postgresql_gmail_repository_satisfies_relationship_replay_contract(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    from tests.contracts.connectors.gmail_message_state_repository_contract import (
+        assert_gmail_relationship_replay_contract,
+    )
+
+    scenario = await _postgresql_gmail_message_state_scenario(
+        postgresql_adapter, 84100
+    )
+    await assert_gmail_relationship_replay_contract(scenario)
+
+
+async def test_postgresql_gmail_repository_satisfies_tenant_denial_contract(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    from spine.infrastructure.persistence.postgresql_gmail_message_state import (
+        PostgreSQLGmailMessageStateRepository,
+    )
+    from tests.contracts.connectors.gmail_message_state_repository_contract import (
+        GmailMessageStateRepositoryScenario,
+        assert_gmail_tenant_denial_contract,
+    )
+
+    scenario = await _postgresql_gmail_message_state_scenario(
+        postgresql_adapter, 84200
+    )
+    foreign_workspace_id = synthetic_uuid(84290)
+    foreign_environment_id = synthetic_uuid(84291)
     await prepare_source_scope(
         postgresql_adapter, foreign_workspace_id, foreign_environment_id
     )
-    foreign_repository = PostgreSQLGmailMessageStateRepository(
+    denied = GmailMessageStateRepositoryScenario(
+        repository=PostgreSQLGmailMessageStateRepository(
         postgresql_adapter.uow_factory,
         lambda operation, trace_id: postgresql_adapter.source_context(
             foreign_workspace_id, foreign_environment_id
         ),
+        ),
+        binding=scenario.binding,
+        revision_evidence=scenario.revision_evidence,
     )
-    with pytest.raises(ValueError, match="unavailable in this tenant") as error:
-        await foreign_repository.record_label(first[0].persisted)
-    assert key.message_id not in str(error.value)
+    await assert_gmail_tenant_denial_contract(denied)
+
+
+async def test_postgresql_gmail_repository_satisfies_stale_revision_contract(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    from tests.contracts.connectors.gmail_message_state_repository_contract import (
+        assert_gmail_stale_revision_contract,
+    )
+
+    scenario = await _postgresql_gmail_message_state_scenario(
+        postgresql_adapter,
+        84300,
+    )
+    await assert_gmail_stale_revision_contract(scenario)
+
+
+async def test_postgresql_gmail_repository_satisfies_tombstone_resolution_contract(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    from tests.contracts.connectors.gmail_message_state_repository_contract import (
+        assert_gmail_tombstone_resolution_contract,
+    )
+
+    scenario = await _postgresql_gmail_message_state_scenario(
+        postgresql_adapter,
+        84400,
+    )
+    await assert_gmail_tombstone_resolution_contract(scenario)
 
 
 async def _trusted_content_evidence_case(
@@ -11616,13 +11788,49 @@ async def test_selector_migration_rollback_preserves_existing_v1_acceptance(
     config = Config(str(config_path))
     config.set_main_option("script_location", str(script_location))
     config.attributes["migration_settings"] = migration_settings
-    await asyncio.to_thread(command.downgrade, config, "20261224_92")
-
     migration_engine = create_async_engine(
         postgresql_contract_database.migration_url.get_secret_value(),
         hide_parameters=True,
     )
+    email_revisions = ()
+    migration_failure: BaseException | None = None
     try:
+        async with migration_engine.connect() as connection:
+            email_revisions = tuple(
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT revision_id, revision_metadata_schema, "
+                            "revision_metadata FROM spine.source_revisions "
+                            "WHERE revision_metadata->'email_revision' IS NOT NULL "
+                            "AND revision_metadata->'email_revision' <> 'null'::jsonb"
+                        )
+                    )
+                ).mappings()
+            )
+        if email_revisions:
+            async with migration_engine.begin() as connection:
+                await connection.execute(
+                    text("ALTER TABLE spine.source_revisions DISABLE TRIGGER USER")
+                )
+            try:
+                async with migration_engine.begin() as connection:
+                    await connection.execute(
+                        text(
+                            "UPDATE spine.source_revisions SET "
+                            "revision_metadata_schema = 'revision-metadata:r1-document-v1', "
+                            "revision_metadata = revision_metadata - 'email_revision' "
+                            "WHERE revision_metadata->'email_revision' IS NOT NULL "
+                            "AND revision_metadata->'email_revision' <> 'null'::jsonb"
+                        )
+                    )
+            finally:
+                async with migration_engine.begin() as connection:
+                    await connection.execute(
+                        text("ALTER TABLE spine.source_revisions ENABLE TRIGGER USER")
+                    )
+
+        await asyncio.to_thread(command.downgrade, config, "20261224_92")
         async with migration_engine.connect() as connection:
             after_downgrade = (await connection.execute(
                 text("SELECT * FROM spine.canonical_acceptances WHERE canonical_acceptance_id = :id"),
@@ -11632,10 +11840,52 @@ async def test_selector_migration_rollback_preserves_existing_v1_acceptance(
             legacy_before.pop("canonical_acceptance_schema_version")
             legacy_before.pop("processing_admission_id")
             assert dict(after_downgrade) == legacy_before
+    except BaseException as error:
+        migration_failure = error
     finally:
         await migration_engine.dispose()
 
-    await asyncio.to_thread(upgrade_database, migration_settings)
+    try:
+        await asyncio.to_thread(upgrade_database, migration_settings)
+        if email_revisions:
+            migration_engine = create_async_engine(
+                postgresql_contract_database.migration_url.get_secret_value(),
+                hide_parameters=True,
+            )
+            try:
+                async with migration_engine.begin() as connection:
+                    await connection.execute(
+                        text("ALTER TABLE spine.source_revisions DISABLE TRIGGER USER")
+                    )
+                try:
+                    async with migration_engine.begin() as connection:
+                        for row in email_revisions:
+                            await connection.execute(
+                                text(
+                                    "UPDATE spine.source_revisions SET "
+                                    "revision_metadata_schema = :metadata_schema, "
+                                    "revision_metadata = CAST(:metadata AS jsonb) "
+                                    "WHERE revision_id = :revision_id"
+                                ),
+                                {
+                                    "metadata_schema": row["revision_metadata_schema"],
+                                    "metadata": json.dumps(row["revision_metadata"]),
+                                    "revision_id": row["revision_id"],
+                                },
+                            )
+                finally:
+                    async with migration_engine.begin() as connection:
+                        await connection.execute(
+                            text("ALTER TABLE spine.source_revisions ENABLE TRIGGER USER")
+                        )
+            finally:
+                await migration_engine.dispose()
+    except BaseException as cleanup_error:
+        if migration_failure is not None:
+            raise cleanup_error from migration_failure
+        raise
+    if migration_failure is not None:
+        raise migration_failure
     async with postgresql_adapter.uow_factory(case.context) as uow:
         after_upgrade = (await uow._execute(  # type: ignore[attr-defined]
             select(canonical_acceptances).where(
