@@ -220,17 +220,20 @@ environment; backup deletion, encryption, physical erasure and restart/restore
 qualification. No actual retention duration or approval is invented here.
 
 Verification on the rebased working tree, based on current main
-`00c4b911f36bbf973cae108b3665fd13fc3c9170`:
+`7bc81928d80f88c4d35d86eca83964de103ef60d`:
 
 - PostgreSQL private-ASR module: `60 passed in 57.42s` with restricted
   `spine_runtime`, including report/aggregate atomicity, RLS, process restart,
   aggregate revocation visibility, staging forgery and bounded retry checks.
-- Fresh-database initial-tenancy migration suite: `58 passed in 752.29s` through
-  Alembic head `20270102_101`; migration/readiness inventory unit suite: `7 passed`.
+- On previous base `00c4b91`, fresh-database initial-tenancy migration suite:
+  `58 passed in 752.29s` through Alembic head `20270102_101`; the restricted ASR
+  module passed `60 tests in 80.75s`.
 - Source lifecycle, AccessPolicy, retention, audit, retry and related contracts:
   `196 passed in 11.86s`.
 - `uv run python -m compileall -q src tests` and `git diff --check`: PASS.
-- Exact current-main baseline and full repository suite for `00c4b91` are pending.
+- Previous full suite on `00c4b91`/`bb81d14`: `6340 passed, 7 skipped, 3 failed`;
+  the failures were the Google OAuth loopback test, #680 wizard and nested #68
+  gate. Exact `7bc8192` full suite and migration tests remain pending.
 - Exact-head GitHub CI is pending until this branch is pushed.
 
 PR #797 stays OPEN/DRAFT and Issue #795 stays OPEN. Source-head replacement,
