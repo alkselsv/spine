@@ -6,7 +6,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import AsyncIterable
+from typing import AsyncIterable, Callable
 from uuid import UUID
 
 from spine.application.connector_ingestion import (
@@ -89,6 +89,9 @@ class EligiblePolicyRepository:
 
 
 class QualificationUploader:
+    def __init__(self) -> None:
+        self.objects: dict[UUID, bytes] = {}
+
     async def upload(
         self,
         context: TrustedPersistenceContext,
@@ -106,6 +109,7 @@ class QualificationUploader:
             digest_hex=digest,
             byte_length=len(content),
         )
+        self.objects[reference.object_id] = content
         receipt = WriteReceipt(
             schema_version=1,
             upload_id=stable_id(f"upload:{command.idempotency_key}"),
@@ -149,6 +153,9 @@ class UnusedReader:
 class CanonicalIngestionHarness:
     orchestrator: ConnectorIngestionOrchestrator
     events: RecordingOutboxEventRegistry
+    uploader: QualificationUploader
+    persistence: InMemoryPersistence
+    context_factory: Callable[[PersistenceOperation, UUID], TrustedPersistenceContext]
 
     @property
     def projection_intent_count(self) -> int:
@@ -218,11 +225,12 @@ async def build_canonical_ingestion_harness() -> CanonicalIngestionHarness:
             trace_id=trace_id,
         )
 
+    uploader = QualificationUploader()
     return CanonicalIngestionHarness(
         orchestrator=ConnectorIngestionOrchestrator(
             uow_factory=persistence.uow_factory,
             observation_reader=UnusedReader(),
-            uploader=QualificationUploader(),
+            uploader=uploader,
             read_context_factory=context_factory,
             context_factory=context_factory,
             canonical_command_factory=lambda **values: build_connector_canonical_acceptance_command(
@@ -235,6 +243,9 @@ async def build_canonical_ingestion_harness() -> CanonicalIngestionHarness:
             clock=lambda: datetime(2026, 10, 30, 12, tzinfo=timezone.utc),
         ),
         events=events,
+        uploader=uploader,
+        persistence=persistence,
+        context_factory=context_factory,
     )
 
 
