@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from enum import Enum
@@ -10,6 +11,7 @@ from typing import Annotated, Literal, Protocol, TypeGuard
 from pydantic import AfterValidator, Field
 
 from spine.domain.common import DefinitionModel
+from spine.domain.connections.email_scope import EmailOperation, MailboxReadScope
 
 
 def _validate_history_id(value: str) -> str:
@@ -69,6 +71,8 @@ class GmailHistoryResult(DefinitionModel):
     """Safe outcome for a bounded history drain, including usable partial data."""
 
     schema_version: Literal["gmail-history-result:v1"] = "gmail-history-result:v1"
+    requested_start_history_id: GmailHistoryId
+    admission_scope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     state: GmailHistoryState
     changes: tuple[GmailHistoryChange, ...] = ()
     terminal_history_id: GmailHistoryId | None = None
@@ -95,10 +99,21 @@ class GmailHistoryPageSource(Protocol):
 class GmailHistoryReader:
     """Drain and normalize every page within the caller's explicit page bound."""
 
-    def __init__(self, source: GmailHistoryPageSource, *, max_pages: int) -> None:
+    def __init__(
+        self,
+        source: GmailHistoryPageSource,
+        *,
+        scope: MailboxReadScope,
+        max_pages: int,
+    ) -> None:
         if max_pages < 1:
             raise ValueError("max_pages must be positive")
+        if scope.provider_kind != "google":
+            raise ValueError("Gmail history requires a Google mailbox scope")
+        if not scope.allows(EmailOperation.SYNCHRONIZE):
+            raise ValueError("Gmail history requires synchronization authority")
         self._source = source
+        self._admission_scope_digest = gmail_history_scope_digest(scope)
         self._max_pages = max_pages
 
     async def read(self, *, start_history_id: str, max_results: int) -> GmailHistoryResult:
@@ -200,6 +215,8 @@ class GmailHistoryReader:
             )
         )
         return GmailHistoryResult(
+            requested_start_history_id=request.start_history_id,
+            admission_scope_digest=self._admission_scope_digest,
             state=state,
             changes=normalized,
             terminal_history_id=terminal_history_id,
@@ -208,6 +225,18 @@ class GmailHistoryReader:
             malformed_count=malformed_count,
             error_code=error_code,
         )
+
+
+def gmail_history_scope_digest(scope: MailboxReadScope) -> str:
+    """Bind a history drain to the exact immutable scope admitted for its read."""
+
+    canonical_scope = json.dumps(
+        scope.model_dump(mode="json"),
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical_scope.encode("utf-8")).hexdigest()
 
 
 def _provider_failure(status_code: int) -> tuple[GmailHistoryState, str]:
@@ -300,4 +329,5 @@ __all__ = [
     "GmailHistoryReader",
     "GmailHistoryResult",
     "GmailHistoryState",
+    "gmail_history_scope_digest",
 ]

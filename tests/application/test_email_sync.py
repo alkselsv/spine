@@ -6,6 +6,9 @@ from uuid import UUID
 import pytest
 
 from spine.application.email_sync import (
+    EMAIL_SYNC_STATE_OBSERVED_CONSUMER_NAME,
+    EMAIL_SYNC_STATE_OBSERVED_EVENT_TYPE,
+    EMAIL_SYNC_STATE_OBSERVED_SCHEMA_VERSION,
     EmailSyncAdmission,
     EmailSyncAdmissionState,
     EmailSyncAttempt,
@@ -14,8 +17,14 @@ from spine.application.email_sync import (
     EmailSyncEffectReceipt,
     EmailSyncPage,
     EmailSyncStatus,
+    EmailSyncStateObservedConsumer,
+    EmailSyncStateObservedOutboxPayload,
     InMemoryEmailSyncRepository,
+    register_email_sync_delivery_route,
 )
+from spine.application.diagnostics import DiagnosticContext
+from spine.application.persistence.delivery import OutboxDeliveryRouteRegistry
+from spine.application.persistence.outbox import OutboxIntent
 from spine.domain.connections.email_scope import (
     EmailProviderOperation,
     MailboxReadScope,
@@ -476,3 +485,37 @@ async def test_running_attempt_can_be_cancelled_without_applying_another_page() 
     assert cancelled.status is EmailSyncStatus.SUSPENDED
     assert resumed.status is EmailSyncStatus.SUSPENDED
     assert effects.calls == ["effect-one"]
+
+
+@pytest.mark.asyncio
+async def test_state_observation_event_has_explicit_validating_delivery_route() -> None:
+    routes = OutboxDeliveryRouteRegistry(version="email-sync-test.v1")
+    register_email_sync_delivery_route(routes)
+    route = routes.resolve(
+        EMAIL_SYNC_STATE_OBSERVED_EVENT_TYPE,
+        EMAIL_SYNC_STATE_OBSERVED_SCHEMA_VERSION,
+    )
+    diagnostic_context = DiagnosticContext(trace_id=EFFECT_ONE)
+    intent = OutboxIntent(
+        event_id=EFFECT_ONE,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        event_type=EMAIL_SYNC_STATE_OBSERVED_EVENT_TYPE,
+        schema_version=EMAIL_SYNC_STATE_OBSERVED_SCHEMA_VERSION,
+        payload=EmailSyncStateObservedOutboxPayload(
+            observation_id=EFFECT_TWO,
+            connection_id=CONNECTION_ID,
+            mailbox_binding_id=MAILBOX_BINDING_ID,
+            state_kind="label_added",
+            provider_event_digest="a" * 64,
+        ),
+        trace_id=EFFECT_ONE,
+    )
+
+    result = await EmailSyncStateObservedConsumer().consume(
+        intent,
+        diagnostic_context,
+    )
+
+    assert route.consumer_name == EMAIL_SYNC_STATE_OBSERVED_CONSUMER_NAME
+    assert result.diagnostic_context == diagnostic_context

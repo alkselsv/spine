@@ -509,7 +509,11 @@ class _GmailHistoryProviderReader:
             connection=connection,
             command=command,
         )
-        return await GmailHistoryReader(source, max_pages=command.max_pages).read(
+        return await GmailHistoryReader(
+            source,
+            scope=command.scope,
+            max_pages=command.max_pages,
+        ).read(
             start_history_id=command.start_history_id,
             max_results=command.max_results,
         )
