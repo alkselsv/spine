@@ -48,6 +48,40 @@ Each concurrent agent works in its own Git worktree and ticket branch. Record
 the branch, worktree and owned files when assigning the task. An agent preserves
 changes owned by other tickets and coordinates before editing overlapping files.
 
+### Local Compose isolation
+
+Run Compose through the repository `make` targets, not by invoking
+`docker compose` directly. The Make wrapper resolves a stable project name and
+a disjoint loopback-port block for every linked worktree. The primary checkout
+keeps the `spine` project and its configured ports. Inspect the selection before
+starting or deleting a stack with:
+
+```text
+make compose-context
+```
+
+Every worktree owns its gitignored `.env` and `.env.qualification`; never share
+or automatically copy these files because they contain secrets, commit-bound
+deployment identity and bounded qualification authority. Explicit
+`COMPOSE_PROJECT` and exported `SPINE_*_PORT` values remain operator overrides.
+Use the same overrides for `start`, `status`, `logs`, `stop` and `destroy`.
+
+Initialize missing private configuration and inspect the resulting selection
+before the first start:
+
+```text
+make worktree-init
+# Fill only the required fields reported by the initializer, then run it again.
+make worktree-init
+make compose-context
+make compose-preflight
+make start
+```
+
+The initializer never replaces an existing runtime or qualification file. The
+preflight is read-only: it accepts an already-running selected Compose project,
+but rejects ports held by an unrelated local process before provisioning begins.
+
 ## Implement and review
 
 Use the ticket as the behavioral contract and implement it through the

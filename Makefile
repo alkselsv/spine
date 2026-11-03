@@ -1,10 +1,14 @@
 UV ?= uv
+PYTHON ?= python3
 PORT ?= 8080
 PYTEST_ARGS ?=
 COMPOSE ?= docker compose
-COMPOSE_PROJECT ?= spine
+COMPOSE_WORKTREE = $(PYTHON) scripts/compose_worktree.py
+COMPOSE_PROJECT_ARG = $(if $(strip $(COMPOSE_PROJECT)),--project "$(COMPOSE_PROJECT)")
 COMPOSE_ENV_FILES = --env-file .env --env-file .env.qualification
-COMPOSE_COMMAND = $(COMPOSE) -p "$(COMPOSE_PROJECT)" $(COMPOSE_ENV_FILES)
+COMPOSE_CONTEXT = $(COMPOSE_WORKTREE) context $(COMPOSE_PROJECT_ARG) $(COMPOSE_ENV_FILES)
+COMPOSE_PREFLIGHT = $(COMPOSE_WORKTREE) preflight --compose "$(COMPOSE)" $(COMPOSE_PROJECT_ARG) $(COMPOSE_ENV_FILES)
+COMPOSE_COMMAND = $(COMPOSE_WORKTREE) run --compose "$(COMPOSE)" $(COMPOSE_PROJECT_ARG) $(COMPOSE_ENV_FILES) --
 LOG_TAIL ?= 200
 LOG_SERVICES ?= api qa-worker outbox-dispatcher web
 QUALIFICATION_TTL ?= 4h
@@ -19,7 +23,7 @@ TEST_UV_CACHE_DIR ?= $(TEST_TMP_ROOT)/spine-uv-cache
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install test test-fast test-release compile diff-check check verify api qualification-env compose-env qualification-provision start start-fixtures status logs stop destroy
+.PHONY: help install test test-fast test-release compile diff-check check verify api qualification-env worktree-init compose-env compose-context compose-preflight qualification-provision start start-fixtures status logs stop destroy
 
 help: ## Show available commands.
 	@printf '%s\n' \
@@ -30,7 +34,10 @@ help: ## Show available commands.
 		'make compile  Compile Python sources and tests' \
 		'make check    Run tests and compilation checks' \
 		'make verify   Install dependencies and run all checks' \
+		'make worktree-init Create missing private runtime and qualification env files' \
 		'make qualification-env Generate a bounded local .env.qualification' \
+		'make compose-context Show the automatic worktree Compose project and ports' \
+		'make compose-preflight Check the selected ports without changing Docker state' \
 		'make start    Provision qualification authority and start Compose' \
 		'make start-fixtures Start the isolated fixture UI on port 4176' \
 		'make status   Show all Compose services' \
@@ -52,7 +59,7 @@ test-fast: ## Run narrower feedback only; this is not a release gate.
 	TMPDIR="$(TEST_TMPDIR)" UV_CACHE_DIR="$(TEST_UV_CACHE_DIR)" $(UV) run pytest -q -m 'not postgresql' $(PYTEST_ARGS)
 
 compile: ## Compile Python sources and tests.
-	$(UV) run python -m compileall -q src tests
+	$(UV) run python -m compileall -q src tests scripts
 
 diff-check: ## Reject whitespace and conflict-marker errors in the working diff.
 	git diff --check
@@ -71,11 +78,25 @@ qualification-env: ## Generate .env.qualification; use FORCE=1 to replace it.
 		$(if $(strip $(PROVIDER_BUDGET)),--provider-budget "$(PROVIDER_BUDGET)") \
 		$(if $(filter 1 true yes,$(FORCE)),--force)
 
-compose-env: ## Fail before Docker when required local environment files are absent.
-	@test -f .env || { printf '%s\n' 'Не найден .env; создайте его из .env.example.' >&2; exit 2; }
-	@test -f .env.qualification || { printf '%s\n' 'Не найден .env.qualification; выполните make qualification-env.' >&2; exit 2; }
+worktree-init: ## Create missing private env files without replacing existing files.
+	@$(COMPOSE_WORKTREE) init --template .env.example --runtime .env
+	@if test -f .env.qualification; then \
+		printf '%s\n' 'qualification environment kept: .env.qualification'; \
+	else \
+		$(MAKE) qualification-env; \
+	fi
 
-qualification-provision: compose-env ## Provision disposable qualification authority.
+compose-env: ## Fail before Docker when required local environment files are absent.
+	@test -f .env || { printf '%s\n' 'Не найден .env; выполните make worktree-init.' >&2; exit 2; }
+	@test -f .env.qualification || { printf '%s\n' 'Не найден .env.qualification; выполните make worktree-init.' >&2; exit 2; }
+
+compose-context: ## Show the automatic project name and linked-worktree ports.
+	@$(COMPOSE_CONTEXT)
+
+compose-preflight: compose-env ## Check ports without starting or changing Docker resources.
+	@$(COMPOSE_PREFLIGHT)
+
+qualification-provision: compose-env compose-preflight ## Provision disposable qualification authority.
 	$(COMPOSE_COMMAND) --profile qualification-provisioning run --rm qualification-authority-provisioner
 
 start: qualification-provision ## Build and start the complete local Compose stack.
@@ -94,7 +115,8 @@ stop: compose-env ## Stop the stack without deleting disposable volumes.
 	$(COMPOSE_COMMAND) --profile fixtures down
 
 destroy: compose-env ## Delete the selected Compose project and its disposable volumes.
-	@printf '%s\n' 'Удаляются контейнеры и все disposable volumes Compose-проекта $(COMPOSE_PROJECT).'
+	@$(COMPOSE_CONTEXT)
+	@printf '%s\n' 'Удаляются контейнеры и все disposable volumes показанного Compose-проекта.'
 	$(COMPOSE_COMMAND) --profile fixtures down --volumes --remove-orphans
 
 api: ## Start the development API; override PORT if needed.
