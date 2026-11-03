@@ -1,0 +1,113 @@
+{
+  "schema_version": "issue-598-google-qualification:v1",
+  "ticket": 598,
+  "target_commit": "7970c7127bb215f955e0a70a40ce544e56be0407",
+  "executed_on": "2026-11-03",
+  "qualification_boundary": "governed-google-drive-sheets-offline-and-live-readiness",
+  "status": "offline_pass_live_not_verified",
+  "decision": "NO_GO_FOR_LIVE_OR_PRODUCTION",
+  "results": {
+    "offline_connector_contracts": "PASS",
+    "postgresql_canonical_and_migration_contracts": "PASS",
+    "concrete_google_api_adapters": "PASS",
+    "execution_envelope_and_retry_controls": "PASS",
+    "manual_grant_lifecycle_with_fakes": "PASS",
+    "live_harness_fail_closed_behavior": "PASS",
+    "shared_drive_offline_conformance": "PASS",
+    "my_drive_live_provider_behavior": "NOT_VERIFIED",
+    "sheets_live_provider_behavior": "NOT_VERIFIED",
+    "shared_drive_live_provider_behavior": "NOT_VERIFIED",
+    "live_cleanup_and_revocation": "NOT_VERIFIED",
+    "production_readiness": "NOT_APPROVED"
+  },
+  "verification": {
+    "offline_command": "uv run pytest -q tests/application/test_google_drive_reader.py tests/application/test_google_drive_snapshot.py tests/application/test_google_drive_changes.py tests/application/test_google_drive_reconciliation.py tests/application/test_google_drive_lifecycle.py tests/application/test_google_sheets_reader.py tests/application/test_google_sheets_reconciliation.py tests/application/test_google_sheets_lifecycle.py tests/application/test_google_read_admission.py tests/application/test_google_sync_diagnostics.py tests/application/test_register_associations.py tests/application/test_connector_ingestion.py tests/application/persistence/test_canonical_acceptance.py tests/contracts/persistence/test_canonical_acceptance_contract.py tests/integration/postgresql/test_postgresql_unit_of_work.py tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head tests/qualification/test_issue614_google_offline_qualification.py tests/infrastructure/memory/test_cognee_dependency_contract.py",
+    "offline_result": "388 passed, 0 skipped, 0 failed",
+    "offline_postgresql": "postgres:17.6-bookworm disposable container",
+    "adapter_harness_command": "uv run pytest -q tests/connectors/test_google_api.py tests/connectors/test_google_composition.py tests/connectors/test_google_execution_envelope.py tests/qualification/test_google_live_harness.py tests/qualification/test_issue652_google_api_adapters.py tests/qualification/test_issue756_shared_drive_conformance.py tests/application/test_google_manual_authorization.py tests/infrastructure/test_google_qualification_credentials.py tests/infrastructure/test_google_desktop_oauth.py tests/domain/connections/test_google_connections.py tests/infrastructure/connections/test_in_memory_google_connections.py",
+    "adapter_harness_result": "131 passed, 0 skipped, 0 failed",
+    "loopback_note": "The synthetic Desktop OAuth test used only a temporary 127.0.0.1 listener and fake token exchange; it made no Google request.",
+    "repository_command": "uv run pytest -q",
+    "repository_result": "6013 passed, 7 skipped, 0 failed",
+    "repository_warning": "One existing Pydantic serializer warning in tests/domain/storage/test_recovery_integrity.py::test_unknown_event_kind_is_rejected",
+    "compileall_command": "uv run python -m compileall -q src tests",
+    "compileall_result": "passed",
+    "negative_preflight_command": "env -u SPINE_GOOGLE_LIVE_OPT_IN .venv/bin/spine-google-live-qualification --config /private/tmp/spine-issue598-no-approved-config.json --composition unavailable_google_runtime:build_live_runner --report /private/tmp/spine-issue598-live-report.json",
+    "negative_preflight_result": "REFUSED_BEFORE_CONFIG",
+    "negative_preflight_stderr": "Google live qualification refused: approved opt-in or prerequisites are missing.",
+    "negative_preflight_exit_code": 2,
+    "negative_preflight_provider_requests": 0,
+    "negative_preflight_report_written": false,
+    "negative_preflight_reason": "No approved private live manifest, deployment composition, resource allowlist or explicit execution authorization was available to this run."
+  },
+  "evidence_binding": {
+    "scheme": "sha256-lines:v1",
+    "fields": [
+      "schema_version",
+      "target_commit",
+      "verification.offline_result",
+      "verification.adapter_harness_result",
+      "verification.repository_result",
+      "verification.negative_preflight_result",
+      "verification.negative_preflight_exit_code",
+      "verification.negative_preflight_provider_requests",
+      "verification.negative_preflight_report_written"
+    ],
+    "digest": "2530b84109be0afa4428d81db94147f8df8b418f7e37a22af7e9830421a7506d"
+  },
+  "delivered_children": [
+    599,
+    600,
+    601,
+    602,
+    603,
+    604,
+    605,
+    606,
+    607,
+    608,
+    609,
+    610,
+    611,
+    612,
+    613,
+    614,
+    652,
+    752,
+    753,
+    754,
+    755,
+    756
+  ],
+  "remaining_child": {
+    "ticket": 615,
+    "status": "ready-for-human",
+    "result": "NOT_VERIFIED"
+  },
+  "remaining_prerequisites": [
+    "separate explicit authorization for one live qualification run",
+    "approved isolated Google project and synthetic account",
+    "approved private exact My Drive, spreadsheet and numeric sheet allowlist",
+    "approved deployment-owned credential resolver and live composition",
+    "configured and approved execution limits for duration, response size, aggregate bytes, rows and pages",
+    "named backup cleanup operator and approved private report destination",
+    "real accessible synthetic Shared Drive and exact allowlist, or an explicitly adopted scope amendment that keeps Shared Drive NOT_VERIFIED",
+    "provider run, sanitized evidence review, resource cleanup, remote grant revocation and local credential cleanup evidence"
+  ],
+  "unverified_live_behaviors": [
+    "real Desktop OAuth consent, refresh, reauthorization and revocation",
+    "real Drive snapshot pagination, change tokens, exports and removal semantics",
+    "real Sheets representations, pagination and concurrent edits",
+    "real quota, rate-limit and retry timing",
+    "real Shared Drive scope and access-loss behavior",
+    "provider-backed interruption, recovery and cleanup"
+  ],
+  "privacy": {
+    "synthetic_fakes_only": true,
+    "credentials_accessed": false,
+    "provider_network_calls": false,
+    "provider_payloads_recorded": false,
+    "source_content_recorded": false,
+    "raw_provider_errors_recorded": false
+  }
+}
