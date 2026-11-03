@@ -220,25 +220,24 @@ environment; backup deletion, encryption, physical erasure and restart/restore
 qualification. No actual retention duration or approval is invented here.
 
 Verification on the rebased working tree, based on current main
-`8b99d598b8706620b086052bb92bd613676d06a8`:
+`c05b091452eaded3f040334ce27408297155f67f`:
 
-- Restricted PostgreSQL ASR storage and readiness: `78 passed in 57.89s` with
-  restricted `spine_runtime`; Alembic head is `20270103_102`.
-- The fresh-database initial-tenancy migration suite passed `59 tests in
-  805.64s` on `7bc8192`; later main commits did not change migrations, and the
-  current full suite also passed migration tests.
+- Restricted PostgreSQL ASR storage and readiness: `78 passed in 83.61s` with
+  restricted `spine_runtime`; Alembic head is `20270104_103`.
+- Fresh-database initial-tenancy migration suite: `59 passed in 642.04s`,
+  including new main migration `20270101_100` and failure rollback at `104`.
 - `python -m compileall -q src tests` and `git diff --check`: PASS.
-- Full repository suite on exact current-main base `8b99d598`, code HEAD
-  `c54c34a`: `6451 passed, 7 skipped, 3 failed, 1 warning` in `1331.62s`.
+- Full repository suite on exact current-main base `c05b0914`: `6468 passed,
+  7 skipped, 5 failed, 1 warning` in `2008.34s`.
   The two direct failures were the Google OAuth loopback test and #680 wizard;
-  nested #68 repeats them. Both direct failures reproduced on a clean detached
-  `8b99d598` worktree (`2 failed in 2.63s`), so they are inherited baseline
-  defects. No PR-specific full-suite failure was observed.
+  nested #68 traceability/full gates repeat baseline failures. The artifact-diff
+  check also failed because migration resequencing changes were uncommitted
+  during this run; rerun it on the clean committed tree. No ASR storage test
+  failed. The direct baseline failures must be confirmed on exact `c05b0914`.
 - `python -m compileall -q src tests`, `uv lock --check` with `/tmp` cache, and
   `git diff --check`: PASS.
-- GitHub CI on previous code HEAD `e249cbd` passed all seven checks: Python
-  compatibility 3.10–3.14, web, and `r1-regression-gate`. Current rebased-head
-  checks are pending.
+- GitHub CI on the previous base passed all seven checks; checks for final base
+  `c05b0914` and the pushed rebased head are pending.
 
 PR #797 stays OPEN/DRAFT and Issue #795 stays OPEN. Source-head replacement,
 AccessPolicy activation, lifecycle withdrawal, retention CAS, multi-source
