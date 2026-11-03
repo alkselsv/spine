@@ -41,6 +41,11 @@ from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
 from spine.infrastructure.persistence.postgresql_email_sync import (
     PostgreSQLEmailSyncRepository,
 )
+from spine.connectors.yandex_mail_incremental import (
+    YandexMailIncrementalCheckpoint,
+    decode_yandex_mail_incremental_checkpoint,
+    encode_yandex_mail_incremental_checkpoint,
+)
 from tests.contracts.persistence.outbox_events import create_outbox_event_registry
 
 
@@ -350,6 +355,62 @@ async def test_postgresql_email_sync_publishes_checkpoint_for_complete_empty_pag
     final = await repository.get(attempt.attempt_id, WORKSPACE_ID, ENVIRONMENT_ID)
     assert final is not None
     assert final.pages == (page, next_page)
+
+
+async def test_postgresql_email_sync_round_trips_generation_bound_imap_checkpoint(
+    email_sync_repository,
+) -> None:
+    repository, _, _, _ = email_sync_repository
+    attempt = _attempt()
+    await repository.save(attempt)
+    current = await repository.get(attempt.attempt_id, WORKSPACE_ID, ENVIRONMENT_ID)
+    assert current is not None
+    checkpoint = YandexMailIncrementalCheckpoint(
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        connection_id=attempt.admission.connection_id,
+        connection_version_id=attempt.admission.connection_version_id,
+        mailbox_binding_id=attempt.admission.mailbox_binding_id,
+        folder_reference=uuid4(),
+        authorization_generation=attempt.admission.authorization_generation,
+        configuration_generation=attempt.admission.configuration_generation,
+        scope_generation=attempt.admission.scope_generation,
+        uid_validity=101,
+        next_uid=42,
+        baseline_kind="snapshot",
+        baseline_receipt_reference="snapshot-receipt-postgresql",
+    )
+    encoded = encode_yandex_mail_incremental_checkpoint(checkpoint)
+    page = EmailSyncPageState(
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        page_id="imap-baseline-page",
+        page_digest="f" * 64,
+        requested_checkpoint=None,
+        next_checkpoint=encoded,
+        terminal=False,
+        effects=(),
+        committed=True,
+    )
+
+    await repository.save(
+        current.model_copy(
+            update={
+                "pages": (page,),
+                "committed_checkpoint": encoded,
+                "status": EmailSyncStatus.RUNNING,
+            }
+        )
+    )
+    restored = await repository.get(
+        attempt.attempt_id, WORKSPACE_ID, ENVIRONMENT_ID
+    )
+
+    assert restored is not None
+    assert restored.pages == (page,)
+    assert decode_yandex_mail_incremental_checkpoint(
+        restored.committed_checkpoint or ""
+    ) == checkpoint
 
 
 async def test_postgresql_email_sync_rolls_back_checkpoint_without_canonical_receipts(
