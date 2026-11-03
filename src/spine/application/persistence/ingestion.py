@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 INGESTION_RUN_SCHEMA_VERSION = 1
 INGESTION_BINDING_SCHEMA_VERSION = 1
 PROCESS_ONLY_BINDING_SCHEMA_VERSION = 1
-PROCESSING_RECEIPT_SCHEMA_VERSION = 1
+PROCESSING_RECEIPT_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +179,8 @@ class ProcessingReceiptCommand:
                 "output_reference": receipt.output_reference,
                 "output_digest": receipt.output_digest,
                 "coverage": receipt.coverage,
+                "processing_scope": receipt.processing_scope,
+                "process_only_operation_id": receipt.process_only_operation_id,
                 "exclusions": [
                     item.model_dump(mode="json") for item in receipt.exclusions
                 ],

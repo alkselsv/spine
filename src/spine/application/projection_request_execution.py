@@ -238,6 +238,7 @@ class PersistenceCanonicalProjectionRequestResolver:
                 or receipt.parser_config_reference != payload.parser_config_reference
                 or receipt.locator_contract_version != payload.locator_contract_version
                 or receipt.coverage is ProcessingCoverage.FAILED
+                or receipt.processing_scope != "ordinary"
                 or receipt.output_reference is None
                 or receipt.output_digest is None
             ):
@@ -397,6 +398,7 @@ class PersistenceCanonicalProjectionRequestResolver:
                         candidate_receipt is not None
                         and candidate_receipt.coverage
                         is not ProcessingCoverage.FAILED
+                        and candidate_receipt.processing_scope == "ordinary"
                         and candidate_receipt.output_reference is not None
                         and candidate_receipt.output_digest is not None
                     ):

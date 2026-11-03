@@ -39,6 +39,11 @@ class ReprocessProcessingRequest(BaseModel):
     source_object_id: UUID
     source_revision_id: UUID
     expected_current_revision_id: UUID
+    canonical_acceptance_id: UUID
+    canonical_accepted_generation: int = Field(ge=1)
+    processing_admission_id: UUID
+    receipt_association_id: UUID
+    verified_byte_length: int = Field(ge=0)
     parent_processing_receipt_id: UUID | None = None
     processing_profile_reference: str = Field(
         min_length=1,

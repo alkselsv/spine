@@ -55,11 +55,16 @@ describe('document processing command API', () => {
     await reprocessDocument(
       client,
       {
+        canonical_acceptance_id: '80000000-0000-4000-8000-000000000001',
+        canonical_accepted_generation: 7,
         expected_current_revision_id: sourceRevisionId,
         parent_processing_receipt_id: '70000000-0000-4000-8000-000000000001',
+        processing_admission_id: '80000000-0000-4000-8000-000000000002',
         processing_profile_reference: DEFAULT_PROCESSING_PROFILE,
+        receipt_association_id: '80000000-0000-4000-8000-000000000003',
         source_object_id: sourceObjectId,
         source_revision_id: sourceRevisionId,
+        verified_byte_length: 42,
       },
       'reprocess-command-key',
       new AbortController().signal,
@@ -69,6 +74,7 @@ describe('document processing command API', () => {
     expect(request.url).toBe('https://spine.test/api/v1/documents/processing/reprocess');
     expect(request.headers.get('Idempotency-Key')).toBe('reprocess-command-key');
     expect(await request.json()).toMatchObject({
+      canonical_accepted_generation: 7,
       expected_current_revision_id: sourceRevisionId,
       processing_profile_reference: DEFAULT_PROCESSING_PROFILE,
       source_object_id: sourceObjectId,

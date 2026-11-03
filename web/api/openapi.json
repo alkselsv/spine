@@ -6837,6 +6837,18 @@
             "title": "Ingestion Run Id",
             "type": "string"
           },
+          "process_only_operation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Process Only Operation Id"
+          },
           "processing_receipt_id": {
             "anyOf": [
               {
@@ -6848,6 +6860,21 @@
               }
             ],
             "title": "Processing Receipt Id"
+          },
+          "processing_scope": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ordinary",
+                  "process_only"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processing Scope"
           },
           "state": {
             "$ref": "#/components/schemas/IngestionItemState"
@@ -9448,6 +9475,16 @@
       "ReprocessProcessingRequest": {
         "additionalProperties": false,
         "properties": {
+          "canonical_acceptance_id": {
+            "format": "uuid",
+            "title": "Canonical Acceptance Id",
+            "type": "string"
+          },
+          "canonical_accepted_generation": {
+            "minimum": 1.0,
+            "title": "Canonical Accepted Generation",
+            "type": "integer"
+          },
           "expected_current_revision_id": {
             "format": "uuid",
             "title": "Expected Current Revision Id",
@@ -9465,11 +9502,21 @@
             ],
             "title": "Parent Processing Receipt Id"
           },
+          "processing_admission_id": {
+            "format": "uuid",
+            "title": "Processing Admission Id",
+            "type": "string"
+          },
           "processing_profile_reference": {
             "maxLength": 128,
             "minLength": 1,
             "pattern": "^[a-z][a-z0-9_.:-]{0,127}$",
             "title": "Processing Profile Reference",
+            "type": "string"
+          },
+          "receipt_association_id": {
+            "format": "uuid",
+            "title": "Receipt Association Id",
             "type": "string"
           },
           "source_object_id": {
@@ -9481,12 +9528,22 @@
             "format": "uuid",
             "title": "Source Revision Id",
             "type": "string"
+          },
+          "verified_byte_length": {
+            "minimum": 0.0,
+            "title": "Verified Byte Length",
+            "type": "integer"
           }
         },
         "required": [
           "source_object_id",
           "source_revision_id",
           "expected_current_revision_id",
+          "canonical_acceptance_id",
+          "canonical_accepted_generation",
+          "processing_admission_id",
+          "receipt_association_id",
+          "verified_byte_length",
           "processing_profile_reference"
         ],
         "title": "ReprocessProcessingRequest",
@@ -10945,6 +11002,18 @@
               }
             ]
           },
+          "canonical_acceptance_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Acceptance Id"
+          },
           "content": {
             "anyOf": [
               {
@@ -10989,6 +11058,18 @@
             ],
             "title": "Predecessor Revision Id"
           },
+          "processing_admission_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processing Admission Id"
+          },
           "processing_references": {
             "default": [],
             "items": {
@@ -11004,6 +11085,18 @@
             },
             "title": "Projection References",
             "type": "array"
+          },
+          "receipt_association_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Receipt Association Id"
           },
           "schema_version": {
             "const": 1,
@@ -11027,6 +11120,18 @@
               }
             ],
             "title": "Superseded By Revision Id"
+          },
+          "verified_byte_length": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified Byte Length"
           }
         },
         "required": [

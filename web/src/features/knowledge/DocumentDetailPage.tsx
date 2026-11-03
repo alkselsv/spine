@@ -580,11 +580,24 @@ function SelectedRevision({
       </div>
       {revision.kind === 'content' &&
       revision.lifecycle === 'current' &&
-      document.current_revision?.source_revision_id === revision.source_revision_id ? (
+      document.current_revision?.source_revision_id === revision.source_revision_id &&
+      revision.canonical_acceptance_id &&
+      revision.accepted_generation &&
+      revision.processing_admission_id &&
+      revision.receipt_association_id &&
+      revision.verified_byte_length !== null &&
+      revision.verified_byte_length !== undefined ? (
         <ProcessingCommandAction
           client={client}
           currentRevisionId={revision.source_revision_id}
-          mode={{ kind: 'reprocess' }}
+          mode={{
+            kind: 'reprocess',
+            canonicalAcceptanceId: revision.canonical_acceptance_id,
+            canonicalAcceptedGeneration: revision.accepted_generation,
+            processingAdmissionId: revision.processing_admission_id,
+            receiptAssociationId: revision.receipt_association_id,
+            verifiedByteLength: revision.verified_byte_length,
+          }}
           processingReceiptId={revision.processing_references.at(-1)?.processing_receipt_id}
           queryKey={queryKey}
           sourceObjectId={document.source_object_id}

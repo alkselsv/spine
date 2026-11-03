@@ -134,6 +134,7 @@ class ParsedArtifactCanonicalProjectionLocatorResolver:
                 or receipt.source_object_id != source.source_object_id
                 or receipt.source_revision_id != source.source_revision_id
                 or receipt.processing_receipt_id != source.processing_receipt_id
+                or receipt.processing_scope != "ordinary"
                 or receipt.locator_contract_version != source.locator_contract_version
                 or receipt.output_reference is None
                 or receipt.output_digest is None

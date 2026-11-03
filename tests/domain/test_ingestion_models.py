@@ -90,6 +90,37 @@ def test_process_only_lineage_rejects_failure_parent_for_replacement() -> None:
         )
 
 
+def test_governed_reprocess_lineage_requires_exact_admission_links() -> None:
+    with pytest.raises(ValueError, match="exact admission authority lineage"):
+        ProcessOnlyOperationLineage(
+            schema_version=2,
+            operation_id=identifier(50), workspace_id=identifier(3),
+            environment_id=identifier(4), ingestion_run_id=identifier(2),
+            ingestion_run_source_id=identifier(1), trigger_kind="reprocess",
+            source_object_id=identifier(6), source_revision_id=identifier(7),
+            original_receipt_id=identifier(8), original_receipt_digest="a" * 64,
+            pinned_processing_profile_reference="document-processing:r1",
+            command_digest="b" * 64, idempotency_receipt_id=identifier(9),
+        )
+
+
+def test_process_only_receipt_requires_operation_lineage() -> None:
+    with pytest.raises(ValueError, match="requires an operation lineage"):
+        ProcessingReceipt(
+            processing_receipt_id=identifier(20), workspace_id=identifier(3),
+            environment_id=identifier(4), ingestion_run_source_id=identifier(1),
+            binding_id=identifier(5), source_object_id=identifier(6),
+            source_revision_id=identifier(7), processor_kind="document_processor",
+            parser_name="parser", parser_version="v1", parser_config_reference="config-v1",
+            locator_contract_version="locator-v1", original_sha256="c" * 64,
+            output_kind="parsed-document", output_reference=identifier(21),
+            output_digest="d" * 64, coverage=ProcessingCoverage.COMPLETE,
+            command_identity="process-1", command_digest="e" * 64,
+            idempotency_receipt_id=identifier(8), completed_at=NOW,
+            processing_scope="process_only",
+        )
+
+
 def test_transition_rejects_run_target_with_item_state() -> None:
     with pytest.raises(ValueError, match="valid IngestionRunState"):
         IngestionTransition(

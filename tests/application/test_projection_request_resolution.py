@@ -73,6 +73,7 @@ class _Uow:
         locator_contract_version="locator:v1",
         opaque_current=False,
         opaque_additional=False,
+        process_only_receipt=False,
     ) -> None:
         command = _command()
         context = _context(command)
@@ -90,6 +91,7 @@ class _Uow:
             source,
             additional_source,
             locator_contract_version=locator_contract_version,
+            process_only_receipt=process_only_receipt,
         )
         self.sources = SimpleNamespace(resolve_revision=self._resolve_revision)
         self.canonical = SimpleNamespace(
@@ -266,10 +268,12 @@ class _Ingestion:
         additional_source=None,
         *,
         locator_contract_version="locator:v1",
+        process_only_receipt=False,
     ) -> None:
         self._source = source
         self._additional_source = additional_source
         self._locator_contract_version = locator_contract_version
+        self._process_only_receipt = process_only_receipt
 
     async def resolve_item(self, item_id):
         return IngestionRunSource(
@@ -361,6 +365,12 @@ class _Ingestion:
             command_digest="e" * 64,
             idempotency_receipt_id=UUID(int=19),
             completed_at=NOW,
+            processing_scope=(
+                "process_only" if self._process_only_receipt else "ordinary"
+            ),
+            process_only_operation_id=(
+                UUID(int=190) if self._process_only_receipt else None
+            ),
         ) if item_id == ITEM else None
 
     async def list_bindings_for_source_revision(
@@ -472,6 +482,12 @@ async def test_production_resolver_returns_detached_canonical_command_context() 
 async def test_opaque_current_revision_is_rejected_before_physical_projection() -> None:
     with pytest.raises(ProjectionMappingError, match="canonical projection request"):
         await _resolver(_Uow(opaque_current=True)).resolve(_request())
+
+
+@pytest.mark.asyncio
+async def test_process_only_receipt_is_rejected_before_physical_projection() -> None:
+    with pytest.raises(ProjectionMappingError, match="canonical projection request"):
+        await _resolver(_Uow(process_only_receipt=True)).resolve(_request())
 
 
 @pytest.mark.asyncio

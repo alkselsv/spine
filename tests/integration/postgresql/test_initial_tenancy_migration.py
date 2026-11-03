@@ -428,6 +428,20 @@ CANONICAL_ACCEPTANCE_CONSTRAINTS = {
     "ck_source_processing_admissions_digests",
     "ck_source_processing_admissions_mode",
     "fk_canonical_acceptances_processing_admission",
+    "uq_canonical_acceptances_reprocess_authority",
+    "uq_processing_admissions_reprocess_evidence",
+    "uq_source_receipt_associations_reprocess_receipt",
+    "fk_process_only_lineages_canonical_acceptance",
+    "fk_process_only_lineages_processing_admission",
+    "fk_process_only_lineages_receipt_association",
+    "fk_process_only_lineages_processing_policy",
+    "fk_process_only_lineages_lifecycle",
+    "fk_process_only_lineages_retention",
+    "fk_process_only_lineages_authorization_audit",
+    "ck_process_only_lineages_governed_reprocess",
+    "fk_processing_receipts_process_only_lineage",
+    "ck_processing_receipts_process_only_scope",
+    "uq_process_only_lineages_receipt_binding",
     "pk_current_source_heads",
     "fk_current_source_heads_revision",
     "fk_current_source_heads_acceptance",
@@ -1846,6 +1860,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "ck_source_receipt_associations_verified",
         "ck_source_receipt_associations_reference",
         "uq_source_receipt_associations_verifier_binding",
+        "uq_source_receipt_associations_reprocess_receipt",
         "pk_trusted_content_evidence",
         "uq_trusted_content_evidence_digest",
         "fk_trusted_content_evidence_exact_receipt",
@@ -1920,6 +1935,9 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "pk_process_only_operation_lineages",
         "uq_process_only_lineages_scope_id",
         "uq_process_only_lineages_run",
+        "uq_process_only_lineages_receipt_binding",
+        "uq_canonical_acceptances_reprocess_authority",
+        "uq_processing_admissions_reprocess_evidence",
         "fk_process_only_lineages_run",
         "fk_process_only_lineages_item",
         "fk_process_only_lineages_revision",
@@ -2472,6 +2490,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "uq_source_receipt_associations_receipt",
         "uq_source_receipt_associations_provenance",
         "uq_source_receipt_associations_verifier_binding",
+        "uq_source_receipt_associations_reprocess_receipt",
         "ix_source_receipt_associations_revision",
         "ix_source_receipt_associations_object_digest",
         "pk_trusted_content_evidence",
@@ -2635,6 +2654,9 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "pk_process_only_operation_lineages",
         "uq_process_only_lineages_scope_id",
         "uq_process_only_lineages_run",
+        "uq_process_only_lineages_receipt_binding",
+        "uq_canonical_acceptances_reprocess_authority",
+        "uq_processing_admissions_reprocess_evidence",
         "ix_qa_session_versions_navigation",
         "ix_qa_message_versions_navigation",
         "ix_projection_activations_kind_generation",
@@ -2977,6 +2999,77 @@ async def test_initial_tenancy_revision_upgrades_to_current_head_and_owned_schem
     assert migrated_database.retained_revisions == _retained_revision_ids()[:-1]
     assert heads == [HEAD_REVISION]
     assert owner == MIGRATION_ROLE
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_governed_reprocessing_catalog_has_exact_tenant_foreign_keys(
+    migrated_database: MigratedDatabase,
+) -> None:
+    expected = {
+        "fk_process_only_lineages_canonical_acceptance",
+        "fk_process_only_lineages_processing_admission",
+        "fk_process_only_lineages_receipt_association",
+        "fk_process_only_lineages_processing_policy",
+        "fk_process_only_lineages_lifecycle",
+        "fk_process_only_lineages_retention",
+        "fk_process_only_lineages_authorization_audit",
+        "fk_processing_receipts_process_only_lineage",
+    }
+    async with _connection(migrated_database.migration.url) as connection:
+        constraints = {
+            row.conname: (tuple(row.source_columns), tuple(row.target_columns))
+            for row in (
+                (
+                    await connection.execute(
+                    text(
+                        "SELECT constraint_record.conname, "
+                        "ARRAY(SELECT source_attribute.attname FROM unnest(constraint_record.conkey) WITH ORDINALITY AS key(attnum, ordinal) JOIN pg_attribute AS source_attribute ON source_attribute.attrelid = constraint_record.conrelid AND source_attribute.attnum = key.attnum ORDER BY key.ordinal) AS source_columns, "
+                        "ARRAY(SELECT target_attribute.attname FROM unnest(constraint_record.confkey) WITH ORDINALITY AS key(attnum, ordinal) JOIN pg_attribute AS target_attribute ON target_attribute.attrelid = constraint_record.confrelid AND target_attribute.attnum = key.attnum ORDER BY key.ordinal) AS target_columns "
+                        "FROM pg_constraint AS constraint_record "
+                        "WHERE constraint_record.connamespace = 'spine'::regnamespace "
+                        "AND constraint_record.conname = ANY(:names)"
+                    ),
+                    {"names": sorted(expected)},
+                )
+                ).all()
+            )
+        }
+        policies = set(
+            (
+                await connection.execute(
+                    text(
+                        "SELECT policyname FROM pg_policies "
+                        "WHERE schemaname = 'spine' "
+                        "AND tablename = 'process_only_operation_lineages'"
+                    )
+                )
+            ).scalars()
+        )
+
+    assert set(constraints) == expected
+    assert constraints["fk_process_only_lineages_canonical_acceptance"][0] == (
+        "workspace_id", "environment_id", "source_object_id",
+        "canonical_acceptance_id", "source_revision_id",
+        "canonical_accepted_generation", "processing_admission_id",
+        "processing_policy_version_id",
+    )
+    assert constraints["fk_process_only_lineages_processing_admission"][0] == (
+        "workspace_id", "environment_id", "source_object_id", "source_revision_id",
+        "processing_admission_id", "receipt_association_id", "original_receipt_digest",
+        "verified_byte_length", "lifecycle_eligibility_reference",
+        "lifecycle_eligibility_generation", "retention_applicability_reference",
+        "retention_applicability_generation",
+    )
+    assert constraints["fk_process_only_lineages_receipt_association"][0] == (
+        "receipt_association_id", "workspace_id", "environment_id",
+        "source_object_id", "source_revision_id", "original_receipt_id",
+        "original_receipt_digest", "verified_byte_length",
+    )
+    assert constraints["fk_processing_receipts_process_only_lineage"][0] == (
+        "workspace_id", "environment_id", "process_only_operation_id",
+        "source_object_id", "source_revision_id", "ingestion_run_source_id",
+    )
+    assert "pol_process_only_operation_lineages_tenant_isolation" in policies
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -5560,13 +5653,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261225_93_crm_relationship_v2.py",
         "20261226_94_canonical_acceptance_selectors.py",
         "20261227_95_processing_admission_expand.py",
+        "20261228_96_governed_reprocessing.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261228_96_injected_failure.py").write_text(
+    (target / "versions" / "20261229_97_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261228_96'\n"
-        "down_revision = '20261227_95'\n"
+        "revision = '20261229_97'\n"
+        "down_revision = '20261228_96'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

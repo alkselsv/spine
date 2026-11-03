@@ -67,6 +67,7 @@ from spine.application.persistence.outbox import (
 from spine.application.processing_commands import (
     OrchestratedProcessingCommandService,
     ProcessingCommandResult,
+    ReprocessingAuthorityResolver,
     ReprocessProcessingCommand,
     RetryProcessingCommand,
 )
@@ -453,6 +454,7 @@ class _SharedIngestion:
     audit_events: AuditEventRegistry
     authority_alias_issuer: str
     authority_alias_subject: str
+    reprocessing_authority: ReprocessingAuthorityResolver | None = None
     fault_controller: IngestionFaultController | None = None
 
     def context_factory(
@@ -523,6 +525,7 @@ class _SharedIngestion:
                 context, purpose="document.processing.v1"
             ),
             outbox_events=self.outbox_events,
+            reprocessing_authority=self.reprocessing_authority,
         )
 
 
@@ -647,6 +650,7 @@ def build_production_ingestion(
     max_bytes: int,
     authority_alias_issuer: str,
     authority_alias_subject: str,
+    reprocessing_authority: ReprocessingAuthorityResolver | None = None,
     fault_controller: IngestionFaultController | None = None,
 ) -> ProductionIngestionComposition:
     grants = AuthorizedReadGrantRegistry()
@@ -696,6 +700,7 @@ def build_production_ingestion(
         audit_events=audit_events,
         authority_alias_issuer=authority_alias_issuer,
         authority_alias_subject=authority_alias_subject,
+        reprocessing_authority=reprocessing_authority,
         fault_controller=fault_controller,
     )
     return ProductionIngestionComposition(
