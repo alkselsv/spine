@@ -3,8 +3,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 import pytest
+from pydantic import ValidationError
 
 from spine.connectors.gmail_history import (
+    GmailHistoryChange,
+    GmailHistoryChangeKind,
     GmailHistoryPageRequest,
     GmailHistoryProviderError,
     GmailHistoryReader,
@@ -291,3 +294,12 @@ async def test_untyped_provider_error_does_not_disclose_exception_text() -> None
     assert result.error_code == "provider_error"
     assert "secret" not in repr(result)
     assert "private provider message" not in repr(result)
+
+
+def test_history_contracts_reject_invalid_provider_history_ids() -> None:
+    with pytest.raises(ValidationError):
+        GmailHistoryChange(
+            history_id="not-a-cursor",
+            kind=GmailHistoryChangeKind.MESSAGE_DELETED,
+            message_id="synthetic-message",
+        )
