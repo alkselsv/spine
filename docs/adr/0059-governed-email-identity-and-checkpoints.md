@@ -41,6 +41,17 @@ changed `UIDVALIDITY` invalidates the prior folder UID generation; reused UIDs
 must not overwrite or continue an earlier Source Object. Reconciliation establishes
 new qualified observations under the new generation.
 
+Before enumeration, the Yandex Mail adapter may retain a folder-generation
+observation from an exact, approved `EXAMINE` selection. The evidence is bound to
+the workspace, environment, connection and connection version, authorization,
+configuration and scope generations, mailbox binding and folder binding and
+records both `UIDVALIDITY` and `UIDNEXT`. This operation
+is read-only: it never enables `STORE` or `EXPUNGE`. Missing or invalid values,
+`UIDNOTSTICKY`, an inconsistent response, a changed generation or a mismatched
+binding yields a typed incomplete outcome. `UIDNEXT` is a synchronization hint,
+not a message identity or deletion proof; sequence numbers are never retained as
+identity or deletion evidence. Raw server diagnostics are not returned.
+
 RFC 5322 `Message-ID` is optional, externally supplied evidence. It is neither a
 canonical key nor a deduplication or merge instruction. Two provider messages
 with the same `Message-ID` remain distinct provider-identified sources; a missing

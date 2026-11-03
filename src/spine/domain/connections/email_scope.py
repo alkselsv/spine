@@ -19,6 +19,7 @@ class EmailProviderOperation(str, Enum):
     READ_RAW_MESSAGE = "read_raw_message"
     READ_ATTACHMENT = "read_attachment"
     SYNCHRONIZE = "synchronize"
+    OBSERVE_FOLDER_GENERATION = "observe_folder_generation"
 
 
 class EmailOperation(str, Enum):
@@ -29,6 +30,7 @@ class EmailOperation(str, Enum):
     READ_RAW_MESSAGE = "read_raw_message"
     READ_ATTACHMENT = "read_attachment"
     SYNCHRONIZE = "synchronize"
+    OBSERVE_FOLDER_GENERATION = "observe_folder_generation"
     PROCESS_CONTENT = "process_content"
     READ_CONTENT = "read_content"
 
