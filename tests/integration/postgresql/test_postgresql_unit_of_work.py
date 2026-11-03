@@ -971,6 +971,244 @@ async def test_postgresql_email_artifact_replay_is_tenant_scoped_and_outbox_atom
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_email_attachment_replay_is_tenant_scoped_and_immutable(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    from spine.application.email_attachments import EmailAttachmentPersistenceResult
+    from spine.application.persistence.context import EnvironmentScope, PersistenceOperation, PersistencePurpose
+    from spine.domain.artifacts.email_attachment import (
+        EmailAttachmentArtifact,
+        EmailAttachmentWriteReceipt,
+        email_attachment_artifact_digest,
+        email_attachment_id,
+    )
+    from spine.domain.sources.original_reference import ObjectReference
+    from spine.infrastructure.persistence.email_attachments import PostgreSQLEmailAttachmentRepository
+
+    raw = b"From: synthetic@example.test\r\nContent-Type: message/rfc822\r\n\r\nSynthetic"
+    case = await prepare_canonical_case(postgresql_adapter, 85500, original_content=raw)
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        acceptance = await uow.canonical.accept(case.command)
+        await uow.commit()
+    assert acceptance.acceptance is not None
+
+    runtime_engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    session_factory = async_sessionmaker(runtime_engine, expire_on_commit=False, autoflush=False)
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(85501), secret=b"issue-855-email-attachment-postgresql-context"
+    )
+
+    def context_factory(workspace_id: UUID, environment_id: UUID) -> TrustedPersistenceContext:
+        return boundary.worker(
+            scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id),
+            service_principal_id=synthetic_uuid(85502),
+            purpose=PersistencePurpose("email_attachment_test"),
+            operation=PersistenceOperation("email_attachment.persist"),
+            trace_id=synthetic_uuid(85503),
+        )
+
+    repository = PostgreSQLEmailAttachmentRepository(
+        session_factory, context_factory=context_factory, context_verifier=boundary
+    )
+    profile = "email-attachment-extractor:v1:" + "c" * 64
+    digest = hashlib.sha256(b"synthetic attachment").hexdigest()
+    reference = ObjectReference(
+        schema_version=1, object_id=synthetic_uuid(85504),
+        storage_generation=synthetic_uuid(85505), digest_algorithm="sha256",
+        digest_hex=digest, byte_length=len(b"synthetic attachment"),
+    )
+    receipt = EmailAttachmentWriteReceipt(
+        upload_id=synthetic_uuid(85506), object_reference=reference,
+        observed_sha256=digest, observed_byte_length=len(b"synthetic attachment"),
+        verification_status="verified", storage_status="finalized_verified",
+        finalized_at=datetime(2026, 10, 1, tzinfo=timezone.utc),
+    )
+    artifact_id = email_attachment_id(
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        source_revision_id=case.revision.revision_id,
+        mime_part_path="1.2", extraction_profile=profile,
+    )
+    provisional = EmailAttachmentArtifact.model_construct(
+        artifact_id=artifact_id,
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        source_object_id=case.source.source_object_id,
+        source_revision_id=case.revision.revision_id,
+        canonical_acceptance_id=acceptance.acceptance.canonical_acceptance_id,
+        source_revision_digest=case.revision.revision_digest,
+        mime_part_path="1.2", content_sha256=digest,
+        byte_length=len(b"synthetic attachment"), media_type="application/octet-stream",
+        extraction_profile=profile, disposition="attachment", filename="synthetic.bin",
+        content_id=None, write_receipt=receipt, artifact_sha256="0" * 64,
+    )
+    artifact = EmailAttachmentArtifact.model_validate(provisional.model_copy(update={
+        "artifact_sha256": email_attachment_artifact_digest(provisional)
+    }).model_dump())
+
+    try:
+        first = await repository.persist_many((artifact,))
+        replay = await repository.persist_many((artifact,))
+        assert first == (EmailAttachmentPersistenceResult(artifact, replay=False),)
+        assert replay == (EmailAttachmentPersistenceResult(artifact, replay=True),)
+        assert await repository.get(
+            workspace_id=case.source.workspace_id,
+            environment_id=case.source.environment_id,
+            artifact_id=artifact.artifact_id,
+        ) == artifact
+        assert await repository.get(
+            workspace_id=synthetic_uuid(85510),
+            environment_id=synthetic_uuid(85511),
+            artifact_id=artifact.artifact_id,
+        ) is None
+
+        migration_engine = create_async_engine(
+            postgresql_contract_database.migration_url.get_secret_value(),
+            hide_parameters=True,
+            connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+        )
+        try:
+            with pytest.raises(IntegrityError):
+                async with migration_engine.begin() as connection:
+                    await connection.execute(
+                        text("UPDATE spine.email_attachment_artifacts SET content_sha256 = :digest WHERE artifact_id = :id"),
+                        {"digest": "d" * 64, "id": artifact.artifact_id},
+                    )
+        finally:
+            await migration_engine.dispose()
+    finally:
+        await runtime_engine.dispose()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_email_attachment_replay_is_tenant_scoped_and_immutable(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    from spine.application.email_attachments import EmailAttachmentPersistenceResult
+    from spine.application.persistence.context import EnvironmentScope, PersistenceOperation, PersistencePurpose
+    from spine.domain.artifacts.email_attachment import (
+        EmailAttachmentArtifact,
+        EmailAttachmentWriteReceipt,
+        email_attachment_artifact_digest,
+        email_attachment_id,
+    )
+    from spine.infrastructure.persistence.email_attachments import PostgreSQLEmailAttachmentRepository
+
+    original = b"From: synthetic@example.test\r\nContent-Type: message/rfc822\r\n\r\nSynthetic"
+    case = await prepare_canonical_case(postgresql_adapter, 85500, original_content=original)
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        acceptance = await uow.canonical.accept(case.command)
+        await uow.commit()
+    assert acceptance.acceptance is not None
+
+    runtime_engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    session_factory = async_sessionmaker(runtime_engine, expire_on_commit=False, autoflush=False)
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(85501), secret=b"issue-855-email-attachment-postgresql-context"
+    )
+
+    def context_factory(workspace_id: UUID, environment_id: UUID) -> TrustedPersistenceContext:
+        return boundary.worker(
+            scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id),
+            service_principal_id=synthetic_uuid(85502),
+            purpose=PersistencePurpose("email_attachment_test"),
+            operation=PersistenceOperation("email_attachment.persist"),
+            trace_id=synthetic_uuid(85503),
+        )
+
+    repository = PostgreSQLEmailAttachmentRepository(
+        session_factory, context_factory=context_factory, context_verifier=boundary
+    )
+    profile = "email-attachment-extractor:v1:" + "c" * 64
+    content = b"synthetic attachment"
+    digest = hashlib.sha256(content).hexdigest()
+    reference = ObjectReference(
+        schema_version=1, object_id=synthetic_uuid(85504),
+        storage_generation=synthetic_uuid(85505), digest_algorithm="sha256",
+        digest_hex=digest, byte_length=len(content),
+    )
+    receipt = EmailAttachmentWriteReceipt(
+        upload_id=synthetic_uuid(85506), object_reference=reference,
+        observed_sha256=digest, observed_byte_length=len(content),
+        verification_status="verified", storage_status="finalized_verified",
+        finalized_at=datetime(2026, 10, 1, tzinfo=timezone.utc),
+    )
+    artifact_id = email_attachment_id(
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        source_revision_id=case.revision.revision_id,
+        mime_part_path="1.2", extraction_profile=profile,
+    )
+    provisional = EmailAttachmentArtifact.model_construct(
+        artifact_id=artifact_id,
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        source_object_id=case.source.source_object_id,
+        source_revision_id=case.revision.revision_id,
+        canonical_acceptance_id=acceptance.acceptance.canonical_acceptance_id,
+        source_revision_digest=case.revision.revision_digest,
+        mime_part_path="1.2", content_sha256=digest, byte_length=len(content),
+        media_type="application/octet-stream", extraction_profile=profile,
+        disposition="attachment", filename="synthetic.bin", content_id=None,
+        write_receipt=receipt, artifact_sha256="0" * 64,
+    )
+    artifact = EmailAttachmentArtifact.model_validate(provisional.model_copy(update={
+        "artifact_sha256": email_attachment_artifact_digest(provisional)
+    }).model_dump())
+
+    try:
+        first = await repository.persist_many((artifact,))
+        replay = await repository.persist_many((artifact,))
+        assert first == (EmailAttachmentPersistenceResult(artifact, replay=False),)
+        assert replay == (EmailAttachmentPersistenceResult(artifact, replay=True),)
+        assert await repository.get(
+            workspace_id=case.source.workspace_id,
+            environment_id=case.source.environment_id,
+            artifact_id=artifact.artifact_id,
+        ) == artifact
+        assert await repository.get(
+            workspace_id=synthetic_uuid(85510), environment_id=synthetic_uuid(85511),
+            artifact_id=artifact.artifact_id,
+        ) is None
+        assert len(await repository.list_for_revision(
+            workspace_id=case.source.workspace_id,
+            environment_id=case.source.environment_id,
+            source_revision_id=case.revision.revision_id,
+        )) == 1
+
+        migration_engine = create_async_engine(
+            postgresql_contract_database.migration_url.get_secret_value(),
+            hide_parameters=True,
+            connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+        )
+        try:
+            with pytest.raises(IntegrityError):
+                async with migration_engine.begin() as connection:
+                    await connection.execute(
+                        text("UPDATE spine.email_attachment_artifacts SET content_sha256 = :digest WHERE artifact_id = :id"),
+                        {"digest": "d" * 64, "id": artifact.artifact_id},
+                    )
+        finally:
+            await migration_engine.dispose()
+    finally:
+        await runtime_engine.dispose()
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_qa_run_collection_returns_empty_page_from_postgresql(
     postgresql_contract_database: PostgreSQLContractDatabase,
 ) -> None:

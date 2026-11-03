@@ -414,6 +414,7 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "email_sync_pages": ExpectedTablePrivileges(True, True, True, True, False),
         "email_sync_effect_receipts": ExpectedTablePrivileges(True, True, True, True, False),
         "email_message_artifacts": ExpectedTablePrivileges(True, True, True, False, False),
+        "email_attachment_artifacts": ExpectedTablePrivileges(True, True, True, False, False),
         "drive_lifecycle_decisions": ExpectedTablePrivileges(True, True, True, True, False),
         "lifecycle_observations": ExpectedTablePrivileges(True, True, True, False, False),
         "lifecycle_decisions": ExpectedTablePrivileges(True, True, True, False, False),

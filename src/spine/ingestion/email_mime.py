@@ -27,6 +27,25 @@ from spine.domain.artifacts.email_mime import (
 _POLL_BYTES = 4_096
 
 
+@dataclass(frozen=True, slots=True)
+class MimeAttachmentContent:
+    """Decoded bytes for one attachment or inline MIME part, kept out of artifacts."""
+
+    part_path: str
+    media_type: str
+    disposition: str
+    filename: str | None
+    content_id: str | None
+    content: bytes
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class MimeParseResult:
+    artifact: MimeArtifact
+    attachments: tuple[MimeAttachmentContent, ...]
+
+
 class MimeParserProfile(DefinitionModel):
     """Caller-supplied operating limits; no production values are implied."""
 
@@ -59,8 +78,13 @@ class MimeParser:
     clock: Callable[[], float] = field(default=monotonic, compare=False, repr=False)
 
     def parse(self, raw: bytes) -> MimeArtifact:
+        return self.parse_with_attachments(raw).artifact
+
+    def parse_with_attachments(self, raw: bytes) -> MimeParseResult:
         if len(raw) > self.profile.max_total_bytes:
-            return self._limit_result(raw, "total_bytes_exceeded")
+            return MimeParseResult(
+                self._limit_result(raw, "total_bytes_exceeded"), ()
+            )
         started_at = self.clock()
         budget = _ParseBudget(
             profile=self.profile,
@@ -78,16 +102,27 @@ class MimeParser:
             message = parser.close()
             budget.check_time("1")
         except _LimitExceeded as exc:
-            return self._limit_result(raw, exc.code, part_path=exc.part_path)
+            return MimeParseResult(
+                self._limit_result(raw, exc.code, part_path=exc.part_path), ()
+            )
         except RecursionError:
-            return self._limit_result(raw, "depth_exceeded")
+            return MimeParseResult(self._limit_result(raw, "depth_exceeded"), ())
         defects: list[MimeDefect] = []
+        attachments: list[MimeAttachmentContent] = []
         try:
-            root = _part(message, "1", budget=budget, defects=defects)
+            root = _part(
+                message,
+                "1",
+                budget=budget,
+                defects=defects,
+                attachments=attachments,
+            )
         except _LimitExceeded as exc:
-            return self._limit_result(raw, exc.code, part_path=exc.part_path)
+            return MimeParseResult(
+                self._limit_result(raw, exc.code, part_path=exc.part_path), ()
+            )
         headers = _headers(message, "1", defects)
-        return MimeArtifact(
+        artifact = MimeArtifact(
             parser_profile=self.profile.reference,
             raw_sha256=hashlib.sha256(raw).hexdigest(),
             raw_byte_length=len(raw),
@@ -99,6 +134,10 @@ class MimeParser:
             headers=headers,
             root=root,
             defects=tuple(defects),
+        )
+        return MimeParseResult(
+            artifact,
+            tuple(attachments) if artifact.disposition is MimeParseDisposition.COMPLETE else (),
         )
 
     def _limit_result(
@@ -207,6 +246,7 @@ def _part(
     *,
     budget: _ParseBudget,
     defects: list[MimeDefect],
+    attachments: list[MimeAttachmentContent],
 ) -> MimePart:
     budget.check_time(path)
     _record_message_defects(message, path, defects)
@@ -217,6 +257,7 @@ def _part(
                 f"{path}.{index}",
                 budget=budget,
                 defects=defects,
+                attachments=attachments,
             )
             for index, child in enumerate(message.iter_parts(), start=1)
         )
@@ -255,6 +296,27 @@ def _part(
         except (LookupError, UnicodeDecodeError):
             _append_defect(defects, path, "invalid_charset")
     disposition = message.get_content_disposition()
+    filename = message.get_filename()
+    content_id = message.get("Content-ID")
+    if (
+        not children
+        and payload is not None
+        and (
+            disposition in {"inline", "attachment"}
+            or filename is not None
+            or content_id is not None
+            or message.get_content_maintype() not in {"text", "multipart"}
+        )
+    ):
+        attachments.append(MimeAttachmentContent(
+            part_path=path,
+            media_type=message.get_content_type().lower(),
+            disposition=disposition or "attachment",
+            filename=filename,
+            content_id=str(content_id) if content_id is not None else None,
+            content=payload_bytes,
+            sha256=hashlib.sha256(payload_bytes).hexdigest(),
+        ))
     return MimePart(
         part_path=path,
         media_type=message.get_content_type().lower(),

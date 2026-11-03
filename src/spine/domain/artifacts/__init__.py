@@ -30,6 +30,12 @@ from .email_mime import (
     MimePart,
 )
 from .email_message import EmailMessageArtifact, email_message_artifact_digest
+from .email_attachment import (
+    EmailAttachmentArtifact,
+    EmailAttachmentWriteReceipt,
+    email_attachment_artifact_digest,
+    email_attachment_id,
+)
 from .email_html import (
     EmailHtmlDisposition,
     EmailHtmlSanitizerProfile,
@@ -98,6 +104,10 @@ __all__ = [
     "MimePart",
     "EmailMessageArtifact",
     "email_message_artifact_digest",
+    "EmailAttachmentArtifact",
+    "EmailAttachmentWriteReceipt",
+    "email_attachment_artifact_digest",
+    "email_attachment_id",
     "EmailHtmlDisposition",
     "EmailHtmlSanitizerProfile",
     "SanitizedEmailHtml",
