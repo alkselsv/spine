@@ -46,6 +46,11 @@ class RetentionArtifactClass(str, Enum):
     PRIVATE_ASR_DETAILED_REPORT = "private_asr_detailed_report"
     PRIVATE_ASR_SANITIZED_AGGREGATE = "private_asr_sanitized_aggregate"
     PRIVATE_ASR_AUDIT_EVIDENCE = "private_asr_audit_evidence"
+    EMAIL_RAW_MIME = "email_raw_mime"
+    EMAIL_PARSED_BODY = "email_parsed_body"
+    EMAIL_ATTACHMENT_ORIGINAL = "email_attachment_original"
+    EMAIL_ATTACHMENT_ARTIFACT = "email_attachment_artifact"
+    EMAIL_PROJECTION = "email_projection"
 
 
 class RetentionAuthorityKind(str, Enum):

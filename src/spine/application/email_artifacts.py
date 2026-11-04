@@ -10,6 +10,7 @@ from uuid import UUID, uuid5, NAMESPACE_URL
 from pydantic import ConfigDict, Field, ValidationError
 
 from spine.application.processing_disposition import CurrentProcessingDispositionAuthority
+from spine.application.email_governance import EmailDerivativeProcessingAuthority
 from spine.application.persistence.outbox import (
     OutboxEventRegistry,
     OutboxIntent,
@@ -18,6 +19,11 @@ from spine.application.persistence.outbox import (
 from spine.domain.common import DefinitionModel
 from spine.application.storage.authorized_read import AuthorizedOriginalReadGateway
 from spine.domain.artifacts.email_message import EmailMessageArtifact, email_message_artifact_digest
+from spine.domain.artifacts.email_governance import (
+    EmailDerivativeProcessingPlan,
+    EmailGovernedArtifact,
+)
+from spine.domain.sources.retention import RetentionArtifactClass
 from spine.domain.artifacts.email_mime import MimeParseDisposition
 from spine.domain.artifacts.email_html import EmailHtmlDisposition
 from spine.domain.artifacts.email_html import SanitizedEmailHtml
@@ -139,6 +145,7 @@ class EmailArtifactProcessor:
         parser: MimeParser,
         sanitizer: EmailHtmlSanitizer,
         outbox_events: OutboxEventRegistry,
+        governance: EmailDerivativeProcessingAuthority,
     ) -> None:
         self._gateway = gateway
         self._eligibility = eligibility
@@ -147,6 +154,7 @@ class EmailArtifactProcessor:
         self._parser = parser
         self._sanitizer = sanitizer
         self._outbox_events = outbox_events
+        self._governance = governance
         self._outbox_events.register(
             event_type=EMAIL_ARTIFACT_PROJECTION_REQUESTED,
             schema_version=1,
@@ -194,6 +202,29 @@ class EmailArtifactProcessor:
         ):
             raise EmailArtifactUnavailable()
         try:
+            await self._governance.authorize_plan(
+                EmailDerivativeProcessingPlan(
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                    source_object_id=source_object_id,
+                    source_revision_id=source_revision_id,
+                    artifact_classes=(
+                        RetentionArtifactClass.EMAIL_RAW_MIME,
+                        RetentionArtifactClass.EMAIL_PARSED_BODY,
+                        RetentionArtifactClass.EMAIL_PROJECTION,
+                    ),
+                )
+            )
+            await self._governance.authorize_processing(
+                EmailGovernedArtifact(
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                    artifact_class=RetentionArtifactClass.EMAIL_RAW_MIME,
+                    artifact_id=source_revision_id,
+                    artifact_version=1,
+                    artifact_digest=parent.original_sha256,
+                )
+            )
             raw = b"".join([
                 chunk async for chunk in self._gateway.read_original(
                     workspace_id=workspace_id,
@@ -295,6 +326,26 @@ class EmailArtifactProcessor:
             causation_id=eligibility.canonical_acceptance_id,
         )
         try:
+            await self._governance.authorize_processing(
+                EmailGovernedArtifact(
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                    artifact_class=RetentionArtifactClass.EMAIL_PARSED_BODY,
+                    artifact_id=artifact.artifact_id,
+                    artifact_version=1,
+                    artifact_digest=artifact.artifact_sha256,
+                )
+            )
+            await self._governance.authorize_processing(
+                EmailGovernedArtifact(
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                    artifact_class=RetentionArtifactClass.EMAIL_PROJECTION,
+                    artifact_id=intent_id,
+                    artifact_version=1,
+                    artifact_digest=artifact.artifact_sha256,
+                )
+            )
             return await self._repository.persist(
                 EmailArtifactCommand(
                     artifact, command_identity, command_digest, projection_intent

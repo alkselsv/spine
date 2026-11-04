@@ -11,6 +11,7 @@ from uuid import UUID
 from pydantic import ConfigDict, Field, StrictInt
 
 from spine.application.processing_disposition import CurrentProcessingDispositionAuthority
+from spine.application.email_governance import EmailDerivativeProcessingAuthority
 from spine.application.storage.authorized_read import AuthorizedOriginalReadGateway
 from spine.domain.common import DefinitionModel
 from spine.domain.artifacts.email_attachment import (
@@ -19,6 +20,11 @@ from spine.domain.artifacts.email_attachment import (
     email_attachment_artifact_digest,
     email_attachment_id,
 )
+from spine.domain.artifacts.email_governance import (
+    EmailDerivativeProcessingPlan,
+    EmailGovernedArtifact,
+)
+from spine.domain.sources.retention import RetentionArtifactClass
 from spine.domain.artifacts.email_mime import MimeParseDisposition, MimePart
 from spine.ingestion.email_mime import MimeAttachmentContent, MimeParser
 
@@ -106,6 +112,7 @@ class EmailAttachmentProcessor:
         parents: AcceptedEmailAttachmentParentReader, repository: EmailAttachmentRepository,
         parser: MimeParser, profile: EmailAttachmentExtractionProfile,
         originals: EmailAttachmentOriginalWriter,
+        governance: EmailDerivativeProcessingAuthority,
     ) -> None:
         self._gateway = gateway
         self._eligibility = eligibility
@@ -114,6 +121,7 @@ class EmailAttachmentProcessor:
         self._parser = parser
         self._profile = profile
         self._originals = originals
+        self._governance = governance
 
     async def process(
         self, *, workspace_id: UUID, environment_id: UUID, source_object_id: UUID,
@@ -139,6 +147,29 @@ class EmailAttachmentProcessor:
         ):
             raise EmailAttachmentUnavailable()
         try:
+            await self._governance.authorize_plan(
+                EmailDerivativeProcessingPlan(
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                    source_object_id=source_object_id,
+                    source_revision_id=source_revision_id,
+                    artifact_classes=(
+                        RetentionArtifactClass.EMAIL_RAW_MIME,
+                        RetentionArtifactClass.EMAIL_ATTACHMENT_ORIGINAL,
+                        RetentionArtifactClass.EMAIL_ATTACHMENT_ARTIFACT,
+                    ),
+                )
+            )
+            await self._governance.authorize_processing(
+                EmailGovernedArtifact(
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                    artifact_class=RetentionArtifactClass.EMAIL_RAW_MIME,
+                    artifact_id=source_revision_id,
+                    artifact_version=1,
+                    artifact_digest=parent.original_sha256,
+                )
+            )
             raw = b"".join([
                 chunk async for chunk in self._gateway.read_original(
                     workspace_id=workspace_id, environment_id=environment_id,
@@ -163,6 +194,9 @@ class EmailAttachmentProcessor:
         if current != eligibility:
             raise EmailAttachmentUnavailable()
 
+        # The class-level plan above admits bounded, in-memory child discovery.
+        # No attachment bytes are persisted, disclosed, or passed to a format
+        # processor until the exact part identity is authorized below.
         parsed = self._parser.parse_with_attachments(raw)
         if parsed.artifact.disposition is not MimeParseDisposition.COMPLETE:
             raise EmailAttachmentUnavailable()
@@ -203,6 +237,25 @@ class EmailAttachmentProcessor:
         artifacts: list[EmailAttachmentArtifact] = []
         for part in verified_parts:
             try:
+                identifier = email_attachment_id(
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                    source_revision_id=source_revision_id,
+                    mime_part_path=part.part_path,
+                    extraction_profile=self._profile.reference,
+                )
+                await self._governance.authorize_processing(
+                    EmailGovernedArtifact(
+                        workspace_id=workspace_id,
+                        environment_id=environment_id,
+                        artifact_class=(
+                            RetentionArtifactClass.EMAIL_ATTACHMENT_ORIGINAL
+                        ),
+                        artifact_id=identifier,
+                        artifact_version=1,
+                        artifact_digest=part.sha256,
+                    )
+                )
                 receipt = await self._originals.store(
                     workspace_id=workspace_id, environment_id=environment_id,
                     source_revision_id=source_revision_id, part_path=part.part_path,
@@ -215,6 +268,18 @@ class EmailAttachmentProcessor:
                     canonical_acceptance_id=eligibility.canonical_acceptance_id,
                     source_revision_digest=parent.source_revision_digest, part=part,
                     extraction_profile=self._profile.reference, receipt=receipt,
+                )
+                await self._governance.authorize_processing(
+                    EmailGovernedArtifact(
+                        workspace_id=workspace_id,
+                        environment_id=environment_id,
+                        artifact_class=(
+                            RetentionArtifactClass.EMAIL_ATTACHMENT_ARTIFACT
+                        ),
+                        artifact_id=artifact.artifact_id,
+                        artifact_version=1,
+                        artifact_digest=artifact.artifact_sha256,
+                    )
                 )
                 artifacts.append(artifact)
             except EmailAttachmentConflict:
