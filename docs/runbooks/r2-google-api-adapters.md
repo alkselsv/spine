@@ -136,6 +136,18 @@ reference-bound OAuth values after admission. Missing, stale, revoked or
 mismatched current authority refuses before OAuth or provider transport. It does
 not write a report or invoke OAuth/Drive/Sheets endpoints.
 
+`GOOGLE_NUMERIC_SHEET_TITLES_JSON` is an ordered JSON array whose entries bind
+one-to-one to `GOOGLE_NUMERIC_SHEET_IDS`. Titles are part of the approved
+manifest and effective fingerprint. The runtime always A1-quotes each title
+(including doubled apostrophes) and composes only bounded `A2:E5000` ranges;
+missing, duplicate or count-mismatched titles fail closed before provider
+transport. During an authorized live run, the Sheets adapter first performs a
+metadata-only `spreadsheets.get` restricted to `spreadsheetId` and
+`sheets.properties(sheetId,title)` for the approved range. The returned title
+and numeric sheet ID must match the approved pair before any Drive-version or
+grid-data request; stale or swapped titles therefore stop with no sheet page
+completed and no provider identity in the report.
+
 Phase 1 requests only `drive.readonly` and `spreadsheets.readonly`. The consent
 command reads the exact mode-0600 Web client JSON named by
 `GOOGLE_OAUTH_CLIENT_FILE`; the JSON must contain the configured client ID and

@@ -961,6 +961,13 @@ class GoogleApiService:
             page_size=self._policy.sheets_page_size,
         )
         _require_profile_columns_in_range(profile, provider_range)
+        await self._validate_sheet_identity(
+            connection,
+            resource_scope_reference,
+            spreadsheet_id,
+            sheet_id,
+            provider_range,
+        )
         version_before = await self.get_provider_version(
             connection, resource_scope_reference, spreadsheet_id
         )
@@ -1000,6 +1007,53 @@ class GoogleApiService:
             provider_version_after=version_after,
             snapshot=snapshot,
         )
+
+    async def _validate_sheet_identity(
+        self,
+        connection: GoogleConnection,
+        resource_scope_reference: OpaqueGoogleReference,
+        spreadsheet_id: str,
+        sheet_id: int,
+        provider_range: str,
+    ) -> None:
+        scope = self._scope(connection, resource_scope_reference)
+        self._require_spreadsheet(scope, spreadsheet_id)
+        expected_title = _sheet_title_from_a1_range(provider_range)
+        payload = self._json_success(
+            await self._authorized_request(
+                connection,
+                provider_api="sheets",
+                method="GET",
+                url=(
+                    f"{self._endpoints.sheets_base_url.rstrip('/')}/spreadsheets/"
+                    f"{quote(spreadsheet_id, safe='')}"
+                ),
+                query={
+                    "includeGridData": "false",
+                    "ranges": provider_range,
+                    "fields": "spreadsheetId,sheets(properties(sheetId,title))",
+                },
+            )
+        )
+        sheets = payload.get("sheets")
+        if payload.get("spreadsheetId") != spreadsheet_id or not isinstance(
+            sheets, list
+        ):
+            raise GoogleSheetsConfiguredScopeError(
+                "Sheets identity response is outside the configured spreadsheet."
+            )
+        matches = [
+            item
+            for item in sheets
+            if isinstance(item, Mapping)
+            and isinstance(item.get("properties"), Mapping)
+            and item["properties"].get("sheetId") == sheet_id
+            and item["properties"].get("title") == expected_title
+        ]
+        if len(matches) != 1 or len(sheets) != 1:
+            raise GoogleSheetsConfiguredScopeError(
+                "Sheets identity response does not match the configured numeric sheet."
+            )
 
     def _scope(
         self,
@@ -1857,52 +1911,84 @@ def _developer_metadata_by_row(
     return result
 
 
+_BOUNDED_SHEET_A1_RANGE = re.compile(
+    r"(?P<title>'(?:''|[^'])+'|[^!]+)!(?P<start>[A-Z]+)(?P<first>[1-9][0-9]*):"
+    r"(?P<end>[A-Z]+)(?P<last>[1-9][0-9]*)"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _ParsedSheetA1Range:
+    title_token: str
+    title: str
+    start_column: str
+    first_row: int
+    end_column: str
+    last_row: int
+
+
+def _parse_bounded_sheet_a1_range(value: str) -> _ParsedSheetA1Range:
+    match = _BOUNDED_SHEET_A1_RANGE.fullmatch(value)
+    if match is None:
+        raise GoogleSheetsConfiguredScopeError("Sheets A1 page range is invalid.")
+    title_token = match.group("title")
+    title = (
+        title_token[1:-1].replace("''", "'")
+        if title_token.startswith("'")
+        else title_token
+    )
+    return _ParsedSheetA1Range(
+        title_token=title_token,
+        title=title,
+        start_column=match.group("start"),
+        first_row=int(match.group("first")),
+        end_column=match.group("end"),
+        last_row=int(match.group("last")),
+    )
+
+
 def _paged_a1_range(
     value: str, page_token: str | None, *, page_size: int
 ) -> tuple[str, str | None, bool]:
-    match = re.fullmatch(
-        r"(?P<title>'(?:''|[^'])+'|[^!]+)!(?P<start>[A-Z]+)(?P<first>[1-9][0-9]*):"
-        r"(?P<end>[A-Z]+)(?P<last>[1-9][0-9]*)",
-        value,
-    )
-    if match is None:
+    try:
+        parsed = _parse_bounded_sheet_a1_range(value)
+    except GoogleSheetsConfiguredScopeError:
         raise GoogleSheetsConfiguredScopeError(
             "Sheets pagination requires a bounded sheet-qualified A1 range."
-        )
-    first = int(match.group("first"))
-    last = int(match.group("last"))
-    if last < first:
+        ) from None
+    if parsed.last_row < parsed.first_row:
         raise GoogleSheetsConfiguredScopeError("Sheets A1 range is reversed.")
     if page_token is None:
-        page_first = first
-    elif page_token.isdigit() and first <= int(page_token) <= last:
+        page_first = parsed.first_row
+    elif (
+        page_token.isdigit()
+        and parsed.first_row <= int(page_token) <= parsed.last_row
+    ):
         page_first = int(page_token)
     else:
         raise GoogleSheetsConfiguredScopeError("Sheets page token is invalid.")
-    page_last = min(last, page_first + page_size - 1)
-    complete = page_last == last
+    page_last = min(parsed.last_row, page_first + page_size - 1)
+    complete = page_last == parsed.last_row
     next_token = None if complete else str(page_last + 1)
     provider_range = (
-        f"{match.group('title')}!{match.group('start')}{page_first}:"
-        f"{match.group('end')}{page_last}"
+        f"{parsed.title_token}!{parsed.start_column}{page_first}:"
+        f"{parsed.end_column}{page_last}"
     )
     return provider_range, next_token, complete
 
 
 def _a1_bounds(value: str) -> tuple[int, int, int, int]:
-    match = re.fullmatch(
-        r"(?:'(?:''|[^'])+'|[^!]+)!(?P<start>[A-Z]+)(?P<first>[1-9][0-9]*):"
-        r"(?P<end>[A-Z]+)(?P<last>[1-9][0-9]*)",
-        value,
-    )
-    if match is None:
-        raise GoogleSheetsConfiguredScopeError("Sheets A1 page range is invalid.")
+    parsed = _parse_bounded_sheet_a1_range(value)
     return (
-        int(match.group("first")),
-        int(match.group("last")),
-        _column_index(match.group("start")) - 1,
-        _column_index(match.group("end")) - 1,
+        parsed.first_row,
+        parsed.last_row,
+        _column_index(parsed.start_column) - 1,
+        _column_index(parsed.end_column) - 1,
     )
+
+
+def _sheet_title_from_a1_range(value: str) -> str:
+    return _parse_bounded_sheet_a1_range(value).title
 
 
 def _require_profile_columns_in_range(

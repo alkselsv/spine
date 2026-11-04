@@ -530,6 +530,60 @@ def _sheet_target(
     )
 
 
+def _sheet_identity_response(
+    spreadsheet_id: str, sheet_id: int, title: str
+) -> GoogleApiResponse:
+    return GoogleApiResponse(
+        status_code=200,
+        json_body={
+            "spreadsheetId": spreadsheet_id,
+            "sheets": [
+                {"properties": {"sheetId": sheet_id, "title": title}},
+            ],
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_offline_composition_rejects_stale_sheet_title_before_grid_read() -> None:
+    config = _config(opt_in=True)
+    config = config.model_copy(
+        update={
+            "resource_scope": config.resource_scope.model_copy(
+                update={
+                    "allowed_file_ids": (),
+                    "allowed_spreadsheet_ids": ("synthetic-sheet",),
+                }
+            ),
+            "file_targets": (),
+            "sheet_targets": (
+                _sheet_target("synthetic-sheet", 1, ("'Synthetic'!A1:A2",)),
+            ),
+        }
+    )
+    responses = [
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"access_token": "synthetic-token", "expires_in": 3600},
+        ),
+        _sheet_identity_response("synthetic-sheet", 2, "Synthetic"),
+    ]
+
+    report = await _composed_runner(
+        config, QueuedResponseTransport(responses)
+    ).run(environment_opt_in=True)
+
+    assert report.status == "failed"
+    assert report.failure_code == "provider_contract_rejected"
+    assert report.failure_stage == "sheets"
+    assert report.sheets_request_attempts == 1
+    assert report.drive_request_attempts == 0
+    assert report.sheet_pages == 0
+    assert "synthetic-sheet" not in report.model_dump_json()
+    assert "Synthetic" not in report.model_dump_json()
+    assert responses == []
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "resource_kind", ("files", "exports", "spreadsheets", "numeric_sheets", "ranges")
@@ -1547,6 +1601,7 @@ async def test_offline_composition_reports_remaining_closed_failure_classes(
         )
         responses.extend(
             (
+                _sheet_identity_response("synthetic-sheet", 1, "Synthetic"),
                 GoogleApiResponse(
                     status_code=200,
                     json_body={"id": "synthetic-sheet", "version": "1"},
@@ -1644,6 +1699,7 @@ async def test_offline_composition_records_every_bounded_sheets_attempt() -> Non
             status_code=200,
             json_body={"access_token": "synthetic-token", "expires_in": 3600},
         ),
+        _sheet_identity_response("synthetic-sheet", 1, "Synthetic"),
         GoogleApiResponse(
             status_code=200,
             json_body={"id": "synthetic-sheet", "version": "1"},
@@ -1664,7 +1720,7 @@ async def test_offline_composition_records_every_bounded_sheets_attempt() -> Non
     assert report.configured_max_attempts == 2
     assert report.oauth_request_attempts == 1
     assert report.drive_request_attempts == 1
-    assert report.sheets_request_attempts == 2
+    assert report.sheets_request_attempts == 3
     assert report.sheet_pages == 0
     assert responses == []
 

@@ -29,7 +29,11 @@ from spine.application.connections.google import (
 )
 from spine.connectors.google_api import GoogleResourceScopeError
 from spine.connectors.google_drive import GoogleDriveAccessOutcomeError
-from spine.connectors.google_sheets import GoogleSheetsColumn, GoogleSheetsReadProfile
+from spine.connectors.google_sheets import (
+    GoogleSheetsColumn,
+    GoogleSheetsConfiguredScopeError,
+    GoogleSheetsReadProfile,
+)
 from spine.domain.connections.google import (
     GoogleConnection,
     GoogleConnectionStatus,
@@ -1490,6 +1494,80 @@ def _spreadsheet_payload(*, spreadsheet_id: str = "sheet-1") -> dict:
     }
 
 
+def _sheet_identity_payload() -> dict:
+    return {
+        "spreadsheetId": "sheet-1",
+        "sheets": [
+            {
+                "properties": {
+                    "sheetId": 123,
+                    "title": "Estimate Register",
+                }
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("returned_sheet_id", "returned_title"),
+    ((999, "Estimate Register"), (123, "Renamed Register")),
+)
+async def test_sheets_range_page_rejects_mismatched_identity_before_grid_transport(
+    returned_sheet_id: int,
+    returned_title: str,
+) -> None:
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={
+                    "spreadsheetId": "sheet-1",
+                    "sheets": [
+                        {
+                            "properties": {
+                                "sheetId": returned_sheet_id,
+                                "title": returned_title,
+                            }
+                        }
+                    ],
+                },
+            ),
+        ]
+    )
+
+    with pytest.raises(
+        GoogleSheetsConfiguredScopeError,
+        match="configured numeric sheet",
+    ):
+        await _service(
+            RecordingCredentialResolver(),
+            transport,
+            sheet_profiles=(_sheet_profile(),),
+            sheets_page_size=2,
+        ).get_spreadsheet_range_page(
+            _connection(),
+            RESOURCE_SCOPE,
+            "sheet-1",
+            123,
+            "'Estimate Register'!A2:D5",
+            None,
+        )
+
+    assert len(transport.requests) == 2
+    identity_request = transport.requests[1]
+    assert identity_request.url.endswith("/spreadsheets/sheet-1")
+    assert identity_request.query == {
+        "includeGridData": "false",
+        "ranges": "'Estimate Register'!A2:D3",
+        "fields": "spreadsheetId,sheets(properties(sheetId,title))",
+    }
+
+
 @pytest.mark.asyncio
 async def test_sheets_range_page_preserves_representations_metadata_and_pagination() -> (
     None
@@ -1501,6 +1579,7 @@ async def test_sheets_range_page_preserves_representations_metadata_and_paginati
                 status_code=200,
                 json_body={"access_token": "token", "expires_in": 3600},
             ),
+            GoogleApiResponse(status_code=200, json_body=_sheet_identity_payload()),
             GoogleApiResponse(
                 status_code=200, json_body={"id": "sheet-1", "version": "77"}
             ),
@@ -1539,7 +1618,7 @@ async def test_sheets_range_page_preserves_representations_metadata_and_paginati
     assert first.cells[2].effective.value == "2501"
     assert first.cells[3].entered.kind == "blank"
     assert result.snapshot.rows[1].cells[2].effective.kind == "error"
-    assert transport.requests[2].query["ranges"] == "'Estimate Register'!A2:D3"
+    assert transport.requests[3].query["ranges"] == "'Estimate Register'!A2:D3"
 
 
 @pytest.mark.asyncio
@@ -1552,6 +1631,7 @@ async def test_sparse_sheets_page_uses_configured_range_for_continuation() -> No
                 status_code=200,
                 json_body={"access_token": "token", "expires_in": 3600},
             ),
+            GoogleApiResponse(status_code=200, json_body=_sheet_identity_payload()),
             GoogleApiResponse(
                 status_code=200, json_body={"id": "sheet-1", "version": "77"}
             ),
@@ -1586,6 +1666,7 @@ async def test_sheets_grid_start_outside_requested_page_fails_closed() -> None:
                 status_code=200,
                 json_body={"access_token": "token", "expires_in": 3600},
             ),
+            GoogleApiResponse(status_code=200, json_body=_sheet_identity_payload()),
             GoogleApiResponse(
                 status_code=200, json_body={"id": "sheet-1", "version": "77"}
             ),
