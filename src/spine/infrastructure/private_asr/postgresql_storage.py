@@ -157,6 +157,29 @@ def _admitted_from_jsonb(value: object) -> AdmittedSourceRevision:
         raise PrivateASRStorageDenied("Private ASR storage metadata is invalid.") from None
 
 
+def _report_retention_evidence(
+    admitted: AdmittedSourceRevision,
+    disposition: Any,
+    *,
+    version: int,
+) -> dict[str, object]:
+    """Serialize report retention evidence without positional lineage matching."""
+    revision = admitted.source_revision
+    evidence: dict[str, object] = {
+        "source_revision_id": str(revision.revision_id),
+        "disposition": disposition.model_dump(mode="json"),
+    }
+    if version == 2:
+        evidence.update({
+            "schema_version": "private-asr-report-retention-binding:v2",
+            "workspace_id": str(admitted.workspace_id),
+            "environment_id": str(admitted.environment_id),
+            "source_object_id": str(admitted.source_object.source_object_id),
+            "source_revision_digest": revision.revision_digest,
+        })
+    return evidence
+
+
 class PostgreSQLPrivateASRStorage:
     """Scoped #771/#772 adapter backed by one PostgreSQL database.
 
@@ -754,13 +777,15 @@ class PostgreSQLPrivateASRStorage:
                     private_asr_artifacts.c.tombstoned_at.is_(None),
                     private_asr_artifacts.c.expires_at > now,
                 ))).mappings().first()
-                if original is None or original["retention_profile_ref"] != retention_profile_ref.reference_id:
+                if original is None:
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 admitted = _admitted_from_jsonb(original["admitted_record"])
                 if (
                     admitted.source_object.workspace_id != workspace_id
                     or admitted.source_object.environment_id != environment_id
                     or admitted.source_revision.revision_id != revision_id
+                    or original["retention_profile_ref"]
+                    != admitted.retention_profile_ref.reference_id
                 ):
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 originals_by_revision[revision_id] = original
@@ -787,17 +812,22 @@ class PostgreSQLPrivateASRStorage:
                     str(item.source_revision.revision_id),
                 ),
             )
+            retention_binding_version = 1 if len(ordered_admissions) == 1 else 2
             for admitted in ordered_admissions:
                 original = originals_by_revision[admitted.source_revision.revision_id]
                 retention_disposition = await self._locked_source(
-                    session, admitted, retention_profile_ref=retention_profile_ref,
+                    session, admitted,
+                    retention_profile_ref=admitted.retention_profile_ref,
                     artifact_class=RetentionArtifactClass.PRIVATE_ASR_DETAILED_REPORT,
                     starting_event=RetentionStartingEvent.REPORT_GENERATED,
                     starting_at=report.generated_at, context=context,
                     admission_path_locked=True,
                 )
                 await self._check_admitted(admitted, context)
-                if admitted.retention_profile_ref != retention_profile_ref:
+                if (
+                    retention_binding_version == 1
+                    and admitted.retention_profile_ref != retention_profile_ref
+                ):
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 matching_bindings = tuple(
                     item for item in source_bindings
@@ -808,6 +838,8 @@ class PostgreSQLPrivateASRStorage:
                     or item.source_revision_digest != admitted.source_revision.revision_digest
                     or original["source_object_id"] != item.source_object_id
                     or original["source_revision_digest"] != item.source_revision_digest
+                    or original["retention_profile_ref"]
+                    != admitted.retention_profile_ref.reference_id
                     for item in matching_bindings
                 ) or not matching_bindings:
                     raise PrivateASRStorageDenied("Private ASR report lineage rejected.")
@@ -816,10 +848,9 @@ class PostgreSQLPrivateASRStorage:
                 if retention_expiry <= now:
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 retention_expiries.append(retention_expiry)
-                retention_dispositions.append({
-                    "source_revision_id": str(admitted.source_revision.revision_id),
-                    "disposition": retention_disposition.model_dump(mode="json"),
-                })
+                retention_dispositions.append(_report_retention_evidence(
+                    admitted, retention_disposition, version=retention_binding_version,
+                ))
                 admitted_records.append(admitted)
             retention_dispositions.sort(key=lambda item: str(item["source_revision_id"]))
             if not await self._manifest_lineage.verify_current(
@@ -1959,6 +1990,26 @@ class PostgreSQLPrivateASRStorage:
                 ):
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 source_ids = {item["source_revision_id"] for item in binding_rows}
+                stored_retention = row["retention_disposition"]
+                if not isinstance(stored_retention, list) or not stored_retention:
+                    raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
+                versioned_retention = [
+                    item.get("schema_version") == "private-asr-report-retention-binding:v2"
+                    for item in stored_retention if isinstance(item, dict)
+                ]
+                if len(versioned_retention) != len(stored_retention) or len(set(versioned_retention)) != 1:
+                    raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
+                retention_binding_version = 2 if versioned_retention[0] else 1
+                if retention_binding_version == 2 and len({
+                    item.get("source_revision_id") for item in stored_retention
+                }) != len(stored_retention):
+                    raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
+                if retention_binding_version == 2 and (
+                    len(stored_retention) != len(source_ids)
+                    or {item["source_revision_id"] for item in stored_retention}
+                    != {str(source_id) for source_id in source_ids}
+                ):
+                    raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 report_bindings = tuple(
                     PrivateReportSourceBinding(
                         record_id=item["source_record_id"], dataset_id=row["dataset_id"],
@@ -2007,6 +2058,22 @@ class PostgreSQLPrivateASRStorage:
                         for item in matched
                     ):
                         raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
+                    if retention_binding_version == 2:
+                        evidence = [
+                            item for item in stored_retention
+                            if item.get("source_revision_id")
+                            == str(admitted_source.source_revision.revision_id)
+                        ]
+                        if len(evidence) != 1 or any(
+                            evidence[0].get(field) != expected
+                            for field, expected in (
+                                ("workspace_id", str(workspace_id)),
+                                ("environment_id", str(environment_id)),
+                                ("source_object_id", str(admitted_source.source_object.source_object_id)),
+                                ("source_revision_digest", admitted_source.source_revision.revision_digest),
+                            )
+                        ):
+                            raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
             elif row["admitted_record"] is not None:
                 admitted_values = [row["admitted_record"]]
             else:
@@ -2038,9 +2105,13 @@ class PostgreSQLPrivateASRStorage:
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 disposition = await self._locked_source(
                     session, admitted,
-                    retention_profile_ref=PrivateReference(
-                        reference_id=row["retention_profile_ref"],
-                        reference_kind="retention_applicability",
+                    retention_profile_ref=(
+                        admitted.retention_profile_ref
+                        if row["kind"] == "report" and retention_binding_version == 2
+                        else PrivateReference(
+                            reference_id=row["retention_profile_ref"],
+                            reference_kind="retention_applicability",
+                        )
                     ),
                     artifact_class=artifact_class,
                     starting_event=_retention_starting_event_for_kind(row["kind"]),
@@ -2050,10 +2121,11 @@ class PostgreSQLPrivateASRStorage:
                 if disposition is None:
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 current_retention_expiries.append(disposition.expires_at)
-                current_retention_dispositions.append({
-                    "source_revision_id": str(admitted.source_revision.revision_id),
-                    "disposition": disposition.model_dump(mode="json"),
-                })
+                current_retention_dispositions.append(_report_retention_evidence(
+                    admitted,
+                    disposition,
+                    version=retention_binding_version if row["kind"] == "report" else 1,
+                ))
                 await self._check_admitted(admitted, context)
             if min(current_retention_expiries) != row["expires_at"]:
                 raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
