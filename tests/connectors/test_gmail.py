@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import UTC, datetime
 import hashlib
 from contextlib import asynccontextmanager
 from uuid import UUID
@@ -10,6 +11,19 @@ import pytest
 from spine.application.connections.email_read import (
     MailboxReadCommand,
     MailboxReadDeniedError,
+)
+from spine.application.email_sync import (
+    EmailSyncAdmissionState,
+    EmailSyncCoordinator,
+    EmailSyncStatus,
+    InMemoryEmailSyncRepository,
+)
+from spine.application.gmail_initial_snapshot import (
+    GmailHistoryBaseline,
+    GmailHistoryBaselineState,
+    GmailInitialSnapshotCommand,
+    GmailSnapshotPage,
+    gmail_snapshot_effect_key,
 )
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -30,8 +44,23 @@ from spine.connectors.gmail import (
     compose_gmail_mailbox_reader,
 )
 from spine.connectors.gmail_history import (
+    GmailHistoryChange,
+    GmailHistoryChangeKind,
+    GmailHistoryResult,
     GmailHistoryState,
     gmail_history_scope_digest,
+)
+from spine.connectors.gmail_checkpoints import (
+    decode_gmail_history_checkpoint,
+    decode_gmail_snapshot_page_checkpoint,
+    encode_gmail_history_checkpoint,
+)
+from spine.connectors.gmail_snapshot import (
+    GmailHistoryBaselineReadCommand,
+    GmailInitialSnapshotProviderReader,
+    GmailInitialHistoryDrainAdapter,
+    GmailProfileResponse,
+    GmailSnapshotPageReadCommand,
 )
 from spine.domain.common import ContextOrigin
 from spine.domain.connections.email_scope import (
@@ -47,6 +76,9 @@ from spine.domain.connections.provider import (
     ProviderConnection,
     ProviderConnectionStatus,
     ProviderKind,
+)
+from spine.workers.gmail_initial_snapshot import (
+    create_gmail_initial_snapshot_operation,
 )
 
 
@@ -171,10 +203,246 @@ class _RawGmailClient(_RecordingGmailClient):
         return self.response
 
 
+class _SnapshotGmailClient(_RecordingGmailClient):
+    def __init__(self, responses: list[object]) -> None:
+        super().__init__()
+        self.responses = responses
+
+    async def read(self, request: GmailReadRequest) -> object:
+        self.requests.append(request)
+        return self.responses.pop(0)
+
+
+class _HistoryAdmission:
+    def __init__(self, result: GmailHistoryResult) -> None:
+        self.result = result
+
+    async def read(self, command, context):
+        del command, context
+        return self.result
+
+
+class _StagingHistoryApplier:
+    def __init__(self, mailbox_scope: MailboxReadScope) -> None:
+        self.scope = mailbox_scope
+        self.result: GmailHistoryResult | None = None
+
+    async def stage(self, attempt_id, result, *, start_history_id):
+        del attempt_id, start_history_id
+        self.result = result
+        return "staged"
+
+
+class _SnapshotAdmission:
+    async def check(self, admission):
+        del admission
+        return EmailSyncAdmissionState.ALLOWED
+
+
+class _NoEffects:
+    async def apply(self, effect):
+        del effect
+        raise AssertionError("empty Gmail snapshot has no effects")
+
+
+class _EmptySnapshotReader:
+    def __init__(self, mailbox_scope: MailboxReadScope) -> None:
+        self.scope = mailbox_scope
+
+    async def capture_history_baseline(self, mailbox_scope):
+        assert mailbox_scope == self.scope
+        return GmailHistoryBaseline(
+            state=GmailHistoryBaselineState.CAPTURED,
+            admission_scope_digest=gmail_history_scope_digest(self.scope),
+            checkpoint=encode_gmail_history_checkpoint(self.scope, "100"),
+        )
+
+    async def enumerate_snapshot_page(self, request):
+        assert request.scope == self.scope
+        return GmailSnapshotPage(requested_checkpoint=request.checkpoint)
+
+
+class _NoHistoryEffects:
+    async def prepare(self, mailbox_scope, change):
+        del mailbox_scope, change
+        raise AssertionError("empty Gmail history has no effects")
+
+
 class _HttpFailure(RuntimeError):
     def __init__(self, status_code: int) -> None:
         super().__init__("provider payload secret subject@example.test")
         self.status_code = status_code
+
+
+@pytest.mark.asyncio
+async def test_initial_snapshot_provider_encodes_baseline_and_page_cursor() -> None:
+    mailbox_scope = _scope(
+        allowed_operations=(
+            EmailProviderOperation.ENUMERATE_MAILBOX,
+            EmailProviderOperation.SYNCHRONIZE,
+        )
+    )
+    client = _SnapshotGmailClient(
+        [
+            GmailProfileResponse(history_id="100"),
+            GmailMessageIdPage(
+                message_ids=("message-a",), next_page_token="provider-secret"
+            ),
+        ]
+    )
+    provider = GmailInitialSnapshotProviderReader(client)
+    connection = _connection()
+    connection = connection.model_copy(
+        update={
+            "capabilities": connection.capabilities
+            + (
+                ProviderCapability(
+                    kind=ProviderCapabilityKind.INCREMENTAL_CHANGE_DISCOVERY,
+                    status=ProviderCapabilityStatus.SUPPORTED,
+                    qualification_reference=OpaqueProviderReference(value=_id(40)),
+                ),
+            )
+        }
+    )
+    baseline = await provider.read(
+        connection,
+        GmailHistoryBaselineReadCommand(
+            scope=mailbox_scope,
+            operation=EmailOperation.SYNCHRONIZE,
+            mailbox_subject_reference=mailbox_scope.mailbox_subject_reference,
+            folder_or_label_reference=_id(11),
+        ),
+    )
+    page = await provider.read(
+        connection,
+        GmailSnapshotPageReadCommand(
+            scope=mailbox_scope,
+            operation=EmailOperation.ENUMERATE_MAILBOX,
+            mailbox_subject_reference=mailbox_scope.mailbox_subject_reference,
+            checkpoint=None,
+            provider_page_token=None,
+            max_results=10,
+        ),
+    )
+
+    assert decode_gmail_history_checkpoint(mailbox_scope, baseline.checkpoint) == "100"
+    assert page.message_ids == ("message-a",)
+    assert (
+        decode_gmail_snapshot_page_checkpoint(mailbox_scope, page.next_checkpoint)
+        == "provider-secret"
+    )
+    assert [request.resource for request in client.requests] == ["profile", "messages"]
+
+
+def test_gmail_checkpoint_rejects_another_generation() -> None:
+    mailbox_scope = _scope()
+    checkpoint = encode_gmail_history_checkpoint(mailbox_scope, "100")
+
+    with pytest.raises(ValueError, match="outside the admitted generation"):
+        decode_gmail_history_checkpoint(
+            mailbox_scope.model_copy(update={"scope_generation": 11}), checkpoint
+        )
+
+
+@pytest.mark.asyncio
+async def test_initial_history_drain_removes_snapshot_message_overlap() -> None:
+    mailbox_scope = _scope(allowed_operations=(EmailProviderOperation.SYNCHRONIZE,))
+    result = GmailHistoryResult(
+        requested_start_history_id="100",
+        admission_scope_digest=gmail_history_scope_digest(mailbox_scope),
+        state=GmailHistoryState.COMPLETE,
+        terminal_history_id="102",
+        pages_read=1,
+        duplicate_count=0,
+        malformed_count=0,
+        changes=(
+            GmailHistoryChange(
+                history_id="101",
+                kind=GmailHistoryChangeKind.MESSAGE_ADDED,
+                message_id="message-a",
+            ),
+            GmailHistoryChange(
+                history_id="102",
+                kind=GmailHistoryChangeKind.MESSAGE_DELETED,
+                message_id="message-b",
+            ),
+        ),
+    )
+    applier = _StagingHistoryApplier(mailbox_scope)
+    adapter = GmailInitialHistoryDrainAdapter(
+        reader=_HistoryAdmission(result),
+        applier=applier,
+        context_factory=lambda operation, trace_id: _context(),
+    )
+
+    staged = await adapter.stage(
+        _id(50),
+        mailbox_scope,
+        baseline_checkpoint=encode_gmail_history_checkpoint(mailbox_scope, "100"),
+        max_results=100,
+        max_pages=2,
+        covered_snapshot_effect_keys=(
+            gmail_snapshot_effect_key(mailbox_scope, "message-a"),
+        ),
+    )
+
+    assert staged == "staged"
+    assert applier.result is not None
+    assert [change.kind for change in applier.result.changes] == [
+        GmailHistoryChangeKind.MESSAGE_DELETED
+    ]
+
+
+@pytest.mark.asyncio
+async def test_worker_composition_executes_bounded_gmail_snapshot() -> None:
+    mailbox_scope = _scope(
+        allowed_operations=(
+            EmailProviderOperation.ENUMERATE_MAILBOX,
+            EmailProviderOperation.READ_RAW_MESSAGE,
+            EmailProviderOperation.SYNCHRONIZE,
+        )
+    )
+    history_result = GmailHistoryResult(
+        requested_start_history_id="100",
+        admission_scope_digest=gmail_history_scope_digest(mailbox_scope),
+        state=GmailHistoryState.COMPLETE,
+        terminal_history_id="101",
+        pages_read=1,
+        duplicate_count=0,
+        malformed_count=0,
+    )
+    operation = create_gmail_initial_snapshot_operation(
+        scope=mailbox_scope,
+        sync=EmailSyncCoordinator(
+            repository=InMemoryEmailSyncRepository(),
+            admission=_SnapshotAdmission(),
+            effects=_NoEffects(),
+        ),
+        snapshot_reader=_EmptySnapshotReader(mailbox_scope),
+        history_reader=_HistoryAdmission(history_result),
+        history_effects=_NoHistoryEffects(),
+        context_factory=lambda operation, trace_id: _context(),
+        ingestion=object(),
+        raw_messages=object(),
+        clock=lambda: datetime(2026, 11, 4, tzinfo=UTC),
+    )
+
+    result = await operation.run(
+        GmailInitialSnapshotCommand(
+            scope=mailbox_scope,
+            attempt_key="issue-838-worker-composition",
+            snapshot_page_size=10,
+            max_snapshot_pages=2,
+            history_page_size=10,
+            max_history_pages=2,
+            max_message_bytes=4096,
+            access_policy_version_id=_id(60),
+        )
+    )
+
+    assert result.attempt.status is EmailSyncStatus.COMPLETE
+    assert result.completed_snapshot_pages == 1
+    assert result.snapshot_messages == 0
 
 
 class _RecordingGmailHistoryClient:
@@ -256,7 +524,9 @@ def _compose_raw(
 
 
 @pytest.mark.asyncio
-async def test_admitted_google_mailbox_reaches_fake_client_with_opaque_read_request() -> None:
+async def test_admitted_google_mailbox_reaches_fake_client_with_opaque_read_request() -> (
+    None
+):
     reader, command, _, _, client = _compose()
 
     result = await reader.read(command, _context())
@@ -293,12 +563,16 @@ async def test_gmail_enumeration_consumes_pages_and_deduplicates_ids() -> None:
         async def read(self, request: GmailReadRequest) -> GmailMessageIdPage:
             self.requests.append(request)
             if request.page_token is None:
-                return GmailMessageIdPage(message_ids=("m2", "m1"), next_page_token="next")
+                return GmailMessageIdPage(
+                    message_ids=("m2", "m1"), next_page_token="next"
+                )
             return GmailMessageIdPage(message_ids=("m1", "m3"))
 
     client = Pages()
     reader = compose_gmail_mailbox_reader(
-        scopes=_Scopes(exact_scope), connections=_Connections(_connection()), client=client
+        scopes=_Scopes(exact_scope),
+        connections=_Connections(_connection()),
+        client=client,
     )
     command = MailboxReadCommand(
         scope=exact_scope,
@@ -353,16 +627,21 @@ async def test_gmail_enumeration_marks_empty_page_partial() -> None:
             return GmailMessageIdPage()
 
     reader = compose_gmail_mailbox_reader(
-        scopes=_Scopes(exact_scope), connections=_Connections(_connection()), client=Pages()
+        scopes=_Scopes(exact_scope),
+        connections=_Connections(_connection()),
+        client=Pages(),
     )
     command = MailboxReadCommand(
-        scope=exact_scope, operation=EmailOperation.ENUMERATE_MAILBOX,
+        scope=exact_scope,
+        operation=EmailOperation.ENUMERATE_MAILBOX,
         mailbox_subject_reference=exact_scope.mailbox_subject_reference,
     )
 
     result = await reader.read(command, _context())
 
-    assert result == GmailEnumerationResult(message_ids=(), complete=False, pages_read=1)
+    assert result == GmailEnumerationResult(
+        message_ids=(), complete=False, pages_read=1
+    )
 
 
 @pytest.mark.asyncio
@@ -375,11 +654,14 @@ async def test_gmail_enumeration_preserves_continuation_at_item_limit() -> None:
             return GmailMessageIdPage(message_ids=("m1", "m2"), next_page_token="next")
 
     reader = compose_gmail_mailbox_reader(
-        scopes=_Scopes(exact_scope), connections=_Connections(_connection()),
-        client=Pages(), max_items=1,
+        scopes=_Scopes(exact_scope),
+        connections=_Connections(_connection()),
+        client=Pages(),
+        max_items=1,
     )
     command = MailboxReadCommand(
-        scope=exact_scope, operation=EmailOperation.ENUMERATE_MAILBOX,
+        scope=exact_scope,
+        operation=EmailOperation.ENUMERATE_MAILBOX,
         mailbox_subject_reference=exact_scope.mailbox_subject_reference,
     )
 
@@ -391,7 +673,9 @@ async def test_gmail_enumeration_preserves_continuation_at_item_limit() -> None:
 
 
 @pytest.mark.asyncio
-async def test_gmail_enumeration_rejects_repeated_page_token_without_exposing_it() -> None:
+async def test_gmail_enumeration_rejects_repeated_page_token_without_exposing_it() -> (
+    None
+):
     exact_scope = _scope(allowed_operations=(EmailProviderOperation.ENUMERATE_MAILBOX,))
 
     class Pages:
@@ -401,10 +685,13 @@ async def test_gmail_enumeration_rejects_repeated_page_token_without_exposing_it
             )
 
     reader = compose_gmail_mailbox_reader(
-        scopes=_Scopes(exact_scope), connections=_Connections(_connection()), client=Pages()
+        scopes=_Scopes(exact_scope),
+        connections=_Connections(_connection()),
+        client=Pages(),
     )
     command = MailboxReadCommand(
-        scope=exact_scope, operation=EmailOperation.ENUMERATE_MAILBOX,
+        scope=exact_scope,
+        operation=EmailOperation.ENUMERATE_MAILBOX,
         mailbox_subject_reference=exact_scope.mailbox_subject_reference,
     )
 
@@ -426,7 +713,11 @@ async def test_gmail_enumeration_rejects_repeated_page_token_without_exposing_it
         {"connection_version_id": _id(99)},
         {"authorization_generation": 99},
         {"configuration_generation": 99},
-        {"approved_resource_scope_references": (OpaqueProviderReference(value=_id(99)),)},
+        {
+            "approved_resource_scope_references": (
+                OpaqueProviderReference(value=_id(99)),
+            )
+        },
         {"capabilities": ()},
     ),
 )
@@ -495,7 +786,9 @@ async def test_drive_and_sheets_only_capabilities_never_reach_gmail() -> None:
 
 
 @pytest.mark.asyncio
-async def test_google_error_details_are_sanitized_and_tokens_are_not_in_request() -> None:
+async def test_google_error_details_are_sanitized_and_tokens_are_not_in_request() -> (
+    None
+):
     reader, command, _, _, client = _compose()
     client.failure = RuntimeError(
         "refresh-token-value private@example.test customer subject.pdf"
@@ -508,12 +801,16 @@ async def test_google_error_details_are_sanitized_and_tokens_are_not_in_request(
     assert "refresh-token-value" not in str(error.value)
     assert "private@example.test" not in str(error.value)
     assert "subject.pdf" not in str(error.value)
-    assert client.requests[0].credential_reference == OpaqueProviderReference(value=_id(24))
+    assert client.requests[0].credential_reference == OpaqueProviderReference(
+        value=_id(24)
+    )
     assert client.requests[0].grant_reference == OpaqueProviderReference(value=_id(25))
 
 
 @pytest.mark.asyncio
-async def test_admitted_gmail_history_pages_reach_client_with_same_exact_authority() -> None:
+async def test_admitted_gmail_history_pages_reach_client_with_same_exact_authority() -> (
+    None
+):
     scope = _scope(allowed_operations=(EmailProviderOperation.SYNCHRONIZE,))
     connection = _connection(
         capabilities=(
@@ -555,7 +852,9 @@ async def test_admitted_gmail_history_pages_reach_client_with_same_exact_authori
     assert connections.calls == 1
     assert len(client.requests) == 2
     assert [request.page_token for request in client.requests] == [None, "page-2"]
-    assert all(request.operation is EmailOperation.SYNCHRONIZE for request in client.requests)
+    assert all(
+        request.operation is EmailOperation.SYNCHRONIZE for request in client.requests
+    )
     assert all(request.start_history_id == "98" for request in client.requests)
     assert all(request.max_results == 20 for request in client.requests)
     assert all(request.connection_id == _id(3) for request in client.requests)
@@ -592,7 +891,9 @@ async def test_gmail_history_without_sync_capability_never_reaches_client() -> N
 
 
 @pytest.mark.asyncio
-async def test_raw_message_returns_bytes_digest_and_provider_revision_evidence() -> None:
+async def test_raw_message_returns_bytes_digest_and_provider_revision_evidence() -> (
+    None
+):
     reader, command, client = _compose_raw()
     payload = base64.urlsafe_b64decode(_raw_response().raw_data + "==")
 
