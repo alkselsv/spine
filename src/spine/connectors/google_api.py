@@ -802,7 +802,7 @@ class GoogleApiService:
             "includeItemsFromAllDrives": str(scope.supports_all_drives).lower(),
             "fields": (
                 "nextPageToken,newStartPageToken,incompleteSearch,"
-                "changes(changeId,fileId,removed,file(id,driveId,version,trashed,parents))"
+                "changes(fileId,removed,file(id,driveId,version,trashed,parents))"
             ),
         }
         if scope.drive_id is not None:
@@ -1602,7 +1602,7 @@ def _drive_change(value: Any) -> DriveChange:
     return DriveChange(
         file_id=file_id,
         drive_id=_optional_string(raw_file, "driveId"),
-        change_id=_optional_string(value, "changeId"),
+        change_id=None,
         provider_version=_optional_string(raw_file, "version"),
         removed=removed,
         trashed=_required_bool(raw_file, "trashed", default=False),
