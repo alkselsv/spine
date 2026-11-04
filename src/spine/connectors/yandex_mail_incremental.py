@@ -21,6 +21,12 @@ from spine.application.email_sync import (
     EmailSyncStatus,
 )
 from spine.application.persistence.context import TrustedPersistenceContext
+from spine.application.yandex_mail_uidvalidity_reset import (
+    YandexMailUidValidityResetCommand,
+    YandexMailUidValidityResetPort,
+    YandexMailUidValidityResetReceipt,
+    YandexMailUidValidityResetState,
+)
 from spine.connectors.yandex_mail_generation import (
     YandexMailFolderGenerationCode,
     YandexMailFolderGenerationObservation,
@@ -220,6 +226,8 @@ class YandexMailIncrementalPollResult(DefinitionModel):
     attempt: EmailSyncAttempt
     covered_uid_range: tuple[StrictInt, StrictInt] | None = None
     discovered_uids: tuple[StrictInt, ...] = ()
+    reset_receipt: YandexMailUidValidityResetReceipt | None = None
+    reset_state: YandexMailUidValidityResetState | None = None
     periodic_reconciliation_required: Literal[True] = True
     covers_flag_changes: Literal[False] = False
     covers_folder_changes: Literal[False] = False
@@ -311,11 +319,13 @@ class YandexMailIncrementalPoller:
         coordinator: EmailSyncCoordinator,
         effect_factory: YandexMailIncrementalEffectFactory,
         baseline_verifier: YandexMailIncrementalBaselineVerifier,
+        uidvalidity_reset: YandexMailUidValidityResetPort,
     ) -> None:
         self._reader = reader
         self._coordinator = coordinator
         self._effect_factory = effect_factory
         self._baseline_verifier = baseline_verifier
+        self._uidvalidity_reset = uidvalidity_reset
 
     async def poll(
         self,
@@ -356,9 +366,14 @@ class YandexMailIncrementalPoller:
         if attempt.status in {
             EmailSyncStatus.COMPLETE,
             EmailSyncStatus.FAILED,
-            EmailSyncStatus.RECONCILIATION_REQUIRED,
             EmailSyncStatus.SUSPENDED,
         }:
+            return self._result(attempt)
+        if (
+            attempt.status is EmailSyncStatus.RECONCILIATION_REQUIRED
+            and attempt.failure_code
+            not in {"uidvalidity_changed", "uidvalidity_reset_incomplete"}
+        ):
             return self._result(attempt)
 
         checkpoint = await self._checkpoint_or_hold(
@@ -400,6 +415,17 @@ class YandexMailIncrementalPoller:
         generation_failure = self._generation_failure(generation, checkpoint)
         if generation_failure is not None:
             status, code = generation_failure
+            reset = await self._recover_changed_uidvalidity(
+                attempt_id=attempt_id,
+                scope=scope,
+                folder_reference=folder_reference,
+                stale_uid_validity=checkpoint.uid_validity,
+                restore_committed_checkpoint=attempt.committed_checkpoint,
+                failure_code=code,
+                observed_uid_validity=generation.uid_validity,
+            )
+            if reset is not None:
+                return reset
             held = await self._hold(attempt_id, scope, status, code)
             return self._result(held)
 
@@ -462,6 +488,17 @@ class YandexMailIncrementalPoller:
         page_failure = self._page_failure(page_result, request)
         if page_failure is not None:
             status, code = page_failure
+            reset = await self._recover_changed_uidvalidity(
+                attempt_id=attempt_id,
+                scope=scope,
+                folder_reference=folder_reference,
+                stale_uid_validity=checkpoint.uid_validity,
+                restore_committed_checkpoint=attempt.committed_checkpoint,
+                failure_code=code,
+                observed_uid_validity=page_result.uid_validity,
+            )
+            if reset is not None:
+                return reset
             held = await self._hold(attempt_id, scope, status, code)
             return self._result(held)
 
@@ -634,26 +671,106 @@ class YandexMailIncrementalPoller:
             failure_code=failure_code,
         )
 
+    async def _recover_uidvalidity_reset(
+        self,
+        *,
+        attempt_id: UUID,
+        scope: MailboxReadScope,
+        folder_reference: UUID,
+        stale_uid_validity: int,
+        observed_uid_validity: int,
+        restore_committed_checkpoint: str | None,
+    ) -> YandexMailIncrementalPollResult:
+        fenced = await self._coordinator.fence_for_reconciliation(
+            attempt_id,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            expected_admission=EmailSyncAdmission.from_scope(scope),
+            restore_committed_checkpoint=restore_committed_checkpoint,
+            failure_code="uidvalidity_changed",
+        )
+        if fenced.status is not EmailSyncStatus.RECONCILIATION_REQUIRED:
+            return self._result(fenced)
+        try:
+            receipt = await self._uidvalidity_reset.reconcile(
+                YandexMailUidValidityResetCommand(
+                    scope=scope,
+                    stale_attempt_id=attempt_id,
+                    folder_reference=folder_reference,
+                    stale_uid_validity=stale_uid_validity,
+                    observed_uid_validity=observed_uid_validity,
+                )
+            )
+        except Exception:
+            fenced = await self._coordinator.require_reconciliation(
+                attempt_id,
+                workspace_id=scope.workspace_id,
+                environment_id=scope.environment_id,
+                failure_code="uidvalidity_reset_incomplete",
+            )
+            return self._result(
+                fenced,
+                reset_state=YandexMailUidValidityResetState.INCOMPLETE,
+            )
+        if receipt.state is YandexMailUidValidityResetState.INCOMPLETE:
+            fenced = await self._coordinator.require_reconciliation(
+                attempt_id,
+                workspace_id=scope.workspace_id,
+                environment_id=scope.environment_id,
+                failure_code="uidvalidity_reset_incomplete",
+            )
+        elif receipt.state is YandexMailUidValidityResetState.SUSPENDED:
+            fenced = await self._coordinator.get_attempt(
+                attempt_id,
+                workspace_id=scope.workspace_id,
+                environment_id=scope.environment_id,
+            )
+        else:
+            fenced = await self._coordinator.require_reconciliation(
+                attempt_id,
+                workspace_id=scope.workspace_id,
+                environment_id=scope.environment_id,
+                failure_code="uidvalidity_reset_started",
+            )
+        return self._result(
+            fenced,
+            reset_receipt=receipt,
+            reset_state=receipt.state,
+        )
+
+    async def _recover_changed_uidvalidity(
+        self,
+        *,
+        attempt_id: UUID,
+        scope: MailboxReadScope,
+        folder_reference: UUID,
+        stale_uid_validity: int,
+        restore_committed_checkpoint: str | None,
+        failure_code: str,
+        observed_uid_validity: int | None,
+    ) -> YandexMailIncrementalPollResult | None:
+        if (
+            failure_code != "uidvalidity_changed"
+            or observed_uid_validity is None
+            or observed_uid_validity == stale_uid_validity
+        ):
+            return None
+        return await self._recover_uidvalidity_reset(
+            attempt_id=attempt_id,
+            scope=scope,
+            folder_reference=folder_reference,
+            stale_uid_validity=stale_uid_validity,
+            observed_uid_validity=observed_uid_validity,
+            restore_committed_checkpoint=restore_committed_checkpoint,
+        )
+
     @staticmethod
     def _generation_failure(
         generation: YandexMailFolderGenerationObservation,
         checkpoint: YandexMailIncrementalCheckpoint,
     ) -> tuple[EmailSyncStatus, str] | None:
-        if (
-            generation.code is YandexMailFolderGenerationCode.UIDVALIDITY_CHANGED
-            or generation.uid_validity != checkpoint.uid_validity
-        ):
-            return EmailSyncStatus.RECONCILIATION_REQUIRED, "uidvalidity_changed"
         if generation.code is YandexMailFolderGenerationCode.WRONG_SCOPE:
             return EmailSyncStatus.SUSPENDED, "scope_not_authorized"
-        if (
-            not generation.complete
-            or generation.code is not YandexMailFolderGenerationCode.COMPLETE
-            or generation.uid_next is None
-            or generation.selection_command != "EXAMINE"
-            or generation.read_only is not True
-        ):
-            return EmailSyncStatus.INCOMPLETE, "generation_incomplete"
         if (
             generation.workspace_id != checkpoint.workspace_id
             or generation.environment_id != checkpoint.environment_id
@@ -668,6 +785,19 @@ class YandexMailIncrementalPoller:
             or generation.scope_generation != checkpoint.scope_generation
         ):
             return EmailSyncStatus.RECONCILIATION_REQUIRED, "generation_stale"
+        if (
+            generation.code is YandexMailFolderGenerationCode.UIDVALIDITY_CHANGED
+            or generation.uid_validity != checkpoint.uid_validity
+        ):
+            return EmailSyncStatus.RECONCILIATION_REQUIRED, "uidvalidity_changed"
+        if (
+            not generation.complete
+            or generation.code is not YandexMailFolderGenerationCode.COMPLETE
+            or generation.uid_next is None
+            or generation.selection_command != "EXAMINE"
+            or generation.read_only is not True
+        ):
+            return EmailSyncStatus.INCOMPLETE, "generation_incomplete"
         return None
 
     @staticmethod
@@ -675,16 +805,10 @@ class YandexMailIncrementalPoller:
         result: YandexMailUidEnumerationPageResult,
         request: YandexMailUidEnumerationPageRequest,
     ) -> tuple[EmailSyncStatus, str] | None:
-        if result.code is YandexMailUidPageCode.UIDVALIDITY_CHANGED:
-            return EmailSyncStatus.RECONCILIATION_REQUIRED, "uidvalidity_changed"
         if result.code is YandexMailUidPageCode.WRONG_SCOPE:
             return EmailSyncStatus.SUSPENDED, "scope_not_authorized"
         if (
-            not result.complete
-            or result.covered_uid_range
-            != (request.start_uid, request.end_uid)
-            or result.uid_validity != request.uid_validity
-            or result.workspace_id != request.scope.workspace_id
+            result.workspace_id != request.scope.workspace_id
             or result.environment_id != request.scope.environment_id
             or result.connection_id != request.scope.connection_id
             or result.connection_version_id != request.scope.connection_version_id
@@ -695,6 +819,15 @@ class YandexMailIncrementalPoller:
             or result.configuration_generation
             != request.scope.configuration_generation
             or result.scope_generation != request.scope.scope_generation
+        ):
+            return EmailSyncStatus.INCOMPLETE, "uid_page_incomplete"
+        if result.code is YandexMailUidPageCode.UIDVALIDITY_CHANGED:
+            return EmailSyncStatus.RECONCILIATION_REQUIRED, "uidvalidity_changed"
+        if (
+            not result.complete
+            or result.covered_uid_range
+            != (request.start_uid, request.end_uid)
+            or result.uid_validity != request.uid_validity
         ):
             return EmailSyncStatus.INCOMPLETE, "uid_page_incomplete"
         uids = tuple(message.uid for message in result.messages)
@@ -740,6 +873,8 @@ class YandexMailIncrementalPoller:
         state: YandexMailIncrementalPollState | None = None,
         covered_uid_range: tuple[int, int] | None = None,
         discovered_uids: tuple[int, ...] = (),
+        reset_receipt: YandexMailUidValidityResetReceipt | None = None,
+        reset_state: YandexMailUidValidityResetState | None = None,
     ) -> YandexMailIncrementalPollResult:
         if state is None:
             state = {
@@ -755,6 +890,8 @@ class YandexMailIncrementalPoller:
             attempt=attempt,
             covered_uid_range=covered_uid_range,
             discovered_uids=discovered_uids,
+            reset_receipt=reset_receipt,
+            reset_state=reset_state,
         )
 
 

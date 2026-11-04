@@ -2,11 +2,12 @@
 
 ## Acceptance matrix (synthetic PostgreSQL verification)
 
-Focused run of the #811 tests in
-`tests/integration/postgresql/test_postgresql_private_asr_storage.py`:
-**29 passed, exit code 0**. The batch includes the trusted resolver positive
-path, both withdrawal/report commit race orders, negative publication cases,
-and runtime RLS/grant/immutability checks.
+After integrating pinned main `ffbb19e77af11ff2d5efd2d8f68d093f0b6fe991`,
+the combined focused batch completed with **42 passed, 0 failed, exit code 0**.
+It included all 29 #811 tests, the clean-target migration, Alembic inventory,
+and PostgreSQL readiness tests. The #811 subset covers the trusted resolver
+positive path, both withdrawal/report commit race orders, negative publication
+cases, and runtime RLS/grant/immutability checks.
 
 | Criterion | Result | Evidence |
 | --- | --- | --- |
@@ -22,9 +23,11 @@ and runtime RLS/grant/immutability checks.
 | Caller-pinned expected generation comparison | NOT APPLICABLE | #771/#772 request contract does not carry an expected generation; currentness is resolved from the trusted pointer |
 | External approval/revocation fencing and production qualification | OUT OF SCOPE / NOT VERIFIED | External authority belongs to #813; no real release is approved |
 
-The 29-test batch completed on the PR branch before publishing this test and
-documentation update. It used only synthetic fixtures. This is not evidence of
-production qualification or a real-data release.
+The integration preserves main's email attachment migration `20270108_107`
+and chains ASR manifest authority as `20270109_108` over it. Alembic reports one
+head at `20270109_108`; the clean PostgreSQL target and readiness checks pass.
+All tests used synthetic fixtures. This is not evidence of production
+qualification or a real-data release.
 
 The canonical contract owner is `application.private_asr_corpus`, specifically
 the existing `PrivateASRManifestLineageVerifier` port. The PostgreSQL
@@ -33,7 +36,7 @@ injected into the existing #795 report store. This keeps corpus identity and
 lineage at the existing #771/#772 boundary, uses #795's transaction, and adds
 neither a dataset registry nor another runner.
 
-Revision `20270108_107` stores an immutable JSONB snapshot and a current release
+Revision `20270109_108` stores an immutable JSONB snapshot and a current release
 pointer keyed by workspace, environment, purpose, and dataset. The digest is
 recomputed from canonical JSON at resolution; record membership is then checked
 against source object, revision, revision digest, split, and scope. Reports must

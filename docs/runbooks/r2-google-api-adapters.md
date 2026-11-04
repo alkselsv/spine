@@ -136,7 +136,7 @@ SPINE_GOOGLE_LIVE_OPT_IN=1 \
   --report /approved/path/google-live-report.json
 ```
 
-The `google-live-qualification-report:v3` report separates completed logical
+The `google-live-qualification-report:v4` report separates completed logical
 operations from low-level transport attempts. It records bounded attempt counts
 for OAuth refresh, Drive and Sheets, plus a closed failure stage of
 `oauth_refresh`, `drive`, `sheets` or `harness`; a successful run has no failure
@@ -145,21 +145,27 @@ the request, so a transport exception still leaves independently checkable
 evidence. Completed operation counters keep their previous meaning and advance
 only after the logical operation succeeds.
 
-Version 3 also records the configured maximum attempts, a closed failure class
+Version 3 added the configured maximum attempts, a closed failure class
 and a closed retry disposition. The failure class distinguishes disclosure-safe
 categories such as timeout, transport connectivity and HTTP 5xx without
 retaining the URL, response or raw exception. The retry disposition says whether
 the failure exhausted its attempts, was non-retryable, stopped before another
 retry, stopped at the run deadline or had no applicable provider retry.
-Every failed v3 report contains the failure stage, code, class and retry
+Every failed v4 report contains the failure stage, code, class and retry
 disposition together; every passed report omits all four. A second provider 401
 after the single permitted refresh is `not_retryable`, even when the general
 request-attempt ceiling is higher, because the authorization policy deliberately
 stops before exhausting that ceiling.
 
+Version 4 preserves the v3 fields and distinguishes a closed allowlist of safe
+Drive 403 reasons: insufficient OAuth scope, a non-downloadable file, missing
+file permission and a revision download restriction. Unknown, missing or
+malformed provider reasons remain `provider_policy_denied`. The report never
+copies the provider message, resource ID or response body.
+
 Migration note: v1 reports contain completed-operation counters only. Version 2
 adds transport attempts and `failure_stage`, but has no failure class, retry
-disposition or configured maximum. Consumers must never infer missing v2 or v3
+disposition or configured maximum. Consumers must never infer missing v2, v3 or v4
 evidence retrospectively; require the exact schema version before reading its
 fields.
 

@@ -32,9 +32,12 @@ from .email_mime import (
 from .email_message import EmailMessageArtifact, email_message_artifact_digest
 from .email_attachment import (
     EmailAttachmentArtifact,
+    EmailAttachmentProcessingDisposition,
+    EmailAttachmentProcessingReceipt,
     EmailAttachmentWriteReceipt,
     email_attachment_artifact_digest,
     email_attachment_id,
+    email_attachment_processing_receipt_digest,
 )
 from .email_html import (
     EmailHtmlDisposition,
@@ -105,9 +108,12 @@ __all__ = [
     "EmailMessageArtifact",
     "email_message_artifact_digest",
     "EmailAttachmentArtifact",
+    "EmailAttachmentProcessingDisposition",
+    "EmailAttachmentProcessingReceipt",
     "EmailAttachmentWriteReceipt",
     "email_attachment_artifact_digest",
     "email_attachment_id",
+    "email_attachment_processing_receipt_digest",
     "EmailHtmlDisposition",
     "EmailHtmlSanitizerProfile",
     "SanitizedEmailHtml",

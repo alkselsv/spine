@@ -9,7 +9,7 @@ import json
 from typing import Literal, Protocol
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import Field, StrictInt, model_validator
 
 from spine.application.email_sync import (
     EmailSyncAttempt,
@@ -226,6 +226,19 @@ class YandexMailSnapshotUidPage(DefinitionModel):
         )
 
 
+class YandexMailRequiredFolderGeneration(DefinitionModel):
+    """Exact folder generation that complete discovery must confirm."""
+
+    folder_reference: UUID
+    uid_validity: StrictInt = Field(ge=1, le=2**32 - 1)
+
+    @model_validator(mode="after")
+    def validate_reference(self) -> "YandexMailRequiredFolderGeneration":
+        if self.folder_reference.int == 0:
+            raise ValueError("required folder reference must be non-zero")
+        return self
+
+
 class YandexMailInitialSnapshotCommand(DefinitionModel):
     """One finite initial attempt under an exact immutable mailbox scope."""
 
@@ -241,6 +254,7 @@ class YandexMailInitialSnapshotCommand(DefinitionModel):
     max_uid_pages_per_folder: int = Field(ge=1, le=10_000)
     max_message_bytes: int = Field(ge=1, le=268_435_456)
     access_policy_version_id: UUID
+    required_folder_generations: tuple[YandexMailRequiredFolderGeneration, ...] = ()
 
     @model_validator(mode="after")
     def validate_scope(self) -> "YandexMailInitialSnapshotCommand":
@@ -255,7 +269,29 @@ class YandexMailInitialSnapshotCommand(DefinitionModel):
             not self.scope.allows(operation) for operation in required
         ) or self.access_policy_version_id.int == 0:
             raise ValueError("snapshot scope lacks an approved Yandex Mail operation")
+        required_folders = tuple(
+            requirement.folder_reference
+            for requirement in self.required_folder_generations
+        )
+        if (
+            len(required_folders) != len(set(required_folders))
+            or any(
+                not self.scope.allows_location(requirement.folder_reference)
+                for requirement in self.required_folder_generations
+            )
+        ):
+            raise ValueError("required folder generation is outside the approved scope")
         return self
+
+    def required_uid_validity(self, folder_reference: UUID) -> int | None:
+        return next(
+            (
+                requirement.uid_validity
+                for requirement in self.required_folder_generations
+                if requirement.folder_reference == folder_reference
+            ),
+            None,
+        )
 
 
 class YandexMailInitialSnapshotReader(Protocol):
@@ -462,6 +498,13 @@ class YandexMailInitialSnapshotCoordinator:
                 effects: list[EmailSyncEffect] = []
                 receipts: list[EmailSyncEffectReceipt] = []
                 for message in uid_page.messages:
+                    attempt = await self.sync.check_effect_admission(
+                        attempt.attempt_id,
+                        workspace_id=scope.workspace_id,
+                        environment_id=scope.environment_id,
+                    )
+                    if attempt.status is not EmailSyncStatus.RUNNING:
+                        return self._result(attempt)
                     effect_key = self._message_effect_key(
                         folder_reference, generation.uid_validity, message.uid
                     )
@@ -484,6 +527,13 @@ class YandexMailInitialSnapshotCoordinator:
                         return await self._incomplete(
                             attempt, "message_effect_incomplete"
                         )
+                    attempt = await self.sync.check_effect_admission(
+                        attempt.attempt_id,
+                        workspace_id=scope.workspace_id,
+                        environment_id=scope.environment_id,
+                    )
+                    if attempt.status is not EmailSyncStatus.RUNNING:
+                        return self._result(attempt)
                     if (
                         receipt.effect_key != effect_key
                         or receipt.workspace_id != scope.workspace_id
@@ -650,6 +700,14 @@ class YandexMailInitialSnapshotCoordinator:
                 )
             return None, result.attempt
 
+        required_uid_validity = command.required_uid_validity(folder_reference)
+        if (
+            required_uid_validity is not None
+            and generation.uid_validity != required_uid_validity
+        ):
+            result = await self._reconcile(attempt, "folder_generation_changed")
+            return None, result.attempt
+
         evidence_cursor = generation.evidence_cursor()
         evidence_digest = self._digest(evidence_cursor)
         attempt = await self.sync.record_durable_page(
@@ -760,6 +818,7 @@ __all__ = [
     "YandexMailInitialSnapshotCoordinator",
     "YandexMailInitialSnapshotReader",
     "YandexMailInitialSnapshotResult",
+    "YandexMailRequiredFolderGeneration",
     "YandexMailSnapshotFolderCode",
     "YandexMailSnapshotFolderDiscovery",
     "YandexMailSnapshotFolderGeneration",
