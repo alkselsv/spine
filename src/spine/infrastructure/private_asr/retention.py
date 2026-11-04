@@ -59,6 +59,8 @@ class PrivateASRRetentionDisposition(DefinitionModel):
     approved_evidence_reference: UUID
     deletion_obligation_reference: UUID
     backup_obligation_reference: UUID
+    exception_references: tuple[UUID, ...] = ()
+    legal_hold_references: tuple[UUID, ...] = ()
     expires_at: datetime
 
     @model_validator(mode="after")
@@ -286,6 +288,8 @@ class PostgreSQLPrivateASRRetentionResolver:
             approved_evidence_reference=terms.approval_evidence_reference,
             deletion_obligation_reference=terms.deletion_obligation_reference,
             backup_obligation_reference=terms.backup_obligation_reference,
+            exception_references=terms.resolved_exception_references,
+            legal_hold_references=terms.resolved_legal_hold_references,
             expires_at=expires_at,
         )
 

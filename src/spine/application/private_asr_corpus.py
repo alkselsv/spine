@@ -196,6 +196,42 @@ class PrivateArtifactSourceLineage(PrivateASRApplicationContract):
         return self
 
 
+class PrivateArtifactRetentionBinding(PrivateASRApplicationContract):
+    """One current retention decision bound to exact source lineage."""
+
+    source_object_id: UUID
+    source_revision_id: UUID
+    source_revision_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    applicability_id: UUID
+    applicability_generation: StrictInt = Field(ge=1)
+    policy_id: UUID
+    policy_version_id: UUID
+    policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    terms_id: UUID
+    terms_version: str
+    terms_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    artifact_class: str
+    starting_event: str
+    starting_at: datetime
+    deadline: datetime
+    exception_references: tuple[UUID, ...] = ()
+    legal_hold_references: tuple[UUID, ...] = ()
+    active_legal_hold_references: tuple[UUID, ...] = ()
+    approval_evidence_reference: UUID
+    deletion_obligation_reference: UUID
+    backup_obligation_reference: UUID
+
+    @model_validator(mode="after")
+    def validate_binding(self) -> "PrivateArtifactRetentionBinding":
+        if (self.starting_at.tzinfo is None or self.starting_at.utcoffset() is None
+                or self.deadline.tzinfo is None or self.deadline.utcoffset() is None
+                or self.deadline <= self.starting_at):
+            raise ValueError("artifact retention binding timestamps are invalid")
+        if self.active_legal_hold_references:
+            raise ValueError("active legal holds prohibit artifact deletion")
+        return self
+
+
 class PrivateArtifactDeletionRequest(PrivateASRApplicationContract):
     """Transaction-scoped request to expire or discard one persisted artifact.
 
@@ -210,6 +246,7 @@ class PrivateArtifactDeletionRequest(PrivateASRApplicationContract):
     artifact_id: UUID
     workspace_id: UUID
     environment_id: UUID
+    purpose: Literal["asr_model_evaluation"]
     artifact_kind: Literal["staging", "original", "annotation", "report", "aggregate_export"]
     action: Literal["retention_expiration", "staging_cleanup"]
     expected_state_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -217,6 +254,7 @@ class PrivateArtifactDeletionRequest(PrivateASRApplicationContract):
     retention_deadline: datetime
     requested_at: datetime
     source_lineage: tuple[PrivateArtifactSourceLineage, ...]
+    retention_bindings: tuple[PrivateArtifactRetentionBinding, ...] = Field(min_length=1)
     manifest_version: str | None = None
     manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
@@ -227,6 +265,19 @@ class PrivateArtifactDeletionRequest(PrivateASRApplicationContract):
             for value in (self.artifact_id, self.workspace_id, self.environment_id)
         ) or not self.source_lineage:
             raise ValueError("artifact deletion request requires exact lineage")
+        lineage_keys = {
+            (item.source_object_id, item.source_revision_id, item.source_revision_digest)
+            for item in self.source_lineage
+        }
+        retention_keys = {
+            (item.source_object_id, item.source_revision_id, item.source_revision_digest)
+            for item in self.retention_bindings
+        }
+        if lineage_keys != retention_keys or any(
+            item.applicability_id != self.retention_profile_ref.reference_id
+            for item in self.retention_bindings
+        ) or min(item.deadline for item in self.retention_bindings) != self.retention_deadline:
+            raise ValueError("artifact deletion retention binding is incomplete or stale")
         if any(
             value.tzinfo is None or value.utcoffset() is None
             for value in (self.retention_deadline, self.requested_at)

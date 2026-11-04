@@ -29,6 +29,7 @@ from spine.application.private_asr_corpus import (
     PrivateArtifactDeletionAuthority,
     PrivateArtifactDeletionAuthorization,
     PrivateArtifactDeletionRequest,
+    PrivateArtifactRetentionBinding,
     PrivateArtifactSourceLineage,
     PrivateAggregatePublicationAuthorityPort,
     PrivateASRManifestLineageVerifier,
@@ -53,7 +54,10 @@ from spine.infrastructure.persistence.postgresql_source_locks import (
     lock_admission_revision,
     lock_source_lifecycle_shared,
 )
-from spine.infrastructure.private_asr.retention import PostgreSQLPrivateASRRetentionResolver
+from spine.infrastructure.private_asr.retention import (
+    PostgreSQLPrivateASRRetentionResolver,
+    PrivateASRRetentionDisposition,
+)
 
 
 _SCHEMA = "spine"
@@ -155,6 +159,55 @@ def _admitted_from_jsonb(value: object) -> AdmittedSourceRevision:
         return AdmittedSourceRevision.model_validate_json(json.dumps(value))
     except Exception:
         raise PrivateASRStorageDenied("Private ASR storage metadata is invalid.") from None
+
+
+def _retention_binding_from_disposition(
+    admitted: AdmittedSourceRevision, disposition: PrivateASRRetentionDisposition,
+) -> PrivateArtifactRetentionBinding:
+    return _retention_binding_from_snapshot(
+        admitted.source_revision.revision_id,
+        disposition.model_dump(mode="json"),
+        source_object_id=admitted.source_object.source_object_id,
+        source_revision_digest=admitted.source_revision.revision_digest,
+    )
+
+
+def _retention_binding_from_snapshot(
+    source_revision_id: UUID | str,
+    snapshot: Any,
+    *,
+    source_object_id: UUID | None = None,
+    source_revision_digest: str | None = None,
+) -> PrivateArtifactRetentionBinding:
+    if not isinstance(snapshot, dict):
+        raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+    binding = {
+        "source_object_id": str(source_object_id or snapshot.get("source_object_id")),
+        "source_revision_id": str(source_revision_id),
+        "source_revision_digest": source_revision_digest or snapshot.get("source_revision_digest"),
+        "applicability_id": snapshot["applicability_id"],
+        "applicability_generation": snapshot["applicability_generation"],
+        "policy_id": snapshot["policy_id"],
+        "policy_version_id": snapshot["policy_version_id"],
+        "policy_digest": snapshot["policy_digest"],
+        "terms_id": snapshot["terms_id"],
+        "terms_version": snapshot["terms_version"],
+        "terms_digest": snapshot["terms_digest"],
+        "artifact_class": snapshot["artifact_class"],
+        "starting_event": snapshot["starting_event"],
+        "starting_at": snapshot["starting_at"],
+        "deadline": snapshot["expires_at"],
+        "exception_references": snapshot.get("exception_references", ()),
+        "legal_hold_references": snapshot.get("legal_hold_references", ()),
+        "approval_evidence_reference": snapshot["approved_evidence_reference"],
+        "deletion_obligation_reference": snapshot["deletion_obligation_reference"],
+        "backup_obligation_reference": snapshot["backup_obligation_reference"],
+    }
+    binding["active_legal_hold_references"] = ()
+    try:
+        return PrivateArtifactRetentionBinding.model_validate_json(json.dumps(binding))
+    except Exception:
+        raise PrivateASRStorageDenied("Private ASR deletion authorization denied.") from None
 
 
 class PostgreSQLPrivateASRStorage:
@@ -1581,11 +1634,26 @@ class PostgreSQLPrivateASRStorage:
                 "payload_sha256": aggregate["payload_sha256"], "created_at": aggregate["created_at"].isoformat()}
             request = PrivateArtifactDeletionRequest(
                 artifact_id=reference.reference_id, workspace_id=workspace_id,
-                environment_id=environment_id, artifact_kind="aggregate_export",
+                environment_id=environment_id, purpose="asr_model_evaluation",
+                artifact_kind="aggregate_export",
                 action="retention_expiration", expected_state_digest=hashlib.sha256(
                     json.dumps(state, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
                 retention_profile_ref=policy_ref, retention_deadline=aggregate["expires_at"],
                 requested_at=now, source_lineage=lineage,
+                retention_bindings=tuple(
+                    _retention_binding_from_snapshot(
+                        item["source_revision_id"], item["disposition"],
+                        source_object_id=next(
+                            row.source_object_id for row in lineage
+                            if row.source_revision_id == UUID(str(item["source_revision_id"]))
+                        ),
+                        source_revision_digest=next(
+                            row.source_revision_digest for row in lineage
+                            if row.source_revision_id == UUID(str(item["source_revision_id"]))
+                        ),
+                    )
+                    for item in aggregate["retention_disposition"]
+                ),
                 manifest_version=report["manifest_version"], manifest_sha256=report["manifest_sha256"],
             )
             try:
@@ -1596,7 +1664,8 @@ class PostgreSQLPrivateASRStorage:
             except Exception:
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.") from None
             if (not isinstance(authz, PrivateArtifactDeletionAuthorization) or not authz.authorized
-                    or authz.request_digest != request.calculate_digest() or authz.valid_until <= now):
+                    or authz.request_digest != request.calculate_digest()
+                    or authz.revocation_epoch < 1 or authz.valid_until <= now):
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
             writer = getattr(self._audit_receipts, "append_artifact_deletion", None)
             if writer is None:
@@ -1609,6 +1678,8 @@ class PostgreSQLPrivateASRStorage:
                     private_asr_aggregate_exports.c.export_id == reference.reference_id,
                     private_asr_aggregate_exports.c.tombstoned_at.is_(None),
                 ).values(tombstoned_at=now, payload={}))
+                if authz.valid_until <= self._clock():
+                    raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
                 await transaction.commit()
             except asyncio.CancelledError:
                 raise
@@ -1819,6 +1890,7 @@ class PostgreSQLPrivateASRStorage:
                 artifact_id=reference.reference_id,
                 workspace_id=workspace_id,
                 environment_id=environment_id,
+                purpose="asr_model_evaluation",
                 artifact_kind=kind,
                 action=action,
                 expected_state_digest=hashlib.sha256(json.dumps(
@@ -1828,6 +1900,19 @@ class PostgreSQLPrivateASRStorage:
                 retention_deadline=current_deadline,
                 requested_at=now,
                 source_lineage=tuple(source_lineage),
+                retention_bindings=tuple(
+                    _retention_binding_from_disposition(
+                        admitted_by_revision[revision_id], disposition
+                    )
+                    for revision_id, disposition in zip(
+                        sorted(admitted_by_revision, key=lambda revision_id: (
+                            str(admitted_by_revision[revision_id].source_object.source_object_id),
+                            str(revision_id),
+                        )),
+                        dispositions,
+                        strict=True,
+                    )
+                ),
                 manifest_version=initial["manifest_version"],
                 manifest_sha256=initial["manifest_sha256"],
             )
@@ -1842,6 +1927,7 @@ class PostgreSQLPrivateASRStorage:
             if not isinstance(authz, PrivateArtifactDeletionAuthorization) or (
                 not authz.authorized
                 or authz.request_digest != request.calculate_digest()
+                or authz.revocation_epoch < 1
                 or authz.valid_until <= now
             ):
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
@@ -1880,6 +1966,8 @@ class PostgreSQLPrivateASRStorage:
                     private_asr_artifacts.c.artifact_id == reference.reference_id,
                     private_asr_artifacts.c.status != "tombstoned",
                 ).values(status="tombstoned", tombstoned_at=now, payload=b""))
+                if authz.valid_until <= self._clock():
+                    raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
                 await transaction.commit()
             except asyncio.CancelledError:
                 raise

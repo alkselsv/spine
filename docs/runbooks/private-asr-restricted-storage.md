@@ -179,9 +179,45 @@ visibility in the same transaction. Staging cleanup is restricted to exact
 staging artifacts and also requires deletion authority. Missing authority, a
 future deadline, wrong artifact type, mismatched profile, forged reference or
 audit failure leaves the artifact unchanged. These fixture authorities are
-test-only; production wiring remains denied until #812 exists. Clearing a
+test-only; production wiring remains denied pending canonical/external approval
+and revocation qualification. Clearing a
 PostgreSQL payload and writing a tombstone do not prove physical erasure from
 WAL, replicas or backups.
+
+### Canonical deletion ownership (#812)
+
+The canonical owner of the derived-artifact deletion transition is
+`PostgreSQLPrivateASRStorage`, because it owns the artifact row and is the
+existing PostgreSQL UoW coordinator. It does not own retention terms, source
+tombstones, access policy or audit records: those remain with canonical
+RetentionApplicability/approved-terms ports, source lifecycle, AccessPolicy and
+audit infrastructure. The existing `PrivateArtifactDeletionAuthority` port
+is the provider-neutral decision boundary; no second registry or deletion
+table is introduced.
+
+The deletion request digest binds workspace/environment, the fixed private ASR
+purpose, exact artifact identity/kind/action/state digest, every source object,
+revision and revision digest, and each current applicability ID/generation,
+policy and approved-terms version/digest, derived deadline, exception/hold
+references and deletion/backup obligations. Resolved active holds deny before
+the request is authorized. The authority result binds that digest and carries
+an authority version, revocation epoch and validity bound. The storage adapter
+checks expiry again immediately before commit. Expiration discovery is still a
+separate operation; reaching a deadline is not permission. Authorization,
+tombstone transition, primary payload visibility removal and minimal audit
+evidence remain explicit steps in one transaction after canonical source and
+retention locks.
+
+Lock ordering remains the existing shared order: source lifecycle, workspace /
+environment generation, exact revision admission, current source head,
+current retention applicability, current AccessPolicy, then exact artifact
+row. Source tombstone semantics from #735/#736 fence source revisions and do
+not authorize deletion of derived artifacts. If external approval/revocation
+cannot participate in this transaction, #813 must supply a coordinated fence;
+a point-in-time callback is not a production substitute. Production
+composition therefore stays denied. Tombstoning and clearing the primary
+payload do not establish physical erasure from WAL, replicas, snapshots or
+backups; those remain operator obligations requiring separate evidence.
 
 Private reads acquire canonical source/retention/AccessPolicy fences before
 share-locking exact original/report artifact rows through payload selection.
