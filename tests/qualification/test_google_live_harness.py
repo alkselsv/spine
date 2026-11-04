@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
@@ -58,6 +59,9 @@ from spine.application.persistence.context import (
 )
 from spine.domain.common import ContextOrigin
 from spine.infrastructure.diagnostics import RecordingDiagnosticSink
+from spine.infrastructure.private_qualification_artifacts import (
+    FilePrivateQualificationArtifactWriter,
+)
 from spine.domain.connections.google import (
     GoogleConnection,
     GoogleConnectionStatus,
@@ -590,7 +594,11 @@ async def test_live_harness_writes_only_sanitized_versioned_evidence(
 
     report = await runner.run(environment_opt_in=True)
     report_path = tmp_path / "google-live-report.json"
-    write_google_live_report(report_path, report)
+    write_google_live_report(
+        report_path,
+        report,
+        artifact_writer=FilePrivateQualificationArtifactWriter(),
+    )
     serialized = report_path.read_text(encoding="utf-8")
 
     assert report.status == "passed"
@@ -607,6 +615,22 @@ async def test_live_harness_writes_only_sanitized_versioned_evidence(
         '"raw_error":',
     ):
         assert forbidden not in serialized.lower()
+
+
+def test_live_report_serializes_exact_versioned_json(tmp_path: Path) -> None:
+    report = _valid_report()
+    report_path = tmp_path / "google-live-report.json"
+
+    write_google_live_report(
+        report_path,
+        report,
+        artifact_writer=FilePrivateQualificationArtifactWriter(),
+    )
+
+    serialized = report_path.read_text(encoding="utf-8")
+    assert json.loads(serialized) == report.model_dump(mode="json")
+    assert serialized.endswith("}\n")
+    assert not serialized.endswith("}\n\n")
 
 
 def test_live_config_rejects_targets_that_do_not_equal_exact_allowlist() -> None:

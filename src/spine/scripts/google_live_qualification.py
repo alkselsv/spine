@@ -19,6 +19,9 @@ from spine.connectors.google_live_qualification import (
     GoogleLiveQualificationRunner,
     write_google_live_report,
 )
+from spine.infrastructure.private_qualification_artifacts import (
+    FilePrivateQualificationArtifactWriter,
+)
 
 GoogleLiveCompositionFactory = Callable[
     [GoogleLiveQualificationConfig], GoogleLiveQualificationRunner
@@ -107,7 +110,11 @@ async def _run(
             "the approved live composition does not match the requested manifest"
         )
     report = await runner.run(environment_opt_in=environment_opt_in)
-    write_google_live_report(report_path, report)
+    write_google_live_report(
+        report_path,
+        report,
+        artifact_writer=FilePrivateQualificationArtifactWriter(),
+    )
     return 0 if report.status == "passed" else 1
 
 

@@ -3,23 +3,25 @@
 from __future__ import annotations
 
 import os
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
 
 def create_private_qualification_file(path: Path, content: bytes) -> None:
-    """Create one owner-only local artifact without replacing an existing file."""
+    """Atomically publish one owner-only artifact without replacing evidence."""
 
     if not path.is_absolute() or path.parent.resolve(strict=True) != path.parent:
         raise OSError("private output path is not an approved local path")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    temporary = path.parent / f".{path.name}.pending-{secrets.token_hex(16)}"
     descriptor: int | None = None
+    temporary_created = False
     try:
-        descriptor = os.open(path, flags, 0o600)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(temporary, flags, 0o600)
+        temporary_created = True
+        os.fchmod(descriptor, 0o600)
         written = 0
         while written < len(content):
             count = os.write(descriptor, content[written:])
@@ -27,18 +29,28 @@ def create_private_qualification_file(path: Path, content: bytes) -> None:
                 raise OSError("private output write did not make progress")
             written += count
         os.fsync(descriptor)
-    except Exception:
+        os.close(descriptor)
+        descriptor = None
+        os.link(temporary, path, follow_symlinks=False)
+    except BaseException:
         if descriptor is not None:
-            os.close(descriptor)
-            descriptor = None
             try:
-                os.unlink(path)
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temporary_created:
+            try:
+                os.unlink(temporary)
             except OSError:
                 pass
         raise
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
+    else:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            # The final link already contains the complete, fsynced evidence.
+            # A private leftover link must not make publication ambiguous.
+            pass
 
 
 @dataclass(frozen=True, slots=True)
