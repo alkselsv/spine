@@ -1,0 +1,110 @@
+{
+  "schema_version": "issue-655-provider-neutral-sources:v1",
+  "ticket": 655,
+  "implementation_status": "implemented",
+  "qualification_status": "offline_qualified",
+  "production_ready": false,
+  "qualification_boundary": "provider-connection-admission-observation-canonical-outbox-authorized-retrieval-operator-inspection",
+  "live_qualification": {
+    "google": "NOT_VERIFIED",
+    "yandex_disk": "NOT_VERIFIED",
+    "bitrix24": "NOT_VERIFIED",
+    "mounted_filesystem": "NOT_VERIFIED"
+  },
+  "provider_live_gates": {
+    "google": {"ticket": 615, "state": "OPEN", "outcome": "NOT_VERIFIED"},
+    "yandex_disk": {"ticket": 678, "state": "CLOSED", "outcome": "NOT_VERIFIED"},
+    "bitrix24": {"ticket": 679, "state": "OPEN", "outcome": "NOT_VERIFIED"},
+    "mounted_filesystem": {"ticket": 680, "state": "OPEN", "outcome": "NOT_VERIFIED"}
+  },
+  "open_live_gates": [615, 679, 680],
+  "privacy": {
+    "synthetic_fakes_only": true,
+    "credentials_recorded": false,
+    "signed_urls_recorded": false,
+    "protected_names_recorded": false,
+    "content_excerpts_recorded": false,
+    "raw_provider_errors_recorded": false
+  },
+  "acceptance_criteria": {
+    "shared_canonical_path": {
+      "status": "PASS",
+      "evidence": [
+        "tests/qualification/test_issue677_cross_provider_offline.py::test_provider_binary_runs_through_real_adapter_and_admission",
+        "tests/qualification/test_issue677_cross_provider_offline.py::test_authorized_retrieval_preserves_exact_ingested_lineage"
+      ]
+    },
+    "google_v1_compatibility": {
+      "status": "PASS",
+      "evidence": [
+        "tests/qualification/test_issue614_google_offline_qualification.py::test_issue614_traceability_matrix_covers_required_scenarios",
+        "tests/domain/test_provider_connections.py::test_google_v1_connection_maps_explicitly_without_changing_scope_or_generations"
+      ]
+    },
+    "immutable_scoped_refs_only_connections": {
+      "status": "PASS",
+      "evidence": [
+        "tests/application/test_provider_connection_management.py::test_approved_configuration_creates_immutable_refs_only_version",
+        "tests/application/test_provider_connection_management.py::test_denied_configuration_stops_before_provider_and_hides_approval"
+      ]
+    },
+    "explicit_capability_outcomes": {
+      "status": "PASS",
+      "evidence": [
+        "tests/domain/test_provider_connections.py::test_unsupported_or_unqualified_capability_cannot_satisfy_guarantee",
+        "tests/application/test_provider_read_admission.py::test_required_guarantee_is_rejected_before_provider_call",
+        "tests/api/test_provider_connections.py::test_operator_configures_and_inspects_safe_connection_summary",
+        "web/src/features/connections/ProviderConnectionsPage.test.tsx::test_source_capability_details_show_supported_and_unqualified_outcomes"
+      ]
+    },
+    "typed_observation_representations": {
+      "status": "PASS",
+      "evidence": [
+        "tests/qualification/test_issue677_cross_provider_offline.py::test_typed_representations_keep_one_common_canonical_retrieval_contract"
+      ]
+    },
+    "durable_checkpoint_after_acceptance": {
+      "status": "PASS",
+      "evidence": [
+        "tests/application/test_yandex_disk_reconciliation.py::test_pages_commit_opaque_checkpoint_only_after_canonical_effects_are_accepted",
+        "tests/application/test_yandex_disk_reconciliation.py::test_interrupted_page_replays_with_stable_item_identity_and_keeps_prior_checkpoint"
+      ]
+    },
+    "conservative_lifecycle_classification": {
+      "status": "PASS",
+      "evidence": [
+        "tests/application/test_yandex_disk_reconciliation.py::test_incomplete_and_provider_failures_record_distinct_state_without_tombstone",
+        "tests/application/test_mounted_filesystem_reconciliation.py::test_missing_root_marks_connection_unavailable_without_mass_tombstone"
+      ]
+    },
+    "identity_assurance_controls_continuity": {
+      "status": "PASS",
+      "evidence": [
+        "tests/application/test_mounted_filesystem_reconciliation.py::test_path_scoped_rename_is_old_absence_plus_new_observation",
+        "tests/application/test_yandex_disk_reconciliation.py::test_path_scoped_reappearance_creates_new_source_and_records_non_equivalence"
+      ]
+    },
+    "revocation_denies_without_history_erasure": {
+      "status": "PASS",
+      "evidence": [
+        "tests/application/test_provider_read_admission.py::test_withdrawn_source_is_denied_before_provider_read",
+        "tests/application/test_transcript_publication.py::test_revoked_publication_is_unavailable_without_deleting_history"
+      ]
+    },
+    "safe_operator_api_and_ui": {
+      "status": "PASS",
+      "evidence": [
+        "tests/api/test_provider_connections.py::test_operator_configures_and_inspects_safe_connection_summary",
+        "web/src/features/connections/ProviderConnectionsPage.test.tsx::test_catalog_shows_every_approved_provider_connection_and_safe_scope_contracts",
+        "web/src/features/connections/ProviderConnectionsPage.test.tsx::test_synthetic_status_is_identified_as_ui_qualification_not_provider_pass",
+        "web/src/features/connections/ProviderConnectionsPage.test.tsx::test_permission_denied_state_never_renders_provider_or_mailbox_payload"
+      ]
+    },
+    "connection_is_not_business_authority": {
+      "status": "PASS",
+      "evidence": [
+        "tests/qualification/test_issue671_bitrix24_crm_material.py::test_issue671_accepted_handoff_has_no_disclosure_or_pricing_authority"
+      ]
+    }
+  }
+}

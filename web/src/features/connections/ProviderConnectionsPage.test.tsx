@@ -13,18 +13,31 @@ const otherScope: Scope = { workspaceId: '10000000-0000-4000-8000-000000000002',
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-describe('Approved mailbox connection control plane', () => {
-  it('test_catalog_shows_only_approved_mailbox_connections_and_safe_scope_contracts', async () => {
+describe('Approved source connection control plane', () => {
+  it('test_catalog_shows_every_approved_provider_connection_and_safe_scope_contracts', async () => {
     const gmail = connection({ connection_id: id(10), connection_version_id: id(11), provider_kind: 'google', approved_resource_scope_references: ['mailbox-scope:gmail:approved:10'], permitted_operations: ['enumerate_mailbox', 'read_raw_message', 'read_attachment'], capabilities: [{ kind: 'mailbox_enumeration', status: 'supported', qualification_reference: 'offline-gmail-v1' }, { kind: 'raw_message_read', status: 'supported', qualification_reference: 'offline-gmail-v1' }], mailbox_sync: { state: 'complete', last_complete_at: '2026-11-03T05:42:00Z', lag_seconds: 248 } });
     const yandexMail = connection({ connection_id: id(20), connection_version_id: id(21), provider_kind: 'yandex_mail', approved_resource_scope_references: ['mailbox-scope:yandex:approved:20'], permitted_operations: ['enumerate_folder_uids', 'read_message_metadata'], capabilities: [{ kind: 'message_metadata_read', status: 'supported', qualification_reference: 'offline-imap-v1' }], mailbox_sync: { state: 'partial', last_complete_at: '2026-11-02T20:15:00Z', lag_seconds: 35280 } });
-    const drive = connection({ provider_kind: 'yandex_disk', mailbox_sync: null, permitted_operations: [] });
-    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(collection([gmail, yandexMail, drive]))));
+    const googleDrive = connection({ connection_id: id(30), connection_version_id: id(31), provider_kind: 'google', mailbox_sync: null, permitted_operations: [] });
+    const yandexDisk = connection({ connection_id: id(32), connection_version_id: id(33), provider_kind: 'yandex_disk', mailbox_sync: null, permitted_operations: [] });
+    const bitrix24 = connection({ connection_id: id(40), connection_version_id: id(41), provider_kind: 'bitrix24', mailbox_sync: null, permitted_operations: [] });
+    const filesystem = connection({ connection_id: id(50), connection_version_id: id(51), provider_kind: 'mounted_filesystem', mailbox_sync: null, permitted_operations: [] });
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(collection([gmail, googleDrive, yandexMail, yandexDisk, bitrix24, filesystem]))));
     renderPage();
 
     expect(await screen.findByRole('heading', { name: 'Gmail' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Google Drive / Sheets' })).toBeVisible();
     expect(screen.getByRole('heading', { name: 'Yandex Mail' })).toBeVisible();
-    expect(screen.queryByText('yandex_disk')).not.toBeInTheDocument();
-    await userEvent.setup().click(screen.getByRole('button', { name: /Открыть Gmail/ }));
+    expect(screen.getByRole('heading', { name: 'Yandex Disk' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Bitrix24 Disk / CRM' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Mounted filesystem' })).toBeVisible();
+  });
+
+  it('test_mailbox_details_show_approved_scope_operations_and_sync_metrics', async () => {
+    const gmail = connection({ connection_id: id(10), connection_version_id: id(11), provider_kind: 'google', approved_resource_scope_references: ['mailbox-scope:gmail:approved:10'], permitted_operations: ['enumerate_mailbox', 'read_raw_message', 'read_attachment'], capabilities: [{ kind: 'mailbox_enumeration', status: 'supported', qualification_reference: 'offline-gmail-v1' }], mailbox_sync: { state: 'complete', last_complete_at: '2026-11-03T05:42:00Z', lag_seconds: 248 } });
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(collection([gmail]))));
+    renderPage();
+
+    await userEvent.setup().click(await screen.findByRole('button', { name: /Открыть Gmail/ }));
     expect(screen.getByTestId('route-location')).toHaveTextContent(`connection=${id(10)}`);
     expect(screen.getByText('mailbox-scope:gmail:approved:10')).toBeVisible();
     expect(screen.getByText('Чтение исходного сообщения')).toBeVisible();
@@ -34,15 +47,27 @@ describe('Approved mailbox connection control plane', () => {
     expect(document.body).not.toHaveTextContent('protected@example.test');
   });
 
-  it('test_loading_then_mailbox_empty_state_is_explicit', async () => {
+  it('test_source_capability_details_show_supported_and_unqualified_outcomes', async () => {
+    const yandexDisk = connection({ provider_kind: 'yandex_disk', mailbox_sync: null, permitted_operations: [], capabilities: [{ kind: 'incremental_change_discovery', status: 'unqualified', qualification_reference: null }, { kind: 'lifecycle_evidence', status: 'supported', qualification_reference: id(32) }] });
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(collection([yandexDisk]))));
+    renderPage();
+
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Открыть Yandex Disk' }));
+    expect(screen.getByText('incremental_change_discovery')).toBeVisible();
+    expect(screen.getByText('Не квалифицировано')).toBeVisible();
+    expect(screen.getByText('lifecycle_evidence')).toBeVisible();
+    expect(screen.getByText('Поддерживается')).toBeVisible();
+  });
+
+  it('test_loading_then_source_connection_empty_state_is_explicit', async () => {
     let release!: (response: Response) => void;
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { release = resolve; })));
     renderPage();
 
-    expect(screen.getByRole('status')).toHaveTextContent('Загружаем почтовые подключения');
+    expect(screen.getByRole('status')).toHaveTextContent('Загружаем подключения источников');
     await waitFor(() => expect(release).toBeTypeOf('function'));
     release(Response.json(collection([])));
-    expect(await screen.findByText('Почтовые подключения не настроены')).toBeVisible();
+    expect(await screen.findByText('Подключения источников не настроены')).toBeVisible();
   });
 
   it('test_stale_snapshot_remains_visible_while_live_inspection_is_pending', async () => {
@@ -92,7 +117,7 @@ describe('Approved mailbox connection control plane', () => {
 
     await userEvent.setup().click(await screen.findByRole('button', { name: /Открыть Yandex Mail/ }));
     expect(screen.getByText(/квалифицирует только отображение безопасного API-контракта/i)).toBeVisible();
-    expect(screen.getByText(/не подтверждает live-доступ или работоспособность Gmail и Yandex Mail/i)).toBeVisible();
+    expect(screen.getByText(/не подтверждает live-доступ или работоспособность внешнего провайдера/i)).toBeVisible();
     expect(document.body).not.toHaveTextContent(/provider pass/i);
   });
 
@@ -124,7 +149,7 @@ describe('Approved mailbox connection control plane', () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(Response.json(collection([]))).mockResolvedValueOnce(structuredError(404, 'spine.source_connections.not_found', { credential: 'oauth-token-secret' }));
     vi.stubGlobal('fetch', fetch);
     renderPage();
-    await screen.findByText('Почтовые подключения не настроены');
+    await screen.findByText('Подключения источников не настроены');
 
     await openAndSubmitConfiguration();
     expect(await screen.findByRole('alert')).toHaveTextContent('Approval недействителен');
@@ -193,7 +218,7 @@ describe('Approved mailbox connection control plane', () => {
       .mockResolvedValueOnce(Response.json(envelope(created)));
     vi.stubGlobal('fetch', fetch);
     renderPage();
-    await screen.findByText('Почтовые подключения не настроены');
+    await screen.findByText('Подключения источников не настроены');
 
     await openAndSubmitConfiguration();
     expect(await screen.findByText('Одобренная конфигурация сохранена.')).toBeVisible();
@@ -210,7 +235,7 @@ describe('Approved mailbox connection control plane', () => {
       .mockResolvedValueOnce(Response.json(envelope(created)));
     vi.stubGlobal('fetch', fetch);
     renderPage();
-    await screen.findByText('Почтовые подключения не настроены');
+    await screen.findByText('Подключения источников не настроены');
 
     const user = userEvent.setup();
     await user.click(screen.getAllByRole('button', { name: 'Настроить по ссылкам' })[0]!);

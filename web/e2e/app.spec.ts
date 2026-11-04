@@ -138,7 +138,7 @@ test('test_synthetic_ui_qualification_renders_safe_sync_states_without_provider_
   await expect(page.getByRole('heading', { name: 'Разрешённые операции' })).toBeVisible();
   await expect(page.getByText('Чтение исходного сообщения')).toBeVisible();
   await expect(page.getByText(/квалифицирует только отображение безопасного API-контракта/i)).toBeVisible();
-  await expect(page.getByText(/не подтверждает live-доступ или работоспособность Gmail и Yandex Mail/i)).toBeVisible();
+  await expect(page.getByText(/не подтверждает live-доступ или работоспособность внешнего провайдера/i)).toBeVisible();
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Одобренная область' })).toBeVisible();
 });
@@ -197,7 +197,7 @@ test('test_mailbox_configuration_retries_idempotently_then_clears_state_on_works
 
   await page.getByRole('button', { name: /Рабочая область: Основная/ }).click();
   await page.getByRole('menuitemradio', { name: 'Продажи' }).click();
-  await expect(page.getByText('Почтовые подключения не настроены')).toBeVisible();
+  await expect(page.getByText('Подключения источников не настроены')).toBeVisible();
   await expect(page.getByText(/Повтор команды распознан/)).not.toBeVisible();
   await expect(page).toHaveURL(new RegExp(`workspace=${salesWorkspace}`));
 });
@@ -212,9 +212,9 @@ test('test_mailbox_loading_resolves_to_explicit_empty_state', async ({ page }) =
   });
 
   await page.goto('/settings/connections');
-  await expect(page.getByRole('status', { name: 'Загрузка почтовых коннекторов' })).toContainText('Загружаем почтовые подключения');
+  await expect(page.getByRole('status', { name: 'Загрузка подключений источников' })).toContainText('Загружаем подключения источников');
   releaseLoading();
-  await expect(page.getByText('Почтовые подключения не настроены')).toBeVisible();
+  await expect(page.getByText('Подключения источников не настроены')).toBeVisible();
 });
 
 test('test_mailbox_permission_denial_hides_protected_payload', async ({ page }) => {
