@@ -3710,16 +3710,38 @@ async def test_postgresql_private_asr_aggregate_persists_identity_keyed_retentio
         ))).scalar_one()
 
     assert len(evidence) == 2
-    by_revision = {item["source_revision_id"]: item for item in evidence}
-    assert set(by_revision) == {
-        str(prepared.case.revision.revision_id),
-        str(second_case.revision.revision_id),
+    by_identity = {
+        (
+            item["workspace_id"],
+            item["environment_id"],
+            item["source_object_id"],
+            item["source_revision_id"],
+            item["source_revision_digest"],
+        ): item
+        for item in evidence
+    }
+    assert set(by_identity) == {
+        (
+            str(source_case.source.workspace_id),
+            str(source_case.source.environment_id),
+            str(source_case.source.source_object_id),
+            str(source_case.revision.revision_id),
+            source_case.revision.revision_digest,
+        )
+        for source_case in (prepared.case, second_case)
     }
     for source_case, applicability in (
         (prepared.case, prepared.applicability),
         (second_case, second_applicability),
     ):
-        item = by_revision[str(source_case.revision.revision_id)]
+        identity = (
+            str(source_case.source.workspace_id),
+            str(source_case.source.environment_id),
+            str(source_case.source.source_object_id),
+            str(source_case.revision.revision_id),
+            source_case.revision.revision_digest,
+        )
+        item = by_identity[identity]
         assert item["schema_version"] == "private-asr-aggregate-retention-binding:v2"
         assert item["workspace_id"] == str(source_case.source.workspace_id)
         assert item["environment_id"] == str(source_case.source.environment_id)

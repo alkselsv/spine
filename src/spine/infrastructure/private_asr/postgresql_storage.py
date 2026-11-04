@@ -7,7 +7,7 @@ transaction and RLS scope. No filesystem path or public URL is created.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -195,6 +195,67 @@ def _source_identity_key(
         source_revision_id,
         source_revision_digest,
     )
+
+
+def _retention_dispositions_by_identity(
+    evidence: object,
+    expected_identities: Collection[tuple[UUID, UUID, UUID, UUID, str]],
+    *,
+    schema_version: str,
+) -> tuple[dict[tuple[UUID, UUID, UUID, UUID, str], object], int]:
+    """Validate a complete v1/v2 retention evidence set against source keys."""
+    expected = set(expected_identities)
+    if (
+        not expected
+        or not isinstance(evidence, list)
+        or len(evidence) != len(expected)
+    ):
+        raise ValueError("retention evidence does not match source identities")
+    if not all(isinstance(item, dict) for item in evidence):
+        raise ValueError("retention evidence entries must be objects")
+
+    versioned = [item.get("schema_version") == schema_version for item in evidence]
+    if len(set(versioned)) != 1:
+        raise ValueError("retention evidence versions must be consistent")
+    version = 2 if versioned[0] else 1
+    dispositions: dict[tuple[UUID, UUID, UUID, UUID, str], object] = {}
+    for item in evidence:
+        try:
+            if version == 2:
+                if set(item) != {
+                    "schema_version", "workspace_id", "environment_id",
+                    "source_object_id", "source_revision_id",
+                    "source_revision_digest", "disposition",
+                }:
+                    raise ValueError
+                identity = _source_identity_key(
+                    workspace_id=UUID(item["workspace_id"]),
+                    environment_id=UUID(item["environment_id"]),
+                    source_object_id=UUID(item["source_object_id"]),
+                    source_revision_id=UUID(item["source_revision_id"]),
+                    source_revision_digest=item["source_revision_digest"],
+                )
+            else:
+                if (
+                    len(expected) != 1
+                    or set(item) != {"source_revision_id", "disposition"}
+                ):
+                    raise ValueError
+                identity = next(iter(expected))
+                if UUID(item["source_revision_id"]) != identity[3]:
+                    raise ValueError
+            if (
+                identity not in expected
+                or identity in dispositions
+                or not isinstance(item["disposition"], dict)
+            ):
+                raise ValueError
+            dispositions[identity] = item["disposition"]
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("retention evidence has an invalid source identity") from None
+    if set(dispositions) != expected:
+        raise ValueError("retention evidence does not match source identities")
+    return dispositions, version
 
 
 def _aggregate_retention_evidence(
@@ -1247,52 +1308,16 @@ class PostgreSQLPrivateASRStorage:
             if len(set(source_identity_keys)) != len(source_identity_keys):
                 raise PrivateASRStorageDenied("Private ASR aggregate lineage denied.")
 
-            stored_report_dispositions: dict[
-                tuple[UUID, UUID, UUID, UUID, str], object
-            ] = {}
-            report_retention_evidence = report_row["retention_disposition"]
-            if not isinstance(report_retention_evidence, list) or len(
-                report_retention_evidence
-            ) != len(source_identity_keys):
-                raise PrivateASRStorageDenied("Private ASR aggregate lineage denied.")
-            for item in report_retention_evidence:
-                if not isinstance(item, dict):
-                    raise PrivateASRStorageDenied("Private ASR aggregate lineage denied.")
-                try:
-                    if item.get("schema_version") == "private-asr-report-retention-binding:v2":
-                        if set(item) != {
-                            "schema_version", "workspace_id", "environment_id",
-                            "source_object_id", "source_revision_id",
-                            "source_revision_digest", "disposition",
-                        }:
-                            raise ValueError
-                        identity = _source_identity_key(
-                            workspace_id=UUID(item["workspace_id"]),
-                            environment_id=UUID(item["environment_id"]),
-                            source_object_id=UUID(item["source_object_id"]),
-                            source_revision_id=UUID(item["source_revision_id"]),
-                            source_revision_digest=item["source_revision_digest"],
-                        )
-                    elif (
-                        len(source_identity_keys) == 1
-                        and set(item) == {"source_revision_id", "disposition"}
-                        and UUID(item["source_revision_id"])
-                        == source_identity_keys[0][3]
-                    ):
-                        identity = source_identity_keys[0]
-                    else:
-                        raise ValueError
-                    if identity not in source_identity_keys or identity in stored_report_dispositions:
-                        raise ValueError
-                    if not isinstance(item["disposition"], dict):
-                        raise ValueError
-                    stored_report_dispositions[identity] = item["disposition"]
-                except (KeyError, TypeError, ValueError):
-                    raise PrivateASRStorageDenied(
-                        "Private ASR aggregate lineage denied."
-                    ) from None
-            if set(stored_report_dispositions) != set(source_identity_keys):
-                raise PrivateASRStorageDenied("Private ASR aggregate lineage denied.")
+            try:
+                stored_report_dispositions, _ = _retention_dispositions_by_identity(
+                    report_row["retention_disposition"],
+                    source_identity_keys,
+                    schema_version="private-asr-report-retention-binding:v2",
+                )
+            except ValueError:
+                raise PrivateASRStorageDenied(
+                    "Private ASR aggregate lineage denied."
+                ) from None
 
             originals_by_identity: dict[
                 tuple[UUID, UUID, UUID, UUID, str], Any
@@ -2110,15 +2135,6 @@ class PostgreSQLPrivateASRStorage:
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 source_ids = {item["source_revision_id"] for item in binding_rows}
                 stored_retention = row["retention_disposition"]
-                if not isinstance(stored_retention, list) or not stored_retention:
-                    raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
-                versioned_retention = [
-                    item.get("schema_version") == "private-asr-report-retention-binding:v2"
-                    for item in stored_retention if isinstance(item, dict)
-                ]
-                if len(versioned_retention) != len(stored_retention) or len(set(versioned_retention)) != 1:
-                    raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
-                retention_binding_version = 2 if versioned_retention[0] else 1
                 report_bindings = tuple(
                     PrivateReportSourceBinding(
                         record_id=item["source_record_id"], dataset_id=row["dataset_id"],
@@ -2140,43 +2156,15 @@ class PostgreSQLPrivateASRStorage:
                 }
                 if len(expected_source_keys) != len(report_bindings):
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
-                for item in stored_retention:
-                    try:
-                        if retention_binding_version == 2:
-                            if set(item) != {
-                                "schema_version", "workspace_id", "environment_id",
-                                "source_object_id", "source_revision_id",
-                                "source_revision_digest", "disposition",
-                            }:
-                                raise ValueError
-                            identity = _source_identity_key(
-                                workspace_id=UUID(item["workspace_id"]),
-                                environment_id=UUID(item["environment_id"]),
-                                source_object_id=UUID(item["source_object_id"]),
-                                source_revision_id=UUID(item["source_revision_id"]),
-                                source_revision_digest=item["source_revision_digest"],
-                            )
-                        else:
-                            if (
-                                len(expected_source_keys) != 1
-                                or set(item) != {"source_revision_id", "disposition"}
-                            ):
-                                raise ValueError
-                            identity = next(iter(expected_source_keys))
-                            if UUID(item["source_revision_id"]) != identity[3]:
-                                raise ValueError
-                        if (
-                            identity not in expected_source_keys
-                            or identity in stored_report_dispositions
-                            or not isinstance(item["disposition"], dict)
-                        ):
-                            raise ValueError
-                        stored_report_dispositions[identity] = item["disposition"]
-                    except (KeyError, TypeError, ValueError):
-                        raise PrivateASRStorageDenied(
-                            "Private ASR storage authorization denied."
-                        ) from None
-                if set(stored_report_dispositions) != expected_source_keys:
+                try:
+                    stored_report_dispositions, retention_binding_version = (
+                        _retention_dispositions_by_identity(
+                            stored_retention,
+                            expected_source_keys,
+                            schema_version="private-asr-report-retention-binding:v2",
+                        )
+                    )
+                except ValueError:
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 if self._manifest_lineage is None or not await self._manifest_lineage.verify_current(
                     transaction=session, context=context, dataset_id=row["dataset_id"],
