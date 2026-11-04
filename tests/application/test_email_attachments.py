@@ -19,6 +19,7 @@ from spine.application.processing_disposition import (
     OrdinaryProcessingEligibilityReason,
 )
 from spine.domain.sources.original_reference import ObjectReference
+from spine.domain.sources.retention import RetentionArtifactClass
 from spine.domain.artifacts.email_attachment import (
     EmailAttachmentWriteReceipt,
     email_attachment_id,
@@ -130,6 +131,24 @@ class FakeOriginalWriter:
         return domain_receipt
 
 
+class FakeGovernance:
+    def __init__(self, denied_class=None, *, deny_plan=False):
+        self.denied_class = denied_class
+        self.deny_plan = deny_plan
+        self.plans = []
+        self.calls = []
+
+    async def authorize_plan(self, plan):
+        self.plans.append(plan)
+        if self.deny_plan:
+            raise PermissionError("synthetic.txt must stay private")
+
+    async def authorize_processing(self, artifact):
+        self.calls.append(artifact)
+        if artifact.artifact_class is self.denied_class:
+            raise PermissionError("synthetic.txt must stay private")
+
+
 def _parser():
     return MimeParser(profile=MimeParserProfile(
         max_total_bytes=20_000,
@@ -141,7 +160,10 @@ def _parser():
     ))
 
 
-def _processor(*, parent=None, gateway=None, repository=None, writer=None, parser=None, max_bytes=10_000):
+def _processor(
+    *, parent=None, gateway=None, repository=None, writer=None, parser=None,
+    max_bytes=10_000, governance=None,
+):
     profile = EmailAttachmentExtractionProfile(
         max_attachment_bytes=max_bytes,
         max_attachment_parts=10,
@@ -154,6 +176,7 @@ def _processor(*, parent=None, gateway=None, repository=None, writer=None, parse
         parser=parser or _parser(),
         profile=profile,
         originals=writer or FakeOriginalWriter(),
+        governance=governance or FakeGovernance(),
     )
 
 
@@ -355,6 +378,59 @@ async def test_wrong_tenant_parent_is_rejected_before_read_or_child_creation() -
     assert await repository.list_for_revision(
         workspace_id=WORKSPACE, environment_id=ENVIRONMENT, source_revision_id=REVISION
     ) == ()
+
+
+@pytest.mark.asyncio
+async def test_governance_denial_blocks_attachment_original_before_object_write() -> None:
+    repository = InMemoryEmailAttachmentRepository()
+    writer = FakeOriginalWriter()
+    governance = FakeGovernance(
+        denied_class=RetentionArtifactClass.EMAIL_ATTACHMENT_ORIGINAL
+    )
+    processor = _processor(
+        repository=repository,
+        writer=writer,
+        governance=governance,
+    )
+
+    with pytest.raises(EmailAttachmentUnavailable) as error:
+        await _process(processor)
+
+    assert str(error.value) == "email attachment is unavailable"
+    assert writer.calls == []
+    assert tuple(item.artifact_class for item in governance.calls) == (
+        RetentionArtifactClass.EMAIL_RAW_MIME,
+        RetentionArtifactClass.EMAIL_ATTACHMENT_ORIGINAL,
+    )
+    assert await repository.list_for_revision(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        source_revision_id=REVISION,
+    ) == ()
+
+
+@pytest.mark.asyncio
+async def test_attachment_plan_denial_stops_before_raw_read_or_extraction() -> None:
+    gateway = FakeGateway()
+    writer = FakeOriginalWriter()
+    governance = FakeGovernance(deny_plan=True)
+    processor = _processor(
+        gateway=gateway,
+        writer=writer,
+        governance=governance,
+    )
+
+    with pytest.raises(EmailAttachmentUnavailable):
+        await _process(processor)
+
+    assert gateway.calls == []
+    assert writer.calls == []
+    assert governance.calls == []
+    assert governance.plans[0].artifact_classes == (
+        RetentionArtifactClass.EMAIL_RAW_MIME,
+        RetentionArtifactClass.EMAIL_ATTACHMENT_ORIGINAL,
+        RetentionArtifactClass.EMAIL_ATTACHMENT_ARTIFACT,
+    )
 
 
 @pytest.mark.asyncio

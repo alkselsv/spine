@@ -97,14 +97,23 @@ class _Effects:
         return applicability.audit_event_id, applicability.outbox_event_id
 
 
-def _applicability(case, context, *, identifier: int = 734100):
+def _applicability(
+    case,
+    context,
+    *,
+    identifier: int = 734100,
+    artifact_classes: tuple[RetentionArtifactClass, ...] = (
+        RetentionArtifactClass.ORIGINAL,
+        RetentionArtifactClass.PARSED_CONTENT,
+    ),
+):
     return RetentionApplicability(
         applicability_id=synthetic_uuid(identifier),
         workspace_id=case.source.workspace_id,
         environment_id=case.source.environment_id,
         target_kind=RetentionTargetKind.EXACT_SOURCE,
         source_object_id=case.source.source_object_id,
-        artifact_classes=(RetentionArtifactClass.ORIGINAL, RetentionArtifactClass.PARSED_CONTENT),
+        artifact_classes=artifact_classes,
         retention_policy_id=synthetic_uuid(identifier + 1),
         retention_policy_version_id=synthetic_uuid(identifier + 2),
         retention_policy_digest="a" * 64,
@@ -258,3 +267,56 @@ async def test_postgresql_retention_applicability_cas_allows_one_current_winner(
     assert sum(
         isinstance(item, RetentionApplicabilityConflictError) for item in results
     ) == 1
+
+
+async def test_postgresql_retention_binding_covers_each_email_derivative_class(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await _case(postgresql_adapter, 857000)
+    context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id,
+        case.source.environment_id,
+        "retention_applicability",
+    )
+    email_classes = (
+        RetentionArtifactClass.EMAIL_RAW_MIME,
+        RetentionArtifactClass.EMAIL_PARSED_BODY,
+        RetentionArtifactClass.EMAIL_ATTACHMENT_ORIGINAL,
+        RetentionArtifactClass.EMAIL_ATTACHMENT_ARTIFACT,
+        RetentionArtifactClass.EMAIL_PROJECTION,
+    )
+    applicability = _applicability(
+        case,
+        context,
+        identifier=857100,
+        artifact_classes=email_classes,
+    )
+    repository = _repository(postgresql_adapter)
+
+    recorded = await repository.record_applicability(applicability, context)
+    current = await repository.list_current_applicabilities(
+        RetentionSourceLineage(
+            source_object_id=case.source.source_object_id,
+            source_revision_id=case.revision.revision_id,
+            source_class=case.source.source_kind,
+        ),
+        context,
+    )
+    foreign = await _case(postgresql_adapter, 857200)
+    foreign_context = postgresql_adapter.ingestion_context(
+        foreign.source.workspace_id,
+        foreign.source.environment_id,
+        "retention_applicability",
+    )
+    async with postgresql_adapter.uow_factory(foreign_context) as uow:
+        hidden = await uow.execute_statement(
+            select(retention_applicabilities.c.applicability_id).where(
+                retention_applicabilities.c.applicability_id
+                == applicability.applicability_id
+            )
+        )
+        assert hidden.scalar_one_or_none() is None
+        await uow.rollback()
+
+    assert recorded.artifact_classes == email_classes
+    assert current == (recorded,)

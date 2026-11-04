@@ -19,6 +19,7 @@ from spine.application.processing_disposition import (
 from spine.application.storage.authorized_read import OriginalReadDenied
 from spine.domain.artifacts.email_html import EmailHtmlSanitizerProfile
 from spine.domain.artifacts.email_mime import MimeParseDisposition
+from spine.domain.sources.retention import RetentionArtifactClass
 from spine.infrastructure.persistence.email_artifacts import InMemoryEmailArtifactRepository
 from spine.ingestion.email_html import EmailHtmlSanitizer
 from spine.ingestion.email_mime import MimeParser, MimeParserProfile
@@ -88,7 +89,28 @@ class FakeGateway:
         return stream()
 
 
-def _processor(*, parser_profile=None, eligibility=None, gateway=None, parent=None, repository=None):
+class FakeGovernance:
+    def __init__(self, denied_class=None, *, deny_plan=False):
+        self.denied_class = denied_class
+        self.deny_plan = deny_plan
+        self.plans = []
+        self.calls = []
+
+    async def authorize_plan(self, plan):
+        self.plans.append(plan)
+        if self.deny_plan:
+            raise PermissionError("synthetic subject must stay private")
+
+    async def authorize_processing(self, artifact):
+        self.calls.append(artifact)
+        if artifact.artifact_class is self.denied_class:
+            raise PermissionError("synthetic subject must stay private")
+
+
+def _processor(
+    *, parser_profile=None, eligibility=None, gateway=None, parent=None,
+    repository=None, governance=None,
+):
     parser = MimeParser(profile=parser_profile or MimeParserProfile(
         max_total_bytes=10_000,
         max_header_bytes=5_000,
@@ -112,6 +134,7 @@ def _processor(*, parser_profile=None, eligibility=None, gateway=None, parent=No
         parser=parser,
         sanitizer=sanitizer,
         outbox_events=OutboxEventRegistry(),
+        governance=governance or FakeGovernance(),
     ), repo
 
 
@@ -278,6 +301,70 @@ async def test_original_integrity_mismatch_does_not_create_an_artifact() -> None
         environment_id=ENVIRONMENT,
         source_revision_id=REVISION,
     ) == ()
+
+
+@pytest.mark.asyncio
+async def test_retention_or_policy_denial_blocks_body_and_projection_persistence() -> None:
+    governance = FakeGovernance(
+        denied_class=RetentionArtifactClass.EMAIL_PROJECTION
+    )
+    processor, repository = _processor(governance=governance)
+
+    with pytest.raises(EmailArtifactUnavailable) as error:
+        await _process(processor)
+
+    assert str(error.value) == "email content is unavailable"
+    assert tuple(item.artifact_class for item in governance.calls) == (
+        RetentionArtifactClass.EMAIL_RAW_MIME,
+        RetentionArtifactClass.EMAIL_PARSED_BODY,
+        RetentionArtifactClass.EMAIL_PROJECTION,
+    )
+    assert await repository.list_for_revision(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        source_revision_id=REVISION,
+    ) == ()
+    assert await repository.projection_intent_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_raw_mime_governance_denial_stops_before_original_read() -> None:
+    gateway = FakeGateway()
+    governance = FakeGovernance(
+        denied_class=RetentionArtifactClass.EMAIL_RAW_MIME
+    )
+    processor, repository = _processor(
+        gateway=gateway,
+        governance=governance,
+    )
+
+    with pytest.raises(EmailArtifactUnavailable):
+        await _process(processor)
+
+    assert gateway.calls == []
+    assert await repository.projection_intent_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_derivative_plan_denial_stops_before_mime_processing() -> None:
+    gateway = FakeGateway()
+    governance = FakeGovernance(deny_plan=True)
+    processor, repository = _processor(
+        gateway=gateway,
+        governance=governance,
+    )
+
+    with pytest.raises(EmailArtifactUnavailable):
+        await _process(processor)
+
+    assert gateway.calls == []
+    assert governance.calls == []
+    assert governance.plans[0].artifact_classes == (
+        RetentionArtifactClass.EMAIL_RAW_MIME,
+        RetentionArtifactClass.EMAIL_PARSED_BODY,
+        RetentionArtifactClass.EMAIL_PROJECTION,
+    )
+    assert await repository.projection_intent_count() == 0
 
 
 @pytest.mark.asyncio
