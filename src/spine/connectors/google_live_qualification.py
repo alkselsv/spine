@@ -33,6 +33,9 @@ from spine.application.connections.google import (
 )
 from spine.application.diagnostics import DiagnosticEventRegistry, DiagnosticSink
 from spine.application.persistence.context import TrustedPersistenceContext
+from spine.application.private_qualification_artifacts import (
+    PrivateQualificationArtifactWriter,
+)
 from spine.connectors.google_api import (
     GoogleApiEndpoints,
     GoogleApiRequest,
@@ -815,13 +818,18 @@ def compose_google_live_qualification_runner(
     )
 
 
-def write_google_live_report(path: Path, report: GoogleLiveQualificationReport) -> None:
-    """Write only the closed, sanitized report schema."""
+def write_google_live_report(
+    path: Path,
+    report: GoogleLiveQualificationReport,
+    *,
+    artifact_writer: PrivateQualificationArtifactWriter,
+) -> None:
+    """Serialize the closed report contract through the private artifact port."""
 
-    path.write_text(
-        json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    payload = (
+        json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    artifact_writer.create(path, payload)
 
 
 __all__ = [
