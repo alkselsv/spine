@@ -123,6 +123,7 @@ private_asr_aggregate_exports = Table(
     Column("audit_receipt_id", PGUUID(as_uuid=True), nullable=False),
     Column("payload", JSONB, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("tombstoned_at", DateTime(timezone=True)),
 )
 Index(
     "uq_private_asr_aggregate_exports_idempotency",
@@ -223,6 +224,8 @@ class PostgreSQLPrivateASRStorage:
                             {"environment_id": str(scope.environment_id)})
         await self._execute(session, text("select set_config('spine.purpose', :purpose, true)"),
                             {"purpose": context.purpose.value})
+        await self._execute(session, text("select set_config('spine.operation', :operation, true)"),
+                            {"operation": context.operation.value})
 
     def _scope(self, context: TrustedPersistenceContext) -> tuple[UUID, UUID]:
         trusted = self._context(context)
@@ -1505,6 +1508,112 @@ class PostgreSQLPrivateASRStorage:
             raise
         except Exception:
             raise PrivateASRStorageDenied("Private ASR cleanup authorization denied.") from None
+
+    async def expire_aggregate_export(
+        self, reference: PrivateReference, *, policy_ref: PrivateReference,
+        context: TrustedPersistenceContext,
+    ) -> None:
+        """Tombstone one expired aggregate with current authority and audit in one UoW."""
+        workspace_id, environment_id = self._require_worker_operation(
+            context, "private_asr_retention_expiration"
+        )
+        if (reference.reference_kind != "private_asr_aggregate"
+                or self._uow_factory is None or self._deletion_authority is None):
+            raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+        now = self._clock()
+        async with self._uow_factory(context) as transaction:
+            await self._set_scope(transaction, context)
+            aggregate = (await self._execute(transaction, select(
+                private_asr_aggregate_exports,
+            ).where(
+                private_asr_aggregate_exports.c.workspace_id == workspace_id,
+                private_asr_aggregate_exports.c.environment_id == environment_id,
+                private_asr_aggregate_exports.c.export_id == reference.reference_id,
+            ).with_for_update())).mappings().one_or_none()
+            if aggregate is None:
+                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+            if aggregate["tombstoned_at"] is not None:
+                await transaction.commit()
+                return
+            report = (await self._execute(transaction, select(
+                private_asr_artifacts.c.artifact_id, private_asr_artifacts.c.dataset_id,
+                private_asr_artifacts.c.manifest_version, private_asr_artifacts.c.manifest_sha256,
+                private_asr_artifacts.c.status, private_asr_artifacts.c.retention_profile_ref,
+            ).where(
+                private_asr_artifacts.c.workspace_id == workspace_id,
+                private_asr_artifacts.c.environment_id == environment_id,
+                private_asr_artifacts.c.artifact_id == aggregate["report_artifact_id"],
+                private_asr_artifacts.c.report_id == aggregate["report_id"],
+                private_asr_artifacts.c.kind == "report",
+            ).with_for_update())).mappings().one_or_none()
+            if (report is None or report["status"] != "committed"
+                    or report["retention_profile_ref"] != policy_ref.reference_id
+                    or aggregate["retention_profile_ref"] != policy_ref.reference_id
+                    or aggregate["purpose"] != "asr_model_evaluation"
+                    or aggregate["expires_at"] > now):
+                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+            links = (await self._execute(transaction, select(
+                private_asr_report_sources.c.source_record_id,
+                private_asr_report_sources.c.source_revision_id,
+                private_asr_report_sources.c.source_object_id,
+                private_asr_report_sources.c.source_revision_digest,
+                private_asr_report_sources.c.split,
+            ).where(
+                private_asr_report_sources.c.workspace_id == workspace_id,
+                private_asr_report_sources.c.environment_id == environment_id,
+                private_asr_report_sources.c.report_id == aggregate["report_id"],
+            ).order_by(private_asr_report_sources.c.source_revision_id))).mappings().all()
+            if not links:
+                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+            lineage = tuple(PrivateArtifactSourceLineage(
+                source_object_id=row["source_object_id"],
+                source_revision_id=row["source_revision_id"],
+                source_revision_digest=row["source_revision_digest"],
+                record_id=row["source_record_id"], dataset_id=report["dataset_id"],
+                split=CorpusSplit(row["split"]) if row["split"] else None,
+            ) for row in links)
+            state = {"export_id": str(aggregate["export_id"]), "workspace_id": str(workspace_id),
+                "environment_id": str(environment_id), "purpose": aggregate["purpose"],
+                "report_artifact_id": str(aggregate["report_artifact_id"]),
+                "report_id": str(aggregate["report_id"]), "retention_profile_ref": str(policy_ref.reference_id),
+                "retention_disposition": aggregate["retention_disposition"],
+                "expires_at": aggregate["expires_at"].isoformat(),
+                "payload_sha256": aggregate["payload_sha256"], "created_at": aggregate["created_at"].isoformat()}
+            request = PrivateArtifactDeletionRequest(
+                artifact_id=reference.reference_id, workspace_id=workspace_id,
+                environment_id=environment_id, artifact_kind="aggregate_export",
+                action="retention_expiration", expected_state_digest=hashlib.sha256(
+                    json.dumps(state, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+                retention_profile_ref=policy_ref, retention_deadline=aggregate["expires_at"],
+                requested_at=now, source_lineage=lineage,
+                manifest_version=report["manifest_version"], manifest_sha256=report["manifest_sha256"],
+            )
+            try:
+                authz = await self._deletion_authority.authorize_deletion(
+                    request, context=context, transaction=transaction)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.") from None
+            if (not isinstance(authz, PrivateArtifactDeletionAuthorization) or not authz.authorized
+                    or authz.request_digest != request.calculate_digest() or authz.valid_until <= now):
+                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+            writer = getattr(self._audit_receipts, "append_artifact_deletion", None)
+            if writer is None:
+                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+            try:
+                await writer(transaction, request=request, authorization=authz, context=context)
+                await self._execute(transaction, update(private_asr_aggregate_exports).where(
+                    private_asr_aggregate_exports.c.workspace_id == workspace_id,
+                    private_asr_aggregate_exports.c.environment_id == environment_id,
+                    private_asr_aggregate_exports.c.export_id == reference.reference_id,
+                    private_asr_aggregate_exports.c.tombstoned_at.is_(None),
+                ).values(tombstoned_at=now, payload={}))
+                await transaction.commit()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.") from None
 
     async def _delete_authorized_artifact(
         self,

@@ -23,7 +23,7 @@ authority.
 | Canonical `RetentionApplicability` | `PostgreSQLPrivateASRRetentionResolver` | Locks exact-source current pointer in the caller's transaction; validates binding generation, policy identity/digest, exact class and source lineage. | `IMPLEMENTED / TESTED` with synthetic test authority |
 | Approved policy terms | `ApprovedRetentionTermsProvider` and `RetentionCommitApprovalVerifier` | Provider-neutral exact version/digest contract; test-only deterministic providers are injected only in isolated tests. Production composition absent, so missing providers deny. | Contract implemented; production authority `NEEDS INFO` |
 | #771/#772 manifest admission | `PrivateASRManifestLineageVerifier` scoped seam | Storage independently checks manifest identity/digest, dataset/version/split, unique record membership and exact source/revision digest binding. Test fixture authority is isolated and not registered in production. | Storage enforcement `TESTED` synthetically; production resolver `NEEDS INFO` |
-| Sanitized aggregate export | `TransactionalPrivateAggregateExportPort` backed by `PostgreSQLPrivateASRStorage.publish_sanitized_aggregate` | Revalidates the strict sanitized model, exact committed report and source lineage; recomputes sanitized values; checks fixture authority and runner release/disclosure callbacks before appending audit and inserting allowlisted aggregate in one transaction. RLS hides it after aggregate/report expiry or report tombstone. Raw legacy byte export remains denied. | Synthetic publication `IMPLEMENTED / TESTED`; aggregate tombstone/cleanup under the existing deletion authority is a `BLOCKER #795`; post-publication privacy/release revocation is owned by #813 |
+| Sanitized aggregate export | `TransactionalPrivateAggregateExportPort` plus `PostgreSQLPrivateASRStorage.expire_aggregate_export` | Exact export/report/scope/retention/source lineage is bound to the existing deletion authority; tombstone, payload clearing and canonical audit share one restricted PostgreSQL transaction. RLS hides tombstoned exports. Tombstones do not prove WAL/backup erasure. | Synthetic publication/deletion `IMPLEMENTED / TESTED`; trusted production deletion authority remains #812; post-publication privacy/release revocation remains #813 |
 | `CleanupPort`, `RevocationFencePort`, `RetentionExpirationPort` | Source fence plus exact authorized private-artifact tombstone in the same PostgreSQL UoW | Expiration re-resolves current canonical retention terms under source/retention/policy locks, then requires a separate transaction-aware deletion authority bound to exact state/lineage and appends minimal audit in the same commit. Staging cleanup is limited to exact staging rows and the same authority port. | Synthetic authorized path `IMPLEMENTED / TESTED`; production deletion authority delegated to #812; physical/backup erasure `OPERATOR_NOT_VERIFIED` |
 
 | Operation | Concrete test evidence | Positive / negative coverage |
@@ -34,7 +34,7 @@ authority.
 | Detailed report and success receipt | `test_postgresql_private_asr_authorized_synthetic_report_commit`, callback denial, suspended callback cancellation, after-audit-flush cancellation, audit-failure rollback, idempotent duplicate tests, process death/restart tests | Positive atomic report+canonical audit; denial/exception/cancellation/audit failure leave neither visible. Fresh-process retry after response loss is tested; server crash/backup restore is not. |
 | Source revocation fence | `test_postgresql_private_asr_source_revocation_tombstones_derivatives` | PostgreSQL synthetic positive fence, tombstone of linked derivatives, and denied read after revocation. Race against report publication remains in the broader D1 matrix. |
 | Expiration and staging cleanup | Expired original tombstone+audit; before-deadline and missing-authority denial; authorized staging discard; report/forged ref generic refusal | Positive synthetic transaction and idempotent retry; denied operations preserve state/payload. Read race/process crash/backup deletion remain unverified. |
-| Sanitized aggregate publication | `test_postgresql_private_asr_synthetic_aggregate_commits_with_canonical_audit`; revoked/missing authority, small-cell, cancellation and audit rollback tests; `test_postgresql_private_asr_aggregate_read_is_fenced_by_source_revocation` | Sanitized publication plus audit share one transaction and stable duplicate identity; RLS hides expired/tombstoned linked reports. It does not physically delete aggregate rows or fence post-publication external privacy approval revocation. `export_sanitized` refuses arbitrary bytes. |
+| Sanitized aggregate lifecycle | `test_postgresql_private_asr_synthetic_aggregate_commits_with_canonical_audit`; `test_postgresql_private_asr_aggregate_expiry_is_audited_and_idempotent`; `test_postgresql_private_asr_aggregate_read_is_fenced_by_source_revocation` | Restricted runtime test proves tombstone, payload clearing, one audit on retry and RLS read denial. Physical WAL/backup erasure and external approval revocation remain outside this lifecycle. |
 
 Report visibility linearizes at the successful PostgreSQL UoW commit. Report
 metadata, source links, the success audit event and the artifact's committed
@@ -111,7 +111,7 @@ second registry. Frozen dataset versions and #661 thresholds are unchanged.
 
 | Category | Scope | Result |
 | --- | --- | --- |
-| A — required for synthetic #795 acceptance | Concrete restricted PostgreSQL store; current canonical source/retention/AccessPolicy checks; atomic report+audit; synthetic manifest verifier; authorized report read; authorized source-artifact expiry/staging cleanup fixture; negative RLS/callback/retention/idempotency tests; process restart; sanitized aggregate path and lifecycle. | The aggregate row is hidden by expiry/report revocation, but it has no exact-authorized tombstone/deletion transition and audit. That leaves the literal derived-artifact deletion criterion incomplete; this is a `BLOCKER #795`, not a production-only claim. |
+| A — required for synthetic #795 acceptance | Concrete restricted PostgreSQL store; current canonical source/retention/AccessPolicy checks; atomic report+audit; synthetic manifest verifier; authorized report read; authorized source-artifact and aggregate expiry fixtures; negative RLS/callback/retention/idempotency tests; process restart; sanitized aggregate lifecycle. | Aggregate expiry has exact request binding, atomic audit+tombstone, idempotent retry and RLS read denial. Physical WAL/backup erasure is not claimed. Synthetic storage criterion `IMPLEMENTED / TESTED`; production authority is a separate #812 gate. |
 | B — shared production wiring | Trusted immutable manifest release authority (#811); canonical deletion authorization (#812); external approval/revocation commit fence (#813); production policy terms and authority composition. | Assigned as production/shared contracts. These do not block the synthetic path and cannot be replaced by test authorities. |
 | C — operator/deployment qualification | Named environment grants and RLS, backup/replica erasure, restore reconciliation, encryption-at-rest evidence, physical erasure and deployment recovery. | `OPERATOR_NOT_VERIFIED`; not proven by offline PostgreSQL tests. |
 
@@ -149,12 +149,9 @@ Verification on the rebased working tree (base
   commit. Final migration head remains `20270105_104`.
 
 Production manifest authority (#811), deletion authority (#812), and external
-approval/revocation fencing (#813) remain separate production gates. One
-synthetic-scope #795 blocker remains: aggregate rows have expiry/source-revocation
-visibility fencing but no authorized tombstone/deletion lifecycle or deletion
-audit. The generic artifact deletion request supports staging, original,
-annotation and detailed report only. #812 owns production deletion authority;
-the missing synthetic aggregate transition still belongs in #795 storage.
+approval/revocation fencing (#813) remain separate production gates. The
+synthetic aggregate tombstone blocker is implemented through the existing
+deletion-authority port; #812 still owns trusted production deletion authority.
 Report
 process restart, stable idempotency, bounded transaction retry, and synthetic
 aggregate publication have focused PostgreSQL evidence. Aggregate physical
@@ -163,8 +160,7 @@ erasure, restore recovery, encryption-at-rest and named-environment operator
 evidence remain `NOT_VERIFIED`. #683 remains blocked for real qualification;
 this implementation grants no real-data admission and no model selection.
 
-Keep PR #797 OPEN/DRAFT. The remaining #795 implementation blocker is synthetic
-aggregate tombstone/cleanup using the existing deletion authority port, with
-restricted-role tests for expiry, audit atomicity and idempotency. Current-base
-GitHub CI is pending. Issue #795 remains OPEN; this qualification does not
+Keep PR #797 OPEN/DRAFT pending review. Restricted-role aggregate expiry, audit,
+idempotency and RLS evidence is recorded above. Current-base GitHub CI is pending.
+Issue #795 remains OPEN; this qualification does not
 approve production deployment or close #795.

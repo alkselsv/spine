@@ -218,7 +218,7 @@ class _SyntheticArtifactDeletionAuthority:
         allowed = (
             (
                 request.action == "retention_expiration"
-                and request.artifact_kind in {"original", "annotation", "report"}
+                and request.artifact_kind in {"original", "annotation", "report", "aggregate_export"}
                 and request.retention_deadline <= request.requested_at
             )
             or (request.action == "staging_cleanup" and request.artifact_kind == "staging")
@@ -234,7 +234,7 @@ class _SyntheticArtifactDeletionAuthority:
             ),
             authority_version="synthetic-deletion-authority:v1",
             revocation_epoch=1,
-            valid_until=NOW + timedelta(days=1),
+            valid_until=request.requested_at + timedelta(days=1),
             authorized=allowed,
         )
 
@@ -2810,6 +2810,59 @@ async def test_postgresql_private_asr_synthetic_aggregate_commits_with_canonical
     assert str(prepared.case.source.source_object_id) not in exported_text
     assert str(prepared.case.revision.revision_id) not in exported_text
     assert prepared.case.revision.revision_digest not in exported_text
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_aggregate_expiry_is_audited_and_idempotent(
+    private_asr_database: _Database,
+) -> None:
+    clock = _ControlledClock(NOW)
+    publication_authority = _SyntheticAggregatePublicationAuthority()
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database, seed=799711,
+        aggregate_authority=publication_authority,
+        deletion_authority=_SyntheticArtifactDeletionAuthority(), clock=clock,
+    )
+    sanitized, export_context = await _prepare_sanitized_aggregate(prepared, publication_authority)
+    await _commit_synthetic_report(prepared, idempotency_key="aggregate-expiry-report")
+    export_ref = await prepared.store.publish_sanitized_aggregate(
+        sanitized, report_id=prepared.report_id, idempotency_key="aggregate-expiry:v1",
+        context=export_context, authorize_export=_allow_commit,
+    )
+    deletion_context = prepared.boundary.worker(
+        scope=EnvironmentScope(workspace_id=prepared.case.source.workspace_id,
+                               environment_id=prepared.case.source.environment_id),
+        service_principal_id=synthetic_uuid(799712),
+        purpose=PersistencePurpose("asr_model_evaluation"),
+        operation=PersistenceOperation("private_asr_retention_expiration"),
+        trace_id=synthetic_uuid(799713),
+    )
+    clock.current = NOW + timedelta(days=3650)
+    await prepared.store.expire_aggregate_export(
+        export_ref, policy_ref=prepared.applicability_ref, context=deletion_context,
+    )
+    await prepared.store.expire_aggregate_export(
+        export_ref, policy_ref=prepared.applicability_ref, context=deletion_context,
+    )
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, deletion_context)
+        row = (await session.execute(select(
+            private_asr_aggregate_exports.c.tombstoned_at,
+            private_asr_aggregate_exports.c.payload,
+        ).where(private_asr_aggregate_exports.c.export_id == export_ref.reference_id))).one()
+        events = (await session.execute(select(func.count()).select_from(audit_events).where(
+            audit_events.c.target_id == export_ref.reference_id,
+            audit_events.c.reason == "private_asr_aggregate_expired",
+        ))).scalar_one()
+    assert row.tombstoned_at == clock.current
+    assert row.payload == {}
+    assert events == 1
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, export_context)
+        visible = (await session.execute(select(func.count()).select_from(
+            private_asr_aggregate_exports,
+        ).where(private_asr_aggregate_exports.c.export_id == export_ref.reference_id))).scalar_one()
+    assert visible == 0
 
 
 @pytest.mark.asyncio

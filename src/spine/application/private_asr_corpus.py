@@ -210,7 +210,7 @@ class PrivateArtifactDeletionRequest(PrivateASRApplicationContract):
     artifact_id: UUID
     workspace_id: UUID
     environment_id: UUID
-    artifact_kind: Literal["staging", "original", "annotation", "report"]
+    artifact_kind: Literal["staging", "original", "annotation", "report", "aggregate_export"]
     action: Literal["retention_expiration", "staging_cleanup"]
     expected_state_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     retention_profile_ref: PrivateReference
@@ -234,6 +234,8 @@ class PrivateArtifactDeletionRequest(PrivateASRApplicationContract):
             raise ValueError("artifact deletion timestamps must be timezone-aware")
         if self.action == "staging_cleanup" and self.artifact_kind != "staging":
             raise ValueError("staging cleanup applies only to staging artifacts")
+        if self.artifact_kind == "aggregate_export" and self.action != "retention_expiration":
+            raise ValueError("aggregate exports may only be deleted on retention expiry")
         if (self.manifest_version is None) != (self.manifest_sha256 is None):
             raise ValueError("artifact manifest lineage must be complete")
         return self

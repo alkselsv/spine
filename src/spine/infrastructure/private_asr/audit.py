@@ -241,9 +241,12 @@ class PostgreSQLPrivateASRAuditReceipts(ScopedAuditReceiptPort):
             or not authorization.authorized
         ):
             raise ValueError("ASR artifact deletion receipt is invalid.")
+        aggregate = request.artifact_kind == "aggregate_export"
+        object_type = "private_asr_aggregate_export" if aggregate else "private_asr_artifact"
+        command_type = "private_asr_aggregate_deletion" if aggregate else "private_asr_artifact_deletion"
         event_id = uuid5(
             NAMESPACE_URL,
-            f"spine:private-asr-artifact-deletion:v1:{request.workspace_id}:"
+            f"spine:private-asr-{ 'aggregate' if aggregate else 'artifact' }-deletion:v1:{request.workspace_id}:"
             f"{request.environment_id}:{request.artifact_id}:{request.action}",
         )
         event = self._events.build_event(
@@ -251,26 +254,24 @@ class PostgreSQLPrivateASRAuditReceipts(ScopedAuditReceiptPort):
             workspace_id=request.workspace_id,
             environment_id=request.environment_id,
             target=AuditObjectReference(
-                object_type="private_asr_artifact",
+                object_type=object_type,
                 object_id=request.artifact_id,
                 schema_version=1,
             ),
             event_type="command.outcome",
             schema_version=1,
-            payload=CommandAuditPayload(command_type="private_asr_artifact_deletion"),
+            payload=CommandAuditPayload(command_type=command_type),
             origin=context.origin,
             acting_subject_id=context.acting_subject_id,
             service_principal_id=context.service_principal_id,
             trace_id=context.trace_id,
             occurred_at=request.requested_at,
             outcome=AuditOutcome.COMPLETED,
-            reason=(
-                "private_asr_artifact_expired"
-                if request.action == "retention_expiration"
-                else "private_asr_staging_discarded"
-            ),
+            reason=("private_asr_aggregate_expired" if aggregate else
+                    "private_asr_artifact_expired" if request.action == "retention_expiration" else
+                    "private_asr_staging_discarded"),
             producer_deduplication_id=(
-                f"private-asr-artifact-deletion:{request.artifact_id}:{request.action}"
+                f"private-asr-{ 'aggregate' if aggregate else 'artifact' }-deletion:{request.artifact_id}:{request.action}"
             ),
         )
         await transaction.audit.append(event)  # type: ignore[attr-defined]
