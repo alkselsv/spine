@@ -31,6 +31,7 @@ from spine.domain.evaluations.private_asr_corpus import (
 )
 from spine.domain.sources.access_policy import AccessPolicyVersion
 from spine.domain.sources.models import SourceObject, SourceRevision
+from spine.domain.sources.retention import RetentionArtifactClass
 
 
 class PrivateASRApplicationContract(DefinitionModel):
@@ -247,6 +248,141 @@ class PrivateArtifactDeletionRequest(PrivateASRApplicationContract):
         ).hexdigest()
 
 
+class PrivateArtifactDeletionSourceBinding(PrivateASRApplicationContract):
+    """One exact source revision bound to current approved retention evidence."""
+
+    workspace_id: UUID
+    environment_id: UUID
+    source_object_id: UUID
+    source_revision_id: UUID
+    revision_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    applicability_id: UUID
+    applicability_generation: StrictInt = Field(ge=1)
+    expected_current_applicability_id: UUID
+    expected_current_generation: StrictInt = Field(ge=0)
+    artifact_class: RetentionArtifactClass
+    retention_policy_id: UUID
+    retention_policy_version_id: UUID
+    retention_policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    approving_authority_reference: UUID
+    approving_authority_version_id: UUID
+    approving_authority_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    applicability_evidence_reference: UUID
+    applicability_evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    approval_evidence_reference: UUID
+    terms_version: str = Field(pattern=r"^[a-z][a-z0-9_.:-]{0,63}$")
+    terms_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    deletion_obligation_reference: UUID
+    backup_obligation_reference: UUID
+    resolved_exception_references: tuple[UUID, ...] = ()
+    resolved_legal_hold_references: tuple[UUID, ...] = ()
+    active_legal_hold_references: tuple[UUID, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_binding(self) -> "PrivateArtifactDeletionSourceBinding":
+        refs = (self.workspace_id, self.environment_id, self.source_object_id,
+                self.source_revision_id, self.applicability_id,
+                self.retention_policy_id, self.retention_policy_version_id,
+                self.approving_authority_reference, self.approving_authority_version_id,
+                self.applicability_evidence_reference,
+                self.approval_evidence_reference, self.deletion_obligation_reference,
+                self.backup_obligation_reference, *self.resolved_exception_references,
+                *self.resolved_legal_hold_references, *self.active_legal_hold_references)
+        if any(ref.int == 0 for ref in refs):
+            raise ValueError("deletion source binding references must be non-zero")
+        if (self.expected_current_applicability_id != self.applicability_id
+                or self.expected_current_generation != self.applicability_generation):
+            raise ValueError("deletion source binding is not the current applicability head")
+        for values in (self.resolved_exception_references,
+                       self.resolved_legal_hold_references,
+                       self.active_legal_hold_references):
+            if len(values) != len(set(values)):
+                raise ValueError("deletion source binding references must be unique")
+        if not set(self.active_legal_hold_references).issubset(self.resolved_legal_hold_references):
+            raise ValueError("active legal holds require resolved authority")
+        return self
+
+
+class PrivateArtifactDeletionRequestV2(PrivateASRApplicationContract):
+    """Versioned whole-artifact deletion request with exact per-source bindings.
+
+    V1 remains immutable for persisted compatibility. Callers must explicitly
+    construct v2; no conversion or inferred binding from v1 is provided.
+    """
+
+    schema_version: Literal["private-asr-artifact-deletion-request:v2"] = (
+        "private-asr-artifact-deletion-request:v2"
+    )
+    artifact_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    purpose: str = Field(pattern=r"^[a-z][a-z0-9_.:-]{0,63}$")
+    artifact_kind: Literal["staging", "original", "annotation", "report", "aggregate_export"]
+    action: Literal["retention_expiration", "staging_cleanup"]
+    expected_state_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    retention_profile_ref: PrivateReference
+    retention_deadline: datetime
+    requested_at: datetime
+    expected_source_lineage: tuple[PrivateArtifactSourceLineage, ...] = Field(min_length=1)
+    source_bindings: tuple[PrivateArtifactDeletionSourceBinding, ...] = Field(min_length=1)
+    authority_version: str = Field(pattern=r"^[a-z][a-z0-9_.:-]{0,63}$")
+    valid_until: datetime
+
+    @model_validator(mode="after")
+    def validate_request(self) -> "PrivateArtifactDeletionRequestV2":
+        if any(value.int == 0 for value in (self.artifact_id, self.workspace_id, self.environment_id)):
+            raise ValueError("artifact deletion request requires exact identity")
+        times = (self.retention_deadline, self.requested_at, self.valid_until)
+        if any(value.tzinfo is None or value.utcoffset() is None for value in times):
+            raise ValueError("artifact deletion timestamps must be timezone-aware")
+        if self.valid_until <= self.requested_at:
+            raise ValueError("deletion authority validity must extend beyond request time")
+        if (self.action == "retention_expiration"
+                and self.requested_at < self.retention_deadline):
+            raise ValueError("retention expiration cannot precede its deadline")
+        if self.action == "staging_cleanup" and self.artifact_kind != "staging":
+            raise ValueError("staging cleanup applies only to staging artifacts")
+        if self.artifact_kind == "aggregate_export" and self.action != "retention_expiration":
+            raise ValueError("aggregate exports may only be deleted on retention expiry")
+        expected_artifact_class = {
+            "staging": RetentionArtifactClass.PRIVATE_ASR_STAGING,
+            "original": RetentionArtifactClass.PRIVATE_ASR_SOURCE_ORIGINAL,
+            "annotation": RetentionArtifactClass.PRIVATE_ASR_ANNOTATION,
+            "report": RetentionArtifactClass.PRIVATE_ASR_DETAILED_REPORT,
+            "aggregate_export": RetentionArtifactClass.PRIVATE_ASR_SANITIZED_AGGREGATE,
+        }[self.artifact_kind]
+        expected_workspace = self.workspace_id
+        expected_environment = self.environment_id
+        if any(binding.workspace_id != expected_workspace or binding.environment_id != expected_environment
+               for binding in self.source_bindings):
+            raise ValueError("source bindings must share artifact workspace and environment")
+        if any(binding.artifact_class is not expected_artifact_class for binding in self.source_bindings):
+            raise ValueError("source retention class must match artifact kind")
+        identities = [(b.workspace_id, b.environment_id, b.source_object_id,
+                       b.source_revision_id, b.revision_digest) for b in self.source_bindings]
+        if len(identities) != len(set(identities)):
+            raise ValueError("source bindings must have distinct exact identities")
+        expected = [(self.workspace_id, self.environment_id, source.source_object_id,
+                     source.source_revision_id, source.source_revision_digest)
+                    for source in self.expected_source_lineage]
+        if len(expected) != len(set(expected)):
+            raise ValueError("expected source lineage must have distinct exact identities")
+        if set(identities) != set(expected):
+            raise ValueError("source bindings must exactly cover artifact lineage")
+        object.__setattr__(self, "expected_source_lineage", tuple(sorted(
+            self.expected_source_lineage, key=lambda source: (
+                str(source.source_object_id), str(source.source_revision_id),
+                source.source_revision_digest))))
+        object.__setattr__(self, "source_bindings", tuple(sorted(self.source_bindings, key=lambda b: (
+            str(b.workspace_id), str(b.environment_id), str(b.source_object_id),
+            str(b.source_revision_id), b.revision_digest))))
+        return self
+
+    def calculate_digest(self) -> str:
+        payload = self.model_dump(mode="json")
+        return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 class PrivateArtifactDeletionAuthorization(PrivateASRApplicationContract):
     """Current authority result fenced to one exact deletion request."""
 
@@ -435,12 +571,16 @@ class PrivateArtifactDeletionAuthority(Protocol):
 
     Implementations must bind the decision to the supplied request digest and
     keep its approval/revocation epoch valid through the transaction commit.
-    External authorities need a coordinated fence or bounded commit lease.
+    For v2, the authority must compare every binding's applicability identity
+    and generation with the transaction-current pointer, and resolve the
+    referenced policy, approval, exceptions and holds. A request's internal
+    consistency never proves that its applicability remains current. External
+    authorities need a coordinated fence or bounded commit lease.
     """
 
     async def authorize_deletion(
         self,
-        request: PrivateArtifactDeletionRequest,
+        request: PrivateArtifactDeletionRequest | PrivateArtifactDeletionRequestV2,
         *,
         context: TrustedPersistenceContext,
         transaction: object,
@@ -454,7 +594,7 @@ class ScopedPrivateArtifactDeletionAuditPort(Protocol):
         self,
         transaction: object,
         *,
-        request: PrivateArtifactDeletionRequest,
+        request: PrivateArtifactDeletionRequest | PrivateArtifactDeletionRequestV2,
         authorization: PrivateArtifactDeletionAuthorization,
         context: TrustedPersistenceContext,
     ) -> PrivateReference: ...
@@ -1182,7 +1322,10 @@ __all__ = [
     "CleanupPort", "ClockPort", "ContentVerificationResult", "CorpusAdmissionDenied",
     "CorpusVerificationError", "DerivedStagingPort", "MetadataInventoryEntry",
     "MetadataInventoryPort", "OriginalReferencePort", "PrivacyPolicyApprovalPort",
-    "PrivateAggregatePublicationAuthorityPort", "PrivacySanitizationError",
+    "PrivateAggregatePublicationAuthorityPort", "PrivateArtifactDeletionRequest",
+    "PrivateArtifactDeletionRequestV2", "PrivateArtifactDeletionSourceBinding",
+    "PrivateArtifactDeletionAuthorization", "PrivateArtifactDeletionAuthority",
+    "PrivacySanitizationError",
     "PrivateAnnotationStoragePort", "PrivateReportReceipt", "PrivateReportSourceBinding", "PrivateReportStoragePort",
     "PurposeAdmissionRequest", "RetentionExpirationPort", "RevocationFencePort",
     "ScopedAuditReceiptPort", "ScopedCleanupPort", "ScopedDerivedStagingPort",
