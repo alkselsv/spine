@@ -14,6 +14,7 @@ import pytest
 
 from spine.connectors.google_api import (
     GoogleApiEndpoints,
+    GoogleApiRequest,
     GoogleApiRequestPolicy,
     GoogleApiResponse,
     GoogleDesktopOAuthMaterial,
@@ -50,7 +51,12 @@ from spine.connectors.google_execution_envelope import (
     GoogleExecutionDeadlineExceeded,
     GoogleExecutionEnvelope,
 )
-from spine.connectors.google_sheets import GoogleSheetsColumn, GoogleSheetsReadProfile
+from spine.connectors.google_sheets import (
+    GoogleSheetsColumn,
+    GoogleSheetsRangePage,
+    GoogleSheetsReadProfile,
+    GoogleSheetsSnapshot,
+)
 from spine.application.diagnostics import DiagnosticEventRegistry
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -278,6 +284,60 @@ class QueuedResponseTransport:
     async def request(self, request):
         del request
         return self.responses.pop(0)
+
+
+class RecordingQueuedResponseTransport(QueuedResponseTransport):
+    def __init__(self, responses: list[GoogleApiResponse]) -> None:
+        super().__init__(responses)
+        self.requests: list[GoogleApiRequest] = []
+
+    async def request(self, request: GoogleApiRequest) -> GoogleApiResponse:
+        self.requests.append(request)
+        return await super().request(request)
+
+
+class OnePageSheetsService:
+    def __init__(
+        self, configuration_fingerprint: str, page: GoogleSheetsRangePage
+    ) -> None:
+        self.configuration_fingerprint = configuration_fingerprint
+        self.page = page
+        self.transport = QueuedResponseTransport([])
+
+    @property
+    def sleep(self):
+        async def no_sleep(delay: float) -> None:
+            del delay
+
+        return no_sleep
+
+    @contextmanager
+    def using_run_request_budget(self):
+        yield object()
+
+    @contextmanager
+    def using_transport(self, transport, *, sleep=None):
+        del transport, sleep
+        yield
+
+    async def get_spreadsheet_range_page(
+        self,
+        connection,
+        resource_scope_reference,
+        spreadsheet_id,
+        sheet_id,
+        a1_range,
+        page_token,
+    ) -> GoogleSheetsRangePage:
+        del (
+            connection,
+            resource_scope_reference,
+            spreadsheet_id,
+            sheet_id,
+            a1_range,
+            page_token,
+        )
+        return self.page
 
 
 def _composed_runner(
@@ -1660,6 +1720,524 @@ async def test_offline_composition_reports_httpx_stream_failure_as_transport() -
     assert report.sheets_request_attempts == 0
     assert "raw-stream-error" not in report.model_dump_json()
     assert "provider-id-sentinel" not in report.model_dump_json()
+
+
+def _phase1_sheet_target(
+    *, sheet_id: int, title: str
+) -> GoogleLiveSheetTarget:
+    return GoogleLiveSheetTarget(
+        profile=GoogleSheetsReadProfile(
+            spreadsheet_id="synthetic-register",
+            sheet_id=sheet_id,
+            business_id_column="immutable_business_id",
+            columns=(
+                GoogleSheetsColumn(
+                    column_key="immutable_business_id", coordinate="A"
+                ),
+                GoogleSheetsColumn(column_key="formula_total", coordinate="B"),
+                GoogleSheetsColumn(column_key="service_date", coordinate="C"),
+                GoogleSheetsColumn(column_key="amount", coordinate="D"),
+                GoogleSheetsColumn(column_key="ratio", coordinate="E"),
+            ),
+        ),
+        a1_ranges=(f"'{title}'!A2:E5000",),
+    )
+
+
+def _phase1_file_metadata(
+    file_id: str, *, name: str, media_type: str, version: str
+) -> GoogleApiResponse:
+    return GoogleApiResponse(
+        status_code=200,
+        json_body={
+            "id": file_id,
+            "name": name,
+            "mimeType": media_type,
+            "version": version,
+            "webViewLink": f"https://drive.test/{file_id}",
+            "parents": ["synthetic-root"],
+            "modifiedTime": "2026-11-04T12:00:00Z",
+            "trashed": False,
+        },
+    )
+
+
+def _phase1_sheet_identity(sheet_id: int, title: str) -> GoogleApiResponse:
+    return GoogleApiResponse(
+        status_code=200,
+        json_body={
+            "spreadsheetId": "synthetic-register",
+            "sheets": [{"properties": {"sheetId": sheet_id, "title": title}}],
+        },
+    )
+
+
+def _phase1_sheet_grid(
+    *, sheet_id: int, title: str, business_id: str
+) -> GoogleApiResponse:
+    return GoogleApiResponse(
+        status_code=200,
+        json_body={
+            "spreadsheetId": "synthetic-register",
+            "properties": {"locale": "en_US", "timeZone": "UTC"},
+            "sheets": [
+                {
+                    "properties": {"sheetId": sheet_id, "title": title},
+                    "data": [
+                        {
+                            "startRow": 1,
+                            "startColumn": 0,
+                            "rowData": [
+                                {
+                                    "values": [
+                                        {
+                                            "userEnteredValue": {
+                                                "stringValue": business_id
+                                            },
+                                            "effectiveValue": {
+                                                "stringValue": business_id
+                                            },
+                                            "formattedValue": business_id,
+                                            "effectiveFormat": {
+                                                "numberFormat": {"type": "TEXT"}
+                                            },
+                                        },
+                                        {
+                                            "userEnteredValue": {
+                                                "formulaValue": "=D2*2"
+                                            },
+                                            "effectiveValue": {"numberValue": 25.0},
+                                            "formattedValue": "25.00",
+                                            "effectiveFormat": {
+                                                "numberFormat": {
+                                                    "type": "NUMBER",
+                                                    "pattern": "0.00",
+                                                }
+                                            },
+                                        },
+                                        {
+                                            "userEnteredValue": {
+                                                "numberValue": 45965.0
+                                            },
+                                            "effectiveValue": {
+                                                "numberValue": 45965.0
+                                            },
+                                            "formattedValue": "2025-11-04",
+                                            "effectiveFormat": {
+                                                "numberFormat": {
+                                                    "type": "DATE",
+                                                    "pattern": "yyyy-mm-dd",
+                                                }
+                                            },
+                                        },
+                                        {
+                                            "userEnteredValue": {
+                                                "numberValue": 12.5
+                                            },
+                                            "effectiveValue": {
+                                                "numberValue": 12.5
+                                            },
+                                            "formattedValue": "$12.50",
+                                            "effectiveFormat": {
+                                                "numberFormat": {
+                                                    "type": "CURRENCY",
+                                                    "pattern": "$#,##0.00",
+                                                }
+                                            },
+                                        },
+                                        {
+                                            "userEnteredValue": {
+                                                "numberValue": 0.125
+                                            },
+                                            "effectiveValue": {
+                                                "numberValue": 0.125
+                                            },
+                                            "formattedValue": "12.5%",
+                                            "effectiveFormat": {
+                                                "numberFormat": {
+                                                    "type": "PERCENT",
+                                                    "pattern": "0.0%",
+                                                }
+                                            },
+                                        },
+                                    ]
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_provider_accepts_rows_nested_in_the_range_page_snapshot() -> None:
+    sheet_target = _phase1_sheet_target(sheet_id=101, title="records")
+    config = _config(opt_in=True).model_copy(
+        update={
+            "resource_scope": _config(opt_in=True).resource_scope.model_copy(
+                update={
+                    "allowed_file_ids": (),
+                    "allowed_spreadsheet_ids": ("synthetic-register",),
+                }
+            ),
+            "file_targets": (),
+            "sheet_targets": (sheet_target,),
+        }
+    )
+    page = GoogleSheetsRangePage(
+        spreadsheet_id="synthetic-register",
+        sheet_id=101,
+        a1_range="'records'!A2:E5000",
+        page_token=None,
+        next_page_token=None,
+        complete=True,
+        provider_version_before="21",
+        provider_version_after="21",
+        snapshot=GoogleSheetsSnapshot(
+            spreadsheet_id="synthetic-register",
+            sheet_id=101,
+            sheet_title="records",
+            locale="en_US",
+            time_zone="UTC",
+            rows=(),
+        ),
+    )
+    provider = GoogleLiveQualificationProvider(
+        config=config,
+        service=OnePageSheetsService(  # type: ignore[arg-type]
+            config.api_configuration_fingerprint, page
+        ),
+        monotonic=lambda: 0.0,
+    )
+
+    counts = await provider.read(
+        config.connection,
+        GoogleReadCommand(
+            connection_id=config.connection.connection_id,
+            resource_scope_reference=config.resource_scope.reference,
+            authorization_generation=config.connection.authorization_generation,
+            configuration_generation=config.connection.configuration_generation,
+        ),
+    )
+
+    assert counts.sheet_pages == 1
+
+
+@pytest.mark.asyncio
+async def test_phase1_offline_replay_completes_every_approved_read_operation() -> None:
+    config = _config(opt_in=True)
+    config = config.model_copy(
+        update={
+            "resource_scope": config.resource_scope.model_copy(
+                update={
+                    "folder_id": "synthetic-root",
+                    "allowed_file_ids": (
+                        "synthetic-pdf",
+                        "synthetic-docx",
+                        "synthetic-native-doc",
+                    ),
+                    "allowed_spreadsheet_ids": ("synthetic-register",),
+                }
+            ),
+            "request_policy": config.request_policy.model_copy(
+                update={"sheets_page_size": 4999}
+            ),
+            "file_targets": (
+                GoogleLiveFileTarget(file_id="synthetic-pdf", download=True),
+                GoogleLiveFileTarget(file_id="synthetic-docx", download=True),
+                GoogleLiveFileTarget(
+                    file_id="synthetic-native-doc",
+                    download=False,
+                    export_mime_types=(
+                        "application/pdf",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                ),
+            ),
+            "sheet_targets": (
+                _phase1_sheet_target(sheet_id=101, title="records"),
+                _phase1_sheet_target(sheet_id=202, title="archive"),
+            ),
+            "execution_envelope": config.execution_envelope.model_copy(
+                update={"max_drive_file_targets": 3}
+            ),
+        }
+    )
+    responses = [
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"access_token": "synthetic-token", "expires_in": 3600},
+        ),
+        _phase1_file_metadata(
+            "synthetic-pdf",
+            name="Synthetic brief.pdf",
+            media_type="application/pdf",
+            version="11",
+        ),
+        GoogleApiResponse(
+            status_code=200,
+            content=b"synthetic-pdf-bytes",
+            headers={"content-type": "application/pdf"},
+        ),
+        _phase1_file_metadata(
+            "synthetic-docx",
+            name="Synthetic notes.docx",
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            version="12",
+        ),
+        GoogleApiResponse(
+            status_code=200,
+            content=b"synthetic-docx-bytes",
+            headers={
+                "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            },
+        ),
+        _phase1_file_metadata(
+            "synthetic-native-doc",
+            name="Synthetic native document",
+            media_type="application/vnd.google-apps.document",
+            version="13",
+        ),
+        GoogleApiResponse(
+            status_code=200,
+            content=b"synthetic-export-pdf",
+            headers={"content-type": "application/pdf"},
+        ),
+        GoogleApiResponse(
+            status_code=200,
+            content=b"synthetic-export-docx",
+            headers={
+                "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            },
+        ),
+        GoogleApiResponse(
+            status_code=200, json_body={"startPageToken": "start-token-1"}
+        ),
+        GoogleApiResponse(
+            status_code=200,
+            json_body={
+                "incompleteSearch": False,
+                "files": [
+                    {"id": "synthetic-pdf"},
+                    {"id": "synthetic-docx"},
+                    {"id": "synthetic-native-doc"},
+                ],
+            },
+        ),
+        GoogleApiResponse(
+            status_code=200,
+            json_body={
+                "newStartPageToken": "start-token-2",
+                "changes": [],
+            },
+        ),
+        _phase1_sheet_identity(101, "records"),
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"id": "synthetic-register", "version": "21"},
+        ),
+        _phase1_sheet_grid(
+            sheet_id=101,
+            title="records",
+            business_id="018f3e70-7b5a-4d0c-8e31-5c391a854201",
+        ),
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"id": "synthetic-register", "version": "21"},
+        ),
+        _phase1_sheet_identity(202, "archive"),
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"id": "synthetic-register", "version": "21"},
+        ),
+        _phase1_sheet_grid(
+            sheet_id=202,
+            title="archive",
+            business_id="018f3e70-7b5a-4d0c-8e31-5c391a854202",
+        ),
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"id": "synthetic-register", "version": "21"},
+        ),
+    ]
+    transport = RecordingQueuedResponseTransport(responses)
+
+    report = await _composed_runner(config, transport).run(environment_opt_in=True)
+
+    assert report.status == "passed", json.dumps(
+        {
+            "failure_stage": report.failure_stage,
+            "failure_code": report.failure_code,
+            "failure_class": report.failure_class,
+            "retry_disposition": report.retry_disposition,
+            "metadata_reads": report.metadata_reads,
+            "downloads": report.downloads,
+            "exports": report.exports,
+            "snapshot_pages": report.snapshot_pages,
+            "change_pages": report.change_pages,
+            "sheet_pages": report.sheet_pages,
+            "request_count": len(transport.requests),
+            "remaining_responses": len(responses),
+        },
+        sort_keys=True,
+    )
+    assert report.schema_version == "google-live-qualification-report:v4"
+    assert report.metadata_reads == 3
+    assert report.downloads == 2
+    assert report.exports == 2
+    assert report.snapshot_pages == 1
+    assert report.change_pages == 1
+    assert report.sheet_pages == 2
+    assert report.oauth_request_attempts == 1
+    assert report.drive_request_attempts == 14
+    assert report.sheets_request_attempts == 4
+    assert report.shared_drive_status == "NOT_EXERCISED"
+    assert report.failure_stage is None
+    assert report.failure_code is None
+    assert report.failure_class is None
+    assert report.retry_disposition is None
+    assert responses == []
+
+    assert [(request.method, request.url) for request in transport.requests] == [
+        ("POST", "https://oauth2.googleapis.test/token"),
+        ("GET", "https://www.googleapis.test/drive/v3/files/synthetic-pdf"),
+        ("GET", "https://www.googleapis.test/drive/v3/files/synthetic-pdf"),
+        ("GET", "https://www.googleapis.test/drive/v3/files/synthetic-docx"),
+        ("GET", "https://www.googleapis.test/drive/v3/files/synthetic-docx"),
+        (
+            "GET",
+            "https://www.googleapis.test/drive/v3/files/synthetic-native-doc",
+        ),
+        (
+            "GET",
+            "https://www.googleapis.test/drive/v3/files/synthetic-native-doc/export",
+        ),
+        (
+            "GET",
+            "https://www.googleapis.test/drive/v3/files/synthetic-native-doc/export",
+        ),
+        (
+            "GET",
+            "https://www.googleapis.test/drive/v3/changes/startPageToken",
+        ),
+        ("GET", "https://www.googleapis.test/drive/v3/files"),
+        ("GET", "https://www.googleapis.test/drive/v3/changes"),
+        (
+            "GET",
+            "https://sheets.googleapis.test/v4/spreadsheets/synthetic-register",
+        ),
+        (
+            "GET",
+            "https://www.googleapis.test/drive/v3/files/synthetic-register",
+        ),
+        (
+            "GET",
+            "https://sheets.googleapis.test/v4/spreadsheets/synthetic-register",
+        ),
+        (
+            "GET",
+            "https://www.googleapis.test/drive/v3/files/synthetic-register",
+        ),
+        (
+            "GET",
+            "https://sheets.googleapis.test/v4/spreadsheets/synthetic-register",
+        ),
+        (
+            "GET",
+            "https://www.googleapis.test/drive/v3/files/synthetic-register",
+        ),
+        (
+            "GET",
+            "https://sheets.googleapis.test/v4/spreadsheets/synthetic-register",
+        ),
+        (
+            "GET",
+            "https://www.googleapis.test/drive/v3/files/synthetic-register",
+        ),
+    ]
+    metadata_fields = (
+        "id,name,mimeType,version,webViewLink,driveId,parents,modifiedTime,trashed"
+    )
+    assert [transport.requests[index].query for index in (1, 3, 5)] == [
+        {"fields": metadata_fields, "supportsAllDrives": "false"},
+        {"fields": metadata_fields, "supportsAllDrives": "false"},
+        {"fields": metadata_fields, "supportsAllDrives": "false"},
+    ]
+    assert transport.requests[2].query == {
+        "alt": "media",
+        "supportsAllDrives": "false",
+    }
+    assert transport.requests[4].query == {
+        "alt": "media",
+        "supportsAllDrives": "false",
+    }
+    assert [transport.requests[index].query for index in (6, 7)] == [
+        {"mimeType": "application/pdf"},
+        {
+            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        },
+    ]
+    assert transport.requests[8].query == {"supportsAllDrives": "false"}
+    assert transport.requests[9].query == {
+        "fields": "nextPageToken,incompleteSearch,files(id,driveId)",
+        "pageSize": "10",
+        "supportsAllDrives": "false",
+        "includeItemsFromAllDrives": "false",
+        "q": "'synthetic-root' in parents and trashed = false",
+    }
+    change_request = transport.requests[10]
+    assert change_request.url.endswith("/changes")
+    assert change_request.query == {
+        "pageToken": "start-token-1",
+        "pageSize": "10",
+        "includeRemoved": "true",
+        "supportsAllDrives": "false",
+        "includeItemsFromAllDrives": "false",
+        "fields": (
+            "nextPageToken,newStartPageToken,"
+            "changes(fileId,removed,file(id,driveId,version,trashed,parents))"
+        ),
+    }
+    identity_requests = (transport.requests[11], transport.requests[15])
+    assert [request.query for request in identity_requests] == [
+        {
+            "includeGridData": "false",
+            "ranges": "'records'!A2:E5000",
+            "fields": "spreadsheetId,sheets(properties(sheetId,title))",
+        },
+        {
+            "includeGridData": "false",
+            "ranges": "'archive'!A2:E5000",
+            "fields": "spreadsheetId,sheets(properties(sheetId,title))",
+        },
+    ]
+    version_requests = tuple(transport.requests[index] for index in (12, 14, 16, 18))
+    assert all(
+        request.query == {"fields": "id,version", "supportsAllDrives": "false"}
+        for request in version_requests
+    )
+    sheets_fields = (
+        "spreadsheetId,properties(locale,timeZone),"
+        "developerMetadata(metadataId,metadataKey,metadataValue,location),"
+        "sheets(properties(sheetId,title),developerMetadata(metadataId,metadataKey,"
+        "metadataValue,location),data(startRow,startColumn,rowData(values("
+        "userEnteredValue,effectiveValue,formattedValue,effectiveFormat(numberFormat)))))"
+    )
+    grid_requests = (transport.requests[13], transport.requests[17])
+    assert [request.query for request in grid_requests] == [
+        {
+            "includeGridData": "true",
+            "ranges": "'records'!A2:E5000",
+            "fields": sheets_fields,
+        },
+        {
+            "includeGridData": "true",
+            "ranges": "'archive'!A2:E5000",
+            "fields": sheets_fields,
+        },
+    ]
 
 
 @pytest.mark.asyncio

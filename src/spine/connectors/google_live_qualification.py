@@ -544,7 +544,7 @@ class GoogleLiveQualificationProvider:
                             a1_range,
                             token,
                         )
-                        budget.add_rows(len(page.rows))
+                        budget.add_rows(len(page.snapshot.rows))
                         counts.sheet_pages += 1
                         if page.complete:
                             break

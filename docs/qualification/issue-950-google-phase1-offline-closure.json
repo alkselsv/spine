@@ -1,0 +1,97 @@
+{
+  "schema_version": "google-phase1-offline-closure:v1",
+  "issue": 950,
+  "parent_issue": 615,
+  "phase": "phase1-my-drive-sheets-readonly",
+  "oauth_scopes": [
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/spreadsheets.readonly"
+  ],
+  "live_status": "NOT_RUN",
+  "shared_drive_status": "NOT_EXERCISED",
+  "provider_transport_used": false,
+  "mutations_exercised": false,
+  "cases": {
+    "positive_full_trace": {
+      "status": "OFFLINE_VERIFIED",
+      "test_node": "tests/qualification/test_google_live_harness.py::test_phase1_offline_replay_completes_every_approved_read_operation",
+      "expected_completed_operations": {
+        "metadata_reads": 3,
+        "downloads": 2,
+        "exports": 2,
+        "snapshot_pages": 1,
+        "change_pages": 1,
+        "sheet_pages": 2
+      },
+      "expected_transport_attempts": {
+        "oauth": 1,
+        "drive": 14,
+        "sheets": 4
+      }
+    },
+    "oauth_401_reauthorization": {
+      "status": "OFFLINE_VERIFIED",
+      "test_node": "tests/connectors/test_google_api.py::test_provider_unauthorized_invalidates_token_and_refreshes_once"
+    },
+    "oauth_second_401": {
+      "status": "OFFLINE_VERIFIED",
+      "test_node": "tests/connectors/test_google_api.py::test_second_provider_unauthorized_stops_after_single_refresh"
+    },
+    "drive_policy_reasons": {
+      "status": "OFFLINE_VERIFIED",
+      "test_node": "tests/connectors/test_google_api.py::test_drive_download_known_policy_reason_is_typed_and_sanitized"
+    },
+    "not_found_404": {
+      "status": "OFFLINE_VERIFIED",
+      "test_node": "tests/qualification/test_google_live_harness.py::test_offline_composition_reports_drive_404_as_safe_not_found"
+    },
+    "quota_429": {
+      "status": "OFFLINE_VERIFIED",
+      "test_node": "tests/qualification/test_google_live_harness.py::test_offline_composition_reports_remaining_closed_failure_classes"
+    },
+    "http_5xx": {
+      "status": "OFFLINE_VERIFIED",
+      "test_node": "tests/qualification/test_google_live_harness.py::test_offline_composition_reports_exhausted_drive_http_5xx_retries"
+    },
+    "timeout": {
+      "status": "OFFLINE_VERIFIED",
+      "test_node": "tests/qualification/test_google_live_harness.py::test_offline_composition_reports_exhausted_drive_transport_retries"
+    },
+    "stream_failure": {
+      "status": "OFFLINE_VERIFIED",
+      "test_node": "tests/qualification/test_google_live_harness.py::test_offline_composition_reports_httpx_stream_failure_as_transport"
+    },
+    "malformed_contract_response": {
+      "status": "OFFLINE_VERIFIED",
+      "test_node": "tests/qualification/test_google_live_harness.py::test_offline_composition_rejects_stale_sheet_title_before_grid_read"
+    },
+    "cancellation": {
+      "status": "OFFLINE_VERIFIED",
+      "test_node": "tests/qualification/test_google_live_harness.py::test_offline_composition_reports_cancelled_before_transport"
+    },
+    "deadline": {
+      "status": "OFFLINE_VERIFIED",
+      "test_node": "tests/qualification/test_google_live_harness.py::test_offline_composition_attributes_inflight_deadline_to_provider"
+    },
+    "resource_limits": {
+      "status": "OFFLINE_VERIFIED",
+      "test_node": "tests/qualification/test_google_live_harness.py::test_offline_composition_reports_resource_limit_without_retry"
+    },
+    "drive_snapshot_pagination": {
+      "status": "OFFLINE_VERIFIED",
+      "test_node": "tests/connectors/test_google_api.py::test_drive_snapshot_and_changes_map_every_provider_page"
+    },
+    "drive_changes_schema": {
+      "status": "OFFLINE_VERIFIED",
+      "test_node": "tests/connectors/test_google_api.py::test_drive_changes_accept_documented_v3_changelist_fields"
+    },
+    "sheets_representations_pagination": {
+      "status": "OFFLINE_VERIFIED",
+      "test_node": "tests/connectors/test_google_api.py::test_sheets_range_page_preserves_representations_metadata_and_pagination"
+    },
+    "disclosure_safety": {
+      "status": "OFFLINE_VERIFIED",
+      "test_node": "tests/qualification/test_google_live_harness.py::test_live_evidence_surfaces_do_not_disclose_private_values"
+    }
+  }
+}
