@@ -260,6 +260,10 @@ class EmailSyncRepository(Protocol):
 
     async def save(self, attempt: EmailSyncAttempt) -> EmailSyncAttempt: ...
 
+    async def fence_for_reconciliation(
+        self, attempt: EmailSyncAttempt, *, failure_code: str
+    ) -> EmailSyncAttempt: ...
+
 
 class EmailSyncConcurrentUpdateError(RuntimeError):
     """A stale worker attempted to mutate a newer durable attempt revision."""
@@ -347,6 +351,25 @@ class InMemoryEmailSyncRepository:
     async def save(self, attempt: EmailSyncAttempt) -> EmailSyncAttempt:
         self._attempts[attempt.attempt_id] = attempt
         return attempt
+
+    async def fence_for_reconciliation(
+        self, attempt: EmailSyncAttempt, *, failure_code: str
+    ) -> EmailSyncAttempt:
+        current = self._attempts.get(attempt.attempt_id)
+        if current is None or current.admission != attempt.admission:
+            raise KeyError("email sync attempt not found")
+        if current.status in {EmailSyncStatus.SUSPENDED, EmailSyncStatus.FAILED}:
+            return current
+        fenced = current.model_copy(
+            update={
+                "status": EmailSyncStatus.RECONCILIATION_REQUIRED,
+                "committed_checkpoint": attempt.committed_checkpoint,
+                "failure_code": failure_code,
+                "updated_at": attempt.updated_at,
+            }
+        )
+        self._attempts[attempt.attempt_id] = fenced
+        return fenced
 
 
 class EmailSyncCoordinator:
@@ -568,7 +591,30 @@ class EmailSyncCoordinator:
                 )
             )
 
+        if attempt.status is EmailSyncStatus.INCOMPLETE:
+            attempt = await self.resume(
+                attempt_id,
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            )
+            if attempt.status is not EmailSyncStatus.RUNNING:
+                return attempt
+            known = self._page(attempt, page.page_id)
+            if known is None:
+                raise EmailSyncConcurrentUpdateError()
+
         for effect in known.effects:
+            current = await self.check_effect_admission(
+                attempt_id,
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            )
+            if current.status is not EmailSyncStatus.RUNNING:
+                return current
+            attempt = current
+            known = self._page(attempt, page.page_id)
+            if known is None:
+                raise EmailSyncConcurrentUpdateError()
             receipt = self._receipt_for(known, effect.effect_key)
             if receipt is not None and receipt.durable:
                 continue
@@ -695,14 +741,60 @@ class EmailSyncCoordinator:
             EmailSyncStatus.FAILED,
         }:
             return attempt
-        return await self._save(
+        return await self._repository.fence_for_reconciliation(
+            attempt.model_copy(update={"updated_at": self._clock()}),
+            failure_code=failure_code,
+        )
+
+    async def fence_for_reconciliation(
+        self,
+        attempt_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        expected_admission: EmailSyncAdmission,
+        restore_committed_checkpoint: str | None,
+        failure_code: str,
+    ) -> EmailSyncAttempt:
+        """Authorize and durably fence an obsolete provider cursor generation."""
+
+        self._validate_failure_code(failure_code)
+        attempt = await self._require(attempt_id, workspace_id, environment_id)
+        if attempt.admission != expected_admission:
+            raise KeyError("email sync attempt not found")
+        if attempt.status in {EmailSyncStatus.SUSPENDED, EmailSyncStatus.FAILED}:
+            return attempt
+        admission_state = await self._check_admission(attempt)
+        if admission_state is not EmailSyncAdmissionState.ALLOWED:
+            return await self._stop_for_admission(attempt, admission_state)
+        if attempt.status is EmailSyncStatus.RECONCILIATION_REQUIRED:
+            return attempt
+        return await self._repository.fence_for_reconciliation(
             attempt.model_copy(
                 update={
-                    "status": EmailSyncStatus.RECONCILIATION_REQUIRED,
-                    "failure_code": failure_code,
+                    "committed_checkpoint": restore_committed_checkpoint,
+                    "updated_at": self._clock(),
                 }
-            )
+            ),
+            failure_code=failure_code,
         )
+
+    async def check_effect_admission(
+        self,
+        attempt_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+    ) -> EmailSyncAttempt:
+        """Recheck an attempt immediately before a canonical source effect."""
+
+        attempt = await self._require(attempt_id, workspace_id, environment_id)
+        if attempt.status is not EmailSyncStatus.RUNNING:
+            return attempt
+        admission_state = await self._check_admission(attempt)
+        if admission_state is not EmailSyncAdmissionState.ALLOWED:
+            return await self._stop_for_admission(attempt, admission_state)
+        return attempt
 
     async def cancel(
         self,

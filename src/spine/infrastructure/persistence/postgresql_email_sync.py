@@ -14,6 +14,7 @@ from spine.application.email_sync import (
     EmailSyncConcurrentUpdateError,
     EmailSyncPageState,
     EmailSyncRepository,
+    EmailSyncStatus,
     EmailSyncEffectReceipt,
     EmailSyncStateObservation,
     EmailSyncStateObservationRepository,
@@ -256,6 +257,73 @@ class PostgreSQLEmailSyncRepository(EmailSyncRepository):
                 raise EmailSyncConcurrentUpdateError()
             await uow.commit()
             return attempt.model_copy(update={"revision": next_revision})
+
+    async def fence_for_reconciliation(
+        self, attempt: EmailSyncAttempt, *, failure_code: str
+    ) -> EmailSyncAttempt:
+        """Atomically fence the latest revision and restore the detected cursor."""
+
+        workspace_id = attempt.admission.workspace_id
+        environment_id = attempt.admission.environment_id
+        async with self._uow(
+            "email_sync_fence",
+            attempt.attempt_id,
+            workspace_id,
+            environment_id,
+        ) as uow:
+            result = await uow._execute(
+                select(email_sync_attempts)
+                .where(
+                    email_sync_attempts.c.workspace_id == workspace_id,
+                    email_sync_attempts.c.environment_id == environment_id,
+                    email_sync_attempts.c.attempt_id == attempt.attempt_id,
+                )
+                .with_for_update()
+            )
+            row = result.mappings().one_or_none()
+            if row is None:
+                raise KeyError("email sync attempt not found")
+            current = EmailSyncAttempt.model_validate(row["record"])
+            if current.admission != attempt.admission:
+                raise KeyError("email sync attempt not found")
+            if current.status in {EmailSyncStatus.SUSPENDED, EmailSyncStatus.FAILED}:
+                await uow.rollback()
+                stored = await self.get(
+                    attempt.attempt_id,
+                    workspace_id,
+                    environment_id,
+                )
+                if stored is None:
+                    raise KeyError("email sync attempt not found")
+                return stored
+            next_revision = row["revision"] + 1
+            fenced = current.model_copy(
+                update={
+                    "status": EmailSyncStatus.RECONCILIATION_REQUIRED,
+                    "revision": next_revision,
+                    "committed_checkpoint": attempt.committed_checkpoint,
+                    "failure_code": failure_code,
+                    "updated_at": attempt.updated_at,
+                }
+            )
+            await uow._execute(
+                update(email_sync_attempts)
+                .where(
+                    email_sync_attempts.c.workspace_id == workspace_id,
+                    email_sync_attempts.c.environment_id == environment_id,
+                    email_sync_attempts.c.attempt_id == attempt.attempt_id,
+                )
+                .values(**self._attempt_values(fenced, revision=next_revision))
+            )
+            await uow.commit()
+        stored = await self.get(
+            attempt.attempt_id,
+            workspace_id,
+            environment_id,
+        )
+        if stored is None:
+            raise KeyError("email sync attempt not found")
+        return stored
 
     async def _persist_pages(self, uow: Any, attempt: EmailSyncAttempt) -> None:
         workspace_id = attempt.admission.workspace_id

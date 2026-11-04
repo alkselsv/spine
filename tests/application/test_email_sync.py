@@ -421,7 +421,7 @@ async def test_stale_generation_cannot_publish_page_checkpoint() -> None:
 
 
 @pytest.mark.asyncio
-async def test_generation_change_after_effects_still_holds_checkpoint() -> None:
+async def test_generation_change_before_effect_holds_checkpoint_and_effect() -> None:
     service, admission, effects, _ = coordinator()
     attempt = await service.create_attempt(mailbox_scope(), attempt_key="sync-fenced")
     admission.states = [
@@ -433,7 +433,7 @@ async def test_generation_change_after_effects_still_holds_checkpoint() -> None:
 
     assert result.status is EmailSyncStatus.RECONCILIATION_REQUIRED
     assert result.committed_checkpoint is None
-    assert effects.calls == ["effect-one"]
+    assert effects.calls == []
     assert all(
         request.connection_version_id == CONNECTION_VERSION_ID
         and request.authorization_generation == 3

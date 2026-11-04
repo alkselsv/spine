@@ -24,6 +24,7 @@ from spine.application.email_sync import (
     EmailSyncCoordinator,
     EmailSyncEffect,
     EmailSyncEffectReceipt,
+    EmailSyncPage,
     EmailSyncPageKind,
     EmailSyncPageState,
     EmailSyncStatus,
@@ -44,6 +45,12 @@ from spine.application.yandex_mail_snapshot import (
     YandexMailSnapshotMessageCommand,
     YandexMailSnapshotUidPage,
     YandexMailSnapshotUidPageCode,
+)
+from spine.application.yandex_mail_uidvalidity_reset import (
+    YandexMailUidValidityResetCommand,
+    YandexMailUidValidityResetCoordinator,
+    YandexMailUidValidityResetProfile,
+    YandexMailUidValidityResetState,
 )
 from spine.application.persistence import (
     EnvironmentScope,
@@ -688,6 +695,21 @@ class _SnapshotEffects:
         raise AssertionError("scripted empty UID coverage has no message effects")
 
 
+class _BlockingResetRaceEffects:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def apply(self, effect: EmailSyncEffect) -> EmailSyncEffectReceipt:
+        self.started.set()
+        await self.release.wait()
+        return EmailSyncEffectReceipt(
+            effect_key=effect.effect_key,
+            receipt_reference="stale-effect-receipt",
+            durable=True,
+        )
+
+
 class _ScriptedImapSnapshotReader:
     def __init__(
         self,
@@ -696,11 +718,13 @@ class _ScriptedImapSnapshotReader:
         partial_discovery: bool = False,
         page_failure: YandexMailSnapshotUidPageCode | None = None,
         message_uid: int | None = None,
+        uid_validity: int = 101,
     ) -> None:
         self.folders = folders
         self.partial_discovery = partial_discovery
         self.page_failure = page_failure
         self.message_uid = message_uid
+        self.uid_validity = uid_validity
         self.page_calls = 0
 
     async def discover_folders(self, mailbox_scope):
@@ -731,7 +755,7 @@ class _ScriptedImapSnapshotReader:
             authorization_generation=mailbox_scope.authorization_generation,
             configuration_generation=mailbox_scope.configuration_generation,
             scope_generation=mailbox_scope.scope_generation,
-            uid_validity=101,
+            uid_validity=self.uid_validity,
             uid_next=1 if self.message_uid is None else self.message_uid + 1,
             read_only=True,
         )
@@ -900,6 +924,14 @@ class _CrashAfterPostgreSQLSave:
             raise RuntimeError(f"synthetic crash after {self.page_kind.value}")
         return saved
 
+    async def fence_for_reconciliation(
+        self, attempt: EmailSyncAttempt, *, failure_code: str
+    ) -> EmailSyncAttempt:
+        return await self.repository.fence_for_reconciliation(
+            attempt,
+            failure_code=failure_code,
+        )
+
 
 def _postgresql_snapshot(
     repository,
@@ -1018,6 +1050,254 @@ async def test_postgresql_scripted_imap_stale_generation_fences_checkpoint(
     assert result.attempt.status is EmailSyncStatus.RECONCILIATION_REQUIRED
     assert result.attempt.committed_checkpoint is None
     assert not any(page.terminal and page.committed for page in result.attempt.pages)
+
+
+def _uidvalidity_reset_command(
+    snapshot: YandexMailInitialSnapshotCommand,
+    *,
+    stale_attempt_id: UUID,
+) -> YandexMailUidValidityResetCommand:
+    return YandexMailUidValidityResetCommand(
+        scope=snapshot.scope,
+        stale_attempt_id=stale_attempt_id,
+        folder_reference=snapshot.scope.allowed_folder_references[0],
+        stale_uid_validity=101,
+        observed_uid_validity=102,
+    )
+
+
+def _uidvalidity_reset_profile(
+    snapshot: YandexMailInitialSnapshotCommand,
+) -> YandexMailUidValidityResetProfile:
+    return YandexMailUidValidityResetProfile(
+        uid_page_size=snapshot.uid_page_size,
+        uid_page_response_bytes=snapshot.uid_page_response_bytes,
+        max_uid_pages_per_folder=snapshot.max_uid_pages_per_folder,
+        max_message_bytes=snapshot.max_message_bytes,
+        access_policy_version_id=snapshot.access_policy_version_id,
+    )
+
+
+async def test_postgresql_uidvalidity_reset_replay_has_one_successor_generation(
+    email_sync_repository,
+) -> None:
+    repository, *_ = email_sync_repository
+    folder = UUID("9e000000-0000-0000-0000-000000000020")
+    reader = _ScriptedImapSnapshotReader((folder,), uid_validity=102)
+    snapshot, snapshot_command = _postgresql_snapshot(
+        repository,
+        attempt_key="issue-851-unused-snapshot-key",
+        reader=reader,
+    )
+    stale = await snapshot.sync.create_attempt(
+        snapshot_command.scope,
+        attempt_key="issue-851-stale-incremental",
+    )
+    reset = YandexMailUidValidityResetCoordinator(
+        sync=snapshot.sync,
+        reconciliation=snapshot,
+        profile=_uidvalidity_reset_profile(snapshot_command),
+    )
+    command = _uidvalidity_reset_command(
+        snapshot_command,
+        stale_attempt_id=stale.attempt_id,
+    )
+
+    first = await reset.reconcile(command)
+    replay = await reset.reconcile(command)
+    fenced = await snapshot.sync.get_attempt(
+        stale.attempt_id,
+        workspace_id=snapshot_command.scope.workspace_id,
+        environment_id=snapshot_command.scope.environment_id,
+    )
+    successor = await snapshot.sync.get_attempt(
+        first.reconciliation_attempt_id,
+        workspace_id=snapshot_command.scope.workspace_id,
+        environment_id=snapshot_command.scope.environment_id,
+    )
+
+    assert first.state is YandexMailUidValidityResetState.COMPLETE
+    assert replay == first
+    assert fenced.status is EmailSyncStatus.RECONCILIATION_REQUIRED
+    assert fenced.committed_checkpoint is None
+    assert successor.status is EmailSyncStatus.COMPLETE
+    assert sum(page.terminal for page in successor.pages) == 1
+    assert reader.page_calls == 1
+
+
+async def test_postgresql_concurrent_duplicate_reset_signals_share_successor(
+    email_sync_repository,
+) -> None:
+    repository, *_ = email_sync_repository
+    folder = UUID("9e000000-0000-0000-0000-000000000023")
+    reader = _ScriptedImapSnapshotReader((folder,), uid_validity=102)
+    snapshot, snapshot_command = _postgresql_snapshot(
+        repository,
+        attempt_key="issue-851-unused-concurrent",
+        reader=reader,
+    )
+    stale = await snapshot.sync.create_attempt(
+        snapshot_command.scope,
+        attempt_key="issue-851-stale-concurrent",
+    )
+    reset = YandexMailUidValidityResetCoordinator(
+        sync=snapshot.sync,
+        reconciliation=snapshot,
+        profile=_uidvalidity_reset_profile(snapshot_command),
+    )
+    command = _uidvalidity_reset_command(
+        snapshot_command,
+        stale_attempt_id=stale.attempt_id,
+    )
+
+    first, duplicate = await asyncio.gather(
+        reset.reconcile(command),
+        reset.reconcile(command),
+    )
+    replay = await reset.reconcile(command)
+
+    assert first.reset_id == duplicate.reset_id
+    assert first.reconciliation_attempt_id == duplicate.reconciliation_attempt_id
+    assert first.reconciliation_attempt_id is not None
+    assert replay.reconciliation_attempt_id == first.reconciliation_attempt_id
+    assert {
+        first.state,
+        duplicate.state,
+    } <= {
+        YandexMailUidValidityResetState.RECONCILING,
+        YandexMailUidValidityResetState.COMPLETE,
+    }
+
+
+async def test_postgresql_uidvalidity_reset_during_stale_effect_holds_cursor(
+    email_sync_repository,
+) -> None:
+    repository, *_ = email_sync_repository
+    folder = UUID("9e000000-0000-0000-0000-000000000021")
+    reader = _ScriptedImapSnapshotReader((folder,), uid_validity=102)
+    race_effects = _BlockingResetRaceEffects()
+    fence_time = datetime(2026, 11, 4, 12, 30, tzinfo=timezone.utc)
+    sync = EmailSyncCoordinator(
+        repository=repository,
+        admission=_SnapshotAdmission(),
+        effects=race_effects,
+        clock=lambda: fence_time,
+    )
+    snapshot = YandexMailInitialSnapshotCoordinator(
+        sync=sync,
+        reader=reader,
+        messages=_SnapshotEffects(),
+    )
+    _, snapshot_command = _postgresql_snapshot(
+        repository,
+        attempt_key="issue-851-unused-race",
+        reader=reader,
+    )
+    stale = await sync.create_attempt(
+        snapshot_command.scope,
+        attempt_key="issue-851-stale-effect-race",
+    )
+    stale_page = EmailSyncPage(
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        page_id="stale-page-in-flight",
+        requested_checkpoint=None,
+        next_checkpoint="must-not-advance",
+        effects=(
+            EmailSyncEffect(
+                workspace_id=WORKSPACE_ID,
+                environment_id=ENVIRONMENT_ID,
+                effect_key="stale.effect.in.flight",
+                effect_reference=UUID("9e000000-0000-0000-0000-000000000022"),
+            ),
+        ),
+    )
+    stale_worker = asyncio.create_task(
+        sync.apply_page(
+            stale.attempt_id,
+            stale_page,
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+        )
+    )
+    await race_effects.started.wait()
+    reset = YandexMailUidValidityResetCoordinator(
+        sync=sync,
+        reconciliation=snapshot,
+        profile=_uidvalidity_reset_profile(snapshot_command),
+    )
+    command = _uidvalidity_reset_command(
+        snapshot_command,
+        stale_attempt_id=stale.attempt_id,
+    )
+
+    recovered = await reset.reconcile(command)
+    race_effects.release.set()
+    with pytest.raises(EmailSyncConcurrentUpdateError):
+        await stale_worker
+    fenced = await sync.get_attempt(
+        stale.attempt_id,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+    )
+
+    assert recovered.state is YandexMailUidValidityResetState.COMPLETE
+    assert fenced.status is EmailSyncStatus.RECONCILIATION_REQUIRED
+    assert fenced.committed_checkpoint is None
+    assert fenced.updated_at == fence_time
+    assert all(not page.effect_receipts for page in fenced.pages)
+
+
+@pytest.mark.parametrize(
+    "page_kind",
+    (
+        EmailSyncPageKind.FOLDER_GENERATION,
+        EmailSyncPageKind.UID_PAGE,
+        EmailSyncPageKind.AGGREGATE_CHECKPOINT,
+    ),
+)
+async def test_postgresql_uidvalidity_reset_crash_replays_bounded_reconciliation(
+    email_sync_repository,
+    page_kind: EmailSyncPageKind,
+) -> None:
+    repository, *_ = email_sync_repository
+    folder = UUID(
+        int=UUID("9e000000-0000-0000-0000-000000000030").int
+        + list(EmailSyncPageKind).index(page_kind)
+    )
+    reader = _ScriptedImapSnapshotReader((folder,), uid_validity=102)
+    crashing = _CrashAfterPostgreSQLSave(repository, page_kind)
+    snapshot, snapshot_command = _postgresql_snapshot(
+        crashing,
+        attempt_key=f"issue-851-unused-{page_kind.value}",
+        reader=reader,
+    )
+    stale = await snapshot.sync.create_attempt(
+        snapshot_command.scope,
+        attempt_key=f"issue-851-stale-{page_kind.value}",
+    )
+    reset = YandexMailUidValidityResetCoordinator(
+        sync=snapshot.sync,
+        reconciliation=snapshot,
+        profile=_uidvalidity_reset_profile(snapshot_command),
+    )
+    command = _uidvalidity_reset_command(
+        snapshot_command,
+        stale_attempt_id=stale.attempt_id,
+    )
+
+    with pytest.raises(RuntimeError, match=page_kind.value):
+        await reset.reconcile(command)
+    recovered = await reset.reconcile(command)
+    fenced = await snapshot.sync.get_attempt(
+        stale.attempt_id,
+        workspace_id=snapshot_command.scope.workspace_id,
+        environment_id=snapshot_command.scope.environment_id,
+    )
+
+    assert recovered.state is YandexMailUidValidityResetState.COMPLETE
+    assert fenced.status is EmailSyncStatus.RECONCILIATION_REQUIRED
+    assert fenced.committed_checkpoint is None
 
 
 async def test_postgresql_scripted_imap_item_crash_replays_one_canonical_effect(
