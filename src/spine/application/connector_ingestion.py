@@ -1177,7 +1177,7 @@ def build_connector_canonical_acceptance_command(
         schema_version=CANONICAL_ACCEPTANCE_OUTBOX_SCHEMA_VERSION,
         payload_type=CanonicalAcceptanceOutboxPayload,
     )
-    acceptance_id = _id(command, f"acceptance:{revision.revision_id}")
+    acceptance_id = connector_canonical_acceptance_id(command, revision.revision_id)
     audit_id = _id(command, f"canonical-audit:{revision.revision_id}")
     event_id = _id(command, f"canonical-outbox:{revision.revision_id}")
     audit = audit_events.build_event(
@@ -1236,6 +1236,14 @@ def build_connector_canonical_acceptance_command(
         lifecycle_query=command.lifecycle_query,
         operation=context.operation,
     )
+
+
+def connector_canonical_acceptance_id(
+    command: ConnectorIngestionCommand, revision_id: UUID
+) -> UUID:
+    """Return the stable canonical receipt expected for one connector revision."""
+
+    return _id(command, f"acceptance:{revision_id}")
 
 
 async def _bytes(value: bytes):
@@ -1526,4 +1534,5 @@ __all__ = [
     "GoogleAuthorizedObservationReader",
     "ProviderAuthorizedObservationReader",
     "build_connector_canonical_acceptance_command",
+    "connector_canonical_acceptance_id",
 ]

@@ -1629,6 +1629,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "email_sync_attempts",
         "email_sync_pages",
         "email_sync_effect_receipts",
+        "email_sync_state_observations",
         "email_message_artifacts",
         "email_attachment_artifacts",
         "source_canonical_tables",
@@ -1691,6 +1692,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "email_sync_attempts",
         "email_sync_pages",
         "email_sync_effect_receipts",
+        "email_sync_state_observations",
         "email_message_artifacts",
         "email_attachment_artifacts",
     }
@@ -2158,6 +2160,11 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "pk_email_sync_attempts",
         "pk_email_sync_pages",
         "pk_email_sync_effect_receipts",
+        "pk_email_sync_state_observations",
+        "uq_email_sync_state_observations_outbox",
+        "fk_email_sync_state_observations_environment",
+        "fk_email_sync_state_observations_outbox",
+        "ck_email_sync_state_observations_ck_email_sync_state_ob_31dd",
         "pk_email_message_artifacts",
         "uq_email_message_artifacts_command",
         "pk_email_attachment_artifacts",
@@ -2506,6 +2513,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "pk_email_sync_attempts",
         "pk_email_sync_pages",
         "pk_email_sync_effect_receipts",
+        "pk_email_sync_state_observations",
+        "uq_email_sync_state_observations_outbox",
         "pk_email_message_artifacts",
         "uq_email_message_artifacts_command",
         "pk_email_attachment_artifacts",
@@ -2747,6 +2756,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "email_sync_attempts": (True, True),
         "email_sync_pages": (True, True),
         "email_sync_effect_receipts": (True, True),
+        "email_sync_state_observations": (True, True),
         "email_message_artifacts": (True, True),
         "email_attachment_artifacts": (True, True),
         "work_items": (True, True),
@@ -2949,6 +2959,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "email_sync_attempts": (True, True, True, False),
         "email_sync_pages": (True, True, True, False),
         "email_sync_effect_receipts": (True, True, True, False),
+        "email_sync_state_observations": (True, True, False, False),
         "email_message_artifacts": (True, True, False, False),
         "email_attachment_artifacts": (True, True, False, False),
         "idempotency_receipts": (True, True, False, False),
@@ -3521,6 +3532,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "email_sync_attempts",
         "email_sync_pages",
         "email_sync_effect_receipts",
+        "email_sync_state_observations",
         "email_message_artifacts",
         "email_attachment_artifacts",
     }
@@ -3540,6 +3552,11 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "pk_email_sync_attempts",
         "pk_email_sync_pages",
         "pk_email_sync_effect_receipts",
+        "pk_email_sync_state_observations",
+        "uq_email_sync_state_observations_outbox",
+        "fk_email_sync_state_observations_environment",
+        "fk_email_sync_state_observations_outbox",
+        "ck_email_sync_state_observations_ck_email_sync_state_ob_31dd",
         "pk_email_message_artifacts",
         "uq_email_message_artifacts_command",
         "fk_email_message_artifacts_environment",
@@ -3730,6 +3747,15 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         ("email_sync_effect_receipts", "effect_key"),
         ("email_sync_effect_receipts", "receipt_reference"),
         ("email_sync_effect_receipts", "durable"),
+        ("email_sync_state_observations", "workspace_id"),
+        ("email_sync_state_observations", "environment_id"),
+        ("email_sync_state_observations", "observation_id"),
+        ("email_sync_state_observations", "connection_id"),
+        ("email_sync_state_observations", "mailbox_binding_id"),
+        ("email_sync_state_observations", "state_kind"),
+        ("email_sync_state_observations", "provider_event_digest"),
+        ("email_sync_state_observations", "outbox_event_id"),
+        ("email_sync_state_observations", "record"),
         ("email_message_artifacts", "workspace_id"),
         ("email_message_artifacts", "environment_id"),
         ("email_message_artifacts", "artifact_id"),
@@ -3805,6 +3831,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "pk_email_sync_attempts",
         "pk_email_sync_pages",
         "pk_email_sync_effect_receipts",
+        "pk_email_sync_state_observations",
+        "uq_email_sync_state_observations_outbox",
         "pk_email_message_artifacts",
         "uq_email_message_artifacts_command",
         "pk_email_attachment_artifacts",
@@ -4281,8 +4309,10 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                         "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                         "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'yandex_disk_reconciliation_runs', 'mounted_fs_reconciliation_runs', 'mounted_fs_removal_policies', 'mounted_fs_removal_authorities', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'google_sheets_absence_candidates', 'google_sheets_removal_decisions', 'register_link_claims', 'register_association_acceptances', 'original_upload_records', "
-                        "'qa_agent_artifacts', 'qa_agent_results', 'email_sync_attempts', 'email_sync_pages', 'email_sync_effect_receipts', "
-                        "'email_message_artifacts', 'email_attachment_artifacts', 'private_asr_artifacts', 'private_asr_source_fences', 'private_asr_report_sources', 'private_asr_aggregate_exports')"
+                        "'qa_agent_artifacts', 'qa_agent_results', 'email_sync_attempts', 'email_sync_pages', "
+                        "'email_sync_effect_receipts', 'email_sync_state_observations', 'email_message_artifacts', "
+                        "'email_attachment_artifacts', 'private_asr_artifacts', 'private_asr_source_fences', "
+                        "'private_asr_report_sources', 'private_asr_aggregate_exports')"
                     )
                 )
             )
@@ -4344,6 +4374,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "email_sync_attempts": (True, True),
             "email_sync_pages": (True, True),
             "email_sync_effect_receipts": (True, True),
+            "email_sync_state_observations": (True, True),
         "email_message_artifacts": (True, True),
         "email_attachment_artifacts": (True, True),
         "idempotency_receipts": (True, True),
@@ -5894,9 +5925,11 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261231_99_mailbox_connection_status.py",
         "20270101_100_email_revision_metadata.py",
         "20270102_101_email_attachment_artifacts.py",
-        "20270103_102_private_asr_storage.py",
-        "20270104_103_private_asr_manifest_lineage.py",
-        "20270105_104_private_asr_retention_disposition.py",
+        "20270103_102_email_sync_state_effects.py",
+        "20270104_103_private_asr_storage.py",
+        "20270105_104_private_asr_manifest_lineage.py",
+        "20270106_105_private_asr_retention_disposition.py",
+        "20270107_106_private_asr_aggregate_tombstone.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "transactional_failure_probe.py").write_text(

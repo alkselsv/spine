@@ -6,13 +6,21 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
-from typing import Protocol
+import json
+from typing import Literal, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import Field, model_validator
 
+from spine.application.diagnostics import DiagnosticContext
+from spine.application.outbox import OutboxConsumerSuccess
+from spine.application.persistence.outbox import OutboxIntent
 from spine.domain.common import DefinitionModel
 from spine.domain.connections.email_scope import EmailOperation, MailboxReadScope
+
+EMAIL_SYNC_STATE_OBSERVED_EVENT_TYPE = "email.sync.state_observed"
+EMAIL_SYNC_STATE_OBSERVED_SCHEMA_VERSION = 1
+EMAIL_SYNC_STATE_OBSERVED_CONSUMER_NAME = "email_sync_state_observer"
 
 
 class EmailSyncStatus(str, Enum):
@@ -30,6 +38,66 @@ class EmailSyncAdmissionState(str, Enum):
     REVOKED = "revoked"
     STALE_GENERATION = "stale_generation"
     DENIED = "denied"
+
+
+class EmailSyncPageKind(str, Enum):
+    """Stable semantic kind for durable provider coverage stages."""
+
+    PROVIDER_PAGE = "provider_page"
+    DISCOVERY = "discovery"
+    FOLDER_GENERATION = "folder_generation"
+    UID_PAGE = "uid_page"
+    FOLDER_COMPLETE = "folder_complete"
+    AGGREGATE_CHECKPOINT = "aggregate_checkpoint"
+
+
+class EmailSyncEffectKind(str, Enum):
+    """Whether a covered effect can create content or only records source state."""
+
+    CONTENT = "content"
+    STATE = "state"
+
+
+class EmailSyncStateObservation(DefinitionModel):
+    """Content-free provider state covered by one incremental checkpoint."""
+
+    schema_version: Literal["email-sync-state-observation:v1"] = "email-sync-state-observation:v1"
+    observation_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    connection_id: UUID
+    mailbox_binding_id: UUID
+    state_kind: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
+    provider_event_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    subject_reference_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    provider_generation: str = Field(min_length=1, max_length=255)
+    outbox_event_id: UUID
+
+
+class EmailSyncStateObservedOutboxPayload(DefinitionModel):
+    observation_id: UUID
+    connection_id: UUID
+    mailbox_binding_id: UUID
+    state_kind: str
+    provider_event_digest: str
+
+
+class EmailSyncStateObservedConsumer:
+    """Acknowledge publication after validating the durable observation reference."""
+
+    async def consume(
+        self,
+        intent: OutboxIntent,
+        diagnostic_context: DiagnosticContext,
+    ) -> OutboxConsumerSuccess:
+        if (
+            intent.event_type != EMAIL_SYNC_STATE_OBSERVED_EVENT_TYPE
+            or intent.schema_version != EMAIL_SYNC_STATE_OBSERVED_SCHEMA_VERSION
+            or not isinstance(intent.payload, EmailSyncStateObservedOutboxPayload)
+            or intent.environment_id is None
+        ):
+            raise ValueError("email sync state event is invalid")
+        return OutboxConsumerSuccess(diagnostic_context=diagnostic_context)
 
 
 class EmailSyncAdmission(DefinitionModel):
@@ -71,11 +139,23 @@ class EmailSyncEffect(DefinitionModel):
         min_length=1, max_length=255, pattern=r"^[A-Za-z0-9_.:-]+$"
     )
     effect_reference: UUID
+    kind: EmailSyncEffectKind = EmailSyncEffectKind.CONTENT
+    state_observation: EmailSyncStateObservation | None = None
 
     @model_validator(mode="after")
     def validate_reference(self) -> EmailSyncEffect:
         if self.effect_reference.int == 0:
             raise ValueError("effect reference must be non-zero")
+        if self.kind is EmailSyncEffectKind.STATE:
+            observation = self.state_observation
+            if observation is None or (
+                observation.observation_id != self.effect_reference
+                or observation.workspace_id != self.workspace_id
+                or observation.environment_id != self.environment_id
+            ):
+                raise ValueError("state effect must carry its exact observation")
+        elif self.state_observation is not None:
+            raise ValueError("content effect cannot carry a state observation")
         return self
 
 
@@ -96,12 +176,16 @@ class EmailSyncPage(DefinitionModel):
 
     workspace_id: UUID
     environment_id: UUID
+    page_kind: EmailSyncPageKind = EmailSyncPageKind.PROVIDER_PAGE
     page_id: str = Field(
         min_length=1, max_length=255, pattern=r"^[A-Za-z0-9_.:-]+$"
     )
     requested_checkpoint: str | None = Field(default=None, max_length=4096)
     next_checkpoint: str | None = Field(default=None, max_length=4096)
     terminal: bool = False
+    publish_checkpoint: bool = True
+    evidence_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    evidence_cursor: str | None = Field(default=None, max_length=4096, repr=False)
     effects: tuple[EmailSyncEffect, ...]
 
     @model_validator(mode="after")
@@ -109,7 +193,15 @@ class EmailSyncPage(DefinitionModel):
         keys = tuple(effect.effect_key for effect in self.effects)
         if len(keys) != len(set(keys)):
             raise ValueError("page effect keys must be unique")
-        if self.requested_checkpoint == self.next_checkpoint and not self.terminal:
+        if not self.publish_checkpoint and (
+            self.next_checkpoint is not None or self.terminal
+        ):
+            raise ValueError("a staged page cannot publish a checkpoint or terminate")
+        if (
+            self.publish_checkpoint
+            and self.requested_checkpoint == self.next_checkpoint
+            and not self.terminal
+        ):
             raise ValueError("a nonterminal page must advance its opaque checkpoint")
         return self
 
@@ -117,15 +209,20 @@ class EmailSyncPage(DefinitionModel):
 class EmailSyncPageState(DefinitionModel):
     workspace_id: UUID
     environment_id: UUID
+    page_kind: EmailSyncPageKind = EmailSyncPageKind.PROVIDER_PAGE
     page_id: str = Field(
         min_length=1, max_length=255, pattern=r"^[A-Za-z0-9_.:-]+$"
     )
     page_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     requested_checkpoint: str | None = Field(default=None, max_length=4096)
-    # The provider's next cursor is deliberately absent until all effects have
-    # durable receipts and the coordinator is ready to publish the page.
+    # Durable retry input; it is not the attempt's published checkpoint until
+    # every covered effect has a durable receipt.
+    covered_checkpoint: str | None = Field(default=None, max_length=4096)
     next_checkpoint: str | None = Field(default=None, max_length=4096)
     terminal: bool
+    publish_checkpoint: bool = True
+    evidence_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    evidence_cursor: str | None = Field(default=None, max_length=4096, repr=False)
     effects: tuple[EmailSyncEffect, ...]
     effect_receipts: tuple[EmailSyncEffectReceipt, ...] = ()
     committed: bool = False
@@ -181,6 +278,55 @@ class EmailSyncEffectPort(Protocol):
     async def apply(self, effect: EmailSyncEffect) -> EmailSyncEffectReceipt: ...
 
 
+class EmailSyncStateObservationRepository(Protocol):
+    async def record(self, observation: EmailSyncStateObservation) -> UUID: ...
+
+
+class RoutedEmailSyncEffectPort:
+    """Route content acceptance and content-free state to distinct stores."""
+
+    def __init__(self, *, content: EmailSyncEffectPort, state: EmailSyncStateObservationRepository) -> None:
+        self._content = content
+        self._state = state
+
+    async def apply(self, effect: EmailSyncEffect) -> EmailSyncEffectReceipt:
+        if effect.kind is EmailSyncEffectKind.CONTENT:
+            return await self._content.apply(effect)
+        assert effect.state_observation is not None
+        reference = await self._state.record(effect.state_observation)
+        return EmailSyncEffectReceipt(
+            effect_key=effect.effect_key,
+            receipt_reference=str(reference),
+            durable=True,
+        )
+
+
+def register_email_sync_outbox_event(registry: object) -> None:
+    """Register the content-free state event owned by email synchronization."""
+
+    register = getattr(registry, "register", None)
+    if not callable(register):
+        raise TypeError("outbox registry must provide register")
+    register(
+        event_type=EMAIL_SYNC_STATE_OBSERVED_EVENT_TYPE,
+        schema_version=EMAIL_SYNC_STATE_OBSERVED_SCHEMA_VERSION,
+        payload_type=EmailSyncStateObservedOutboxPayload,
+    )
+
+
+def register_email_sync_delivery_route(registry: object) -> None:
+    """Route state publication to its explicit validating consumer."""
+
+    register = getattr(registry, "register", None)
+    if not callable(register):
+        raise TypeError("delivery route registry must provide register")
+    register(
+        event_type=EMAIL_SYNC_STATE_OBSERVED_EVENT_TYPE,
+        schema_version=EMAIL_SYNC_STATE_OBSERVED_SCHEMA_VERSION,
+        consumer_name=EMAIL_SYNC_STATE_OBSERVED_CONSUMER_NAME,
+    )
+
+
 class InMemoryEmailSyncRepository:
     """Small in-memory attempt store used by offline coordinator compositions."""
 
@@ -220,7 +366,11 @@ class EmailSyncCoordinator:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     async def create_attempt(
-        self, scope: MailboxReadScope, *, attempt_key: str
+        self,
+        scope: MailboxReadScope,
+        *,
+        attempt_key: str,
+        initial_checkpoint: str | None = None,
     ) -> EmailSyncAttempt:
         """Return the stable attempt for an exact authorized mailbox binding."""
 
@@ -232,6 +382,10 @@ class EmailSyncCoordinator:
             raise ValueError("attempt key must be a bounded non-empty value")
         if not scope.allows(EmailOperation.SYNCHRONIZE):
             raise ValueError("mailbox scope does not authorize synchronization")
+        if initial_checkpoint is not None and (
+            not initial_checkpoint or len(initial_checkpoint) > 4096
+        ):
+            raise ValueError("initial checkpoint must be a bounded non-empty value")
         admission = EmailSyncAdmission.from_scope(scope)
         attempt_id = uuid5(
             NAMESPACE_URL,
@@ -241,7 +395,16 @@ class EmailSyncCoordinator:
             attempt_id, admission.workspace_id, admission.environment_id
         )
         if existing is not None:
-            if existing.admission != admission or existing.attempt_key != attempt_key:
+            existing_initial_checkpoint = (
+                existing.pages[0].requested_checkpoint
+                if existing.pages
+                else existing.committed_checkpoint
+            )
+            if (
+                existing.admission != admission
+                or existing.attempt_key != attempt_key
+                or existing_initial_checkpoint != initial_checkpoint
+            ):
                 raise ValueError("attempt identity conflicts with its binding")
             return existing
         now = self._now()
@@ -251,6 +414,7 @@ class EmailSyncCoordinator:
                 attempt_key=attempt_key,
                 admission=admission,
                 status=EmailSyncStatus.PENDING,
+                committed_checkpoint=initial_checkpoint,
                 created_at=now,
                 updated_at=now,
             )
@@ -265,6 +429,59 @@ class EmailSyncCoordinator:
         environment_id: UUID,
     ) -> EmailSyncAttempt:
         """Apply a page idempotently and publish its opaque cursor after receipts."""
+
+        return await self._apply_page(
+            attempt_id,
+            page,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            supplied_receipts=(),
+        )
+
+    async def record_durable_page(
+        self,
+        attempt_id: UUID,
+        page: EmailSyncPage,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        receipts: tuple[EmailSyncEffectReceipt, ...],
+    ) -> EmailSyncAttempt:
+        """Record already-durable canonical receipts before cursor publication.
+
+        Provider-specific coordinators use this after their canonical ingestion
+        port has returned durable acceptance receipts. PostgreSQL still verifies
+        those acceptance references when a later aggregate checkpoint advances.
+        """
+
+        receipt_keys = tuple(receipt.effect_key for receipt in receipts)
+        effect_keys = tuple(effect.effect_key for effect in page.effects)
+        if (
+            len(receipt_keys) != len(set(receipt_keys))
+            or set(receipt_keys) != set(effect_keys)
+            or any(not receipt.durable for receipt in receipts)
+        ):
+            raise ValueError("durable page receipts must cover every effect exactly once")
+        return await self._apply_page(
+            attempt_id,
+            page,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            supplied_receipts=receipts,
+        )
+
+    async def _apply_page(
+        self,
+        attempt_id: UUID,
+        page: EmailSyncPage,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        supplied_receipts: tuple[EmailSyncEffectReceipt, ...],
+    ) -> EmailSyncAttempt:
+        supplied_by_key = {
+            receipt.effect_key: receipt for receipt in supplied_receipts
+        }
 
         attempt = await self._require(attempt_id, workspace_id, environment_id)
         known = self._page(attempt, page.page_id)
@@ -330,16 +547,22 @@ class EmailSyncCoordinator:
             known = EmailSyncPageState(
                 workspace_id=page.workspace_id,
                 environment_id=page.environment_id,
+                page_kind=page.page_kind,
                 page_id=page.page_id,
                 page_digest=self._page_digest(page),
                 requested_checkpoint=page.requested_checkpoint,
+                covered_checkpoint=page.next_checkpoint,
                 terminal=page.terminal,
+                publish_checkpoint=page.publish_checkpoint,
+                evidence_digest=page.evidence_digest,
+                evidence_cursor=page.evidence_cursor,
                 effects=page.effects,
             )
             attempt = await self._save(
                 attempt.model_copy(
                     update={
                         "status": EmailSyncStatus.RUNNING,
+                        "failure_code": None,
                         "pages": (*attempt.pages, known),
                     }
                 )
@@ -349,10 +572,12 @@ class EmailSyncCoordinator:
             receipt = self._receipt_for(known, effect.effect_key)
             if receipt is not None and receipt.durable:
                 continue
-            try:
-                receipt = await self._effects.apply(effect)
-            except Exception:
-                return await self._set_incomplete(attempt, known)
+            receipt = supplied_by_key.get(effect.effect_key)
+            if receipt is None:
+                try:
+                    receipt = await self._effects.apply(effect)
+                except Exception:
+                    return await self._set_incomplete(attempt, known)
             if receipt.effect_key != effect.effect_key or not receipt.durable:
                 return await self._set_incomplete(attempt, known)
             known = known.model_copy(
@@ -367,8 +592,18 @@ class EmailSyncCoordinator:
             return await self._stop_for_admission(attempt, admission_state)
 
         known = known.model_copy(
-            update={"next_checkpoint": page.next_checkpoint, "committed": True}
+            update={"next_checkpoint": known.covered_checkpoint, "committed": True}
         )
+        if not known.publish_checkpoint:
+            return await self._replace_page(
+                attempt.model_copy(
+                    update={
+                        "status": EmailSyncStatus.RUNNING,
+                        "failure_code": None,
+                    }
+                ),
+                known,
+            )
         attempt = attempt.model_copy(
             update={
                 "committed_checkpoint": known.next_checkpoint,
@@ -381,6 +616,93 @@ class EmailSyncCoordinator:
             }
         )
         return await self._replace_page(attempt, known)
+
+    async def resume_pending(
+        self,
+        attempt_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+    ) -> EmailSyncAttempt:
+        """Finish the admitted range before accepting a wider provider drain."""
+
+        attempt = await self._require(attempt_id, workspace_id, environment_id)
+        pending = next((page for page in attempt.pages if not page.committed), None)
+        if pending is None:
+            return attempt
+        return await self.apply_page(
+            attempt_id,
+            EmailSyncPage(
+                workspace_id=pending.workspace_id,
+                environment_id=pending.environment_id,
+                page_kind=pending.page_kind,
+                page_id=pending.page_id,
+                requested_checkpoint=pending.requested_checkpoint,
+                next_checkpoint=pending.covered_checkpoint,
+                terminal=pending.terminal,
+                publish_checkpoint=pending.publish_checkpoint,
+                evidence_digest=pending.evidence_digest,
+                evidence_cursor=pending.evidence_cursor,
+                effects=pending.effects,
+            ),
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+        )
+
+    async def mark_incomplete(
+        self,
+        attempt_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        failure_code: str,
+    ) -> EmailSyncAttempt:
+        """Hold the aggregate checkpoint after incomplete provider coverage."""
+
+        self._validate_failure_code(failure_code)
+        attempt = await self._require(attempt_id, workspace_id, environment_id)
+        if attempt.status in {
+            EmailSyncStatus.COMPLETE,
+            EmailSyncStatus.SUSPENDED,
+            EmailSyncStatus.RECONCILIATION_REQUIRED,
+            EmailSyncStatus.FAILED,
+        }:
+            return attempt
+        return await self._save(
+            attempt.model_copy(
+                update={
+                    "status": EmailSyncStatus.INCOMPLETE,
+                    "failure_code": failure_code,
+                }
+            )
+        )
+
+    async def require_reconciliation(
+        self,
+        attempt_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        failure_code: str,
+    ) -> EmailSyncAttempt:
+        """Fence an attempt whose provider or authorization generation changed."""
+
+        self._validate_failure_code(failure_code)
+        attempt = await self._require(attempt_id, workspace_id, environment_id)
+        if attempt.status in {
+            EmailSyncStatus.COMPLETE,
+            EmailSyncStatus.SUSPENDED,
+            EmailSyncStatus.FAILED,
+        }:
+            return attempt
+        return await self._save(
+            attempt.model_copy(
+                update={
+                    "status": EmailSyncStatus.RECONCILIATION_REQUIRED,
+                    "failure_code": failure_code,
+                }
+            )
+        )
 
     async def cancel(
         self,
@@ -570,7 +892,15 @@ class EmailSyncCoordinator:
 
     @staticmethod
     def _page_digest(page: EmailSyncPage) -> str:
-        return hashlib.sha256(page.model_dump_json().encode("utf-8")).hexdigest()
+        payload = page.model_dump(mode="json")
+        if page.page_kind is EmailSyncPageKind.PROVIDER_PAGE:
+            # Preserve the digest of pages created before the semantic kind was
+            # introduced; provider-specific kinds remain part of new identity.
+            payload.pop("page_kind")
+        encoded = json.dumps(
+            payload, separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
     @staticmethod
     def _receipt_for(
@@ -585,9 +915,12 @@ class EmailSyncCoordinator:
     def _with_receipt(
         page: EmailSyncPageState, receipt: EmailSyncEffectReceipt
     ) -> tuple[EmailSyncEffectReceipt, ...]:
-        return tuple(
-            current for current in page.effect_receipts if current.effect_key != receipt.effect_key
+        receipts = tuple(
+            current
+            for current in page.effect_receipts
+            if current.effect_key != receipt.effect_key
         ) + (receipt,)
+        return tuple(sorted(receipts, key=lambda current: current.effect_key))
 
 
 __all__ = [
@@ -598,11 +931,20 @@ __all__ = [
     "EmailSyncCoordinator",
     "EmailSyncConcurrentUpdateError",
     "EmailSyncEffect",
+    "EmailSyncEffectKind",
     "EmailSyncEffectPort",
     "EmailSyncEffectReceipt",
     "EmailSyncPage",
+    "EmailSyncPageKind",
     "EmailSyncPageState",
     "EmailSyncRepository",
     "EmailSyncStatus",
+    "EmailSyncStateObservation",
+    "EmailSyncStateObservationRepository",
+    "EmailSyncStateObservedOutboxPayload",
+    "EmailSyncStateObservedConsumer",
+    "RoutedEmailSyncEffectPort",
+    "register_email_sync_outbox_event",
+    "register_email_sync_delivery_route",
     "InMemoryEmailSyncRepository",
 ]

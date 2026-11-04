@@ -284,6 +284,28 @@ email_sync_effect_receipts = Table(
     ),
 )
 
+email_sync_state_observations = Table(
+    "email_sync_state_observations",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("observation_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("connection_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("mailbox_binding_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("state_kind", String(64), nullable=False),
+    Column("provider_event_digest", String(64), nullable=False),
+    Column("outbox_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("record", JSONB, nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "observation_id",
+        name="pk_email_sync_state_observations",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "outbox_event_id",
+        name="uq_email_sync_state_observations_outbox",
+    ),
+)
+
 requirements_artifact_versions = Table(
     "requirements_artifact_versions",
     metadata,

@@ -96,11 +96,11 @@ the resolver then loads and verifies the canonical database binding. UUID
 equality is not proof of policy authority.
 
 Main migrations are email artifacts `20261230_98`, mailbox connection status
-`20261231_99`, email revision metadata `20270101_100`, and email attachment
-artifacts `20270102_101`. The ASR chain follows them linearly: storage
-`20270103_102`, manifest metadata `20270104_103`, then
-`20270105_104`, which persists the exact per-source retention disposition on
-report artifacts. Reads and idempotent retries compare the entire current
+`20261231_99`, email revision metadata `20270101_100`, email attachment
+artifacts `20270102_101`, and email sync effects `20270103_102`. The ASR chain
+follows them linearly: storage `20270104_103`, manifest metadata `20270105_104`,
+retention disposition `20270106_105`, and aggregate tombstones `20270107_106`.
+Reads and idempotent retries compare the entire current
 disposition (policy and terms IDs/digests, generation, class, start event,
 approval and cleanup/backup evidence) as well as derived expiry. This prevents
 an equal-expiry but different terms version from authorizing a prior report.
@@ -127,9 +127,9 @@ Verification on the rebased working tree (base
 
 - Restricted PostgreSQL storage/readiness qualification on the current branch:
   `78 passed in 82.09s`, using restricted `spine_runtime` and migration head
-  `20270105_104`.
+  `20270107_106`.
 - Initial-tenancy migration upgrade/rollback qualification against the current
-  chain `20270105_104`: `59 passed in 793.81s`.
+  chain `20270107_106`: historical prior-branch result; rerun against this merged chain below.
 - `python -m compileall -q src tests`, `uv lock --check` with cache redirected
   to `/tmp`, and `git diff --check`: PASS.
 - Full repository `pytest -q` on exact previous-main base `c05b0914`: `6468
@@ -146,7 +146,7 @@ Verification on the rebased working tree (base
   `r1-regression-gate` passed on the prior rebased code head. Exact-head CI on
   the newly rebased `6d2984a6` base is pending.
 - The clean-tree #68 artifact gate passed after the migration resequence
-  commit. Final migration head remains `20270105_104`.
+  commit. This qualification is superseded by the migration compatibility checks for `20270107_106`.
 
 Production manifest authority (#811), deletion authority (#812), and external
 approval/revocation fencing (#813) remain separate production gates. The

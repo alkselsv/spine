@@ -52,9 +52,22 @@ from spine.application.email_sync import (
     EmailSyncAttempt,
     EmailSyncCoordinator,
     EmailSyncEffect,
+    EmailSyncEffectKind,
     EmailSyncEffectReceipt,
     EmailSyncPage,
     EmailSyncStatus,
+)
+from spine.connectors.gmail_history import (
+    GmailHistoryChange,
+    GmailHistoryChangeKind,
+    GmailHistoryResult,
+    GmailHistoryState,
+    gmail_history_scope_digest,
+)
+from spine.connectors.gmail_incremental import GmailIncrementalHistoryApplier
+from spine.domain.connections.email_scope import (
+    EmailProviderOperation,
+    MailboxReadScope,
 )
 from spine.application.google_drive_lifecycle import (
     DriveLifecycleDecisionState,
@@ -184,6 +197,7 @@ from spine.infrastructure.persistence.postgresql import (
 )
 from spine.infrastructure.persistence.postgresql_email_sync import (
     PostgreSQLEmailSyncRepository,
+    PostgreSQLEmailSyncStateObservationRepository,
 )
 from spine.infrastructure.persistence.crm_relationship_v2 import (
     PostgreSQLCrmRelationshipV2Repository,
@@ -3431,6 +3445,477 @@ async def test_email_sync_crash_after_canonical_acceptance_replays_before_checkp
     assert len(acceptances) == 1
     assert acceptances[0].canonical_acceptance_id == case.command.canonical_acceptance_id
     assert outbox_count == 1
+
+
+class _Issue837Admission:
+    def __init__(
+        self,
+        state: EmailSyncAdmissionState = EmailSyncAdmissionState.ALLOWED,
+        *,
+        states: tuple[EmailSyncAdmissionState, ...] = (),
+    ) -> None:
+        self.state = state
+        self.states = list(states)
+
+    async def check(self, admission: EmailSyncAdmission) -> EmailSyncAdmissionState:
+        del admission
+        if self.states:
+            return self.states.pop(0)
+        return self.state
+
+
+class _Issue837EffectFactory:
+    def __init__(self, acceptance_id: UUID) -> None:
+        self.acceptance_id = acceptance_id
+
+    async def prepare(
+        self,
+        scope: MailboxReadScope,
+        change: GmailHistoryChange,
+    ) -> EmailSyncEffect:
+        digest = hashlib.sha256(
+            f"{scope.mailbox_binding_id}:{change.event_id}".encode()
+        ).hexdigest()
+        return EmailSyncEffect(
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            effect_key=f"gmail.history.{digest}",
+            effect_reference=self.acceptance_id,
+        )
+
+
+class _Issue837CanonicalEffects:
+    def __init__(
+        self,
+        adapter: PersistenceAdapter,
+        case: object,
+        state_repository: PostgreSQLEmailSyncStateObservationRepository | None = None,
+    ) -> None:
+        self.adapter = adapter
+        self.case = case
+        assert adapter.ingestion_context is not None
+        self.state_repository = state_repository or PostgreSQLEmailSyncStateObservationRepository(
+            adapter.uow_factory,
+            lambda operation, trace_id: adapter.ingestion_context(
+                case.source.workspace_id,
+                case.source.environment_id,
+                operation.value,
+            ),
+            adapter.outbox_events,
+        )
+        self.calls: list[EmailSyncEffect] = []
+        self.fail_once_at: int | None = None
+        self.stop_after_acceptance = False
+
+    async def apply(self, effect: EmailSyncEffect) -> EmailSyncEffectReceipt:
+        self.calls.append(effect)
+        if self.fail_once_at == len(self.calls):
+            self.fail_once_at = None
+            raise RuntimeError("synthetic canonical item failure")
+        if effect.kind is EmailSyncEffectKind.STATE:
+            assert effect.state_observation is not None
+            reference = await self.state_repository.record(effect.state_observation)
+            return EmailSyncEffectReceipt(
+                effect_key=effect.effect_key,
+                receipt_reference=str(reference),
+                durable=True,
+            )
+        async with self.adapter.uow_factory(self.case.context) as uow:
+            acceptance = await uow.canonical.resolve_acceptance(
+                self.case.command.canonical_acceptance_id
+            )
+            if acceptance is None:
+                result = await uow.canonical.accept(self.case.command)
+                acceptance = result.acceptance
+                await uow.commit()
+            else:
+                await uow.rollback()
+        assert acceptance is not None
+        if self.stop_after_acceptance:
+            self.stop_after_acceptance = False
+            raise RuntimeError("synthetic stop after canonical acceptance")
+        return EmailSyncEffectReceipt(
+            effect_key=effect.effect_key,
+            receipt_reference=str(acceptance.canonical_acceptance_id),
+            durable=True,
+        )
+
+
+class _Issue837CheckpointCrashRepository:
+    def __init__(self, repository: PostgreSQLEmailSyncRepository) -> None:
+        self.repository = repository
+        self.interrupted = False
+
+    async def get(
+        self,
+        attempt_id: UUID,
+        workspace_id: UUID,
+        environment_id: UUID,
+    ) -> EmailSyncAttempt | None:
+        return await self.repository.get(attempt_id, workspace_id, environment_id)
+
+    async def save(self, attempt: EmailSyncAttempt) -> EmailSyncAttempt:
+        if (
+            attempt.pages
+            and attempt.pages[0].committed
+            and not self.interrupted
+        ):
+            self.interrupted = True
+            raise RuntimeError("synthetic stop before checkpoint commit")
+        return await self.repository.save(attempt)
+
+
+def _issue837_scope(case: object) -> MailboxReadScope:
+    return MailboxReadScope(
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        connection_id=synthetic_uuid(83701),
+        connection_version_id=synthetic_uuid(83702),
+        provider_kind="google",
+        resource_scope_reference=synthetic_uuid(83703),
+        mailbox_subject_reference=synthetic_uuid(83704),
+        mailbox_binding_id=synthetic_uuid(83705),
+        authorization_generation=3,
+        configuration_generation=4,
+        scope_generation=5,
+        allowed_operations=(EmailProviderOperation.SYNCHRONIZE,),
+    )
+
+
+def _issue837_history(
+    case: object | None = None,
+    *,
+    state: GmailHistoryState = GmailHistoryState.COMPLETE,
+    terminal_history_id: str | None = "103",
+    error_code: str | None = None,
+) -> GmailHistoryResult:
+    return GmailHistoryResult(
+        requested_start_history_id="98",
+        admission_scope_digest=(
+            gmail_history_scope_digest(_issue837_scope(case))
+            if case is not None
+            else "0" * 64
+        ),
+        state=state,
+        changes=(
+            GmailHistoryChange(
+                history_id="99",
+                kind=GmailHistoryChangeKind.MESSAGE_ADDED,
+                message_id="synthetic-message-a",
+            ),
+            GmailHistoryChange(
+                history_id="100",
+                kind=GmailHistoryChangeKind.LABEL_ADDED,
+                message_id="synthetic-message-a",
+                label_id="STARRED",
+            ),
+            GmailHistoryChange(
+                history_id="101",
+                kind=GmailHistoryChangeKind.MESSAGE_DELETED,
+                message_id="synthetic-message-b",
+            ),
+        ),
+        terminal_history_id=terminal_history_id,
+        pages_read=2,
+        duplicate_count=0,
+        malformed_count=0,
+        error_code=error_code,
+    )
+
+
+def _issue837_applier(
+    adapter: PersistenceAdapter,
+    case: object,
+    *,
+    admission: _Issue837Admission | None = None,
+    effects: _Issue837CanonicalEffects | None = None,
+    crash_before_checkpoint: bool = False,
+) -> tuple[
+    GmailIncrementalHistoryApplier,
+    _Issue837CanonicalEffects,
+    PostgreSQLEmailSyncRepository,
+]:
+    assert adapter.ingestion_context is not None
+    repository = PostgreSQLEmailSyncRepository(
+        adapter.uow_factory,
+        lambda operation, trace_id: adapter.ingestion_context(
+            case.source.workspace_id,
+            case.source.environment_id,
+            operation.value,
+        ),
+    )
+    state_repository = PostgreSQLEmailSyncStateObservationRepository(
+        adapter.uow_factory,
+        lambda operation, trace_id: adapter.ingestion_context(
+            case.source.workspace_id,
+            case.source.environment_id,
+            operation.value,
+        ),
+        adapter.outbox_events,
+    )
+    effect_port = effects or _Issue837CanonicalEffects(adapter, case, state_repository)
+    coordinator = EmailSyncCoordinator(
+        repository=(
+            _Issue837CheckpointCrashRepository(repository)
+            if crash_before_checkpoint
+            else repository
+        ),
+        admission=admission or _Issue837Admission(),
+        effects=effect_port,
+        clock=lambda: datetime(2026, 11, 3, tzinfo=timezone.utc),
+    )
+    return (
+        GmailIncrementalHistoryApplier(
+            coordinator,
+            _issue837_scope(case),
+            _Issue837EffectFactory(case.command.canonical_acceptance_id),
+        ),
+        effect_port,
+        repository,
+    )
+
+
+async def test_postgresql_gmail_history_commits_after_multi_page_effects_and_replays(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    case = await prepare_canonical_case(postgresql_adapter, 83700)
+    service, effects, repository = _issue837_applier(postgresql_adapter, case)
+    attempt = await service.start(
+        attempt_key="issue-837-multi-page",
+        start_history_id="98",
+    )
+
+    first = await service.apply(
+        attempt.attempt_id,
+        _issue837_history(case),
+        start_history_id="98",
+    )
+    replay = await service.apply(
+        attempt.attempt_id,
+        _issue837_history(case),
+        start_history_id="98",
+    )
+
+    assert first.status is EmailSyncStatus.COMPLETE
+    assert first.committed_checkpoint == "103"
+    assert replay.attempt_id == first.attempt_id
+    assert replay.committed_checkpoint == first.committed_checkpoint
+    assert replay.pages == first.pages
+    assert len(effects.calls) == 3
+    stored = await repository.get(
+        attempt.attempt_id,
+        case.source.workspace_id,
+        case.source.environment_id,
+    )
+    assert stored is not None
+    assert stored.committed_checkpoint == first.committed_checkpoint
+    assert stored.pages == first.pages
+    assert [effect.kind for effect in stored.pages[0].effects] == [
+        EmailSyncEffectKind.CONTENT,
+        EmailSyncEffectKind.STATE,
+        EmailSyncEffectKind.STATE,
+    ]
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        acceptances = await uow.canonical.list_acceptances(
+            case.source.source_object_id
+        )
+        state_count = (
+            await uow._execute(
+                text(
+                    "SELECT count(*) FROM spine.email_sync_state_observations "
+                    "WHERE workspace_id = :workspace_id AND environment_id = :environment_id"
+                ),
+                {
+                    "workspace_id": case.source.workspace_id,
+                    "environment_id": case.source.environment_id,
+                },
+            )
+        ).scalar_one()
+        await uow.rollback()
+    migration_engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with migration_engine.connect() as connection:
+            state_outbox_count = await connection.scalar(
+                text(
+                    "SELECT count(*) FROM spine.outbox_intents "
+                    "WHERE workspace_id = :workspace_id "
+                    "AND environment_id = :environment_id "
+                    "AND event_type = 'email.sync.state_observed'"
+                ),
+                {
+                    "workspace_id": case.source.workspace_id,
+                    "environment_id": case.source.environment_id,
+                },
+            )
+    finally:
+        await migration_engine.dispose()
+    assert len(acceptances) == 1
+    assert acceptances[0].source_revision_id == case.revision.revision_id
+    assert state_count == 2
+    assert state_outbox_count == 2
+
+
+@pytest.mark.parametrize(
+    "failure_boundary",
+    (
+        "item_failure",
+        "after_acceptance_before_receipt",
+        "after_receipts_before_checkpoint",
+    ),
+)
+async def test_postgresql_gmail_history_crash_and_item_failure_replay(
+    postgresql_adapter: PersistenceAdapter,
+    failure_boundary: str,
+) -> None:
+    seed = {
+        "item_failure": 83720,
+        "after_acceptance_before_receipt": 83740,
+        "after_receipts_before_checkpoint": 83760,
+    }[failure_boundary]
+    case = await prepare_canonical_case(postgresql_adapter, seed)
+    effects = _Issue837CanonicalEffects(postgresql_adapter, case)
+    effects.fail_once_at = 2 if failure_boundary == "item_failure" else None
+    effects.stop_after_acceptance = failure_boundary == "after_acceptance_before_receipt"
+    service, _, repository = _issue837_applier(
+        postgresql_adapter,
+        case,
+        effects=effects,
+        crash_before_checkpoint=failure_boundary == "after_receipts_before_checkpoint",
+    )
+    attempt = await service.start(
+        attempt_key=f"issue-837-{failure_boundary}",
+        start_history_id="98",
+    )
+
+    if failure_boundary == "after_receipts_before_checkpoint":
+        with pytest.raises(RuntimeError, match="checkpoint commit"):
+            await service.apply(
+                attempt.attempt_id,
+                _issue837_history(case),
+                start_history_id="98",
+            )
+    else:
+        incomplete = await service.apply(
+            attempt.attempt_id,
+            _issue837_history(case),
+            start_history_id="98",
+        )
+        assert incomplete.status is EmailSyncStatus.INCOMPLETE
+        assert incomplete.committed_checkpoint == "98"
+
+    recovered = await service.apply(
+        attempt.attempt_id,
+        _issue837_history(case),
+        start_history_id="98",
+    )
+
+    assert recovered.status is EmailSyncStatus.COMPLETE
+    assert recovered.committed_checkpoint == "103"
+    stored = await repository.get(
+        attempt.attempt_id,
+        case.source.workspace_id,
+        case.source.environment_id,
+    )
+    assert stored is not None
+    assert stored.committed_checkpoint == recovered.committed_checkpoint
+    assert stored.pages == recovered.pages
+    assert len(effects.calls) == (
+        3 if failure_boundary == "after_receipts_before_checkpoint" else 4
+    )
+
+
+@pytest.mark.parametrize(
+    ("case_name", "history", "admission", "expected_status"),
+    (
+        (
+            "partial",
+            _issue837_history(
+                state=GmailHistoryState.INCOMPLETE,
+                error_code="malformed_history_record",
+            ),
+            _Issue837Admission(),
+            EmailSyncStatus.INCOMPLETE,
+        ),
+        (
+            "missing_terminal",
+            _issue837_history(terminal_history_id=None),
+            _Issue837Admission(),
+            EmailSyncStatus.INCOMPLETE,
+        ),
+        (
+            "stale_history",
+            _issue837_history(
+                state=GmailHistoryState.RECONCILIATION_REQUIRED,
+                terminal_history_id=None,
+                error_code="history_cursor_stale",
+            ),
+            _Issue837Admission(),
+            EmailSyncStatus.RECONCILIATION_REQUIRED,
+        ),
+        (
+            "stale_generation",
+            _issue837_history(),
+            _Issue837Admission(EmailSyncAdmissionState.STALE_GENERATION),
+            EmailSyncStatus.RECONCILIATION_REQUIRED,
+        ),
+        (
+            "revoked",
+            _issue837_history(),
+            _Issue837Admission(EmailSyncAdmissionState.REVOKED),
+            EmailSyncStatus.SUSPENDED,
+        ),
+    ),
+)
+async def test_postgresql_gmail_history_blocked_outcomes_hold_checkpoint(
+    postgresql_adapter: PersistenceAdapter,
+    case_name: str,
+    history: GmailHistoryResult,
+    admission: _Issue837Admission,
+    expected_status: EmailSyncStatus,
+) -> None:
+    seed = {
+        "partial": 83780,
+        "missing_terminal": 83800,
+        "stale_history": 83820,
+        "stale_generation": 83840,
+        "revoked": 83860,
+    }[case_name]
+    case = await prepare_canonical_case(postgresql_adapter, seed)
+    service, effects, repository = _issue837_applier(
+        postgresql_adapter,
+        case,
+        admission=admission,
+    )
+    attempt = await service.start(
+        attempt_key=f"issue-837-{case_name}",
+        start_history_id="98",
+    )
+
+    held = await service.apply(
+        attempt.attempt_id,
+        history.model_copy(
+            update={
+                "admission_scope_digest": gmail_history_scope_digest(
+                    _issue837_scope(case)
+                )
+            }
+        ),
+        start_history_id="98",
+    )
+
+    assert held.status is expected_status
+    assert held.committed_checkpoint == "98"
+    assert effects.calls == []
+    stored = await repository.get(
+        attempt.attempt_id,
+        case.source.workspace_id,
+        case.source.environment_id,
+    )
+    assert stored == held
 
 
 async def test_postgresql_document_tombstone_preserves_history_and_canonical_effects(

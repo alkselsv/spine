@@ -5,8 +5,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 
-revision = "20270105_104"
-down_revision = "20270104_103"
+revision = "20270106_105"
+down_revision = "20270105_104"
 branch_labels = None
 depends_on = None
 SCHEMA = "spine"
