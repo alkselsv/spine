@@ -778,30 +778,16 @@ async def test_postgresql_email_artifact_replay_is_tenant_scoped_and_outbox_atom
         EmailArtifactCommand,
         EmailArtifactProjectionRequest,
     )
-    from spine.application.email_citations import (
-        EmailMessageCitationExcerptResolver,
-        build_email_message_citation_locator,
-    )
     from spine.application.persistence.context import EnvironmentScope, PersistenceOperation, PersistencePurpose
-    from spine.application.projection_locator import canonical_projection_locator_digest
     from spine.domain.artifacts.email_html import EmailHtmlSanitizerProfile
     from spine.domain.artifacts.email_message import (
         EmailMessageArtifact,
         email_message_artifact_digest,
-        encode_email_message_locator,
     )
     from spine.domain.artifacts.email_mime import MimeArtifact, MimeParseDisposition
-    from spine.domain.capabilities import Citation
-    from spine.domain.context_bundles import (
-        ContextBundleEvidenceReference,
-        ContextBundleLineageRef,
-        ContextBundleRef,
-        EvidenceLocator,
-    )
     from spine.infrastructure.persistence.email_artifacts import PostgreSQLEmailArtifactRepository
     from spine.ingestion.email_html import EmailHtmlSanitizer
     from spine.ingestion.email_mime import MimeParser, MimeParserProfile
-    from spine.memory.contracts import StableLocator
 
     raw = (
         b"From: synthetic@example.test\r\nSubject: synthetic\r\n"
@@ -946,58 +932,6 @@ async def test_postgresql_email_artifact_replay_is_tenant_scoped_and_outbox_atom
             environment_id=case.source.environment_id,
             artifact_id=first.artifact.artifact_id,
         ) == first.artifact
-        locator = build_email_message_citation_locator(
-            first.artifact,
-            part_path="1",
-            representation="plain_text",
-            start_codepoint=10,
-            end_codepoint=14,
-        )
-        locator_reference = encode_email_message_locator(locator)
-        locator_digest = canonical_projection_locator_digest(
-            locator_contract_version=locator.schema_version,
-            locator=StableLocator(kind="message", value=locator_reference),
-        )
-        evidence = ContextBundleEvidenceReference(
-            schema_version="context-evidence-reference:v2",
-            evidence_id="postgres-email-citation-858",
-            workspace_id=case.source.workspace_id,
-            environment_id=case.source.environment_id,
-            projection_snapshot_id=synthetic_uuid(85320),
-            activation_generation=1,
-            source_object_id=case.source.source_object_id,
-            source_revision_id=case.revision.revision_id,
-            original_sha256=first.artifact.raw_sha256,
-            revision_digest=case.revision.revision_digest,
-            processing_receipt_id=synthetic_uuid(85321),
-            projected_kind="chunk",
-            locator_contract_version=locator.schema_version,
-            locator=EvidenceLocator(kind="message", value=locator_reference),
-            locator_digest=locator_digest,
-            evidence_digest="e" * 64,
-        )
-        citation = Citation(
-            citation_id=synthetic_uuid(85322),
-            answer_id=synthetic_uuid(85323),
-            context_bundle=ContextBundleLineageRef(
-                bundle=ContextBundleRef(
-                    bundle_id=synthetic_uuid(85324),
-                    bundle_version=1,
-                    bundle_digest="f" * 64,
-                ),
-                workspace_id=case.source.workspace_id,
-                environment_id=case.source.environment_id,
-                run_id=synthetic_uuid(85325),
-                attempt_id=synthetic_uuid(85326),
-            ),
-            evidence_reference=evidence,
-        )
-        resolved = await EmailMessageCitationExcerptResolver(repository).resolve(
-            citation,
-            historical=False,
-        )
-        assert resolved is not None
-        assert resolved.excerpt == "body"
         assert await repository.get(
             workspace_id=synthetic_uuid(85340),
             environment_id=synthetic_uuid(85341),
@@ -1049,6 +983,216 @@ async def test_postgresql_email_artifact_replay_is_tenant_scoped_and_outbox_atom
             environment_id=case.source.environment_id,
             artifact_id=failed_command.artifact.artifact_id,
         ) is None
+    finally:
+        await runtime_engine.dispose()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_email_artifact_resolves_exact_citation_range(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    from spine.application.email_citations import (
+        EmailMessageCitationExcerptResolver,
+        build_email_message_citation_locator,
+    )
+    from spine.application.projection_locator import canonical_projection_locator_digest
+    from spine.domain.artifacts.email_html import EmailHtmlSanitizerProfile
+    from spine.domain.artifacts.email_message import (
+        EmailMessageArtifact,
+        email_message_artifact_digest,
+        encode_email_message_locator,
+    )
+    from spine.domain.capabilities import Citation
+    from spine.domain.context_bundles import (
+        ContextBundleEvidenceReference,
+        ContextBundleLineageRef,
+        ContextBundleRef,
+        EvidenceLocator,
+    )
+    from spine.infrastructure.persistence.email_artifacts import (
+        PostgreSQLEmailArtifactRepository,
+    )
+    from spine.ingestion.email_html import EmailHtmlSanitizer
+    from spine.ingestion.email_mime import MimeParser, MimeParserProfile
+    from spine.memory.contracts import StableLocator
+
+    raw = b"Content-Type: text/plain; charset=utf-8\r\n\r\nSynthetic body"
+    case = await prepare_canonical_case(
+        postgresql_adapter,
+        85800,
+        original_content=raw,
+    )
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        acceptance = await uow.canonical.accept(case.command)
+        await uow.commit()
+    assert acceptance.acceptance is not None
+
+    parser = MimeParser(
+        profile=MimeParserProfile(
+            max_total_bytes=20_000,
+            max_header_bytes=10_000,
+            max_parts=20,
+            max_depth=10,
+            max_decoded_bytes=20_000,
+            max_parse_seconds=2.0,
+        )
+    )
+    sanitizer = EmailHtmlSanitizer(
+        profile=EmailHtmlSanitizerProfile(
+            max_total_input_bytes=20_000,
+            max_total_output_bytes=20_000,
+            max_parts=20,
+            max_depth=10,
+        )
+    )
+    mime = parser.parse(raw)
+    provisional = EmailMessageArtifact.model_construct(
+        artifact_id=synthetic_uuid(85810),
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        source_object_id=case.source.source_object_id,
+        source_revision_id=case.revision.revision_id,
+        canonical_acceptance_id=acceptance.acceptance.canonical_acceptance_id,
+        source_revision_digest=case.revision.revision_digest,
+        raw_sha256=hashlib.sha256(raw).hexdigest(),
+        raw_byte_length=len(raw),
+        parser_profile=parser.profile.reference,
+        sanitizer_profile=sanitizer.reference,
+        mime=mime,
+        sanitized_html=sanitizer.sanitize_all(mime),
+        selected_representation="plain_text",
+        selected_text="Synthetic body",
+        artifact_sha256="0" * 64,
+    )
+    artifact = EmailMessageArtifact.model_validate(
+        provisional.model_copy(
+            update={"artifact_sha256": email_message_artifact_digest(provisional)}
+        ).model_dump()
+    )
+
+    migration_engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    try:
+        async with migration_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.email_message_artifacts "
+                    "(workspace_id, environment_id, artifact_id, source_object_id, "
+                    "source_revision_id, canonical_acceptance_id, artifact_digest, "
+                    "command_identity, command_digest, record, created_at) VALUES "
+                    "(:workspace_id, :environment_id, :artifact_id, :source_object_id, "
+                    ":source_revision_id, :canonical_acceptance_id, :artifact_digest, "
+                    ":command_identity, :command_digest, CAST(:record AS jsonb), :created_at)"
+                ),
+                {
+                    "workspace_id": artifact.workspace_id,
+                    "environment_id": artifact.environment_id,
+                    "artifact_id": artifact.artifact_id,
+                    "source_object_id": artifact.source_object_id,
+                    "source_revision_id": artifact.source_revision_id,
+                    "canonical_acceptance_id": artifact.canonical_acceptance_id,
+                    "artifact_digest": artifact.artifact_sha256,
+                    "command_identity": "issue858-email-citation-artifact",
+                    "command_digest": "d" * 64,
+                    "record": artifact.model_dump_json(),
+                    "created_at": datetime(2026, 11, 4, tzinfo=timezone.utc),
+                },
+            )
+    finally:
+        await migration_engine.dispose()
+
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(85811),
+        secret=b"issue-858-email-citation-postgresql-context",
+    )
+
+    def context_factory(
+        workspace_id: UUID, environment_id: UUID
+    ) -> TrustedPersistenceContext:
+        return boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            ),
+            service_principal_id=synthetic_uuid(85812),
+            purpose=PersistencePurpose("email_citation_test"),
+            operation=PersistenceOperation("email_citation.resolve"),
+            trace_id=synthetic_uuid(85813),
+        )
+
+    runtime_engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    repository = PostgreSQLEmailArtifactRepository(
+        async_sessionmaker(
+            runtime_engine,
+            expire_on_commit=False,
+            autoflush=False,
+        ),
+        context_factory=context_factory,
+        context_verifier=boundary,
+    )
+    try:
+        locator = build_email_message_citation_locator(
+            artifact,
+            part_path="1",
+            representation="plain_text",
+            start_codepoint=10,
+            end_codepoint=14,
+        )
+        locator_reference = encode_email_message_locator(locator)
+        locator_digest = canonical_projection_locator_digest(
+            locator_contract_version=locator.schema_version,
+            locator=StableLocator(kind="message", value=locator_reference),
+        )
+        evidence = ContextBundleEvidenceReference(
+            schema_version="context-evidence-reference:v2",
+            evidence_id="postgres-email-citation-858",
+            workspace_id=artifact.workspace_id,
+            environment_id=artifact.environment_id,
+            projection_snapshot_id=synthetic_uuid(85814),
+            activation_generation=1,
+            source_object_id=artifact.source_object_id,
+            source_revision_id=artifact.source_revision_id,
+            original_sha256=artifact.raw_sha256,
+            revision_digest=artifact.source_revision_digest,
+            processing_receipt_id=synthetic_uuid(85815),
+            projected_kind="chunk",
+            locator_contract_version=locator.schema_version,
+            locator=EvidenceLocator(kind="message", value=locator_reference),
+            locator_digest=locator_digest,
+            evidence_digest="e" * 64,
+        )
+        citation = Citation(
+            citation_id=synthetic_uuid(85816),
+            answer_id=synthetic_uuid(85817),
+            context_bundle=ContextBundleLineageRef(
+                bundle=ContextBundleRef(
+                    bundle_id=synthetic_uuid(85818),
+                    bundle_version=1,
+                    bundle_digest="f" * 64,
+                ),
+                workspace_id=artifact.workspace_id,
+                environment_id=artifact.environment_id,
+                run_id=synthetic_uuid(85819),
+                attempt_id=synthetic_uuid(85820),
+            ),
+            evidence_reference=evidence,
+        )
+
+        resolved = await EmailMessageCitationExcerptResolver(repository).resolve(
+            citation,
+            historical=False,
+        )
+
+        assert resolved is not None
+        assert resolved.excerpt == "body"
     finally:
         await runtime_engine.dispose()
 
