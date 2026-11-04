@@ -219,9 +219,11 @@ class _SyntheticArtifactDeletionAuthority:
 
     def __init__(self, *, allow: bool = True) -> None:
         self.allow = allow
+        self.requests = []
 
     async def authorize_deletion(self, request, *, context, transaction):
         del transaction
+        self.requests.append(request)
         allowed = (
             (
                 request.action == "retention_expiration"
@@ -239,9 +241,9 @@ class _SyntheticArtifactDeletionAuthority:
                 reference_id=synthetic_uuid(798001),
                 reference_kind="private_asr_deletion_authorization",
             ),
-            authority_version="synthetic-deletion-authority:v1",
+            authority_version=request.authority_version,
             revocation_epoch=1,
-            valid_until=request.requested_at + timedelta(days=1),
+            valid_until=request.valid_until,
             authorized=allowed,
         )
 
@@ -2734,6 +2736,208 @@ async def test_postgresql_private_asr_report_stale_source_retention_denies_befor
 
 
 @pytest.mark.asyncio
+async def test_postgresql_private_asr_composite_report_deletion_binds_every_current_source(
+    private_asr_database: _Database,
+) -> None:
+    clock = _ControlledClock(NOW)
+    deletion_authority = _SyntheticArtifactDeletionAuthority()
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database,
+        seed=889799320,
+        deletion_authority=deletion_authority,
+        clock=clock,
+    )
+    second_case, _, second_applicability = await _add_synthetic_report_source(
+        prepared, seed=889799340,
+    )
+    prepared.bindings = tuple(reversed(prepared.bindings))
+    prepared.manifest_lineage.bindings = prepared.bindings
+    report = await _commit_synthetic_report(
+        prepared, idempotency_key="composite-report-deletion",
+    )
+    deletion_context = prepared.boundary.worker(
+        scope=EnvironmentScope(
+            workspace_id=prepared.case.source.workspace_id,
+            environment_id=prepared.case.source.environment_id,
+        ),
+        service_principal_id=synthetic_uuid(889799360),
+        purpose=PersistencePurpose("asr_model_evaluation"),
+        operation=PersistenceOperation("private_asr_retention_expiration"),
+        trace_id=synthetic_uuid(889799361),
+    )
+    clock.current = NOW + timedelta(minutes=31)
+
+    await prepared.store.expire(
+        report.report_ref,
+        policy_ref=prepared.applicability_ref,
+        context=deletion_context,
+    )
+
+    assert len(deletion_authority.requests) == 1
+    request = deletion_authority.requests[0]
+    assert request.schema_version == "private-asr-artifact-deletion-request:v2"
+    assert len(request.source_bindings) == 2
+    by_source = {binding.source_revision_id: binding for binding in request.source_bindings}
+    assert by_source[prepared.case.revision.revision_id].applicability_id == (
+        prepared.applicability.applicability_id
+    )
+    assert by_source[second_case.revision.revision_id].applicability_id == (
+        second_applicability.applicability_id
+    )
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, deletion_context)
+        deleted = (await session.execute(select(
+            private_asr_artifacts.c.status,
+            private_asr_artifacts.c.payload,
+        ).where(
+            private_asr_artifacts.c.artifact_id == report.report_ref.reference_id,
+        ))).one()
+        originals = (await session.execute(select(
+            private_asr_artifacts.c.source_revision_id,
+            private_asr_artifacts.c.status,
+            private_asr_artifacts.c.payload,
+        ).where(
+            private_asr_artifacts.c.kind == "original",
+            private_asr_artifacts.c.source_revision_id.in_(tuple(by_source)),
+        ))).all()
+    assert deleted.status == "tombstoned"
+    assert deleted.payload == b""
+    assert len(originals) == 2
+    assert all(row.status == "committed" and row.payload for row in originals)
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_composite_report_deletion_denies_stale_second_source(
+    private_asr_database: _Database,
+) -> None:
+    deletion_authority = _SyntheticArtifactDeletionAuthority()
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database,
+        seed=889799380,
+        deletion_authority=deletion_authority,
+    )
+    _, _, current = await _add_synthetic_report_source(prepared, seed=889799400)
+    prepared.bindings = tuple(reversed(prepared.bindings))
+    prepared.manifest_lineage.bindings = prepared.bindings
+    report = await _commit_synthetic_report(
+        prepared, idempotency_key="stale-composite-report-deletion",
+    )
+    replacement = current.model_copy(update={
+        "applicability_id": synthetic_uuid(889799421),
+        "applicability_evidence_reference": synthetic_uuid(889799422),
+        "expected_current_applicability_id": current.applicability_id,
+        "expected_current_generation": current.generation,
+        "generation": current.generation + 1,
+        "audit_event_id": synthetic_uuid(889799423),
+        "outbox_event_id": synthetic_uuid(889799424),
+    })
+    governance_context = prepared.adapter.ingestion_context(
+        prepared.case.source.workspace_id,
+        prepared.case.source.environment_id,
+        "retention_applicability",
+    )
+    await PostgreSQLRetentionApplicabilityRepository(
+        uow_factory=prepared.persistence.uow_factory,
+        authority=_SyntheticRetentionWriterAuthority(),
+        effects=_SyntheticRetentionEffects(),
+    ).record_applicability(replacement, governance_context)
+    deletion_context = prepared.boundary.worker(
+        scope=EnvironmentScope(
+            workspace_id=prepared.case.source.workspace_id,
+            environment_id=prepared.case.source.environment_id,
+        ),
+        service_principal_id=synthetic_uuid(889799425),
+        purpose=PersistencePurpose("asr_model_evaluation"),
+        operation=PersistenceOperation("private_asr_retention_expiration"),
+        trace_id=synthetic_uuid(889799426),
+    )
+    prepared.store._clock = lambda: NOW + timedelta(minutes=31)
+
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.expire(
+            report.report_ref,
+            policy_ref=prepared.applicability_ref,
+            context=deletion_context,
+        )
+
+    assert deletion_authority.requests == []
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, deletion_context)
+        row = (await session.execute(select(
+            private_asr_artifacts.c.status,
+            private_asr_artifacts.c.payload,
+        ).where(
+            private_asr_artifacts.c.artifact_id == report.report_ref.reference_id,
+        ))).one()
+    assert row.status == "committed"
+    assert row.payload
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_expired_deletion_authority_rolls_back_audit_and_tombstone(
+    private_asr_database: _Database,
+) -> None:
+    clock = _ControlledClock(NOW)
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database,
+        seed=889799440,
+        deletion_authority=_SyntheticArtifactDeletionAuthority(),
+        clock=clock,
+    )
+    report = await _commit_synthetic_report(
+        prepared, idempotency_key="expired-deletion-authority-report",
+    )
+    deletion_context = prepared.boundary.worker(
+        scope=EnvironmentScope(
+            workspace_id=prepared.case.source.workspace_id,
+            environment_id=prepared.case.source.environment_id,
+        ),
+        service_principal_id=synthetic_uuid(889799441),
+        purpose=PersistencePurpose("asr_model_evaluation"),
+        operation=PersistenceOperation("private_asr_retention_expiration"),
+        trace_id=synthetic_uuid(889799442),
+    )
+    clock.current = NOW + timedelta(minutes=31)
+
+    class ExpiringAudit:
+        async def append_artifact_deletion(self, transaction, **kwargs):
+            await prepared.audit_receipts.append_artifact_deletion(
+                transaction, **kwargs,
+            )
+            clock.current = kwargs["request"].valid_until + timedelta(seconds=1)
+
+    storage = _storage_for_transaction_probe(
+        prepared,
+        uow_factory=prepared.store._uow_factory,
+        audit_receipts=ExpiringAudit(),
+    )
+    with pytest.raises(PrivateASRStorageDenied):
+        await storage.expire(
+            report.report_ref,
+            policy_ref=prepared.applicability_ref,
+            context=deletion_context,
+        )
+
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, deletion_context)
+        row = (await session.execute(select(
+            private_asr_artifacts.c.status,
+            private_asr_artifacts.c.payload,
+        ).where(
+            private_asr_artifacts.c.artifact_id == report.report_ref.reference_id,
+        ))).one()
+        deletion_events = (await session.execute(select(func.count()).select_from(
+            audit_events,
+        ).where(
+            audit_events.c.target_id == report.report_ref.reference_id,
+            audit_events.c.reason == "private_asr_artifact_expired",
+        ))).scalar_one()
+    assert row.status == "committed"
+    assert row.payload
+    assert deletion_events == 0
+
+
+@pytest.mark.asyncio
 async def test_postgresql_private_asr_deadlock_retry_rechecks_and_publishes_once(
     private_asr_database: _Database,
 ) -> None:
@@ -3861,7 +4065,7 @@ async def test_postgresql_private_asr_aggregate_expiry_is_audited_and_idempotent
         operation=PersistenceOperation("private_asr_retention_expiration"),
         trace_id=synthetic_uuid(799713),
     )
-    clock.current = NOW + timedelta(days=3650)
+    clock.current = NOW + timedelta(minutes=31)
     await prepared.store.expire_aggregate_export(
         export_ref, policy_ref=prepared.applicability_ref, context=deletion_context,
     )
@@ -3889,6 +4093,103 @@ async def test_postgresql_private_asr_aggregate_expiry_is_audited_and_idempotent
     assert visible == 0
 
 
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_composite_aggregate_deletion_re_resolves_each_source(
+    private_asr_database: _Database,
+) -> None:
+    clock = _ControlledClock(NOW)
+    deletion_authority = _SyntheticArtifactDeletionAuthority()
+    publication_authority = _SyntheticAggregatePublicationAuthority()
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database,
+        seed=889799460,
+        aggregate_authority=publication_authority,
+        deletion_authority=deletion_authority,
+        clock=clock,
+    )
+    second_case, _, second_applicability = await _add_synthetic_report_source(
+        prepared, seed=889799480,
+    )
+    prepared.bindings = tuple(reversed(prepared.bindings))
+    prepared.manifest_lineage.bindings = prepared.bindings
+    sanitized, export_context = await _prepare_sanitized_aggregate(
+        prepared, publication_authority,
+    )
+    await _commit_synthetic_report(prepared, idempotency_key="composite-aggregate-report")
+    export_ref = await prepared.store.publish_sanitized_aggregate(
+        sanitized,
+        report_id=prepared.report_id,
+        idempotency_key="composite-aggregate-deletion",
+        context=export_context,
+        authorize_export=_allow_commit,
+    )
+    deletion_context = prepared.boundary.worker(
+        scope=EnvironmentScope(
+            workspace_id=prepared.case.source.workspace_id,
+            environment_id=prepared.case.source.environment_id,
+        ),
+        service_principal_id=synthetic_uuid(799722),
+        purpose=PersistencePurpose("asr_model_evaluation"),
+        operation=PersistenceOperation("private_asr_retention_expiration"),
+        trace_id=synthetic_uuid(799723),
+    )
+    clock.current = NOW + timedelta(minutes=31)
+    payload_selects: list[str] = []
+
+    def observe_payload_select(conn, cursor, statement, parameters, execution_context, executemany):
+        lowered = statement.lower()
+        selected_columns = lowered.split(" from ", 1)[0]
+        if "select" in selected_columns and "private_asr_aggregate_exports.payload," in selected_columns:
+            payload_selects.append(statement)
+
+    event.listen(
+        private_asr_database.runtime.sync_engine,
+        "before_cursor_execute",
+        observe_payload_select,
+    )
+    try:
+        await prepared.store.expire_aggregate_export(
+            export_ref,
+            policy_ref=prepared.applicability_ref,
+            context=deletion_context,
+        )
+    finally:
+        event.remove(
+            private_asr_database.runtime.sync_engine,
+            "before_cursor_execute",
+            observe_payload_select,
+        )
+
+    assert payload_selects == []
+    request = deletion_authority.requests[0]
+    assert request.schema_version == "private-asr-artifact-deletion-request:v2"
+    by_source = {binding.source_revision_id: binding for binding in request.source_bindings}
+    assert len(by_source) == 2
+    assert by_source[prepared.case.revision.revision_id].applicability_id == (
+        prepared.applicability.applicability_id
+    )
+    assert by_source[second_case.revision.revision_id].applicability_id == (
+        second_applicability.applicability_id
+    )
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, deletion_context)
+        export = (await session.execute(select(
+            private_asr_aggregate_exports.c.tombstoned_at,
+            private_asr_aggregate_exports.c.payload,
+        ).where(
+            private_asr_aggregate_exports.c.export_id == export_ref.reference_id,
+        ))).one()
+        report_status = (await session.execute(select(
+            private_asr_artifacts.c.status,
+        ).where(
+            private_asr_artifacts.c.report_id == prepared.report_id,
+            private_asr_artifacts.c.kind == "report",
+        ))).scalar_one_or_none()
+    assert export.tombstoned_at == clock.current
+    assert export.payload == {}
+    assert report_status == "committed"
+
+
 async def _prepared_expired_aggregate(private_asr_database: _Database, seed: int, *, deletion_authority):
     clock = _ControlledClock(NOW)
     publication_authority = _SyntheticAggregatePublicationAuthority()
@@ -3910,7 +4211,7 @@ async def _prepared_expired_aggregate(private_asr_database: _Database, seed: int
         operation=PersistenceOperation("private_asr_retention_expiration"),
         trace_id=synthetic_uuid(seed + 2),
     )
-    clock.current = NOW + timedelta(days=3650)
+    clock.current = NOW + timedelta(minutes=31)
     return prepared, export_context, deletion_context, export_ref
 
 

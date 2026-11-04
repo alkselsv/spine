@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Collection
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import re
@@ -28,7 +28,8 @@ from spine.application.private_asr_corpus import (
     AdmissionAuthorityPort,
     PrivateArtifactDeletionAuthority,
     PrivateArtifactDeletionAuthorization,
-    PrivateArtifactDeletionRequest,
+    PrivateArtifactDeletionRequestV2,
+    PrivateArtifactDeletionSourceBinding,
     PrivateArtifactSourceLineage,
     PrivateAggregatePublicationAuthorityPort,
     PrivateASRManifestLineageVerifier,
@@ -43,26 +44,52 @@ from spine.domain.evaluations.private_asr_corpus import (
 )
 from spine.domain.sources.models import SourceObject
 from spine.domain.sources.retention import RetentionArtifactClass
+from spine.domain.sources.retention import RetentionApplicability
 from spine.application.retention import RetentionStartingEvent
 from spine.infrastructure.persistence.postgresql_mappings import (
     audit_events, canonical_generation_counters, current_access_policies,
     current_lifecycle_authorities, current_source_heads, lifecycle_decisions,
-    source_objects, source_revisions,
+    retention_applicabilities, source_objects, source_revisions,
 )
 from spine.infrastructure.persistence.postgresql_source_locks import (
     lock_admission_revision,
     lock_source_lifecycle_shared,
 )
-from spine.infrastructure.private_asr.retention import PostgreSQLPrivateASRRetentionResolver
+from spine.infrastructure.private_asr.retention import (
+    PostgreSQLPrivateASRRetentionResolver,
+    PrivateASRRetentionDisposition,
+)
 
 
 _SCHEMA = "spine"
 _SAFE_REASON = re.compile(r"^[a-z][a-z0-9_.:-]{0,63}$")
+_DELETION_AUTHORITY_VERSION = "deletion-authority:v1"
+_DELETION_AUTHORITY_WINDOW = timedelta(minutes=5)
+
+
+def _deletion_authorization_is_current(
+    authorization: PrivateArtifactDeletionAuthorization,
+    request: PrivateArtifactDeletionRequestV2,
+    *,
+    checked_at: datetime,
+) -> bool:
+    """Check that a grant still matches its exact deletion request and deadline."""
+    return (
+        authorization.authorized
+        and authorization.request_digest == request.calculate_digest()
+        and authorization.authority_version == request.authority_version
+        and authorization.valid_until > checked_at
+        and authorization.valid_until <= request.valid_until
+        and request.valid_until > checked_at
+    )
+
+
 _RETENTION_CLASS_BY_KIND = {
     "staging": RetentionArtifactClass.PRIVATE_ASR_STAGING,
     "original": RetentionArtifactClass.PRIVATE_ASR_SOURCE_ORIGINAL,
     "annotation": RetentionArtifactClass.PRIVATE_ASR_ANNOTATION,
     "report": RetentionArtifactClass.PRIVATE_ASR_DETAILED_REPORT,
+    "aggregate_export": RetentionArtifactClass.PRIVATE_ASR_SANITIZED_AGGREGATE,
 }
 _ASR_METADATA = MetaData(schema=_SCHEMA)
 private_asr_artifacts = Table(
@@ -561,6 +588,67 @@ class PostgreSQLPrivateASRStorage:
         if fence is not None and fence["revoked"]:
             raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
         return retention_disposition
+
+    async def _deletion_source_binding(
+        self,
+        transaction: object,
+        admitted: AdmittedSourceRevision,
+        disposition: PrivateASRRetentionDisposition,
+        *,
+        artifact_class: RetentionArtifactClass,
+    ) -> PrivateArtifactDeletionSourceBinding:
+        """Bind a deletion request to the current canonical retention head."""
+        result = await self._execute(transaction, select(
+            retention_applicabilities.c.record,
+        ).where(
+            retention_applicabilities.c.workspace_id == admitted.workspace_id,
+            retention_applicabilities.c.environment_id == admitted.environment_id,
+            retention_applicabilities.c.applicability_id == disposition.applicability_id,
+            retention_applicabilities.c.target_reference
+            == admitted.source_object.source_object_id,
+        ))
+        record = result.scalar_one_or_none()
+        if record is None:
+            raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+        applicability = RetentionApplicability.model_validate_json(json.dumps(record))
+        if (
+            applicability.applicability_id != disposition.applicability_id
+            or applicability.generation != disposition.applicability_generation
+            or applicability.retention_policy_id != disposition.policy_id
+            or applicability.retention_policy_version_id != disposition.policy_version_id
+            or applicability.retention_policy_digest != disposition.policy_digest
+            or applicability.source_object_id != admitted.source_object.source_object_id
+            or artifact_class not in applicability.artifact_classes
+        ):
+            raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+        return PrivateArtifactDeletionSourceBinding(
+            workspace_id=admitted.workspace_id,
+            environment_id=admitted.environment_id,
+            source_object_id=admitted.source_object.source_object_id,
+            source_revision_id=admitted.source_revision.revision_id,
+            revision_digest=admitted.source_revision.revision_digest,
+            applicability_id=applicability.applicability_id,
+            applicability_generation=applicability.generation,
+            expected_current_applicability_id=applicability.applicability_id,
+            expected_current_generation=applicability.generation,
+            artifact_class=artifact_class,
+            retention_policy_id=disposition.policy_id,
+            retention_policy_version_id=disposition.policy_version_id,
+            retention_policy_digest=disposition.policy_digest,
+            approving_authority_reference=applicability.approving_authority_reference,
+            approving_authority_version_id=applicability.approving_authority_version_id,
+            approving_authority_digest=applicability.approving_authority_digest,
+            applicability_evidence_reference=applicability.applicability_evidence_reference,
+            applicability_evidence_digest=applicability.applicability_evidence_digest,
+            approval_evidence_reference=disposition.approved_evidence_reference,
+            terms_version=disposition.terms_version,
+            terms_digest=disposition.terms_digest,
+            deletion_obligation_reference=disposition.deletion_obligation_reference,
+            backup_obligation_reference=disposition.backup_obligation_reference,
+            resolved_exception_references=applicability.exception_references,
+            resolved_legal_hold_references=applicability.legal_hold_references,
+            active_legal_hold_references=(),
+        )
 
     def _ref(self, artifact_id: UUID, kind: str) -> PrivateReference:
         return PrivateReference(reference_id=artifact_id, reference_kind=f"private_asr_{kind}")
@@ -1257,7 +1345,7 @@ class PostgreSQLPrivateASRStorage:
                 private_asr_artifacts.c.status == "committed",
                 private_asr_artifacts.c.tombstoned_at.is_(None),
                 private_asr_artifacts.c.expires_at > now,
-            ).with_for_update())).mappings().all()
+            ))).mappings().all()
             if len(reports) != 1:
                 raise PrivateASRStorageDenied("Private ASR aggregate authorization denied.")
             report_row = reports[0]
@@ -1419,6 +1507,39 @@ class PostgreSQLPrivateASRStorage:
                     aggregate_disposition,
                     version=aggregate_binding_version,
                 ))
+
+            locked_report = (await self._execute(session, select(
+                private_asr_artifacts.c.artifact_id,
+                private_asr_artifacts.c.report_id,
+                private_asr_artifacts.c.status,
+                private_asr_artifacts.c.content_sha256,
+                private_asr_artifacts.c.expires_at,
+                private_asr_artifacts.c.retention_profile_ref,
+                private_asr_artifacts.c.retention_disposition,
+                private_asr_artifacts.c.audit_receipt_ref,
+                private_asr_artifacts.c.created_at,
+                private_asr_artifacts.c.dataset_id,
+                private_asr_artifacts.c.manifest_version,
+                private_asr_artifacts.c.manifest_sha256,
+                private_asr_artifacts.c.tombstoned_at,
+            ).where(
+                private_asr_artifacts.c.workspace_id == workspace_id,
+                private_asr_artifacts.c.environment_id == environment_id,
+                private_asr_artifacts.c.purpose == "asr_model_evaluation",
+                private_asr_artifacts.c.kind == "report",
+                private_asr_artifacts.c.report_id == report_id,
+            ).with_for_update())).mappings().all()
+            if len(locked_report) != 1 or any(
+                locked_report[0][field] != report_row[field]
+                for field in (
+                    "artifact_id", "report_id", "status", "content_sha256", "expires_at",
+                    "retention_profile_ref", "retention_disposition", "audit_receipt_ref",
+                    "created_at", "dataset_id", "manifest_version", "manifest_sha256",
+                    "tombstoned_at",
+                )
+            ):
+                raise PrivateASRStorageDenied("Private ASR aggregate authorization denied.")
+            report_row = locked_report[0]
 
             if not await self._manifest_lineage.verify_current(
                 transaction=session,
@@ -1690,18 +1811,34 @@ class PostgreSQLPrivateASRStorage:
             context, "private_asr_retention_expiration"
         )
         if (reference.reference_kind != "private_asr_aggregate"
+                or policy_ref.reference_kind != "retention_applicability"
                 or self._uow_factory is None or self._deletion_authority is None):
             raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
         now = self._clock()
         async with self._uow_factory(context) as transaction:
             await self._set_scope(transaction, context)
             aggregate = (await self._execute(transaction, select(
-                private_asr_aggregate_exports,
+                private_asr_aggregate_exports.c.export_id,
+                private_asr_aggregate_exports.c.workspace_id,
+                private_asr_aggregate_exports.c.environment_id,
+                private_asr_aggregate_exports.c.purpose,
+                private_asr_aggregate_exports.c.report_artifact_id,
+                private_asr_aggregate_exports.c.report_id,
+                private_asr_aggregate_exports.c.idempotency_key,
+                private_asr_aggregate_exports.c.privacy_policy_version,
+                private_asr_aggregate_exports.c.privacy_policy_approval_version,
+                private_asr_aggregate_exports.c.retention_profile_ref,
+                private_asr_aggregate_exports.c.retention_disposition,
+                private_asr_aggregate_exports.c.expires_at,
+                private_asr_aggregate_exports.c.payload_sha256,
+                private_asr_aggregate_exports.c.audit_receipt_id,
+                private_asr_aggregate_exports.c.created_at,
+                private_asr_aggregate_exports.c.tombstoned_at,
             ).where(
                 private_asr_aggregate_exports.c.workspace_id == workspace_id,
                 private_asr_aggregate_exports.c.environment_id == environment_id,
                 private_asr_aggregate_exports.c.export_id == reference.reference_id,
-            ).with_for_update())).mappings().one_or_none()
+            ))).mappings().one_or_none()
             if aggregate is None:
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
             if aggregate["tombstoned_at"] is not None:
@@ -1711,18 +1848,19 @@ class PostgreSQLPrivateASRStorage:
                 private_asr_artifacts.c.artifact_id, private_asr_artifacts.c.dataset_id,
                 private_asr_artifacts.c.manifest_version, private_asr_artifacts.c.manifest_sha256,
                 private_asr_artifacts.c.status, private_asr_artifacts.c.retention_profile_ref,
+                private_asr_artifacts.c.expires_at, private_asr_artifacts.c.created_at,
             ).where(
                 private_asr_artifacts.c.workspace_id == workspace_id,
                 private_asr_artifacts.c.environment_id == environment_id,
                 private_asr_artifacts.c.artifact_id == aggregate["report_artifact_id"],
                 private_asr_artifacts.c.report_id == aggregate["report_id"],
                 private_asr_artifacts.c.kind == "report",
-            ).with_for_update())).mappings().one_or_none()
+            ))).mappings().one_or_none()
             if (report is None or report["status"] != "committed"
-                    or report["retention_profile_ref"] != policy_ref.reference_id
                     or aggregate["retention_profile_ref"] != policy_ref.reference_id
                     or aggregate["purpose"] != "asr_model_evaluation"
-                    or aggregate["expires_at"] > now):
+                    or aggregate["expires_at"] > now
+                    or aggregate["expires_at"] != report["expires_at"]):
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
             links = (await self._execute(transaction, select(
                 private_asr_report_sources.c.source_record_id,
@@ -1734,31 +1872,243 @@ class PostgreSQLPrivateASRStorage:
                 private_asr_report_sources.c.workspace_id == workspace_id,
                 private_asr_report_sources.c.environment_id == environment_id,
                 private_asr_report_sources.c.report_id == aggregate["report_id"],
-            ).order_by(private_asr_report_sources.c.source_revision_id))).mappings().all()
+            ))).mappings().all()
             if not links:
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
-            lineage = tuple(PrivateArtifactSourceLineage(
-                source_object_id=row["source_object_id"],
-                source_revision_id=row["source_revision_id"],
-                source_revision_digest=row["source_revision_digest"],
-                record_id=row["source_record_id"], dataset_id=report["dataset_id"],
-                split=CorpusSplit(row["split"]) if row["split"] else None,
-            ) for row in links)
-            state = {"export_id": str(aggregate["export_id"]), "workspace_id": str(workspace_id),
-                "environment_id": str(environment_id), "purpose": aggregate["purpose"],
+            if len({row["source_record_id"] for row in links}) != len(links):
+                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+            admitted_by_identity: dict[
+                tuple[UUID, UUID, UUID, UUID, str], AdmittedSourceRevision
+            ] = {}
+            lineage_by_identity: dict[
+                tuple[UUID, UUID, UUID, UUID, str], PrivateArtifactSourceLineage
+            ] = {}
+            for link in links:
+                original = (await self._execute(transaction, select(
+                    private_asr_artifacts.c.admitted_record,
+                    private_asr_artifacts.c.source_object_id,
+                    private_asr_artifacts.c.source_revision_digest,
+                ).where(
+                    private_asr_artifacts.c.workspace_id == workspace_id,
+                    private_asr_artifacts.c.environment_id == environment_id,
+                    private_asr_artifacts.c.source_revision_id == link["source_revision_id"],
+                    private_asr_artifacts.c.kind == "original",
+                    private_asr_artifacts.c.status.in_(("committed", "tombstoned")),
+                ))).mappings().one_or_none()
+                if original is None or original["admitted_record"] is None:
+                    raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+                admitted = _admitted_from_jsonb(original["admitted_record"])
+                if (
+                    link["source_object_id"] != admitted.source_object.source_object_id
+                    or link["source_revision_id"] != admitted.source_revision.revision_id
+                    or link["source_revision_digest"] != admitted.source_revision.revision_digest
+                    or original["source_object_id"] != admitted.source_object.source_object_id
+                    or original["source_revision_digest"] != admitted.source_revision.revision_digest
+                    or admitted.workspace_id != workspace_id
+                    or admitted.environment_id != environment_id
+                ):
+                    raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+                identity = _source_identity_key(
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                    source_object_id=admitted.source_object.source_object_id,
+                    source_revision_id=admitted.source_revision.revision_id,
+                    source_revision_digest=admitted.source_revision.revision_digest,
+                )
+                if identity in admitted_by_identity:
+                    raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+                admitted_by_identity[identity] = admitted
+                lineage_by_identity[identity] = PrivateArtifactSourceLineage(
+                    source_object_id=identity[2],
+                    source_revision_id=identity[3],
+                    source_revision_digest=identity[4],
+                    record_id=link["source_record_id"],
+                    dataset_id=report["dataset_id"],
+                    split=CorpusSplit(link["split"]) if link["split"] else None,
+                )
+            identities = set(admitted_by_identity)
+            await self._lock_source_admission_paths(
+                transaction,
+                tuple((workspace_id, environment_id, identity[2], identity[3])
+                      for identity in sorted(identities, key=lambda item: (str(item[2]), str(item[3]), item[4]))),
+            )
+            source_bindings: list[PrivateArtifactDeletionSourceBinding] = []
+            current_dispositions: dict[tuple[UUID, UUID, UUID, UUID, str], object] = {}
+            deadlines: list[datetime] = []
+            for identity in sorted(identities, key=lambda item: (str(item[2]), str(item[3]), item[4])):
+                admitted = admitted_by_identity[identity]
+                try:
+                    disposition = await self._locked_source(
+                        transaction,
+                        admitted,
+                        retention_profile_ref=admitted.retention_profile_ref,
+                        artifact_class=RetentionArtifactClass.PRIVATE_ASR_SANITIZED_AGGREGATE,
+                        starting_event=RetentionStartingEvent.ARTIFACT_CREATED,
+                        starting_at=aggregate["created_at"],
+                        retention_allow_expired=True,
+                        context=context,
+                        admission_path_locked=True,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    raise PrivateASRStorageDenied(
+                        "Private ASR deletion authorization denied."
+                    ) from None
+                if disposition is None:
+                    raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+                deadlines.append(disposition.expires_at)
+                current_dispositions[identity] = disposition.model_dump(mode="json")
+                try:
+                    source_bindings.append(await self._deletion_source_binding(
+                        transaction,
+                        admitted,
+                        disposition,
+                        artifact_class=RetentionArtifactClass.PRIVATE_ASR_SANITIZED_AGGREGATE,
+                    ))
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    raise PrivateASRStorageDenied(
+                        "Private ASR deletion authorization denied."
+                    ) from None
+            try:
+                stored_dispositions, _ = _retention_dispositions_by_identity(
+                    aggregate["retention_disposition"],
+                    identities,
+                    schema_version="private-asr-aggregate-retention-binding:v2",
+                )
+            except Exception:
+                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.") from None
+            if (
+                stored_dispositions != current_dispositions
+                or min(deadlines) != aggregate["expires_at"]
+            ):
+                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+
+            # Canonical source locks precede both report and aggregate row locks.
+            locked_report = (await self._execute(transaction, select(
+                private_asr_artifacts.c.status,
+                private_asr_artifacts.c.retention_profile_ref,
+                private_asr_artifacts.c.expires_at,
+                private_asr_artifacts.c.created_at,
+                private_asr_artifacts.c.dataset_id,
+                private_asr_artifacts.c.manifest_version,
+                private_asr_artifacts.c.manifest_sha256,
+            ).where(
+                private_asr_artifacts.c.workspace_id == workspace_id,
+                private_asr_artifacts.c.environment_id == environment_id,
+                private_asr_artifacts.c.artifact_id == aggregate["report_artifact_id"],
+                private_asr_artifacts.c.report_id == aggregate["report_id"],
+                private_asr_artifacts.c.kind == "report",
+            ).with_for_update())).mappings().one_or_none()
+            locked_aggregate = (await self._execute(transaction, select(
+                private_asr_aggregate_exports.c.purpose,
+                private_asr_aggregate_exports.c.report_artifact_id,
+                private_asr_aggregate_exports.c.report_id,
+                private_asr_aggregate_exports.c.idempotency_key,
+                private_asr_aggregate_exports.c.privacy_policy_version,
+                private_asr_aggregate_exports.c.privacy_policy_approval_version,
+                private_asr_aggregate_exports.c.retention_profile_ref,
+                private_asr_aggregate_exports.c.retention_disposition,
+                private_asr_aggregate_exports.c.expires_at,
+                private_asr_aggregate_exports.c.payload_sha256,
+                private_asr_aggregate_exports.c.audit_receipt_id,
+                private_asr_aggregate_exports.c.created_at,
+                private_asr_aggregate_exports.c.tombstoned_at,
+            ).where(
+                private_asr_aggregate_exports.c.workspace_id == workspace_id,
+                private_asr_aggregate_exports.c.environment_id == environment_id,
+                private_asr_aggregate_exports.c.export_id == reference.reference_id,
+            ).with_for_update())).mappings().one_or_none()
+            if (
+                locked_report is None
+                or locked_aggregate is None
+                or locked_report["status"] != "committed"
+                or locked_aggregate["tombstoned_at"] is not None
+                or locked_aggregate["payload_sha256"] != aggregate["payload_sha256"]
+                or locked_aggregate["retention_disposition"] != aggregate["retention_disposition"]
+                or locked_aggregate["expires_at"] != aggregate["expires_at"]
+                or locked_aggregate["idempotency_key"] != aggregate["idempotency_key"]
+                or locked_aggregate["privacy_policy_version"] != aggregate["privacy_policy_version"]
+                or locked_aggregate["privacy_policy_approval_version"]
+                != aggregate["privacy_policy_approval_version"]
+                or locked_aggregate["audit_receipt_id"] != aggregate["audit_receipt_id"]
+                or locked_report["expires_at"] != report["expires_at"]
+                or locked_report["manifest_version"] != report["manifest_version"]
+                or locked_report["manifest_sha256"] != report["manifest_sha256"]
+            ):
+                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+            locked_links = (await self._execute(transaction, select(
+                private_asr_report_sources.c.source_record_id,
+                private_asr_report_sources.c.source_revision_id,
+                private_asr_report_sources.c.source_object_id,
+                private_asr_report_sources.c.source_revision_digest,
+                private_asr_report_sources.c.split,
+            ).where(
+                private_asr_report_sources.c.workspace_id == workspace_id,
+                private_asr_report_sources.c.environment_id == environment_id,
+                private_asr_report_sources.c.report_id == aggregate["report_id"],
+            ))).mappings().all()
+            locked_lineage = {
+                (row["source_record_id"], row["source_revision_id"],
+                 row["source_object_id"], row["source_revision_digest"], row["split"])
+                for row in locked_links
+            }
+            expected_locked_lineage = {
+                (row["source_record_id"], row["source_revision_id"],
+                 row["source_object_id"], row["source_revision_digest"], row["split"])
+                for row in links
+            }
+            if locked_lineage != expected_locked_lineage or len(locked_links) != len(links):
+                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+            lineage = tuple(lineage_by_identity.values())
+            now = self._clock()
+            if aggregate["expires_at"] > now:
+                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+            state = {
+                "export_id": str(aggregate["export_id"]),
+                "workspace_id": str(workspace_id),
+                "environment_id": str(environment_id),
+                "purpose": aggregate["purpose"],
                 "report_artifact_id": str(aggregate["report_artifact_id"]),
-                "report_id": str(aggregate["report_id"]), "retention_profile_ref": str(policy_ref.reference_id),
+                "report_id": str(aggregate["report_id"]),
+                "idempotency_key": aggregate["idempotency_key"],
+                "privacy_policy_version": aggregate["privacy_policy_version"],
+                "privacy_policy_approval_version": aggregate["privacy_policy_approval_version"],
+                "retention_profile_ref": str(aggregate["retention_profile_ref"]),
                 "retention_disposition": aggregate["retention_disposition"],
                 "expires_at": aggregate["expires_at"].isoformat(),
-                "payload_sha256": aggregate["payload_sha256"], "created_at": aggregate["created_at"].isoformat()}
-            request = PrivateArtifactDeletionRequest(
-                artifact_id=reference.reference_id, workspace_id=workspace_id,
-                environment_id=environment_id, artifact_kind="aggregate_export",
-                action="retention_expiration", expected_state_digest=hashlib.sha256(
-                    json.dumps(state, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
-                retention_profile_ref=policy_ref, retention_deadline=aggregate["expires_at"],
-                requested_at=now, source_lineage=lineage,
-                manifest_version=report["manifest_version"], manifest_sha256=report["manifest_sha256"],
+                "payload_sha256": aggregate["payload_sha256"],
+                "audit_receipt_id": str(aggregate["audit_receipt_id"]),
+                "created_at": aggregate["created_at"].isoformat(),
+                "report_manifest_version": report["manifest_version"],
+                "report_manifest_sha256": report["manifest_sha256"],
+                "report_status": report["status"],
+                "report_retention_profile_ref": str(report["retention_profile_ref"]),
+                "report_expires_at": report["expires_at"].isoformat(),
+                "report_created_at": report["created_at"].isoformat(),
+                "report_dataset_id": str(report["dataset_id"]),
+                "tombstoned_at": None,
+                "source_bindings": [binding.model_dump(mode="json") for binding in source_bindings],
+            }
+            request = PrivateArtifactDeletionRequestV2(
+                artifact_id=reference.reference_id,
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                purpose="asr_model_evaluation",
+                artifact_kind="aggregate_export",
+                action="retention_expiration",
+                expected_state_digest=hashlib.sha256(json.dumps(
+                    state, sort_keys=True, separators=(",", ":")
+                ).encode()).hexdigest(),
+                retention_profile_ref=policy_ref,
+                retention_deadline=aggregate["expires_at"],
+                requested_at=now,
+                expected_source_lineage=lineage,
+                source_bindings=tuple(source_bindings),
+                authority_version=_DELETION_AUTHORITY_VERSION,
+                valid_until=now + _DELETION_AUTHORITY_WINDOW,
             )
             try:
                 authz = await self._deletion_authority.authorize_deletion(
@@ -1767,8 +2117,8 @@ class PostgreSQLPrivateASRStorage:
                 raise
             except Exception:
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.") from None
-            if (not isinstance(authz, PrivateArtifactDeletionAuthorization) or not authz.authorized
-                    or authz.request_digest != request.calculate_digest() or authz.valid_until <= now):
+            if (not isinstance(authz, PrivateArtifactDeletionAuthorization)
+                    or not _deletion_authorization_is_current(authz, request, checked_at=now)):
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
             writer = getattr(self._audit_receipts, "append_artifact_deletion", None)
             if writer is None:
@@ -1781,6 +2131,11 @@ class PostgreSQLPrivateASRStorage:
                     private_asr_aggregate_exports.c.export_id == reference.reference_id,
                     private_asr_aggregate_exports.c.tombstoned_at.is_(None),
                 ).values(tombstoned_at=now, payload={}))
+                commit_time = self._clock()
+                if not _deletion_authorization_is_current(
+                    authz, request, checked_at=commit_time
+                ):
+                    raise PrivateASRStorageDenied("Private ASR deletion authorization expired.")
                 await transaction.commit()
             except asyncio.CancelledError:
                 raise
@@ -1898,7 +2253,8 @@ class PostgreSQLPrivateASRStorage:
                         raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
                     admitted = _admitted_from_jsonb(original["admitted_record"])
                     if (
-                        original["retention_profile_ref"] != policy_ref.reference_id
+                        original["retention_profile_ref"]
+                        != admitted.retention_profile_ref.reference_id
                         or link["source_object_id"] != admitted.source_object.source_object_id
                         or link["source_revision_digest"] != admitted.source_revision.revision_digest
                         or link["source_revision_id"] != admitted.source_revision.revision_id
@@ -1922,6 +2278,10 @@ class PostgreSQLPrivateASRStorage:
                 manifest_bindings[admitted.source_revision.revision_id] = None
 
             source_lineage: list[PrivateArtifactSourceLineage] = []
+            source_bindings: list[PrivateArtifactDeletionSourceBinding] = []
+            current_retention_dispositions: dict[
+                tuple[UUID, UUID, UUID, UUID, str], object
+            ] = {}
             dispositions = []
             await self._lock_source_admission_paths(
                 transaction,
@@ -1943,19 +2303,48 @@ class PostgreSQLPrivateASRStorage:
                 if artifact_class is None:
                     raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
                 starting_event = _retention_starting_event_for_kind(kind)
-                disposition = await self._locked_source(
-                    transaction,
-                    admitted,
-                    retention_profile_ref=policy_ref,
-                    artifact_class=artifact_class,
-                    starting_event=starting_event,
-                    starting_at=initial["created_at"],
-                    retention_allow_expired=True,
-                    context=context,
-                    admission_path_locked=True,
-                )
-                assert disposition is not None
+                try:
+                    disposition = await self._locked_source(
+                        transaction,
+                        admitted,
+                        retention_profile_ref=admitted.retention_profile_ref,
+                        artifact_class=artifact_class,
+                        starting_event=starting_event,
+                        starting_at=initial["created_at"],
+                        retention_allow_expired=True,
+                        context=context,
+                        admission_path_locked=True,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    raise PrivateASRStorageDenied(
+                        "Private ASR deletion authorization denied."
+                    ) from None
+                if disposition is None:
+                    raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
                 dispositions.append(disposition)
+                identity = _source_identity_key(
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                    source_object_id=admitted.source_object.source_object_id,
+                    source_revision_id=revision_id,
+                    source_revision_digest=admitted.source_revision.revision_digest,
+                )
+                current_retention_dispositions[identity] = disposition.model_dump(mode="json")
+                try:
+                    source_bindings.append(await self._deletion_source_binding(
+                        transaction,
+                        admitted,
+                        disposition,
+                        artifact_class=artifact_class,
+                    ))
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    raise PrivateASRStorageDenied(
+                        "Private ASR deletion authorization denied."
+                    ) from None
                 binding = manifest_bindings[revision_id]
                 source_lineage.append(PrivateArtifactSourceLineage(
                     source_object_id=admitted.source_object.source_object_id,
@@ -1972,6 +2361,83 @@ class PostgreSQLPrivateASRStorage:
                 or (action == "staging_cleanup" and initial["status"] != "staging")
             ):
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+            if kind == "report":
+                try:
+                    stored_dispositions, _ = _retention_dispositions_by_identity(
+                        initial["retention_disposition"],
+                        set(current_retention_dispositions),
+                        schema_version="private-asr-report-retention-binding:v2",
+                    )
+                except Exception:
+                    raise PrivateASRStorageDenied(
+                        "Private ASR deletion authorization denied."
+                    ) from None
+                if stored_dispositions != current_retention_dispositions:
+                    raise PrivateASRStorageDenied(
+                        "Private ASR deletion authorization denied."
+                    )
+            current = (await self._execute(transaction, select(
+                private_asr_artifacts.c.kind,
+                private_asr_artifacts.c.status,
+                private_asr_artifacts.c.report_id,
+                private_asr_artifacts.c.source_object_id,
+                private_asr_artifacts.c.source_revision_id,
+                private_asr_artifacts.c.source_revision_digest,
+                private_asr_artifacts.c.content_sha256,
+                private_asr_artifacts.c.byte_length,
+                private_asr_artifacts.c.retention_profile_ref,
+                private_asr_artifacts.c.audit_receipt_ref,
+                private_asr_artifacts.c.expires_at,
+                private_asr_artifacts.c.created_at,
+                private_asr_artifacts.c.dataset_id,
+                private_asr_artifacts.c.manifest_version,
+                private_asr_artifacts.c.manifest_sha256,
+            ).where(
+                private_asr_artifacts.c.workspace_id == workspace_id,
+                private_asr_artifacts.c.environment_id == environment_id,
+                private_asr_artifacts.c.artifact_id == reference.reference_id,
+                private_asr_artifacts.c.status != "tombstoned",
+            ).with_for_update())).mappings().one_or_none()
+            if current is None or any(
+                current[field] != initial[field]
+                for field in (
+                    "kind", "status", "report_id", "source_object_id",
+                    "source_revision_id", "source_revision_digest", "content_sha256",
+                    "byte_length", "retention_profile_ref", "audit_receipt_ref",
+                    "expires_at", "created_at", "dataset_id", "manifest_version",
+                    "manifest_sha256",
+                )
+            ):
+                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+            if kind == "report":
+                current_links = (await self._execute(transaction, select(
+                    private_asr_report_sources.c.source_record_id,
+                    private_asr_report_sources.c.source_revision_id,
+                    private_asr_report_sources.c.source_object_id,
+                    private_asr_report_sources.c.source_revision_digest,
+                    private_asr_report_sources.c.split,
+                ).where(
+                    private_asr_report_sources.c.workspace_id == workspace_id,
+                    private_asr_report_sources.c.environment_id == environment_id,
+                    private_asr_report_sources.c.report_id == initial["report_id"],
+                ))).mappings().all()
+                def link_key(row: Any) -> tuple[object, ...]:
+                    return (
+                        row["source_record_id"], row["source_revision_id"],
+                        row["source_object_id"], row["source_revision_digest"],
+                        row["split"],
+                    )
+                if (
+                    len(current_links) != len(linked)
+                    or {link_key(row) for row in current_links}
+                    != {link_key(row) for row in linked}
+                ):
+                    raise PrivateASRStorageDenied(
+                        "Private ASR deletion authorization denied."
+                    )
+            now = self._clock()
+            if action == "retention_expiration" and current_deadline > now:
+                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
             state = {
                 "artifact_id": str(initial["artifact_id"]), "kind": kind,
                 "status": initial["status"], "source_object_id": str(initial["source_object_id"]),
@@ -1983,14 +2449,27 @@ class PostgreSQLPrivateASRStorage:
                 "dataset_id": str(initial["dataset_id"]) if initial["dataset_id"] else None,
                 "manifest_version": initial["manifest_version"],
                 "manifest_sha256": initial["manifest_sha256"],
+                "source_bindings": [
+                    binding.model_dump(mode="json")
+                    for binding in sorted(
+                        source_bindings,
+                        key=lambda item: (
+                            str(item.source_object_id),
+                            str(item.source_revision_id),
+                            item.revision_digest,
+                        ),
+                    )
+                ],
                 "retention_disposition": initial["retention_disposition"],
                 "expires_at": initial["expires_at"].isoformat(),
                 "created_at": initial["created_at"].isoformat(),
             }
-            request = PrivateArtifactDeletionRequest(
+            lineage = tuple(source_lineage)
+            request = PrivateArtifactDeletionRequestV2(
                 artifact_id=reference.reference_id,
                 workspace_id=workspace_id,
                 environment_id=environment_id,
+                purpose="asr_model_evaluation",
                 artifact_kind=kind,
                 action=action,
                 expected_state_digest=hashlib.sha256(json.dumps(
@@ -1999,9 +2478,10 @@ class PostgreSQLPrivateASRStorage:
                 retention_profile_ref=policy_ref,
                 retention_deadline=current_deadline,
                 requested_at=now,
-                source_lineage=tuple(source_lineage),
-                manifest_version=initial["manifest_version"],
-                manifest_sha256=initial["manifest_sha256"],
+                expected_source_lineage=lineage,
+                source_bindings=tuple(source_bindings),
+                authority_version=_DELETION_AUTHORITY_VERSION,
+                valid_until=now + _DELETION_AUTHORITY_WINDOW,
             )
             try:
                 authz = await self._deletion_authority.authorize_deletion(
@@ -2011,29 +2491,8 @@ class PostgreSQLPrivateASRStorage:
                 raise
             except Exception:
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.") from None
-            if not isinstance(authz, PrivateArtifactDeletionAuthorization) or (
-                not authz.authorized
-                or authz.request_digest != request.calculate_digest()
-                or authz.valid_until <= now
-            ):
-                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
-            current = (await self._execute(transaction, select(
-                private_asr_artifacts.c.status,
-                private_asr_artifacts.c.content_sha256,
-                private_asr_artifacts.c.byte_length,
-                private_asr_artifacts.c.expires_at,
-                private_asr_artifacts.c.retention_profile_ref,
-            ).where(
-                private_asr_artifacts.c.workspace_id == workspace_id,
-                private_asr_artifacts.c.environment_id == environment_id,
-                private_asr_artifacts.c.artifact_id == reference.reference_id,
-            ).with_for_update())).mappings().one_or_none()
-            if current is None or (
-                current["status"], current["content_sha256"], current["byte_length"],
-                current["expires_at"], current["retention_profile_ref"],
-            ) != (
-                initial["status"], initial["content_sha256"], initial["byte_length"],
-                initial["expires_at"], initial["retention_profile_ref"],
+            if not isinstance(authz, PrivateArtifactDeletionAuthorization) or not (
+                _deletion_authorization_is_current(authz, request, checked_at=now)
             ):
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
             audit_writer = getattr(self._audit_receipts, "append_artifact_deletion", None)
@@ -2052,6 +2511,13 @@ class PostgreSQLPrivateASRStorage:
                     private_asr_artifacts.c.artifact_id == reference.reference_id,
                     private_asr_artifacts.c.status != "tombstoned",
                 ).values(status="tombstoned", tombstoned_at=now, payload=b""))
+                commit_time = self._clock()
+                if not _deletion_authorization_is_current(
+                    authz, request, checked_at=commit_time
+                ):
+                    raise PrivateASRStorageDenied(
+                        "Private ASR deletion authorization expired."
+                    )
                 await transaction.commit()
             except asyncio.CancelledError:
                 raise
