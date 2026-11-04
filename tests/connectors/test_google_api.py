@@ -275,7 +275,6 @@ async def test_drive_snapshot_and_changes_map_every_provider_page() -> None:
                     "newStartPageToken": "start-9",
                     "changes": [
                         {
-                            "changeId": "change-1",
                             "fileId": "file-2",
                             "removed": False,
                             "file": {
@@ -300,12 +299,61 @@ async def test_drive_snapshot_and_changes_map_every_provider_page() -> None:
     assert [item.file_id for item in snapshot.items] == ["file-2"]
     assert snapshot.next_page_token == "page-2"
     assert changes.new_start_page_token == "start-9"
-    assert changes.changes[0].change_key == "id:change-1"
+    assert changes.changes[0].change_key == (
+        "file:file-2:version:7:removed:false"
+    )
     list_request, change_request = transport.requests[1:]
     assert list_request.query["q"] == "'folder-1' in parents and trashed = false"
     assert list_request.query["pageSize"] == "100"
     assert change_request.query["pageToken"] == "page-2"
     assert change_request.query["includeRemoved"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_drive_changes_accept_documented_v3_response_without_change_id() -> None:
+    class DriveV3ContractTransport:
+        def __init__(self) -> None:
+            self.requests: list[GoogleApiRequest] = []
+
+        async def request(self, request: GoogleApiRequest) -> GoogleApiResponse:
+            self.requests.append(request)
+            if request.method == "POST":
+                return GoogleApiResponse(
+                    status_code=200,
+                    json_body={"access_token": "token", "expires_in": 3600},
+                )
+            if "changeId" in request.query["fields"]:
+                return GoogleApiResponse(
+                    status_code=400,
+                    json_body={"error": {"status": "INVALID_ARGUMENT"}},
+                )
+            return GoogleApiResponse(
+                status_code=200,
+                json_body={
+                    "newStartPageToken": "start-10",
+                    "changes": [
+                        {
+                            "fileId": "file-2",
+                            "removed": False,
+                            "file": {
+                                "id": "file-2",
+                                "version": "7",
+                                "trashed": False,
+                                "parents": ["folder-1"],
+                            },
+                        }
+                    ],
+                },
+            )
+
+    transport = DriveV3ContractTransport()
+    service = _service(RecordingCredentialResolver(), transport)
+
+    page = await service.list_changes(_connection(), RESOURCE_SCOPE, "start-9")
+
+    assert page.new_start_page_token == "start-10"
+    assert page.changes[0].change_key == "file:file-2:version:7:removed:false"
+    assert len(transport.requests) == 2
 
 
 @pytest.mark.asyncio
@@ -333,7 +381,6 @@ async def test_shared_drive_requests_bind_all_pages_to_exact_drive_identity() ->
                     "newStartPageToken": "s1",
                     "changes": [
                         {
-                            "changeId": "c1",
                             "fileId": "file-1",
                             "file": {
                                 "id": "file-1",
@@ -481,7 +528,6 @@ async def test_shared_drive_changes_with_unknown_or_foreign_identity_are_incompl
                     "newStartPageToken": "s2",
                     "changes": [
                         {
-                            "changeId": "foreign",
                             "fileId": "unlisted-foreign-file",
                             "file": {
                                 "id": "unlisted-foreign-file",
@@ -489,7 +535,6 @@ async def test_shared_drive_changes_with_unknown_or_foreign_identity_are_incompl
                             },
                         },
                         {
-                            "changeId": "unlisted-same-drive",
                             "fileId": "unlisted-shared-file",
                             "file": {
                                 "id": "unlisted-shared-file",
@@ -497,13 +542,11 @@ async def test_shared_drive_changes_with_unknown_or_foreign_identity_are_incompl
                             },
                         },
                         {
-                            "changeId": "allowlisted-wrong-drive",
                             "fileId": "file-1",
                             "file": {"id": "file-1", "driveId": "drive-2"},
                         },
-                        {"changeId": "unknown", "fileId": "file-1", "removed": True},
+                        {"fileId": "file-1", "removed": True},
                         {
-                            "changeId": "outside-folder",
                             "fileId": "file-1",
                             "file": {
                                 "id": "file-1",
@@ -539,7 +582,6 @@ async def test_shared_drive_change_outside_configured_folder_is_incomplete() -> 
                     "newStartPageToken": "s3",
                     "changes": [
                         {
-                            "changeId": "moved",
                             "fileId": "file-1",
                             "file": {
                                 "id": "file-1",
@@ -575,7 +617,6 @@ async def test_shared_drive_change_without_identity_is_incomplete() -> None:
                     "newStartPageToken": "s4",
                     "changes": [
                         {
-                            "changeId": "identity-missing",
                             "fileId": "file-1",
                             "file": {"id": "file-1", "version": "9"},
                         }
@@ -630,7 +671,6 @@ async def test_drive_changes_exclude_unrelated_folder_items_from_read_authority(
                     "newStartPageToken": "start-10",
                     "changes": [
                         {
-                            "changeId": "unrelated-change",
                             "fileId": "unrelated-file",
                             "removed": False,
                             "file": {
@@ -707,7 +747,6 @@ async def test_folder_change_mapping_is_stable_after_worker_restart() -> None:
         "newStartPageToken": "start-11",
         "changes": [
             {
-                "changeId": "removed-change",
                 "fileId": "file-2",
                 "removed": True,
             }

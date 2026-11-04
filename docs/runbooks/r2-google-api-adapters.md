@@ -69,6 +69,17 @@ pagination, Sheets representations and pagination, Developer Metadata, exact
 scope/generation denial, OAuth resolution/revocation, bounded retry/backoff and
 sanitized live evidence.
 
+Drive v3 `Change` does not expose the v2-style `changeId` field. The adapter's
+partial-response selector therefore requests only documented v3 fields and
+derives the replay key from the file ID, requested file version and removal
+state. A removal without a returned file resource uses the existing conservative
+`unknown` version component; it does not invent provider identity or establish
+deletion authority. See the official
+[`Change` resource](https://developers.google.com/workspace/drive/api/reference/rest/v3/changes).
+The exact post-#931 live Changes response remains unverified until the fix is
+merged, post-merge preflight passes and #615 records a new one-shot owner
+authorization.
+
 ## Manual live qualification
 
 Live access is forbidden unless both gates are present:
