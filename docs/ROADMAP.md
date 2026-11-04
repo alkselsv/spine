@@ -260,6 +260,9 @@ target.
       (#667, #672)`; `accepted: pre-mounted read-only production policy,
       ownership and qualification gate (#659)`; `not qualified: selected real
       mounted-filesystem backend (#680)`;
+      `implemented and qualified offline: top-level provider-neutral acceptance
+      mapping across connection admission, typed observations, canonical
+      ingestion, retrieval and safe operator inspection (#655, #677)`;
       `not qualified: live Google and Shared Drive behavior`; product integration
       remains open.
 - [ ] Связывание строки реестра, запроса, встречи, клиента и итоговой сметы.

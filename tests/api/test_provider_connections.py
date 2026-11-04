@@ -69,11 +69,21 @@ def _inspection() -> ProviderConnectionInspection:
             authorization_generation=2,
             configuration_generation=3,
             status=ProviderConnectionStatus.ACTIVE,
-            capabilities=(ProviderCapability(
-                kind=ProviderCapabilityKind.BINARY_READ,
-                status=ProviderCapabilityStatus.SUPPORTED,
-                qualification_reference=OpaqueProviderReference(value=_id(8)),
-            ),),
+            capabilities=(
+                ProviderCapability(
+                    kind=ProviderCapabilityKind.BINARY_READ,
+                    status=ProviderCapabilityStatus.SUPPORTED,
+                    qualification_reference=OpaqueProviderReference(value=_id(8)),
+                ),
+                ProviderCapability(
+                    kind=ProviderCapabilityKind.INCREMENTAL_CHANGE_DISCOVERY,
+                    status=ProviderCapabilityStatus.UNQUALIFIED,
+                ),
+                ProviderCapability(
+                    kind=ProviderCapabilityKind.LIFECYCLE_EVIDENCE,
+                    status=ProviderCapabilityStatus.UNSUPPORTED,
+                ),
+            ),
         ),
         health=ProviderConnectionHealth.HEALTHY,
         diagnostic_codes=(ProviderDiagnosticCode.CONNECTION_READY,),
@@ -198,6 +208,23 @@ async def test_operator_configures_and_inspects_safe_connection_summary() -> Non
     assert created.json()["result"]["health"] == "healthy"
     assert listed.status_code == 200
     assert listed.json()["items"][0] == inspected.json()["data"]
+    assert inspected.json()["data"]["capabilities"] == [
+        {
+            "kind": "binary_read",
+            "status": "supported",
+            "qualification_reference": str(_id(8)),
+        },
+        {
+            "kind": "incremental_change_discovery",
+            "status": "unqualified",
+            "qualification_reference": None,
+        },
+        {
+            "kind": "lifecycle_evidence",
+            "status": "unsupported",
+            "qualification_reference": None,
+        },
+    ]
     safe_output = created.text + listed.text + inspected.text
     assert str(_id(5)) not in safe_output
     assert str(_id(6)) not in safe_output
