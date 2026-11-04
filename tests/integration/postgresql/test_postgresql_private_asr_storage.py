@@ -81,7 +81,10 @@ from spine.infrastructure.private_asr.postgresql_storage import (
 )
 from spine.infrastructure.private_asr.audit import PostgreSQLPrivateASRAuditReceipts
 from spine.infrastructure.private_asr.retention import PostgreSQLPrivateASRRetentionResolver
-from spine.infrastructure.private_asr.retention import PrivateASRRetentionDisposition
+from spine.infrastructure.private_asr.retention import (
+    PrivateASRRetentionDenied,
+    PrivateASRRetentionDisposition,
+)
 from tests.application.test_private_asr_corpus import service, source_revision
 from tests.contracts.persistence.ids import synthetic_uuid
 from tests.contracts.persistence.outbox_events import create_outbox_event_registry
@@ -204,7 +207,7 @@ class _SyntheticManifestLineage:
             and manifest_version == self.manifest_version
             and manifest_sha256 == self.manifest_sha256
             and retention_profile_ref == self.retention_profile_ref
-            and source_bindings == self.bindings
+            and set(source_bindings) == set(self.bindings)
             and all(item.dataset_id == dataset_id for item in source_bindings)
             and len({item.record_id for item in source_bindings}) == len(source_bindings)
         )
@@ -2511,6 +2514,217 @@ async def test_postgresql_private_asr_authorized_synthetic_report_commit(
     assert disposition.terms_digest == "d" * 64
     assert disposition.expires_at == NOW + timedelta(minutes=30)
     assert report_count == receipt_count == 1
+
+
+async def _add_synthetic_report_source(prepared, *, seed: int):
+    """Add a second canonical source with its own current retention generation."""
+    workspace_id = prepared.case.source.workspace_id
+    environment_id = prepared.case.source.environment_id
+    source = connector_source(
+        workspace_id, environment_id, f"private-asr-fixture{seed % 10}",
+    )
+    case = await prepare_case(
+        prepared.adapter, seed, scope=(workspace_id, environment_id),
+        source_object=source, create_scope=False,
+        accepted_generation=2,
+        provenance_event="event-2",
+        original_content=f"second source bytes {seed}".encode(),
+    )
+    async with prepared.persistence.uow_factory(case.context) as uow:
+        await uow.canonical.accept(case.command)
+        await uow.commit()
+
+    governance_context = prepared.adapter.ingestion_context(
+        workspace_id, environment_id, "retention_applicability",
+    )
+    repository = PostgreSQLRetentionApplicabilityRepository(
+        uow_factory=prepared.persistence.uow_factory,
+        authority=_SyntheticRetentionWriterAuthority(),
+        effects=_SyntheticRetentionEffects(),
+    )
+    previous = prepared.applicability.model_copy(update={
+        "applicability_id": synthetic_uuid(seed + 10),
+        "source_object_id": source.source_object_id,
+        "applicability_evidence_reference": synthetic_uuid(seed + 11),
+        "applicability_evidence_digest": "e" * 64,
+        "approving_authority_reference": synthetic_uuid(seed + 12),
+        "approving_authority_version_id": synthetic_uuid(seed + 13),
+        "approving_authority_digest": "f" * 64,
+        "expected_current_applicability_id": None,
+        "expected_current_generation": 0,
+        "generation": 1,
+        "audit_event_id": synthetic_uuid(seed + 14),
+        "outbox_event_id": synthetic_uuid(seed + 15),
+    })
+    current = previous.model_copy(update={
+        "applicability_id": synthetic_uuid(seed + 16),
+        "applicability_evidence_reference": synthetic_uuid(seed + 17),
+        "approving_authority_reference": synthetic_uuid(seed + 18),
+        "approving_authority_version_id": synthetic_uuid(seed + 19),
+        "expected_current_applicability_id": previous.applicability_id,
+        "expected_current_generation": 1,
+        "generation": 2,
+        "audit_event_id": synthetic_uuid(seed + 20),
+        "outbox_event_id": synthetic_uuid(seed + 21),
+    })
+    await repository.record_applicability(previous, governance_context)
+    await repository.record_applicability(current, governance_context)
+    retention_ref = PrivateReference(
+        reference_id=current.applicability_id,
+        reference_kind="retention_applicability",
+    )
+
+    request, admission, _, _, _, _, _, _ = service(
+        now=NOW, expires=NOW + timedelta(hours=2), policy_id=case.policy_id,
+    )
+    request = request.model_copy(update={
+        "source_object": case.source,
+        "source_revision": case.revision,
+        "workspace_id": workspace_id,
+        "environment_id": environment_id,
+        "allowed_environment_id": environment_id,
+        "retention_profile_ref": retention_ref,
+        "access_policy_version": case.policy_id,
+    })
+    admitted = await admission.admit(request, context=prepared.context)
+    source_policy_ids = {
+        prepared.case.source.source_object_id: prepared.case.policy_id,
+        case.source.source_object_id: case.policy_id,
+    }
+
+    class _SourceScopedPolicies:
+        async def current_for(self, policy_source, *, context):
+            current = await prepared.policies.current_for(policy_source, context=context)
+            return current.model_copy(update={
+                "access_policy_version_id": source_policy_ids[
+                    policy_source.source_object_id
+                ],
+            })
+
+    prepared.store._access_policies = _SourceScopedPolicies()
+    audit_ref = await prepared.audit_receipts.receipt(
+        operation="synthetic_source_admitted",
+        source_revision_id=case.revision.revision_id,
+        outcome="admitted",
+        context=prepared.context,
+    )
+    admitted = admitted.model_copy(update={"audit_receipt_ref": audit_ref})
+    raw = f"second source bytes {seed}".encode()
+    staged = await prepared.store.begin(admitted, context=prepared.context)
+    await prepared.store.append(staged, raw, context=prepared.context)
+    await prepared.store.finalize(
+        staged, sha256=sha256(raw).hexdigest(), byte_length=len(raw),
+        context=prepared.context,
+    )
+    await prepared.store.bind_immutable_original(
+        admitted, sha256=sha256(raw).hexdigest(), byte_length=len(raw),
+        context=prepared.context,
+    )
+    record_id = synthetic_uuid(seed + 22)
+    binding = PrivateReportSourceBinding(
+        record_id=record_id, dataset_id=prepared.report.dataset_id,
+        source_object_id=source.source_object_id,
+        source_revision_id=case.revision.revision_id,
+        source_revision_digest=case.revision.revision_digest,
+        split=CorpusSplit.DEVELOPMENT,
+    )
+    prepared.bindings = (*prepared.bindings, binding)
+    prepared.manifest_lineage.bindings = prepared.bindings
+    prepared.report = prepared.report.model_copy(update={
+        "outcomes": (*prepared.report.outcomes, PrivateCaseOutcome(
+            record_ref=PrivateReference(
+                reference_id=record_id, reference_kind="private_asr_record",
+            ),
+            split=CorpusSplit.DEVELOPMENT,
+            disposition=PrivateCaseDisposition.UNANNOTATED,
+        )),
+        "denominators": prepared.report.denominators.model_copy(update={
+            "eligible": 2, "admitted": 2, "independent_lineages": 2,
+        }),
+    })
+    return case, admitted, current
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_report_persists_per_source_current_retention(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=889799220)
+    second_case, _, second_applicability = await _add_synthetic_report_source(
+        prepared, seed=889799240,
+    )
+    prepared.bindings = tuple(reversed(prepared.bindings))
+    prepared.manifest_lineage.bindings = tuple(reversed(prepared.manifest_lineage.bindings))
+    stored = await _commit_synthetic_report(
+        prepared, idempotency_key="per-source-retention-report",
+    )
+    assert await prepared.store.read_private_reference(
+        stored.report_ref, context=prepared.context,
+    ) == prepared.report.model_dump_json().encode()
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        row = (await session.execute(select(
+            private_asr_artifacts.c.retention_disposition,
+        ).where(
+            private_asr_artifacts.c.artifact_id == stored.report_ref.reference_id,
+        ))).scalar_one()
+    assert len(row) == 2
+    by_revision = {item["source_revision_id"]: item for item in row}
+    second_evidence = by_revision[str(second_case.revision.revision_id)]
+    assert second_evidence["schema_version"] == "private-asr-report-retention-binding:v2"
+    assert second_evidence["workspace_id"] == str(prepared.case.source.workspace_id)
+    assert second_evidence["environment_id"] == str(prepared.case.source.environment_id)
+    assert second_evidence["source_object_id"] == str(second_case.source.source_object_id)
+    assert second_evidence["source_revision_digest"] == second_case.revision.revision_digest
+    disposition = PrivateASRRetentionDisposition.model_validate(second_evidence["disposition"])
+    assert disposition.applicability_id == second_applicability.applicability_id
+    assert disposition.applicability_generation == 2
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_report_stale_source_retention_denies_before_payload_insert(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=889799260)
+    second_case, _, current = await _add_synthetic_report_source(prepared, seed=889799280)
+    replacement = current.model_copy(update={
+        "applicability_id": synthetic_uuid(889799301),
+        "applicability_evidence_reference": synthetic_uuid(889799302),
+        "expected_current_applicability_id": current.applicability_id,
+        "expected_current_generation": current.generation,
+        "generation": current.generation + 1,
+        "audit_event_id": synthetic_uuid(889799303),
+        "outbox_event_id": synthetic_uuid(889799304),
+    })
+    governance_context = prepared.adapter.ingestion_context(
+        prepared.case.source.workspace_id,
+        prepared.case.source.environment_id,
+        "retention_applicability",
+    )
+    await PostgreSQLRetentionApplicabilityRepository(
+        uow_factory=prepared.persistence.uow_factory,
+        authority=_SyntheticRetentionWriterAuthority(),
+        effects=_SyntheticRetentionEffects(),
+    ).record_applicability(replacement, governance_context)
+    callback_called = False
+
+    async def authorize_commit() -> None:
+        nonlocal callback_called
+        callback_called = True
+
+    with pytest.raises((PrivateASRStorageDenied, PrivateASRRetentionDenied)):
+        await _commit_synthetic_report(
+            prepared, idempotency_key="stale-source-retention-report",
+            callback=authorize_commit,
+        )
+    assert callback_called is False
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        row = (await session.execute(select(private_asr_artifacts.c.artifact_id).where(
+            private_asr_artifacts.c.idempotency_key == "stale-source-retention-report",
+        ))).scalar_one_or_none()
+    assert row is None
+    assert second_case.source.source_object_id != prepared.case.source.source_object_id
 
 
 @pytest.mark.asyncio
