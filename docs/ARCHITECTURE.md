@@ -265,6 +265,17 @@ tombstone. Reader разрешает оригинал или производн�
 физическое удаление. Миграция и rollback описаны в
 [`runbooks/retention-applicability.md`](runbooks/retention-applicability.md).
 
+Private ASR deletion requests preserve the immutable
+`private-asr-artifact-deletion-request:v1` wire form and digest. The additive v2
+contract carries the complete artifact source lineage and one identity-keyed
+binding per source revision, including the current applicability head and
+approved retention evidence. Bindings are canonicalized by the exact scoped
+source identity; missing, duplicate, extra, substituted, stale or partial sets
+fail closed. V1 records are never inferred or upgraded to v2. Contract
+construction uses metadata only and grants no deletion authority; the existing
+deletion authority remains responsible for current policy, holds, revocation
+and the whole-artifact decision.
+
 Обработка принятого аудио фиксируется отдельным tenant-scoped
 `TranscriptionJob` после отдельной текущей проверки processing authority; job
 pin-ит решение, точную `SourceRevision`, processing profile, STT adapter и model
