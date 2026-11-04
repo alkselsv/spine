@@ -19,10 +19,14 @@ provider qualification. A missing mandatory repository test result also
 produces `not-qualified`. A failed offline or repository gate returns a non-zero
 exit code.
 
-The CI `r1-regression-gate` job runs the full repository pytest suite, including
-mandatory PostgreSQL acceptance tests, then invokes the same CLI with the suite
-outcome and uploads `r1-gate-status.json`. A PostgreSQL prerequisite failure is
-recorded as `unavailable` and cannot qualify the aggregate gate.
+The CI `r1-regression-gate` job runs dedicated clean-target and retained-revision
+PostgreSQL qualification nodes, then runs the remaining repository pytest suite
+with only those already-receipted nodes deselected. These executions
+collectively preserve the full repository and mandatory PostgreSQL acceptance
+coverage without repeating the expensive migration qualifications. The job then
+invokes the same CLI with the aggregate suite outcome and uploads
+`r1-gate-status.json`. A PostgreSQL prerequisite failure is recorded as
+`unavailable` and cannot qualify the aggregate gate.
 
 The comparison selects the checked-in synthetic baseline at
 `docs/qualification/r1-baseline-report.json`. It records versioned metric deltas

@@ -9,8 +9,15 @@ checked-out commit:
 1. apply the current migration graph to a fresh PostgreSQL 17 target;
 2. upgrade every retained revision to the single current head on another fresh
    PostgreSQL 17 target;
-3. run the complete repository suite and emit JUnit metadata with every skip's
-   stable node ID and reported reason.
+3. run the remaining repository suite and emit JUnit metadata with every skip's
+   stable node ID and reported reason. This execution deselects only the two
+   migration-target nodes already executed by steps 1 and 2, so the three
+   executions collectively preserve complete repository coverage without
+   repeating either expensive migration qualification.
+
+The repository execution also reports its 50 slowest tests in the CI log. This
+timing summary contains test identities and durations only; it is diagnostic
+output and is not part of the attested qualification artifact.
 
 The collector matches the observed skips exactly against
 `r1-repository-skip-policy-v1.json`. Unknown, changed, required, unclassified,

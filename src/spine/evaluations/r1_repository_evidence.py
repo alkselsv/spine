@@ -20,6 +20,25 @@ from spine.domain.evaluations.r1_repository_qualification import (
 )
 
 
+CLEAN_TARGET_TEST = (
+    "tests/integration/postgresql/test_r1_migration_targets.py::"
+    "test_current_graph_applies_to_clean_target"
+)
+UPGRADE_TARGET_TEST = (
+    "tests/integration/postgresql/test_initial_tenancy_migration.py::"
+    "test_every_retained_revision_upgrades_to_one_final_head"
+)
+REPOSITORY_TEST_COMMAND = (
+    "uv",
+    "run",
+    "pytest",
+    "-q",
+    "--durations=50",
+    f"--deselect={CLEAN_TARGET_TEST}",
+    f"--deselect={UPGRADE_TARGET_TEST}",
+)
+
+
 def collect_r1_repository_evidence(
     *,
     head_sha: str,
@@ -83,7 +102,7 @@ def collect_r1_repository_evidence(
                     "run",
                     "pytest",
                     "-q",
-                    "tests/integration/postgresql/test_r1_migration_targets.py::test_current_graph_applies_to_clean_target",
+                    CLEAN_TARGET_TEST,
                 ),
             ),
             R1ExecutedCommand(
@@ -93,12 +112,12 @@ def collect_r1_repository_evidence(
                     "run",
                     "pytest",
                     "-q",
-                    "tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head",
+                    UPGRADE_TARGET_TEST,
                 ),
             ),
             R1ExecutedCommand(
                 boundary="repository_tests",
-                argv=("uv", "run", "pytest", "-q"),
+                argv=REPOSITORY_TEST_COMMAND,
             ),
         ),
         component_versions=(

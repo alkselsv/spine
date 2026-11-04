@@ -119,10 +119,13 @@ jobs:
           set +e
           pytest_log="$RUNNER_TEMP/r1-gate-pytest.log"
           export PYTEST_ADDOPTS="--junitxml=$RUNNER_TEMP/r1-repository-tests.xml"
-          uv run pytest -q > "$pytest_log" 2>&1
+          uv run pytest -q --durations=50 \
+            --deselect=tests/integration/postgresql/test_r1_migration_targets.py::test_current_graph_applies_to_clean_target \
+            --deselect=tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head \
+            > "$pytest_log" 2>&1
           pytest_status=$?
           cat "$pytest_log"
-          gate_status=$(PYTEST_STATUS="$pytest_status" PYTEST_LOG="$pytest_log" uv run python -c 'import os; from pathlib import Path; from tests.qualification.gate_runner import classify_result; result = classify_result(("uv", "run", "pytest", "-q"), returncode=int(os.environ["PYTEST_STATUS"]), output=Path(os.environ["PYTEST_LOG"]).read_text()); print(result.status)')
+          gate_status=$(PYTEST_STATUS="$pytest_status" PYTEST_LOG="$pytest_log" uv run python -c 'import os; from pathlib import Path; from spine.evaluations.r1_repository_evidence import REPOSITORY_TEST_COMMAND; from tests.qualification.gate_runner import classify_result; result = classify_result(REPOSITORY_TEST_COMMAND, returncode=int(os.environ["PYTEST_STATUS"]), output=Path(os.environ["PYTEST_LOG"]).read_text()); print(result.status)')
           if [ "$gate_status" = "passed" ]; then
             echo "gate_flag=--repository-tests-passed" >> "$GITHUB_OUTPUT"
           elif [ "$gate_status" = "blocked-infrastructure" ]; then
