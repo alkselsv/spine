@@ -1,0 +1,20 @@
+{
+  "schema_version": "issue-838-gmail-initial-snapshot-evidence:v1",
+  "issue": 838,
+  "offline_result": "PASS",
+  "live_gmail_semantics": "NOT_VERIFIED",
+  "fixture_policy": "Synthetic message IDs, history records and PostgreSQL state only; no Gmail credentials, network calls, subjects, addresses, filenames or message content.",
+  "proved_transition": [
+    "captured_history_baseline",
+    "complete_snapshot_pages",
+    "durable_snapshot_effect_receipts",
+    "complete_intervening_history_drain",
+    "single_terminal_cursor_commit"
+  ],
+  "durability_evidence": [
+    "tests/application/test_gmail_initial_snapshot.py",
+    "tests/integration/postgresql/test_email_sync_durability.py::test_postgresql_gmail_snapshot_crash_replays_every_durable_boundary",
+    "tests/integration/postgresql/test_email_sync_durability.py::test_postgresql_gmail_crash_after_canonical_acceptance_has_one_effect"
+  ],
+  "unverified_prerequisite": "A separately authorized live qualification must prove Gmail history baseline and concurrent provider semantics for the exact account, scope, adapter and operating limits."
+}

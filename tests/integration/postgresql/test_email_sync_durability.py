@@ -29,6 +29,22 @@ from spine.application.email_sync import (
     EmailSyncPageState,
     EmailSyncStatus,
 )
+from spine.application.gmail_initial_snapshot import (
+    GmailHistoryBaseline,
+    GmailHistoryBaselineState,
+    GmailInitialSnapshotCommand,
+    GmailInitialSnapshotCoordinator,
+    GmailSnapshotMessageCommand,
+    GmailSnapshotPage,
+    gmail_snapshot_effect_key,
+)
+from spine.connectors.gmail_checkpoints import (
+    decode_gmail_history_checkpoint,
+    encode_gmail_history_checkpoint,
+    encode_gmail_snapshot_page_checkpoint,
+)
+from spine.connectors.gmail import GmailRawMessageResult, GmailRawMessageStatus
+from spine.connectors.gmail_snapshot import GmailCanonicalSnapshotMessageAdapter
 from spine.application.connector_ingestion import (
     ConnectorIngestionOrchestrator,
     build_connector_canonical_acceptance_command,
@@ -96,6 +112,12 @@ from spine.connectors.yandex_mail_incremental import (
     decode_yandex_mail_incremental_checkpoint,
     encode_yandex_mail_incremental_checkpoint,
 )
+from spine.connectors.gmail_history import (
+    GmailHistoryResult,
+    GmailHistoryState,
+    gmail_history_scope_digest,
+)
+from spine.connectors.gmail_incremental import GmailIncrementalHistoryApplier
 from spine.domain.connections.email_scope import (
     EmailProviderOperation,
     MailboxReadScope,
@@ -111,7 +133,6 @@ from tests.contracts.persistence.outbox_events import create_outbox_event_regist
 from tests.contracts.persistence.test_canonical_acceptance_contract import (
     _activate_policy as activate_canonical_policy,
 )
-
 
 pytestmark = [pytest.mark.postgresql, pytest.mark.asyncio(loop_scope="session")]
 MIGRATION_ROLE = "spine_migration"
@@ -160,9 +181,13 @@ async def email_sync_repository(
         dispatcher_role=DISPATCHER_ROLE,
     )
     await asyncio.to_thread(upgrade_database, migration_settings)
-    migration_engine = create_async_engine(migration_url.get_secret_value(), hide_parameters=True)
+    migration_engine = create_async_engine(
+        migration_url.get_secret_value(), hide_parameters=True
+    )
     runtime_engine = create_async_engine(
-        _role_url(postgresql_provision, RUNTIME_ROLE, RUNTIME_PASSWORD).get_secret_value(),
+        _role_url(
+            postgresql_provision, RUNTIME_ROLE, RUNTIME_PASSWORD
+        ).get_secret_value(),
         hide_parameters=True,
         connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
     )
@@ -189,7 +214,9 @@ async def email_sync_repository(
             },
         )
 
-    sessions = async_sessionmaker(runtime_engine, expire_on_commit=False, autoflush=False)
+    sessions = async_sessionmaker(
+        runtime_engine, expire_on_commit=False, autoflush=False
+    )
     boundary = TrustedContextBoundary.for_testing(
         issuer_id=UUID("8d000000-0000-0000-0000-000000000001"),
         secret=b"synthetic-email-sync-postgresql-context",
@@ -203,7 +230,9 @@ async def email_sync_repository(
         audit_events=audit_events,
     )
 
-    def repository(workspace_id: UUID, environment_id: UUID) -> PostgreSQLEmailSyncRepository:
+    def repository(
+        workspace_id: UUID, environment_id: UUID
+    ) -> PostgreSQLEmailSyncRepository:
         def context_factory(operation: PersistenceOperation, trace_id: UUID):
             return boundary.worker(
                 scope=EnvironmentScope(
@@ -279,7 +308,9 @@ async def test_postgresql_email_sync_persists_attempt_and_scope_isolation(
     )
 
 
-async def test_postgresql_email_sync_cas_rejects_stale_worker(email_sync_repository) -> None:
+async def test_postgresql_email_sync_cas_rejects_stale_worker(
+    email_sync_repository,
+) -> None:
     repository, *_ = email_sync_repository
     original = _attempt()
     await repository.save(original)
@@ -291,10 +322,14 @@ async def test_postgresql_email_sync_cas_rejects_stale_worker(email_sync_reposit
     assert advanced.revision == current.revision + 1
 
     with pytest.raises(EmailSyncConcurrentUpdateError):
-        await repository.save(original.model_copy(update={"status": EmailSyncStatus.FAILED}))
+        await repository.save(
+            original.model_copy(update={"status": EmailSyncStatus.FAILED})
+        )
 
 
-async def test_postgresql_email_sync_cas_race_has_one_winner(email_sync_repository) -> None:
+async def test_postgresql_email_sync_cas_race_has_one_winner(
+    email_sync_repository,
+) -> None:
     repository, *_ = email_sync_repository
     attempt = _attempt()
     await repository.save(attempt)
@@ -312,13 +347,18 @@ async def test_postgresql_email_sync_cas_race_has_one_winner(email_sync_reposito
     outcomes = await asyncio.gather(first, second, return_exceptions=True)
 
     assert sum(isinstance(value, EmailSyncAttempt) for value in outcomes) == 1
-    assert sum(isinstance(value, EmailSyncConcurrentUpdateError) for value in outcomes) == 1
+    assert (
+        sum(isinstance(value, EmailSyncConcurrentUpdateError) for value in outcomes)
+        == 1
+    )
     stored = await repository.get(attempt.attempt_id, WORKSPACE_ID, ENVIRONMENT_ID)
     assert stored is not None
     assert stored.revision == 2
 
 
-async def test_postgresql_email_sync_cas_rejects_changed_generation(email_sync_repository) -> None:
+async def test_postgresql_email_sync_cas_rejects_changed_generation(
+    email_sync_repository,
+) -> None:
     repository, *_ = email_sync_repository
     attempt = _attempt()
     await repository.save(attempt)
@@ -673,15 +713,14 @@ async def test_postgresql_email_sync_round_trips_generation_bound_imap_checkpoin
             }
         )
     )
-    restored = await repository.get(
-        attempt.attempt_id, WORKSPACE_ID, ENVIRONMENT_ID
-    )
+    restored = await repository.get(attempt.attempt_id, WORKSPACE_ID, ENVIRONMENT_ID)
 
     assert restored is not None
     assert restored.pages == (page,)
-    assert decode_yandex_mail_incremental_checkpoint(
-        restored.committed_checkpoint or ""
-    ) == checkpoint
+    assert (
+        decode_yandex_mail_incremental_checkpoint(restored.committed_checkpoint or "")
+        == checkpoint
+    )
 
 
 async def test_postgresql_email_sync_persists_folder_stages_before_one_aggregate_checkpoint(
@@ -690,9 +729,7 @@ async def test_postgresql_email_sync_persists_folder_stages_before_one_aggregate
     repository, *_ = email_sync_repository
     attempt = _attempt()
     await repository.save(attempt)
-    current = await repository.get(
-        attempt.attempt_id, WORKSPACE_ID, ENVIRONMENT_ID
-    )
+    current = await repository.get(attempt.attempt_id, WORKSPACE_ID, ENVIRONMENT_ID)
     assert current is not None
     generation = EmailSyncPageState(
         workspace_id=WORKSPACE_ID,
@@ -730,9 +767,7 @@ async def test_postgresql_email_sync_persists_folder_stages_before_one_aggregate
     )
 
     assert staged.committed_checkpoint is None
-    reloaded = await repository.get(
-        attempt.attempt_id, WORKSPACE_ID, ENVIRONMENT_ID
-    )
+    reloaded = await repository.get(attempt.attempt_id, WORKSPACE_ID, ENVIRONMENT_ID)
     assert reloaded is not None
     assert reloaded.pages == (generation, uid_page)
     terminal = EmailSyncPageState(
@@ -1050,12 +1085,35 @@ class _RawMessageAdmission:
         return self.result
 
 
+class _GmailRawMessageAdmission:
+    def __init__(self, scope: MailboxReadScope, label: UUID) -> None:
+        self.result = GmailRawMessageResult(
+            status=GmailRawMessageStatus.ACCEPTED,
+            mailbox_scope=scope,
+            requested_message_id="message-a",
+            authorized_label_reference=label,
+            message_id="message-a",
+            raw_mime=_RAW_MESSAGE,
+            sha256=hashlib.sha256(_RAW_MESSAGE).hexdigest(),
+            byte_length=len(_RAW_MESSAGE),
+            observed_label_references=(label,),
+            internal_date_ms=1_762_128_000_000,
+            history_id="101",
+            thread_id="thread-a",
+        )
+
+    async def read(self, command, context):
+        del command, context
+        return self.result
+
+
 class _CrashAfterCanonicalAcceptance:
-    def __init__(self, messages: YandexMailCanonicalSnapshotMessageAdapter) -> None:
+    def __init__(self, messages, *, process_crash: bool = False) -> None:
         self.messages = messages
         self.receipts = []
         self.errors = []
         self.crashed = False
+        self.process_crash = process_crash
 
     async def apply(self, command):
         try:
@@ -1066,18 +1124,23 @@ class _CrashAfterCanonicalAcceptance:
         self.receipts.append(receipt)
         if not self.crashed:
             self.crashed = True
+            if self.process_crash:
+                raise _PostgreSQLProcessCrash(
+                    "synthetic process crash after canonical acceptance"
+                )
             raise RuntimeError("synthetic crash after canonical acceptance")
         return receipt
 
 
 async def _provision_eligible_canonical_message_source(
     *,
-    messages: YandexMailCanonicalSnapshotMessageAdapter,
-    command: YandexMailSnapshotMessageCommand,
+    messages,
+    command,
     migration_engine,
     persistence,
     context_factory,
     outbox_events,
+    activation_number: int = 84900,
 ) -> UUID | None:
     """Prepare source/policy prerequisites without adding crash-test assertions."""
 
@@ -1091,9 +1154,14 @@ async def _provision_eligible_canonical_message_source(
         source_object_id = await connection.scalar(
             text(
                 "SELECT source_object_id FROM spine.source_objects "
-                "WHERE workspace_id = :workspace AND environment_id = :environment"
+                "WHERE workspace_id = :workspace AND environment_id = :environment "
+                "AND connection_id = :connection"
             ),
-            {"workspace": WORKSPACE_ID, "environment": ENVIRONMENT_ID},
+            {
+                "workspace": WORKSPACE_ID,
+                "environment": ENVIRONMENT_ID,
+                "connection": command.scope.connection_id,
+            },
         )
     if not isinstance(source_object_id, UUID):
         raise RuntimeError("canonical message source was not provisioned")
@@ -1113,7 +1181,7 @@ async def _provision_eligible_canonical_message_source(
         ),
         context=policy_context,
         source_object=source_object,
-        number=84900,
+        number=activation_number,
     )
 
 
@@ -1129,8 +1197,7 @@ class _CrashAfterPostgreSQLSave:
     async def save(self, attempt):
         saved = await self.repository.save(attempt)
         if not self.crashed and any(
-            page.page_kind is self.page_kind and page.committed
-            for page in saved.pages
+            page.page_kind is self.page_kind and page.committed for page in saved.pages
         ):
             self.crashed = True
             raise RuntimeError(f"synthetic crash after {self.page_kind.value}")
@@ -1585,9 +1652,7 @@ async def test_postgresql_scripted_imap_item_crash_replays_one_canonical_effect(
             uow_factory=persistence.uow_factory,
             object_store=DeterministicOriginalObjectStoreFake(
                 grant_registry=AuthorizedReadGrantRegistry(),
-                generation_factory=lambda: UUID(
-                    "9d000000-0000-0000-0000-000000000003"
-                ),
+                generation_factory=lambda: UUID("9d000000-0000-0000-0000-000000000003"),
                 clock=lambda: datetime(2026, 11, 3, tzinfo=timezone.utc),
                 max_chunk_bytes=4096,
                 max_object_bytes=8192,
@@ -1688,7 +1753,10 @@ async def test_postgresql_scripted_imap_crash_replays_one_terminal_checkpoint(
     page_kind: EmailSyncPageKind,
 ) -> None:
     repository, *_ = email_sync_repository
-    folder = UUID(int=UUID("9e000000-0000-0000-0000-000000000010").int + list(EmailSyncPageKind).index(page_kind))
+    folder = UUID(
+        int=UUID("9e000000-0000-0000-0000-000000000010").int
+        + list(EmailSyncPageKind).index(page_kind)
+    )
     reader = _ScriptedImapSnapshotReader((folder,))
     crashing = _CrashAfterPostgreSQLSave(repository, page_kind)
     coordinator, command = _postgresql_snapshot(
@@ -1701,8 +1769,396 @@ async def test_postgresql_scripted_imap_crash_replays_one_terminal_checkpoint(
         await coordinator.run(command)
     recovered = await coordinator.run(command)
 
-    assert recovered.attempt.status is EmailSyncStatus.COMPLETE
+    assert recovered.attempt.status is EmailSyncStatus.COMPLETE, (
+        recovered.attempt.failure_code,
+        crashing_messages.receipts,
+        crashing_messages.errors,
+    )
     assert sum(page.terminal for page in recovered.attempt.pages) == 1
+
+
+class _PostgreSQLGmailReader:
+    def __init__(
+        self, scope: MailboxReadScope, *, message_ids: tuple[str, ...] = ()
+    ) -> None:
+        self.scope = scope
+        self.message_ids = message_ids
+        self.second_page = encode_gmail_snapshot_page_checkpoint(scope, "second-page")
+
+    async def capture_history_baseline(self, mailbox_scope):
+        assert mailbox_scope == self.scope
+        return GmailHistoryBaseline(
+            state=GmailHistoryBaselineState.CAPTURED,
+            admission_scope_digest=gmail_history_scope_digest(self.scope),
+            checkpoint=encode_gmail_history_checkpoint(self.scope, "100"),
+        )
+
+    async def enumerate_snapshot_page(self, request):
+        if request.checkpoint is None:
+            return GmailSnapshotPage(
+                requested_checkpoint=None,
+                message_ids=self.message_ids,
+                next_checkpoint=self.second_page,
+            )
+        return GmailSnapshotPage(
+            requested_checkpoint=self.second_page,
+            next_checkpoint=None,
+        )
+
+    def history_result(
+        self,
+        start_history_id,
+    ):
+        return GmailHistoryResult(
+            requested_start_history_id=start_history_id,
+            admission_scope_digest=gmail_history_scope_digest(self.scope),
+            state=GmailHistoryState.COMPLETE,
+            terminal_history_id="101",
+            pages_read=1,
+            duplicate_count=0,
+            malformed_count=0,
+        )
+
+
+class _PostgreSQLGmailHistory:
+    def __init__(self, reader, applier) -> None:
+        self.reader = reader
+        self.applier = applier
+
+    async def stage(
+        self,
+        attempt_id,
+        mailbox_scope,
+        *,
+        baseline_checkpoint,
+        max_results,
+        max_pages,
+        covered_snapshot_effect_keys,
+    ):
+        del max_results, max_pages, covered_snapshot_effect_keys
+        start_history_id = decode_gmail_history_checkpoint(
+            mailbox_scope, baseline_checkpoint
+        )
+        return await self.applier.stage(
+            attempt_id,
+            self.reader.history_result(start_history_id),
+            start_history_id=start_history_id,
+        )
+
+
+class _UnusedGmailMessages:
+    async def apply(self, message):
+        del message
+        raise AssertionError("synthetic PostgreSQL Gmail pages are empty")
+
+
+class _UnusedGmailHistoryFactory:
+    async def prepare(self, mailbox_scope, change):
+        del mailbox_scope, change
+        raise AssertionError("synthetic PostgreSQL Gmail history is empty")
+
+
+class _CrashAfterPostgreSQLPageOccurrence(_CrashAfterPostgreSQLSave):
+    def __init__(self, repository, page_kind, occurrence):
+        super().__init__(repository, page_kind)
+        self.occurrence = occurrence
+
+    async def save(self, attempt):
+        saved = await self.repository.save(attempt)
+        reached = sum(
+            page.page_kind is self.page_kind and page.committed for page in saved.pages
+        )
+        if not self.crashed and reached >= self.occurrence:
+            self.crashed = True
+            raise _PostgreSQLProcessCrash(
+                f"synthetic crash after {self.page_kind.value}:{self.occurrence}"
+            )
+        return saved
+
+
+class _PostgreSQLProcessCrash(BaseException):
+    pass
+
+
+def _postgresql_gmail_snapshot(
+    repository,
+    *,
+    attempt_key: str,
+    messages=None,
+    message_ids: tuple[str, ...] = (),
+):
+    scope = MailboxReadScope(
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        connection_id=UUID("ae000000-0000-0000-0000-000000000001"),
+        connection_version_id=UUID("ae000000-0000-0000-0000-000000000002"),
+        provider_kind="google",
+        resource_scope_reference=UUID("ae000000-0000-0000-0000-000000000003"),
+        mailbox_subject_reference=UUID("ae000000-0000-0000-0000-000000000004"),
+        mailbox_binding_id=UUID("ae000000-0000-0000-0000-000000000005"),
+        authorization_generation=1,
+        configuration_generation=1,
+        scope_generation=1,
+        allowed_label_references=(UUID("ae000000-0000-0000-0000-000000000006"),),
+        allowed_operations=tuple(EmailProviderOperation),
+    )
+    sync = EmailSyncCoordinator(
+        repository=repository,
+        admission=_SnapshotAdmission(),
+        effects=_SnapshotEffects(),
+    )
+    reader = _PostgreSQLGmailReader(scope, message_ids=message_ids)
+    history_applier = GmailIncrementalHistoryApplier(
+        sync,
+        scope,
+        _UnusedGmailHistoryFactory(),
+    )
+    coordinator = GmailInitialSnapshotCoordinator(
+        sync=sync,
+        reader=reader,
+        messages=messages or _UnusedGmailMessages(),
+        history=_PostgreSQLGmailHistory(reader, history_applier),
+    )
+    return coordinator, GmailInitialSnapshotCommand(
+        scope=scope,
+        attempt_key=attempt_key,
+        snapshot_page_size=10,
+        max_snapshot_pages=3,
+        history_page_size=10,
+        max_history_pages=2,
+        max_message_bytes=4096,
+        access_policy_version_id=UUID("ae000000-0000-0000-0000-000000000007"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("page_kind", "occurrence"),
+    (
+        (EmailSyncPageKind.HISTORY_BASELINE, 1),
+        (EmailSyncPageKind.SNAPSHOT_PAGE, 1),
+        (EmailSyncPageKind.SNAPSHOT_PAGE, 2),
+        (EmailSyncPageKind.HISTORY_DRAIN, 1),
+        (EmailSyncPageKind.AGGREGATE_CHECKPOINT, 1),
+    ),
+)
+async def test_postgresql_gmail_snapshot_crash_replays_every_durable_boundary(
+    email_sync_repository,
+    page_kind: EmailSyncPageKind,
+    occurrence: int,
+) -> None:
+    repository, *_ = email_sync_repository
+    crashing = _CrashAfterPostgreSQLPageOccurrence(
+        repository,
+        page_kind,
+        occurrence,
+    )
+    coordinator, command = _postgresql_gmail_snapshot(
+        crashing,
+        attempt_key=(f"issue-838-postgresql-{page_kind.value}-{occurrence}"),
+    )
+
+    with pytest.raises(
+        _PostgreSQLProcessCrash,
+        match=f"{page_kind.value}:{occurrence}",
+    ):
+        await coordinator.run(command)
+    recovered = await coordinator.run(command)
+
+    assert recovered.attempt.status is EmailSyncStatus.COMPLETE
+    assert (
+        decode_gmail_history_checkpoint(
+            command.scope, recovered.attempt.committed_checkpoint
+        )
+        == "101"
+    )
+    assert sum(page.terminal for page in recovered.attempt.pages) == 1
+    assert all(page.committed for page in recovered.attempt.pages)
+
+
+async def test_email_sync_migration_supports_downgrade_and_upgrade(
+    email_sync_repository,
+) -> None:
+    _, _, migration_engine, settings, *_ = email_sync_repository
+    config_path, script_location = locate_migration_assets()
+    config = Config(str(config_path))
+    config.set_main_option("script_location", str(script_location))
+    config.attributes["migration_settings"] = settings
+
+    await asyncio.to_thread(command.downgrade, config, "20261227_95")
+    async with migration_engine.connect() as connection:
+        absent = await connection.scalar(
+            text("SELECT to_regclass('spine.email_sync_attempts') IS NULL")
+        )
+    assert absent is True
+
+    await asyncio.to_thread(upgrade_database, settings)
+
+
+async def test_postgresql_gmail_crash_after_canonical_acceptance_has_one_effect(
+    email_sync_repository,
+) -> None:
+    (
+        repository,
+        _,
+        migration_engine,
+        _,
+        persistence,
+        boundary,
+        outbox_events,
+        audit_events,
+    ) = email_sync_repository
+    _, snapshot_command = _postgresql_gmail_snapshot(
+        repository,
+        attempt_key="issue-838-gmail-accepted-effect-setup",
+    )
+    label = snapshot_command.scope.allowed_label_references[0]
+    active_policy_id: UUID | None = None
+
+    def context_factory(
+        operation: PersistenceOperation, trace_id: UUID
+    ) -> TrustedPersistenceContext:
+        return boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=WORKSPACE_ID,
+                environment_id=ENVIRONMENT_ID,
+            ),
+            service_principal_id=SERVICE_ID,
+            purpose=PersistencePurpose(
+                "connector.ingestion.v1"
+                if operation.value == "original.upload"
+                else "contract_test"
+            ),
+            operation=operation,
+            trace_id=trace_id,
+        )
+
+    def canonical_command_factory(**values):
+        built = build_connector_canonical_acceptance_command(
+            outbox_events=outbox_events,
+            audit_events=audit_events,
+            **values,
+        )
+        return CanonicalAcceptanceCommand.create(
+            source=built.source,
+            revision=built.revision,
+            provenance=built.provenance,
+            admission_decision_id=built.admission_decision_id,
+            access_policy_version_id=active_policy_id,
+            expected_current_revision_id=built.expected_current_revision_id,
+            idempotency_key=built.idempotency_key,
+            canonical_acceptance_id=built.canonical_acceptance_id,
+            audit_event_id=built.audit_event_id,
+            outbox_event_id=built.outbox_event_id,
+            accepted_at=built.accepted_at,
+            audit_event=built.audit_event,
+            outbox_intent=built.outbox_intent,
+            lifecycle_query=built.lifecycle_query,
+            processing_admission=built.processing_admission,
+            operation=built.digest.operation,
+        )
+
+    ingestion = ConnectorIngestionOrchestrator(
+        uow_factory=persistence.uow_factory,
+        observation_reader=_UnusedObservationReader(),
+        uploader=OriginalUploadOrchestrator(
+            uow_factory=persistence.uow_factory,
+            object_store=DeterministicOriginalObjectStoreFake(
+                grant_registry=AuthorizedReadGrantRegistry(),
+                generation_factory=lambda: UUID("ad000000-0000-0000-0000-000000000003"),
+                clock=lambda: datetime(2026, 11, 3, tzinfo=timezone.utc),
+                max_chunk_bytes=4096,
+                max_object_bytes=8192,
+                read_chunk_bytes=64,
+            ),
+            identity_factory=iter(
+                (
+                    UUID("ad000000-0000-0000-0000-000000000001"),
+                    UUID("ad000000-0000-0000-0000-000000000002"),
+                )
+            ).__next__,
+        ),
+        read_context_factory=context_factory,
+        context_factory=context_factory,
+        canonical_command_factory=canonical_command_factory,
+        outbox_events=outbox_events,
+        audit_events=audit_events,
+        read_operation=PersistenceOperation("mailbox.read_raw_message"),
+        admission_reference_type="mailbox_read_admission",
+        clock=lambda: datetime(2026, 11, 3, tzinfo=timezone.utc),
+    )
+    durable_messages = GmailCanonicalSnapshotMessageAdapter(
+        ingestion=ingestion,
+        raw_messages=_GmailRawMessageAdmission(snapshot_command.scope, label),
+        authorized_label_reference=label,
+        clock=lambda: datetime(2026, 11, 3, tzinfo=timezone.utc),
+    )
+    message_command = GmailSnapshotMessageCommand(
+        scope=snapshot_command.scope,
+        message_id="message-a",
+        max_message_bytes=snapshot_command.max_message_bytes,
+        access_policy_version_id=snapshot_command.access_policy_version_id,
+        effect_key=gmail_snapshot_effect_key(snapshot_command.scope, "message-a"),
+    )
+    active_policy_id = await _provision_eligible_canonical_message_source(
+        messages=durable_messages,
+        command=message_command,
+        migration_engine=migration_engine,
+        persistence=persistence,
+        context_factory=context_factory,
+        outbox_events=outbox_events,
+        activation_number=83800,
+    )
+    crashing_messages = _CrashAfterCanonicalAcceptance(
+        durable_messages, process_crash=True
+    )
+    coordinator, command = _postgresql_gmail_snapshot(
+        repository,
+        attempt_key="issue-838-gmail-accepted-effect-crash",
+        messages=crashing_messages,
+        message_ids=("message-a",),
+    )
+
+    with pytest.raises(
+        _PostgreSQLProcessCrash,
+        match="process crash after canonical acceptance",
+    ):
+        await coordinator.run(command)
+    interrupted = await coordinator.sync.create_attempt(
+        command.scope,
+        attempt_key=command.attempt_key,
+    )
+    recovered = await coordinator.run(command)
+
+    assert interrupted.status is EmailSyncStatus.RUNNING
+    assert interrupted.committed_checkpoint is None
+    assert recovered.attempt.status is EmailSyncStatus.COMPLETE, (
+        recovered.attempt.failure_code,
+        crashing_messages.receipts,
+        crashing_messages.errors,
+    )
+    assert recovered.snapshot_messages == 1
+    assert len(crashing_messages.receipts) == 2
+    assert (
+        crashing_messages.receipts[0].canonical_acceptance_id
+        == crashing_messages.receipts[1].canonical_acceptance_id
+    )
+    async with migration_engine.connect() as connection:
+        acceptance_count = await connection.scalar(
+            text(
+                "SELECT count(*) FROM spine.canonical_acceptances AS acceptance "
+                "JOIN spine.source_objects AS source "
+                "ON source.source_object_id = acceptance.source_object_id "
+                "WHERE acceptance.workspace_id = :workspace "
+                "AND acceptance.environment_id = :environment "
+                "AND source.connection_id = :connection"
+            ),
+            {
+                "workspace": WORKSPACE_ID,
+                "environment": ENVIRONMENT_ID,
+                "connection": command.scope.connection_id,
+            },
+        )
+    assert acceptance_count == 1
 
 
 async def test_postgresql_email_sync_rolls_back_checkpoint_without_canonical_receipts(
@@ -1728,7 +2184,9 @@ async def test_postgresql_email_sync_rolls_back_checkpoint_without_canonical_rec
         ),
         effect_receipts=(
             EmailSyncEffectReceipt(
-                effect_key="effect-unaccepted", receipt_reference="receipt-2", durable=True
+                effect_key="effect-unaccepted",
+                receipt_reference="receipt-2",
+                durable=True,
             ),
         ),
         committed=True,
@@ -1807,20 +2265,3 @@ async def test_postgresql_email_sync_holds_checkpoint_for_partial_page(
     assert stored is not None
     assert stored.committed_checkpoint is None
     assert stored.pages == ()
-
-
-async def test_email_sync_migration_supports_downgrade_and_upgrade(email_sync_repository) -> None:
-    _, _, migration_engine, settings, *_ = email_sync_repository
-    config_path, script_location = locate_migration_assets()
-    config = Config(str(config_path))
-    config.set_main_option("script_location", str(script_location))
-    config.attributes["migration_settings"] = settings
-
-    await asyncio.to_thread(command.downgrade, config, "20261227_95")
-    async with migration_engine.connect() as connection:
-        absent = await connection.scalar(
-            text("SELECT to_regclass('spine.email_sync_attempts') IS NULL")
-        )
-    assert absent is True
-
-    await asyncio.to_thread(upgrade_database, settings)

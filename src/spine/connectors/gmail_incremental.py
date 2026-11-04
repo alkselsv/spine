@@ -13,6 +13,7 @@ from spine.application.email_sync import (
     EmailSyncEffect,
     EmailSyncEffectKind,
     EmailSyncPage,
+    EmailSyncPageKind,
     EmailSyncStateObservation,
     EmailSyncStatus,
 )
@@ -24,6 +25,7 @@ from spine.connectors.gmail_history import (
     GmailHistoryState,
     gmail_history_scope_digest,
 )
+from spine.connectors.gmail_checkpoints import encode_gmail_history_checkpoint
 from spine.domain.connections.email_scope import MailboxReadScope
 
 
@@ -76,50 +78,21 @@ class GmailIncrementalHistoryApplier:
             not page.committed for page in resumed.pages
         ):
             return resumed
-        if (
-            result.state is not GmailHistoryState.COMPLETE
-            or result.terminal_history_id is None
-            or result.pages_read < 1
-        ):
-            status = (
-                EmailSyncStatus.RECONCILIATION_REQUIRED
-                if result.state is GmailHistoryState.RECONCILIATION_REQUIRED
-                else EmailSyncStatus.INCOMPLETE
-            )
-            return await self.coordinator.hold(
+        invalid = await self._hold_invalid_result(
+            attempt_id,
+            result,
+            start_history_id=start_history_id,
+        )
+        if invalid is not None:
+            return invalid
+        effects = await self._prepare_effects(attempt_id, result)
+        if effects is None:
+            return await self.coordinator.get_attempt(
                 attempt_id,
                 workspace_id=self.scope.workspace_id,
                 environment_id=self.scope.environment_id,
-                status=status,
-                failure_code=_failure_code(result),
             )
-        if not _covers_requested_range(self.scope, start_history_id, result):
-            return await self.coordinator.hold(
-                attempt_id,
-                workspace_id=self.scope.workspace_id,
-                environment_id=self.scope.environment_id,
-                status=EmailSyncStatus.INCOMPLETE,
-                failure_code="gmail_history_range_invalid",
-            )
-
-        try:
-            effects = tuple(
-                [
-                    self._validate_effect(
-                        change,
-                        await self.effect_factory.prepare(self.scope, change),
-                    )
-                    for change in result.changes
-                ]
-            )
-        except Exception:
-            return await self.coordinator.hold(
-                attempt_id,
-                workspace_id=self.scope.workspace_id,
-                environment_id=self.scope.environment_id,
-                status=EmailSyncStatus.INCOMPLETE,
-                failure_code="gmail_effect_preparation_failed",
-            )
+        assert result.terminal_history_id is not None
         page = EmailSyncPage(
             workspace_id=self.scope.workspace_id,
             environment_id=self.scope.environment_id,
@@ -135,6 +108,127 @@ class GmailIncrementalHistoryApplier:
             workspace_id=self.scope.workspace_id,
             environment_id=self.scope.environment_id,
         )
+
+    async def stage(
+        self,
+        attempt_id: UUID,
+        result: GmailHistoryResult,
+        *,
+        start_history_id: GmailHistoryId,
+    ) -> EmailSyncAttempt:
+        """Durably apply a complete drain without publishing its terminal cursor.
+
+        Initial snapshots use this after every captured snapshot page is durable.
+        The caller may then publish one aggregate terminal checkpoint that proves
+        the baseline, snapshot and intervening history were all covered.
+        """
+
+        _require_history_id(start_history_id)
+        resumed = await self.coordinator.resume_pending(
+            attempt_id,
+            workspace_id=self.scope.workspace_id,
+            environment_id=self.scope.environment_id,
+        )
+        if resumed.status is EmailSyncStatus.COMPLETE or any(
+            not page.committed for page in resumed.pages
+        ):
+            return resumed
+        invalid = await self._hold_invalid_result(
+            attempt_id,
+            result,
+            start_history_id=start_history_id,
+        )
+        if invalid is not None:
+            return invalid
+        effects = await self._prepare_effects(attempt_id, result)
+        if effects is None:
+            return await self.coordinator.get_attempt(
+                attempt_id,
+                workspace_id=self.scope.workspace_id,
+                environment_id=self.scope.environment_id,
+            )
+        assert result.terminal_history_id is not None
+        identity = _page_id(self.scope, start_history_id, result)
+        evidence_digest = hashlib.sha256(
+            result.model_dump_json().encode("utf-8")
+        ).hexdigest()
+        return await self.coordinator.apply_page(
+            attempt_id,
+            EmailSyncPage(
+                workspace_id=self.scope.workspace_id,
+                environment_id=self.scope.environment_id,
+                page_kind=EmailSyncPageKind.HISTORY_DRAIN,
+                page_id=f"gmail.history.drain.{identity.rsplit('.', 1)[-1]}",
+                requested_checkpoint=resumed.committed_checkpoint,
+                publish_checkpoint=False,
+                evidence_digest=evidence_digest,
+                evidence_cursor=encode_gmail_history_checkpoint(
+                    self.scope, result.terminal_history_id
+                ),
+                effects=effects,
+            ),
+            workspace_id=self.scope.workspace_id,
+            environment_id=self.scope.environment_id,
+        )
+
+    async def _hold_invalid_result(
+        self,
+        attempt_id: UUID,
+        result: GmailHistoryResult,
+        *,
+        start_history_id: GmailHistoryId,
+    ) -> EmailSyncAttempt | None:
+        if (
+            result.state is GmailHistoryState.COMPLETE
+            and result.terminal_history_id is not None
+            and result.pages_read >= 1
+            and _covers_requested_range(self.scope, start_history_id, result)
+        ):
+            return None
+        status = (
+            EmailSyncStatus.RECONCILIATION_REQUIRED
+            if result.state is GmailHistoryState.RECONCILIATION_REQUIRED
+            else EmailSyncStatus.INCOMPLETE
+        )
+        failure_code = (
+            _failure_code(result)
+            if result.state is not GmailHistoryState.COMPLETE
+            or result.terminal_history_id is None
+            or result.pages_read < 1
+            else "gmail_history_range_invalid"
+        )
+        return await self.coordinator.hold(
+            attempt_id,
+            workspace_id=self.scope.workspace_id,
+            environment_id=self.scope.environment_id,
+            status=status,
+            failure_code=failure_code,
+        )
+
+    async def _prepare_effects(
+        self,
+        attempt_id: UUID,
+        result: GmailHistoryResult,
+    ) -> tuple[EmailSyncEffect, ...] | None:
+        try:
+            return tuple(
+                [
+                    self._validate_effect(
+                        change,
+                        await self.effect_factory.prepare(self.scope, change),
+                    )
+                    for change in result.changes
+                ]
+            )
+        except Exception:
+            await self.coordinator.hold(
+                attempt_id,
+                workspace_id=self.scope.workspace_id,
+                environment_id=self.scope.environment_id,
+                status=EmailSyncStatus.INCOMPLETE,
+                failure_code="gmail_effect_preparation_failed",
+            )
+            return None
 
     def _validate_effect(
         self,
@@ -166,8 +260,12 @@ class GmailIncrementalHistoryApplier:
             connection_id=self.scope.connection_id,
             mailbox_binding_id=self.scope.mailbox_binding_id,
             state_kind=change.kind.value,
-            provider_event_digest=hashlib.sha256(change.event_id.encode("utf-8")).hexdigest(),
-            subject_reference_digest=hashlib.sha256(change.message_id.encode("utf-8")).hexdigest(),
+            provider_event_digest=hashlib.sha256(
+                change.event_id.encode("utf-8")
+            ).hexdigest(),
+            subject_reference_digest=hashlib.sha256(
+                change.message_id.encode("utf-8")
+            ).hexdigest(),
             provider_generation=change.history_id,
             outbox_event_id=outbox_event_id,
         )
