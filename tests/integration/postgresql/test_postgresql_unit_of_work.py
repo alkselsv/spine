@@ -778,13 +778,30 @@ async def test_postgresql_email_artifact_replay_is_tenant_scoped_and_outbox_atom
         EmailArtifactCommand,
         EmailArtifactProjectionRequest,
     )
+    from spine.application.email_citations import (
+        EmailMessageCitationExcerptResolver,
+        build_email_message_citation_locator,
+    )
     from spine.application.persistence.context import EnvironmentScope, PersistenceOperation, PersistencePurpose
+    from spine.application.projection_locator import canonical_projection_locator_digest
     from spine.domain.artifacts.email_html import EmailHtmlSanitizerProfile
-    from spine.domain.artifacts.email_message import EmailMessageArtifact, email_message_artifact_digest
+    from spine.domain.artifacts.email_message import (
+        EmailMessageArtifact,
+        email_message_artifact_digest,
+        encode_email_message_locator,
+    )
     from spine.domain.artifacts.email_mime import MimeArtifact, MimeParseDisposition
+    from spine.domain.capabilities import Citation
+    from spine.domain.context_bundles import (
+        ContextBundleEvidenceReference,
+        ContextBundleLineageRef,
+        ContextBundleRef,
+        EvidenceLocator,
+    )
     from spine.infrastructure.persistence.email_artifacts import PostgreSQLEmailArtifactRepository
     from spine.ingestion.email_html import EmailHtmlSanitizer
     from spine.ingestion.email_mime import MimeParser, MimeParserProfile
+    from spine.memory.contracts import StableLocator
 
     raw = (
         b"From: synthetic@example.test\r\nSubject: synthetic\r\n"
@@ -929,6 +946,58 @@ async def test_postgresql_email_artifact_replay_is_tenant_scoped_and_outbox_atom
             environment_id=case.source.environment_id,
             artifact_id=first.artifact.artifact_id,
         ) == first.artifact
+        locator = build_email_message_citation_locator(
+            first.artifact,
+            part_path="1",
+            representation="plain_text",
+            start_codepoint=10,
+            end_codepoint=14,
+        )
+        locator_reference = encode_email_message_locator(locator)
+        locator_digest = canonical_projection_locator_digest(
+            locator_contract_version=locator.schema_version,
+            locator=StableLocator(kind="message", value=locator_reference),
+        )
+        evidence = ContextBundleEvidenceReference(
+            schema_version="context-evidence-reference:v2",
+            evidence_id="postgres-email-citation-858",
+            workspace_id=case.source.workspace_id,
+            environment_id=case.source.environment_id,
+            projection_snapshot_id=synthetic_uuid(85320),
+            activation_generation=1,
+            source_object_id=case.source.source_object_id,
+            source_revision_id=case.revision.revision_id,
+            original_sha256=first.artifact.raw_sha256,
+            revision_digest=case.revision.revision_digest,
+            processing_receipt_id=synthetic_uuid(85321),
+            projected_kind="chunk",
+            locator_contract_version=locator.schema_version,
+            locator=EvidenceLocator(kind="message", value=locator_reference),
+            locator_digest=locator_digest,
+            evidence_digest="e" * 64,
+        )
+        citation = Citation(
+            citation_id=synthetic_uuid(85322),
+            answer_id=synthetic_uuid(85323),
+            context_bundle=ContextBundleLineageRef(
+                bundle=ContextBundleRef(
+                    bundle_id=synthetic_uuid(85324),
+                    bundle_version=1,
+                    bundle_digest="f" * 64,
+                ),
+                workspace_id=case.source.workspace_id,
+                environment_id=case.source.environment_id,
+                run_id=synthetic_uuid(85325),
+                attempt_id=synthetic_uuid(85326),
+            ),
+            evidence_reference=evidence,
+        )
+        resolved = await EmailMessageCitationExcerptResolver(repository).resolve(
+            citation,
+            historical=False,
+        )
+        assert resolved is not None
+        assert resolved.excerpt == "body"
         assert await repository.get(
             workspace_id=synthetic_uuid(85340),
             environment_id=synthetic_uuid(85341),
