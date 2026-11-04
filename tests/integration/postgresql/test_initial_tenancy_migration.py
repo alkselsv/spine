@@ -1632,6 +1632,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "email_sync_state_observations",
         "email_message_artifacts",
         "email_attachment_artifacts",
+        "email_attachment_processing_receipts",
         "source_canonical_tables",
         "source_canonical_unicode",
         "source_canonical_compositions",
@@ -2176,6 +2177,17 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "ck_email_attachment_artifacts_ck_email_attachment_artif_d08b",
         "ck_email_attachment_artifacts_ck_email_attachment_artif_f0c8",
         "ck_email_attachment_artifacts_ck_email_attachment_artif_9ffb",
+        "pk_email_attachment_processing_receipts",
+        "uq_email_attachment_processing_receipts_artifact_profile",
+        "fk_email_attachment_processing_receipts_attachment",
+        "fk_email_attachment_processing_receipts_child_revision",
+        "fk_email_attachment_processing_receipts_child_processing",
+        "fk_email_attachment_processing_receipts_parsed_artifact",
+        "ck_email_attachment_processing_receipts_ck_email_attach_79b3",
+        "ck_email_attachment_processing_receipts_ck_email_attach_bd0a",
+        "ck_email_attachment_processing_receipts_ck_email_attach_381d",
+        "ck_email_attachment_processing_receipts_ck_email_attach_057b",
+        "ck_email_attachment_processing_receipts_ck_email_attach_4908",
         "uq_email_sync_attempts_key",
         "fk_email_sync_attempts_environment",
         "fk_email_sync_pages_attempt",
@@ -2519,6 +2531,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "uq_email_message_artifacts_command",
         "pk_email_attachment_artifacts",
         "uq_email_attachment_artifacts_part_profile",
+        "pk_email_attachment_processing_receipts",
+        "uq_email_attachment_processing_receipts_artifact_profile",
         "uq_email_sync_attempts_key",
         "ix_email_sync_attempts_active",
         "uq_google_sheets_sync_runs_idempotency",
@@ -2759,6 +2773,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "email_sync_state_observations": (True, True),
         "email_message_artifacts": (True, True),
         "email_attachment_artifacts": (True, True),
+        "email_attachment_processing_receipts": (True, True),
         "work_items": (True, True),
         "workflow_runs": (True, True),
         "workflow_command_receipts": (True, True),
@@ -2962,6 +2977,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "email_sync_state_observations": (True, True, False, False),
         "email_message_artifacts": (True, True, False, False),
         "email_attachment_artifacts": (True, True, False, False),
+        "email_attachment_processing_receipts": (True, True, False, False),
         "idempotency_receipts": (True, True, False, False),
         "initial_workspace_bootstrap": (False, False, False, False),
         "outbox_intents": (False, True, False, False),
@@ -3535,6 +3551,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "email_sync_state_observations",
         "email_message_artifacts",
         "email_attachment_artifacts",
+        "email_attachment_processing_receipts",
     }
     assert constraints == {
         "alembic_version_pkc",
@@ -3573,6 +3590,17 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "ck_email_attachment_artifacts_ck_email_attachment_artif_d08b",
         "ck_email_attachment_artifacts_ck_email_attachment_artif_f0c8",
         "ck_email_attachment_artifacts_ck_email_attachment_artif_9ffb",
+        "pk_email_attachment_processing_receipts",
+        "uq_email_attachment_processing_receipts_artifact_profile",
+        "fk_email_attachment_processing_receipts_attachment",
+        "fk_email_attachment_processing_receipts_child_revision",
+        "fk_email_attachment_processing_receipts_child_processing",
+        "fk_email_attachment_processing_receipts_parsed_artifact",
+        "ck_email_attachment_processing_receipts_ck_email_attach_79b3",
+        "ck_email_attachment_processing_receipts_ck_email_attach_bd0a",
+        "ck_email_attachment_processing_receipts_ck_email_attach_381d",
+        "ck_email_attachment_processing_receipts_ck_email_attach_057b",
+        "ck_email_attachment_processing_receipts_ck_email_attach_4908",
         "uq_email_sync_attempts_key",
         "fk_email_sync_attempts_environment",
         "fk_email_sync_pages_attempt",
@@ -3779,6 +3807,21 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         ("email_attachment_artifacts", "artifact_digest"),
         ("email_attachment_artifacts", "record"),
         ("email_attachment_artifacts", "created_at"),
+        ("email_attachment_processing_receipts", "workspace_id"),
+        ("email_attachment_processing_receipts", "environment_id"),
+        ("email_attachment_processing_receipts", "processing_receipt_id"),
+        ("email_attachment_processing_receipts", "attachment_artifact_id"),
+        ("email_attachment_processing_receipts", "processor_profile"),
+        ("email_attachment_processing_receipts", "authority_digest"),
+        ("email_attachment_processing_receipts", "disposition"),
+        ("email_attachment_processing_receipts", "child_source_object_id"),
+        ("email_attachment_processing_receipts", "child_source_revision_id"),
+        ("email_attachment_processing_receipts", "child_processing_receipt_id"),
+        ("email_attachment_processing_receipts", "parsed_artifact_id"),
+        ("email_attachment_processing_receipts", "parsed_artifact_digest"),
+        ("email_attachment_processing_receipts", "receipt_digest"),
+        ("email_attachment_processing_receipts", "record"),
+        ("email_attachment_processing_receipts", "completed_at"),
     } | AUTHORIZATION_DIRECTORY_COLUMNS | AUDIT_COLUMNS | DELIVERY_COLUMNS | ADMISSION_COLUMNS
     assert columns[("workspaces", "id")] == ("uuid", "NO", None)
     assert columns[("environments", "id")] == ("uuid", "NO", None)
@@ -3837,6 +3880,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "uq_email_message_artifacts_command",
         "pk_email_attachment_artifacts",
         "uq_email_attachment_artifacts_part_profile",
+        "pk_email_attachment_processing_receipts",
+        "uq_email_attachment_processing_receipts_artifact_profile",
         "uq_email_sync_attempts_key",
         "ix_email_sync_attempts_active",
         "pk_context_profiles",
@@ -4312,7 +4357,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'qa_agent_artifacts', 'qa_agent_results', 'email_sync_attempts', 'email_sync_pages', "
                         "'email_sync_effect_receipts', 'email_sync_state_observations', 'email_message_artifacts', "
                         "'email_attachment_artifacts', 'private_asr_artifacts', 'private_asr_source_fences', "
-                        "'private_asr_report_sources', 'private_asr_aggregate_exports')"
+                        "'private_asr_report_sources', 'private_asr_aggregate_exports', "
+                        "'email_attachment_processing_receipts')"
                     )
                 )
             )
@@ -4377,6 +4423,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "email_sync_state_observations": (True, True),
         "email_message_artifacts": (True, True),
         "email_attachment_artifacts": (True, True),
+        "email_attachment_processing_receipts": (True, True),
         "idempotency_receipts": (True, True),
         "initial_workspace_bootstrap": (True, True),
         "outbox_intents": (True, True),
@@ -5930,6 +5977,7 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20270105_104_private_asr_manifest_lineage.py",
         "20270106_105_private_asr_retention_disposition.py",
         "20270107_106_private_asr_aggregate_tombstone.py",
+        "20270108_107_email_attachment_processing.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "transactional_failure_probe.py").write_text(
