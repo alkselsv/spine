@@ -17,6 +17,10 @@ from spine.application.outbox import OutboxConsumerSuccess
 from spine.application.persistence.outbox import OutboxIntent
 from spine.domain.common import DefinitionModel
 from spine.domain.connections.email_scope import EmailOperation, MailboxReadScope
+from spine.domain.sources.email_lifecycle import (
+    EmailLifecycleCoverage,
+    EmailLifecycleReceipt,
+)
 
 EMAIL_SYNC_STATE_OBSERVED_EVENT_TYPE = "email.sync.state_observed"
 EMAIL_SYNC_STATE_OBSERVED_SCHEMA_VERSION = 1
@@ -48,6 +52,7 @@ class EmailSyncPageKind(str, Enum):
     FOLDER_GENERATION = "folder_generation"
     UID_PAGE = "uid_page"
     FOLDER_COMPLETE = "folder_complete"
+    LIFECYCLE_RECONCILIATION = "lifecycle_reconciliation"
     AGGREGATE_CHECKPOINT = "aggregate_checkpoint"
 
 
@@ -187,12 +192,19 @@ class EmailSyncPage(DefinitionModel):
     evidence_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     evidence_cursor: str | None = Field(default=None, max_length=4096, repr=False)
     effects: tuple[EmailSyncEffect, ...]
+    lifecycle_receipts: tuple[EmailLifecycleReceipt, ...] = ()
 
     @model_validator(mode="after")
     def validate_effects(self) -> EmailSyncPage:
         keys = tuple(effect.effect_key for effect in self.effects)
         if len(keys) != len(set(keys)):
             raise ValueError("page effect keys must be unique")
+        _validate_lifecycle_receipts(
+            self.page_kind,
+            self.workspace_id,
+            self.environment_id,
+            self.lifecycle_receipts,
+        )
         if not self.publish_checkpoint and (
             self.next_checkpoint is not None or self.terminal
         ):
@@ -225,7 +237,18 @@ class EmailSyncPageState(DefinitionModel):
     evidence_cursor: str | None = Field(default=None, max_length=4096, repr=False)
     effects: tuple[EmailSyncEffect, ...]
     effect_receipts: tuple[EmailSyncEffectReceipt, ...] = ()
+    lifecycle_receipts: tuple[EmailLifecycleReceipt, ...] = ()
     committed: bool = False
+
+    @model_validator(mode="after")
+    def validate_lifecycle_receipts(self) -> EmailSyncPageState:
+        _validate_lifecycle_receipts(
+            self.page_kind,
+            self.workspace_id,
+            self.environment_id,
+            self.lifecycle_receipts,
+        )
+        return self
 
 
 class EmailSyncAttempt(DefinitionModel):
@@ -263,6 +286,10 @@ class EmailSyncRepository(Protocol):
     async def fence_for_reconciliation(
         self, attempt: EmailSyncAttempt, *, failure_code: str
     ) -> EmailSyncAttempt: ...
+
+    async def resolve_lifecycle_receipt(
+        self, receipt_id: UUID, workspace_id: UUID, environment_id: UUID
+    ) -> EmailLifecycleReceipt | None: ...
 
 
 class EmailSyncConcurrentUpdateError(RuntimeError):
@@ -370,6 +397,23 @@ class InMemoryEmailSyncRepository:
         )
         self._attempts[attempt.attempt_id] = fenced
         return fenced
+
+    async def resolve_lifecycle_receipt(
+        self, receipt_id: UUID, workspace_id: UUID, environment_id: UUID
+    ) -> EmailLifecycleReceipt | None:
+        for attempt in self._attempts.values():
+            if (
+                attempt.admission.workspace_id != workspace_id
+                or attempt.admission.environment_id != environment_id
+            ):
+                continue
+            for page in attempt.pages:
+                if not page.committed:
+                    continue
+                for receipt in page.lifecycle_receipts:
+                    if receipt.receipt_id == receipt_id:
+                        return receipt
+        return None
 
 
 class EmailSyncCoordinator:
@@ -525,8 +569,23 @@ class EmailSyncCoordinator:
         }:
             return attempt
 
+        records_unusable_coverage = self._records_unusable_coverage(page)
         admission_state = await self._check_admission(attempt)
-        if admission_state is not EmailSyncAdmissionState.ALLOWED:
+        if not self._lifecycle_coverage_matches_admission(page, admission_state):
+            if admission_state is not EmailSyncAdmissionState.ALLOWED:
+                return await self._stop_for_admission(attempt, admission_state)
+            return await self._save(
+                attempt.model_copy(
+                    update={
+                        "status": EmailSyncStatus.RECONCILIATION_REQUIRED,
+                        "failure_code": "lifecycle_admission_conflict",
+                    }
+                )
+            )
+        if (
+            admission_state is not EmailSyncAdmissionState.ALLOWED
+            and not records_unusable_coverage
+        ):
             return await self._stop_for_admission(attempt, admission_state)
 
         if known is None and page.requested_checkpoint != attempt.committed_checkpoint:
@@ -580,6 +639,7 @@ class EmailSyncCoordinator:
                 evidence_digest=page.evidence_digest,
                 evidence_cursor=page.evidence_cursor,
                 effects=page.effects,
+                lifecycle_receipts=page.lifecycle_receipts,
             )
             attempt = await self._save(
                 attempt.model_copy(
@@ -634,7 +694,21 @@ class EmailSyncCoordinator:
         # Recheck at the publication boundary. A generation change after effects
         # were accepted must hold the cursor for reconciliation.
         admission_state = await self._check_admission(attempt)
-        if admission_state is not EmailSyncAdmissionState.ALLOWED:
+        if not self._lifecycle_coverage_matches_admission(page, admission_state):
+            if admission_state is not EmailSyncAdmissionState.ALLOWED:
+                return await self._stop_for_admission(attempt, admission_state)
+            return await self._save(
+                attempt.model_copy(
+                    update={
+                        "status": EmailSyncStatus.RECONCILIATION_REQUIRED,
+                        "failure_code": "lifecycle_admission_conflict",
+                    }
+                )
+            )
+        if (
+            admission_state is not EmailSyncAdmissionState.ALLOWED
+            and not records_unusable_coverage
+        ):
             return await self._stop_for_admission(attempt, admission_state)
 
         known = known.model_copy(
@@ -690,6 +764,7 @@ class EmailSyncCoordinator:
                 evidence_digest=pending.evidence_digest,
                 evidence_cursor=pending.evidence_cursor,
                 effects=pending.effects,
+                lifecycle_receipts=pending.lifecycle_receipts,
             ),
             workspace_id=workspace_id,
             environment_id=environment_id,
@@ -824,6 +899,31 @@ class EmailSyncCoordinator:
         """Load one tenant-scoped durable attempt for a provider coordinator."""
 
         return await self._require(attempt_id, workspace_id, environment_id)
+
+    async def resolve_lifecycle_receipt(
+        self,
+        receipt_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+    ) -> EmailLifecycleReceipt | None:
+        """Resolve one durable tenant-scoped predecessor receipt."""
+
+        return await self._repository.resolve_lifecycle_receipt(
+            receipt_id, workspace_id, environment_id
+        )
+
+    async def admission_state(
+        self,
+        attempt_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+    ) -> EmailSyncAdmissionState:
+        """Read the current exact-binding admission state through the safe port."""
+
+        attempt = await self._require(attempt_id, workspace_id, environment_id)
+        return await self._check_admission(attempt)
 
     async def hold(
         self,
@@ -995,6 +1095,37 @@ class EmailSyncCoordinator:
         return hashlib.sha256(encoded).hexdigest()
 
     @staticmethod
+    def _records_unusable_coverage(page: EmailSyncPage) -> bool:
+        return (
+            page.page_kind is EmailSyncPageKind.LIFECYCLE_RECONCILIATION
+            and bool(page.lifecycle_receipts)
+            and not page.effects
+            and not page.publish_checkpoint
+            and all(
+                receipt.coverage is not EmailLifecycleCoverage.COMPLETE_AUTHORIZED
+                for receipt in page.lifecycle_receipts
+            )
+        )
+
+    @staticmethod
+    def _lifecycle_coverage_matches_admission(
+        page: EmailSyncPage,
+        state: EmailSyncAdmissionState,
+    ) -> bool:
+        if (
+            page.page_kind is not EmailSyncPageKind.LIFECYCLE_RECONCILIATION
+            or not page.lifecycle_receipts
+        ):
+            return True
+        coverages = {receipt.coverage for receipt in page.lifecycle_receipts}
+        if coverages == {EmailLifecycleCoverage.PERMISSION_LOSS}:
+            return state in {
+                EmailSyncAdmissionState.REVOKED,
+                EmailSyncAdmissionState.DENIED,
+            }
+        return state is EmailSyncAdmissionState.ALLOWED
+
+    @staticmethod
     def _receipt_for(
         page: EmailSyncPageState, effect_key: str
     ) -> EmailSyncEffectReceipt | None:
@@ -1013,6 +1144,25 @@ class EmailSyncCoordinator:
             if current.effect_key != receipt.effect_key
         ) + (receipt,)
         return tuple(sorted(receipts, key=lambda current: current.effect_key))
+
+
+def _validate_lifecycle_receipts(
+    page_kind: EmailSyncPageKind,
+    workspace_id: UUID,
+    environment_id: UUID,
+    receipts: tuple[EmailLifecycleReceipt, ...],
+) -> None:
+    receipt_ids = tuple(receipt.receipt_id for receipt in receipts)
+    if len(receipt_ids) != len(set(receipt_ids)):
+        raise ValueError("page lifecycle receipt IDs must be unique")
+    if receipts and page_kind is not EmailSyncPageKind.LIFECYCLE_RECONCILIATION:
+        raise ValueError("lifecycle receipts require a reconciliation page")
+    if any(
+        receipt.workspace_id != workspace_id
+        or receipt.environment_id != environment_id
+        for receipt in receipts
+    ):
+        raise ValueError("lifecycle receipt scope must match its page")
 
 
 __all__ = [
