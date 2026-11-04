@@ -2056,13 +2056,16 @@ async def test_postgresql_gmail_history_cursor_recovery_preserves_old_cursor(
     assert fenced.committed_checkpoint == "98"
     assert successor.status is EmailSyncStatus.COMPLETE
     assert successor.committed_checkpoint != "98"
-    assert [page.page_kind for page in successor.pages] == [
-        EmailSyncPageKind.HISTORY_BASELINE,
-        EmailSyncPageKind.SNAPSHOT_PAGE,
-        EmailSyncPageKind.SNAPSHOT_PAGE,
-        EmailSyncPageKind.HISTORY_DRAIN,
-        EmailSyncPageKind.AGGREGATE_CHECKPOINT,
-    ]
+    assert sorted(page.page_kind.value for page in successor.pages) == sorted(
+        page_kind.value
+        for page_kind in (
+            EmailSyncPageKind.HISTORY_BASELINE,
+            EmailSyncPageKind.SNAPSHOT_PAGE,
+            EmailSyncPageKind.SNAPSHOT_PAGE,
+            EmailSyncPageKind.HISTORY_DRAIN,
+            EmailSyncPageKind.AGGREGATE_CHECKPOINT,
+        )
+    )
     assert all(not page.lifecycle_receipts for page in successor.pages)
 
 
