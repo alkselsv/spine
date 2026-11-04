@@ -1832,6 +1832,32 @@ async def test_httpx_transport_classifies_failures_without_raw_details(
     assert "credential-sentinel" not in str(captured.value)
 
 
+@pytest.mark.asyncio
+async def test_httpx_transport_classifies_stream_failure_without_raw_details() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        raise httpx.StreamError("raw-stream-error provider-id-sentinel")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(GoogleProviderReadError) as captured:
+            await HttpxGoogleApiTransport(client).request(
+                GoogleApiRequest(
+                    method="GET",
+                    url="https://google.test/files/provider-id-sentinel",
+                    headers={"Authorization": "Bearer credential-sentinel"},
+                    query={},
+                    form=None,
+                    timeout_seconds=3.0,
+                )
+            )
+
+    assert captured.value.failure_class == "transport"
+    assert captured.value.retry_disposition == "stopped_before_retry"
+    assert "raw-stream-error" not in str(captured.value)
+    assert "provider-id-sentinel" not in str(captured.value)
+    assert "credential-sentinel" not in str(captured.value)
+
+
 def test_google_endpoints_reject_non_https_provider_origins() -> None:
     with pytest.raises(ValueError, match="HTTPS"):
         GoogleApiEndpoints(
