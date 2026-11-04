@@ -2298,7 +2298,9 @@ async def test_postgresql_private_asr_cancellation_before_commit_rolls_back(
 async def test_postgresql_private_asr_cancellation_after_authorization_before_audit_rolls_back(
     private_asr_database: _Database,
 ) -> None:
-    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799065)
+    # Use a separate deterministic UUID range from the cancellation-stage cases;
+    # this module shares one PostgreSQL outbox table across its tests.
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=899300)
 
     async def cancel_authorized_publication() -> None:
         asyncio.current_task().cancel()
