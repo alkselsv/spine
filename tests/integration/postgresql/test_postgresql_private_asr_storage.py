@@ -4102,13 +4102,13 @@ async def test_postgresql_private_asr_composite_aggregate_deletion_re_resolves_e
     publication_authority = _SyntheticAggregatePublicationAuthority()
     prepared = await _prepare_synthetic_report_case(
         private_asr_database,
-        seed=799720,
+        seed=889799460,
         aggregate_authority=publication_authority,
         deletion_authority=deletion_authority,
         clock=clock,
     )
     second_case, _, second_applicability = await _add_synthetic_report_source(
-        prepared, seed=799721,
+        prepared, seed=889799480,
     )
     prepared.bindings = tuple(reversed(prepared.bindings))
     prepared.manifest_lineage.bindings = prepared.bindings
