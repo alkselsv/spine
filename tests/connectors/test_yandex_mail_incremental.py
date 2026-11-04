@@ -9,6 +9,7 @@ import pytest
 from spine.application.email_sync import (
     EmailSyncAdmission,
     EmailSyncAdmissionState,
+    EmailSyncAttempt,
     EmailSyncCoordinator,
     EmailSyncEffect,
     EmailSyncEffectReceipt,
@@ -16,6 +17,11 @@ from spine.application.email_sync import (
     InMemoryEmailSyncRepository,
 )
 from spine.application.persistence.context import TrustedPersistenceContext
+from spine.application.yandex_mail_uidvalidity_reset import (
+    YandexMailUidValidityResetCommand,
+    YandexMailUidValidityResetReceipt,
+    YandexMailUidValidityResetState,
+)
 from spine.connectors.yandex_mail_generation import (
     YandexMailFolderGenerationCode,
     YandexMailFolderGenerationObservation,
@@ -62,11 +68,7 @@ def _scope(**changes: object) -> MailboxReadScope:
         "configuration_generation": 9,
         "scope_generation": 10,
         "allowed_folder_references": (FOLDER_ID,),
-        "allowed_operations": (
-            EmailProviderOperation.SYNCHRONIZE,
-            EmailProviderOperation.OBSERVE_FOLDER_GENERATION,
-            EmailProviderOperation.ENUMERATE_FOLDER_UIDS,
-        ),
+        "allowed_operations": tuple(EmailProviderOperation),
     }
     values.update(changes)
     return MailboxReadScope(**values)
@@ -211,6 +213,31 @@ class _Baselines:
         return self.verified
 
 
+class _Resets:
+    def __init__(self) -> None:
+        self.calls: list[YandexMailUidValidityResetCommand] = []
+        self.fail = False
+        self.state = YandexMailUidValidityResetState.RECONCILING
+
+    async def reconcile(
+        self, command: YandexMailUidValidityResetCommand
+    ) -> YandexMailUidValidityResetReceipt:
+        self.calls.append(command)
+        if self.fail:
+            raise RuntimeError("private reset detail")
+        return YandexMailUidValidityResetReceipt(
+            reset_id=uuid5(NAMESPACE_URL, command.model_dump_json()),
+            stale_attempt_id=command.stale_attempt_id,
+            reconciliation_attempt_id=uuid5(
+                NAMESPACE_URL, f"successor:{command.model_dump_json()}"
+            ),
+            folder_reference=command.folder_reference,
+            stale_uid_validity=command.stale_uid_validity,
+            observed_uid_validity=command.observed_uid_validity,
+            state=self.state,
+        )
+
+
 class _FailAfterDurableReceiptRepository(InMemoryEmailSyncRepository):
     def __init__(self) -> None:
         super().__init__()
@@ -227,6 +254,30 @@ class _FailAfterDurableReceiptRepository(InMemoryEmailSyncRepository):
         return await super().save(attempt)
 
 
+class _StaleCursorBeforeFenceRepository(InMemoryEmailSyncRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.race_pending = True
+
+    async def fence_for_reconciliation(
+        self, attempt: EmailSyncAttempt, *, failure_code: str
+    ) -> EmailSyncAttempt:
+        if self.race_pending:
+            self.race_pending = False
+            await super().save(
+                attempt.model_copy(
+                    update={
+                        "status": EmailSyncStatus.RUNNING,
+                        "committed_checkpoint": "stale-cursor-must-not-survive",
+                    }
+                )
+            )
+        return await super().fence_for_reconciliation(
+            attempt,
+            failure_code=failure_code,
+        )
+
+
 def _composition(
     reader: _Reader,
     *,
@@ -234,11 +285,13 @@ def _composition(
     effects: _Effects | None = None,
     admission: _Admission | None = None,
     baselines: _Baselines | None = None,
+    resets: _Resets | None = None,
 ):
     repository = repository or InMemoryEmailSyncRepository()
     effects = effects or _Effects()
     admission = admission or _Admission()
     baselines = baselines or _Baselines()
+    resets = resets or _Resets()
     coordinator = EmailSyncCoordinator(
         repository=repository,
         admission=admission,
@@ -250,6 +303,7 @@ def _composition(
         coordinator=coordinator,
         effect_factory=effects,
         baseline_verifier=baselines,
+        uidvalidity_reset=resets,
     )
     return poller, coordinator, repository, effects, admission, baselines
 
@@ -559,7 +613,13 @@ async def test_uidvalidity_and_stale_admission_fence_successor_publication() -> 
             code=YandexMailFolderGenerationCode.UIDVALIDITY_CHANGED,
         )
     )
-    poller, coordinator, _, effects, _, _ = _composition(reader)
+    resets = _Resets()
+    repository = _StaleCursorBeforeFenceRepository()
+    poller, coordinator, _, effects, _, _ = _composition(
+        reader,
+        repository=repository,
+        resets=resets,
+    )
     attempt = await _attempt(coordinator, scope)
 
     changed = await poller.poll(
@@ -575,6 +635,9 @@ async def test_uidvalidity_and_stale_admission_fence_successor_publication() -> 
     assert changed.state is YandexMailIncrementalPollState.RECONCILIATION_REQUIRED
     assert changed.attempt.committed_checkpoint is None
     assert effects.applied == []
+    assert changed.reset_receipt is not None
+    assert changed.reset_receipt.observed_uid_validity == 102
+    assert len(resets.calls) == 1
 
     reader = _Reader(
         _generation(uid_next=11),
@@ -598,7 +661,130 @@ async def test_uidvalidity_and_stale_admission_fence_successor_publication() -> 
 
     assert stale.state is YandexMailIncrementalPollState.RECONCILIATION_REQUIRED
     assert stale.attempt.committed_checkpoint is None
-    assert len(effects.applied) == 1
+    assert effects.applied == []
+
+
+@pytest.mark.asyncio
+async def test_uidvalidity_reset_during_uid_page_starts_reconciliation() -> None:
+    scope = _scope()
+
+    def reset_page(request: YandexMailUidEnumerationPageRequest):
+        return _uid_page(request, uids=(), complete=False).model_copy(
+            update={
+                "code": YandexMailUidPageCode.UIDVALIDITY_CHANGED,
+                "uid_validity": 102,
+            }
+        )
+
+    reader = _Reader(_generation(uid_next=11), reset_page)
+    resets = _Resets()
+    poller, coordinator, _, effects, _, _ = _composition(reader, resets=resets)
+    attempt = await _attempt(coordinator, scope)
+
+    result = await poller.poll(
+        attempt.attempt_id,
+        scope=scope,
+        folder_reference=FOLDER_ID,
+        context=_context(),
+        max_items=10,
+        max_response_bytes=4096,
+        baseline=_baseline(scope),
+    )
+
+    assert result.state is YandexMailIncrementalPollState.RECONCILIATION_REQUIRED
+    assert result.attempt.committed_checkpoint is None
+    assert result.reset_receipt is not None
+    assert len(resets.calls) == 1
+    assert effects.described == []
+    assert effects.applied == []
+
+
+@pytest.mark.asyncio
+async def test_uidvalidity_reset_failure_is_typed_and_retried_without_disclosure() -> None:
+    scope = _scope()
+    reset_generation = _generation(
+        uid_validity=102,
+        complete=False,
+        code=YandexMailFolderGenerationCode.UIDVALIDITY_CHANGED,
+    )
+    reader = _Reader(reset_generation, reset_generation)
+    resets = _Resets()
+    resets.fail = True
+    poller, coordinator, _, effects, _, _ = _composition(reader, resets=resets)
+    attempt = await _attempt(coordinator, scope)
+
+    failed = await poller.poll(
+        attempt.attempt_id,
+        scope=scope,
+        folder_reference=FOLDER_ID,
+        context=_context(),
+        max_items=10,
+        max_response_bytes=4096,
+        baseline=_baseline(scope),
+    )
+    resets.fail = False
+    recovered = await poller.poll(
+        attempt.attempt_id,
+        scope=scope,
+        folder_reference=FOLDER_ID,
+        context=_context(),
+        max_items=10,
+        max_response_bytes=4096,
+        baseline=_baseline(scope),
+    )
+
+    assert failed.state is YandexMailIncrementalPollState.RECONCILIATION_REQUIRED
+    assert failed.reset_state is YandexMailUidValidityResetState.INCOMPLETE
+    assert failed.attempt.failure_code == "uidvalidity_reset_incomplete"
+    assert failed.reset_receipt is None
+    assert "private reset detail" not in repr(failed)
+    assert recovered.reset_state is YandexMailUidValidityResetState.RECONCILING
+    assert recovered.reset_receipt is not None
+    assert recovered.attempt.failure_code == "uidvalidity_reset_started"
+    assert len(resets.calls) == 2
+    assert effects.applied == []
+
+
+@pytest.mark.asyncio
+async def test_incomplete_uidvalidity_reset_receipt_is_retried() -> None:
+    scope = _scope()
+    reset_generation = _generation(
+        uid_validity=102,
+        complete=False,
+        code=YandexMailFolderGenerationCode.UIDVALIDITY_CHANGED,
+    )
+    reader = _Reader(reset_generation, reset_generation)
+    resets = _Resets()
+    resets.state = YandexMailUidValidityResetState.INCOMPLETE
+    poller, coordinator, _, effects, _, _ = _composition(reader, resets=resets)
+    attempt = await _attempt(coordinator, scope)
+
+    incomplete = await poller.poll(
+        attempt.attempt_id,
+        scope=scope,
+        folder_reference=FOLDER_ID,
+        context=_context(),
+        max_items=10,
+        max_response_bytes=4096,
+        baseline=_baseline(scope),
+    )
+    resets.state = YandexMailUidValidityResetState.RECONCILING
+    replay = await poller.poll(
+        attempt.attempt_id,
+        scope=scope,
+        folder_reference=FOLDER_ID,
+        context=_context(),
+        max_items=10,
+        max_response_bytes=4096,
+        baseline=_baseline(scope),
+    )
+
+    assert incomplete.reset_state is YandexMailUidValidityResetState.INCOMPLETE
+    assert incomplete.attempt.failure_code == "uidvalidity_reset_incomplete"
+    assert replay.reset_state is YandexMailUidValidityResetState.RECONCILING
+    assert replay.attempt.failure_code == "uidvalidity_reset_started"
+    assert len(resets.calls) == 2
+    assert effects.applied == []
 
 
 @pytest.mark.asyncio

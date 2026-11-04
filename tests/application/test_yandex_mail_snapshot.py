@@ -432,7 +432,7 @@ async def test_stale_scope_generation_fences_aggregate_publication() -> None:
     assert result.attempt.status is EmailSyncStatus.RECONCILIATION_REQUIRED
     assert result.attempt.committed_checkpoint is None
     assert not any(page.terminal and page.committed for page in result.attempt.pages)
-    assert len(messages.receipts) == 1
+    assert messages.receipts == {}
 
 
 @pytest.mark.asyncio

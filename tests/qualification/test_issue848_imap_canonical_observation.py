@@ -236,6 +236,42 @@ async def test_copied_message_with_same_message_id_and_digest_remains_distinct()
     assert harness.projection_intent_count == 2
 
 
+@pytest.mark.asyncio
+async def test_uidvalidity_reset_cannot_merge_reused_uid_by_message_id_or_digest() -> None:
+    scope = _scope()
+    harness = await build_canonical_ingestion_harness()
+
+    async def ingest_generation(uid_validity: int):
+        reader = YandexMailCanonicalObservationReader(
+            admission=_AdmittedRawMessage(
+                _fetch_result(scope, uid_validity=uid_validity, uid=42)
+            ),
+            scope=scope,
+            folder_reference=FOLDER_ID,
+            uid_validity=uid_validity,
+            uid=42,
+            max_message_bytes=4096,
+        )
+        orchestrator = replace(
+            harness.orchestrator,
+            observation_reader=reader,
+            read_operation=PersistenceOperation("mailbox.read_raw_message"),
+        )
+        return await orchestrator.ingest(
+            _command(scope, identity=f"reset-{uid_validity}", uid=42)
+        )
+
+    stale = await ingest_generation(101)
+    successor = await ingest_generation(102)
+
+    assert stale.revision.original_sha256 == successor.revision.original_sha256
+    assert stale.source.source_object_id != successor.source.source_object_id
+    assert stale.source.external_object_id != successor.source.external_object_id
+    assert stale.source.external_generation == "imap-uidvalidity-v1:101"
+    assert successor.source.external_generation == "imap-uidvalidity-v1:102"
+    assert harness.projection_intent_count == 2
+
+
 def test_same_imap_provider_key_is_isolated_between_valid_workspaces() -> None:
     first_scope = _scope()
     second_scope = _scope(workspace_id=stable_id("issue848-second-workspace"))
