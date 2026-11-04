@@ -107,6 +107,19 @@ The lock order is:
 5. Exact-source current retention applicability pointer.
 6. Current AccessPolicy pointer.
 
+Retention deletion follows this order for every source in the artifact's exact
+identity-keyed lineage before it locks any artifact row. It re-resolves the
+current applicability, approved terms, exceptions and holds, then checks source
+lifecycle and the current AccessPolicy. The report artifact is locked after all
+source locks; aggregate expiry locks its report artifact before the aggregate
+row, matching aggregate publication's report-first order. Under those locks the
+adapter rechecks artifact state and immutable source links, then requests one
+v2 authorization over the complete lineage, per-source bindings and state
+digest. The payload column is not selected. Audit, tombstone and payload
+visibility removal commit in the same restricted PostgreSQL UoW. Authorization
+expiry is checked immediately before commit. Production wiring remains disabled
+until the external revocation fence in #813 is available.
+
 Canonical retention updates use row lock and generation compare-and-swap.
 The PostgreSQL integration test exercises report publication against source
 lifecycle withdrawal and retention applicability replacement using barriers;
