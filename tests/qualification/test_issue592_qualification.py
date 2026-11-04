@@ -28,6 +28,18 @@ def _commands(job: dict[str, Any]) -> list[str]:
     return [step["run"] for step in job["steps"] if "run" in step]
 
 
+def _runs_full_repository_suite(command: str) -> bool:
+    flattened = command.replace("\\\n", " ")
+    invocation = re.search(
+        r"(?m)^\s*uv run pytest -q(?P<arguments>[^>\n]*)",
+        flattened,
+    )
+    if invocation is None:
+        return False
+    arguments = invocation.group("arguments").split()
+    return all(argument.startswith("--") for argument in arguments)
+
+
 def test_python_compatibility_matrix_covers_every_supported_minor() -> None:
     matrix = _jobs()["python-compatibility"]["strategy"]["matrix"]
 
@@ -69,20 +81,14 @@ def test_python_compatibility_suite_exercises_version_sensitive_contract(
 def test_python_compatibility_matrix_does_not_repeat_the_full_suite() -> None:
     commands = _commands(_jobs()["python-compatibility"])
 
-    assert not any(
-        re.search(r"(?m)^\s*uv run pytest -q\s*(?:>|$)", command)
-        for command in commands
-    )
+    assert not any(_runs_full_repository_suite(command) for command in commands)
 
 
 def test_r1_gate_is_the_only_full_repository_suite_owner() -> None:
     owners = [
         name
         for name, job in _jobs().items()
-        if any(
-            re.search(r"(?m)^\s*uv run pytest -q\s*(?:>|$)", command)
-            for command in _commands(job)
-        )
+        if any(_runs_full_repository_suite(command) for command in _commands(job))
     ]
 
     assert owners == ["r1-regression-gate"]

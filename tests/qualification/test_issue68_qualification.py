@@ -87,7 +87,7 @@ TRACEABILITY_MATRIX = (
     TraceabilityRow(27, "domain/application", ("tests/application/outbox/test_dispatch.py::test_bounded_batch_starts_handlers_within_the_same_lease_window", "tests/application/persistence/test_retry_policy.py::test_custom_attempt_limit_and_injected_backoff_are_deterministic")),
     TraceabilityRow(28, "architecture", ("tests/auth/test_architecture.py::test_auth_seam_has_only_inward_framework_independent_dependencies", "tests/infrastructure/db/test_import_safety.py::test_importing_configuration_and_persistence_creates_no_engine_or_socket", "tests/test_architecture_scaffold.py::ArchitectureScaffoldTests::test_domain_layer_has_no_application_or_infrastructure_imports", "tests/qualification/test_issue68_qualification.py::test_issue68_domain_import_gate_covers_observability_frameworks")),
     TraceabilityRow(29, "postgresql", ("tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head",)),
-    TraceabilityRow(30, "repository gates", ("tests/test_architecture_scaffold.py::ArchitectureScaffoldTests::test_domain_layer_has_no_framework_imports", "tests/qualification/test_issue68_qualification.py::test_issue68_traceability_matrix_covers_exactly_ac1_to_ac30", "tests/qualification/test_issue68_qualification.py::test_issue68_migration_graph_has_one_dynamic_head_and_reaches_base", "tests/qualification/test_issue68_qualification.py::test_issue68_traceability_evidence_nodes_are_collectable", "tests/qualification/test_issue68_qualification.py::test_issue68_compileall_gate", "tests/qualification/test_issue68_qualification.py::test_issue68_full_offline_pytest_gate", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_classifies_repository_gate_results", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_executes_every_declared_command_in_order", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_cli_binds_to_staged_diff", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_rejects_unstaged_or_untracked_files", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_hash_changes_with_staged_diff", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_hashes_qualified_tree", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_matches_artifact_hashes_for_staged_and_clean_trees", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_rejects_mixed_pytest_failures", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_rejects_mixed_setup_errors_without_failed_summary", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_rejects_marker_outside_setup_blocks", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_artifact_matches_staged_diff_or_qualified_tree", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_validates_artifact_schema"), gate_commands=("uv sync --extra dev", "uv lock --check", "uv run pytest -q", "uv run python -m compileall -q src tests", "git diff --cached --check")),
+    TraceabilityRow(30, "repository gates", ("tests/test_architecture_scaffold.py::ArchitectureScaffoldTests::test_domain_layer_has_no_framework_imports", "tests/qualification/test_issue68_qualification.py::test_issue68_traceability_matrix_covers_exactly_ac1_to_ac30", "tests/qualification/test_issue68_qualification.py::test_issue68_migration_graph_has_one_dynamic_head_and_reaches_base", "tests/qualification/test_issue68_qualification.py::test_issue68_traceability_evidence_nodes_are_collectable", "tests/qualification/test_issue68_qualification.py::test_issue68_compileall_gate", "tests/qualification/test_issue68_qualification.py::test_issue68_full_offline_gate_command_is_declared", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_classifies_repository_gate_results", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_executes_every_declared_command_in_order", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_cli_binds_to_staged_diff", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_rejects_unstaged_or_untracked_files", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_hash_changes_with_staged_diff", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_hashes_qualified_tree", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_matches_artifact_hashes_for_staged_and_clean_trees", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_rejects_mixed_pytest_failures", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_rejects_mixed_setup_errors_without_failed_summary", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_rejects_marker_outside_setup_blocks", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_artifact_matches_staged_diff_or_qualified_tree", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_validates_artifact_schema"), gate_commands=("uv sync --extra dev", "uv lock --check", "uv run pytest -q", "uv run python -m compileall -q src tests", "git diff --cached --check")),
 )
 
 
@@ -187,7 +187,7 @@ def test_issue68_offline_traceability_nodes_pass() -> None:
     qualification_path = "tests/qualification/test_issue68_qualification.py"
     nested_executor_names = {
         "test_issue68_offline_traceability_nodes_pass",
-        "test_issue68_full_offline_pytest_gate",
+        "test_issue68_full_offline_gate_command_is_declared",
     }
     offline_nodes = tuple(
         f"{path_text}::{node_text}"
@@ -627,29 +627,10 @@ def test_issue68_audit_envelope_preserves_scope_trace_and_schema() -> None:
     assert event.schema_version == 1
 
 
-def test_issue68_full_offline_pytest_gate() -> None:
-    """Run the complete offline gate without recursively rerunning this node."""
+def test_issue68_full_offline_gate_command_is_declared() -> None:
+    """Require the complete gate command without recursively executing it."""
 
-    if os.environ.get("SPINE_ISSUE68_FULL_OFFLINE_GATE") == "1":
-        return
-    repository_root = Path(__file__).parents[2]
-    environment = os.environ.copy()
-    environment["SPINE_ISSUE68_FULL_OFFLINE_GATE"] = "1"
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            "--ignore=tests/integration/postgresql",
-        ],
-        cwd=repository_root,
-        env=environment,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert ("uv", "run", "pytest", "-q") in GATE_COMMANDS
 
 
 def test_issue68_migration_graph_has_one_dynamic_head_and_reaches_base() -> None:

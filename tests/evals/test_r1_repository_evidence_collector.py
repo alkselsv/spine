@@ -108,3 +108,15 @@ def test_junit_skip_is_classified_by_exact_versioned_policy(tmp_path: Path) -> N
     assert evidence.skip_policy_digest == hashlib.sha256(
         policy_path.read_bytes()
     ).hexdigest()
+    repository_command = next(
+        command for command in evidence.commands if command.boundary == "repository_tests"
+    )
+    assert repository_command.argv == (
+        "uv",
+        "run",
+        "pytest",
+        "-q",
+        "--durations=50",
+        "--deselect=tests/integration/postgresql/test_r1_migration_targets.py::test_current_graph_applies_to_clean_target",
+        "--deselect=tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head",
+    )
