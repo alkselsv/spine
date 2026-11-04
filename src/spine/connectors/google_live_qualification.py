@@ -247,8 +247,8 @@ GoogleLiveRetryDisposition = GoogleProviderRetryDisposition | Literal[
 class GoogleLiveQualificationReport(DefinitionModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: Literal["google-live-qualification-report:v3"] = (
-        "google-live-qualification-report:v3"
+    schema_version: Literal["google-live-qualification-report:v4"] = (
+        "google-live-qualification-report:v4"
     )
     status: Literal["passed", "failed"]
     provider: Literal["google"] = "google"
@@ -275,6 +275,10 @@ class GoogleLiveQualificationReport(DefinitionModel):
             "authorization_revoked",
             "provider_quota_exhausted",
             "provider_policy_denied",
+            "provider_oauth_scope_insufficient",
+            "provider_file_not_downloadable",
+            "provider_file_permission_denied",
+            "provider_download_restricted",
             "provider_not_found",
             "provider_unavailable",
             "provider_contract_rejected",

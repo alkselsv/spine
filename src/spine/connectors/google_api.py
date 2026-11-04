@@ -40,6 +40,7 @@ from spine.application.connections.google import (
     GoogleProviderContractError,
     GoogleProviderNotFoundError,
     GoogleProviderPolicyError,
+    GoogleProviderPolicyFailureCode,
     GoogleProviderQuotaError,
     GoogleProviderReadError,
 )
@@ -68,6 +69,13 @@ from spine.domain.sources.google import (
     GoogleSheetCellValue,
     GoogleSheetNumberFormat,
 )
+
+_DRIVE_POLICY_FAILURE_CODES: dict[str, GoogleProviderPolicyFailureCode] = {
+    "insufficientpermissions": "provider_oauth_scope_insufficient",
+    "filenotdownloadable": "provider_file_not_downloadable",
+    "insufficientfilepermissions": "provider_file_permission_denied",
+    "download_restricted_for_revision": "provider_download_restricted",
+}
 
 
 class GoogleApiEndpoints(DefinitionModel):
@@ -604,6 +612,7 @@ class GoogleApiService:
         self._require_file(connection, scope, file_id)
         response = await self._authorized_request(
             connection,
+            provider_api="drive",
             method="GET",
             url=f"{self._endpoints.drive_base_url.rstrip('/')}/files/{quote(file_id, safe='')}",
             query={
@@ -645,6 +654,7 @@ class GoogleApiService:
         await self._revalidate_current_file_scope(connection, scope, file_id)
         response = await self._authorized_request(
             connection,
+            provider_api="drive",
             method="GET",
             url=f"{self._endpoints.drive_base_url.rstrip('/')}/files/{quote(file_id, safe='')}",
             query={
@@ -671,6 +681,7 @@ class GoogleApiService:
         await self._revalidate_current_file_scope(connection, scope, file_id)
         response = await self._authorized_request(
             connection,
+            provider_api="drive",
             method="GET",
             url=(
                 f"{self._endpoints.drive_base_url.rstrip('/')}/files/"
@@ -697,6 +708,7 @@ class GoogleApiService:
             query["driveId"] = scope.drive_id
         response = await self._authorized_request(
             connection,
+            provider_api="drive",
             method="GET",
             url=f"{self._endpoints.drive_base_url.rstrip('/')}/changes/startPageToken",
             query=query,
@@ -732,6 +744,7 @@ class GoogleApiService:
         payload = self._json_success(
             await self._authorized_request(
                 connection,
+                provider_api="drive",
                 method="GET",
                 url=f"{self._endpoints.drive_base_url.rstrip('/')}/files",
                 query=query,
@@ -797,6 +810,7 @@ class GoogleApiService:
         payload = self._json_success(
             await self._authorized_request(
                 connection,
+                provider_api="drive",
                 method="GET",
                 url=f"{self._endpoints.drive_base_url.rstrip('/')}/changes",
                 query=query,
@@ -891,6 +905,7 @@ class GoogleApiService:
         payload = self._json_success(
             await self._authorized_request(
                 connection,
+                provider_api="drive",
                 method="GET",
                 url=(
                     f"{self._endpoints.drive_base_url.rstrip('/')}/files/"
@@ -918,6 +933,7 @@ class GoogleApiService:
         profile = self._sheet_profile(spreadsheet_id, sheet_id)
         response = await self._authorized_request(
             connection,
+            provider_api="sheets",
             method="GET",
             url=(
                 f"{self._endpoints.sheets_base_url.rstrip('/')}/spreadsheets/"
@@ -953,6 +969,7 @@ class GoogleApiService:
         )
         response = await self._authorized_request(
             connection,
+            provider_api="sheets",
             method="GET",
             url=(
                 f"{self._endpoints.sheets_base_url.rstrip('/')}/spreadsheets/"
@@ -1041,6 +1058,7 @@ class GoogleApiService:
         payload = self._json_success(
             await self._authorized_request(
                 connection,
+                provider_api="drive",
                 method="GET",
                 url=(
                     f"{self._endpoints.drive_base_url.rstrip('/')}/files/"
@@ -1121,6 +1139,7 @@ class GoogleApiService:
         self,
         connection: GoogleConnection,
         *,
+        provider_api: Literal["drive", "sheets"],
         method: str,
         url: str,
         query: Mapping[str, str],
@@ -1205,7 +1224,16 @@ class GoogleApiService:
                 }:
                     failure: Exception = GoogleProviderQuotaError()
                 else:
-                    failure = GoogleProviderPolicyError()
+                    policy_reason = (
+                        _provider_error_reason(response)
+                        if provider_api == "drive"
+                        else ""
+                    )
+                    failure = GoogleProviderPolicyError(
+                        failure_code=_DRIVE_POLICY_FAILURE_CODES.get(
+                            policy_reason, "provider_policy_denied"
+                        )
+                    )
                 if not isinstance(failure, GoogleProviderQuotaError):
                     raise failure
             elif response.status_code == 429:
@@ -1583,6 +1611,9 @@ def _drive_change(value: Any) -> DriveChange:
 
 
 def _provider_reason(response: GoogleApiResponse) -> str:
+    exact_reason = _provider_error_reason(response)
+    if exact_reason:
+        return exact_reason
     payload = response.json_body
     if not isinstance(payload, Mapping):
         return ""
@@ -1591,15 +1622,24 @@ def _provider_reason(response: GoogleApiResponse) -> str:
         return error.lower()
     if not isinstance(error, Mapping):
         return ""
-    errors = error.get("errors")
-    if isinstance(errors, list) and errors and isinstance(errors[0], Mapping):
-        reason = errors[0].get("reason")
-        if isinstance(reason, str):
-            return reason.lower()
     status = error.get("status")
     if isinstance(status, str):
         return status.lower()
     return ""
+
+
+def _provider_error_reason(response: GoogleApiResponse) -> str:
+    payload = response.json_body
+    if not isinstance(payload, Mapping):
+        return ""
+    error = payload.get("error")
+    if not isinstance(error, Mapping):
+        return ""
+    errors = error.get("errors")
+    if not isinstance(errors, list) or not errors or not isinstance(errors[0], Mapping):
+        return ""
+    reason = errors[0].get("reason")
+    return reason.lower() if isinstance(reason, str) else ""
 
 
 _SHEETS_FIELDS = (

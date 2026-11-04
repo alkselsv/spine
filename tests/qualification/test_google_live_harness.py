@@ -910,7 +910,7 @@ async def test_offline_composition_records_oauth_transport_failure_attempt() -> 
 
     report = await runner.run(environment_opt_in=True)
 
-    assert report.schema_version == "google-live-qualification-report:v3"
+    assert report.schema_version == "google-live-qualification-report:v4"
     assert report.status == "failed"
     assert report.failure_code == "provider_unavailable"
     assert report.failure_stage == "oauth_refresh"
@@ -921,6 +921,70 @@ async def test_offline_composition_records_oauth_transport_failure_attempt() -> 
     assert report.drive_request_attempts == 0
     assert report.sheets_request_attempts == 0
     assert report.metadata_reads == 0
+
+
+@pytest.mark.asyncio
+async def test_offline_composition_records_closed_drive_download_policy_reason() -> None:
+    config = _config(opt_in=True)
+    config = config.model_copy(
+        update={
+            "file_targets": (
+                config.file_targets[0].model_copy(update={"download": True}),
+            )
+        }
+    )
+    responses = [
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"access_token": "synthetic-token", "expires_in": 3600},
+        ),
+        GoogleApiResponse(
+            status_code=200,
+            json_body={
+                "id": "synthetic-file",
+                "name": "Synthetic file.pdf",
+                "mimeType": "application/pdf",
+                "version": "1",
+            },
+        ),
+        GoogleApiResponse(
+            status_code=403,
+            json_body={
+                "error": {
+                    "status": "PERMISSION_DENIED",
+                    "errors": [
+                        {
+                            "reason": "insufficientPermissions",
+                            "message": (
+                                "synthetic-file provider-payload-sentinel "
+                                "synthetic-refresh-token"
+                            ),
+                        }
+                    ],
+                }
+            },
+        ),
+    ]
+
+    report = await _composed_runner(
+        config, QueuedResponseTransport(responses)
+    ).run(environment_opt_in=True)
+    serialized = report.model_dump_json()
+
+    assert report.schema_version == "google-live-qualification-report:v4"
+    assert report.failure_code == "provider_oauth_scope_insufficient"
+    assert report.failure_stage == "drive"
+    assert report.failure_class == "policy"
+    assert report.retry_disposition == "not_retryable"
+    assert report.oauth_request_attempts == 1
+    assert report.drive_request_attempts == 2
+    assert report.sheets_request_attempts == 0
+    assert report.metadata_reads == 1
+    assert report.downloads == 0
+    assert responses == []
+    assert "synthetic-file" not in serialized
+    assert "provider-payload-sentinel" not in serialized
+    assert "synthetic-refresh-token" not in serialized
 
 
 @pytest.mark.asyncio
