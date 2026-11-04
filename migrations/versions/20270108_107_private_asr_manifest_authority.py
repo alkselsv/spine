@@ -81,9 +81,34 @@ def upgrade() -> None:
     op.execute(f"""CREATE TRIGGER trg_private_asr_manifest_immutable
         BEFORE UPDATE OR DELETE ON {SCHEMA}.private_asr_corpus_manifests
         FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.reject_private_asr_manifest_mutation()""")
+    op.execute(f"""CREATE FUNCTION {SCHEMA}.fence_private_asr_corpus_release_change() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          IF TG_OP = 'UPDATE' AND (
+            OLD.workspace_id, OLD.environment_id, OLD.purpose, OLD.dataset_id
+          ) IS DISTINCT FROM (
+            NEW.workspace_id, NEW.environment_id, NEW.purpose, NEW.dataset_id
+          ) THEN
+            RAISE EXCEPTION 'private ASR release scope is immutable';
+          END IF;
+          PERFORM pg_catalog.pg_advisory_xact_lock(
+            pg_catalog.hashtextextended(
+              OLD.workspace_id::text || ':' || OLD.environment_id::text || ':' ||
+              OLD.purpose || ':' || OLD.dataset_id::text,
+              811
+            )
+          );
+          IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+          RETURN NEW;
+        END $$""")
+    op.execute(f"""CREATE TRIGGER trg_private_asr_corpus_release_change_fence
+        BEFORE UPDATE OR DELETE ON {SCHEMA}.private_asr_corpus_releases
+        FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.fence_private_asr_corpus_release_change()""")
 
 
 def downgrade() -> None:
+    op.execute(f"DROP TRIGGER trg_private_asr_corpus_release_change_fence ON {SCHEMA}.private_asr_corpus_releases")
+    op.execute(f"DROP FUNCTION {SCHEMA}.fence_private_asr_corpus_release_change()")
     op.execute(f"DROP TRIGGER trg_private_asr_manifest_immutable ON {SCHEMA}.private_asr_corpus_manifests")
     op.execute(f"DROP FUNCTION {SCHEMA}.reject_private_asr_manifest_mutation()")
     op.drop_table("private_asr_corpus_releases", schema=SCHEMA)

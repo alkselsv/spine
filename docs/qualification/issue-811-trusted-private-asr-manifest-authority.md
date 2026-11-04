@@ -12,10 +12,14 @@ pointer keyed by workspace, environment, purpose, and dataset. The digest is
 recomputed from canonical JSON at resolution; record membership is then checked
 against source object, revision, revision digest, split, and scope. Reports must
 name the exact manifest version and digest. The release row's generation and
-manifest binding are held under `FOR SHARE` until the report transaction ends;
-replacement or withdrawal updates serialize against report commit. A withdrawn
-pointer has no manifest binding. Missing rows deny. Runtime has SELECT only and
-both tables force tenant RLS. No release rows are installed by this migration.
+manifest binding are protected by a transaction-scoped advisory fence until
+report commit. The resolver takes a shared lock; database triggers on release
+pointer update/delete take the matching exclusive lock. Thus every release
+writer serializes with report publication without granting runtime UPDATE.
+Report publication takes its existing source locks before this fence, while
+release writers take no source locks. A withdrawn pointer has no manifest
+binding. Missing rows deny. Runtime has SELECT only and both tables force tenant
+RLS. No release rows are installed by this migration.
 
 The existing #771 contract has one dataset `version`; this resolver treats that
 as the immutable manifest version. A future contract that separates dataset

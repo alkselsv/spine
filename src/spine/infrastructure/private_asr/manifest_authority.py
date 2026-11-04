@@ -8,14 +8,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import re
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import BigInteger, Column, DateTime, MetaData, String, Table, Text, select
+from sqlalchemy import BigInteger, Column, DateTime, MetaData, String, Table, Text, select, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 
 from spine.application.persistence.context import EnvironmentScope, TrustedPersistenceContext
 from spine.application.private_asr_corpus import PrivateReportSourceBinding
+
+_LOGGER = logging.getLogger(__name__)
+_SQLSTATE = re.compile(r"^[0-9A-Z]{5}$")
 _METADATA = MetaData(schema="spine")
 private_asr_corpus_manifests = Table(
     "private_asr_corpus_manifests", _METADATA,
@@ -39,6 +44,13 @@ def _canonical_digest(payload: dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+async def _execute(transaction: object, statement: object, parameters: object | None = None) -> Any:
+    execute_statement = getattr(transaction, "execute_statement", None)
+    if execute_statement is not None:
+        return await execute_statement(statement, parameters)
+    return await transaction.execute(statement, parameters)  # type: ignore[attr-defined,no-any-return]
 
 
 class PostgreSQLPrivateASRManifestAuthority:
@@ -65,6 +77,20 @@ class PostgreSQLPrivateASRManifestAuthority:
                 return False
             if any(item.dataset_id != dataset_id for item in source_bindings):
                 return False
+            # Matches the exclusive lock taken by the release-pointer trigger.
+            # The transaction retains this shared advisory lock until commit.
+            await _execute(transaction, text("""
+                SELECT pg_catalog.pg_advisory_xact_lock_shared(
+                    pg_catalog.hashtextextended(
+                        :workspace_id || ':' || :environment_id || ':asr_model_evaluation:' || :dataset_id,
+                        811
+                    )
+                )
+            """), {
+                "workspace_id": str(scope.workspace_id),
+                "environment_id": str(scope.environment_id),
+                "dataset_id": str(dataset_id),
+            })
             base = (
                 private_asr_corpus_manifests.c.workspace_id == scope.workspace_id,
                 private_asr_corpus_manifests.c.environment_id == scope.environment_id,
@@ -73,7 +99,7 @@ class PostgreSQLPrivateASRManifestAuthority:
                 private_asr_corpus_manifests.c.manifest_version == manifest_version,
                 private_asr_corpus_manifests.c.manifest_sha256 == manifest_sha256,
             )
-            manifest = (await transaction.execute(select(
+            manifest = (await _execute(transaction, select(
                 private_asr_corpus_manifests.c.manifest_id,
                 private_asr_corpus_manifests.c.manifest_version,
                 private_asr_corpus_manifests.c.manifest_sha256,
@@ -117,7 +143,7 @@ class PostgreSQLPrivateASRManifestAuthority:
                     or record.get("split") != binding.split.value
                 ):
                     return False
-            release = (await transaction.execute(select(
+            release = (await _execute(transaction, select(
                 private_asr_corpus_releases.c.generation,
                 private_asr_corpus_releases.c.manifest_id,
                 private_asr_corpus_releases.c.manifest_version,
@@ -128,7 +154,7 @@ class PostgreSQLPrivateASRManifestAuthority:
                 private_asr_corpus_releases.c.environment_id == scope.environment_id,
                 private_asr_corpus_releases.c.purpose == "asr_model_evaluation",
                 private_asr_corpus_releases.c.dataset_id == dataset_id,
-            ).with_for_update(read=True))).mappings().one_or_none()
+            ))).mappings().one_or_none()
             return bool(
                 release is not None and release["generation"] > 0
                 and release["status"] == "released"
@@ -136,8 +162,16 @@ class PostgreSQLPrivateASRManifestAuthority:
                 and release["manifest_version"] == manifest_version
                 and release["manifest_sha256"] == manifest_sha256
             )
-        except Exception:
+        except Exception as error:
             # No private IDs, hashes, or membership details leave the authority.
+            original = getattr(error, "orig", error)
+            sqlstate = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
+            safe_sqlstate = sqlstate if isinstance(sqlstate, str) and _SQLSTATE.fullmatch(sqlstate) else "unavailable"
+            _LOGGER.warning(
+                "private ASR manifest resolution denied (error_class=%s, sqlstate=%s)",
+                type(error).__name__,
+                safe_sqlstate,
+            )
             return False
 
 

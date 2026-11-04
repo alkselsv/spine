@@ -1413,6 +1413,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "private_asr_source_fences",
         "private_asr_report_sources",
         "private_asr_aggregate_exports",
+        "private_asr_corpus_manifests",
+        "private_asr_corpus_releases",
     }
     tables = set(
         (
@@ -1451,7 +1453,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
                     "'crm_relationship_lifecycle_events','crm_relationship_eligibility_heads',"
                     "'crm_relationship_idempotency','crm_relationship_v2_state',"
                     "'private_asr_artifacts','private_asr_source_fences',"
-                    "'private_asr_report_sources','private_asr_aggregate_exports'))"
+                    "'private_asr_report_sources','private_asr_aggregate_exports',"
+                    "'private_asr_corpus_manifests','private_asr_corpus_releases'))"
                 )
             )
         ).scalars()
@@ -1479,7 +1482,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
                      "'crm_relationship_lifecycle_events','crm_relationship_eligibility_heads',"
                      "'crm_relationship_idempotency','crm_relationship_v2_state',"
                      "'private_asr_artifacts','private_asr_source_fences',"
-                     "'private_asr_report_sources','private_asr_aggregate_exports')")
+                     "'private_asr_report_sources','private_asr_aggregate_exports',"
+                     "'private_asr_corpus_manifests','private_asr_corpus_releases')")
             )
         ).scalars()
     )
@@ -1508,6 +1512,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         and (
             row.relname not in policy_tables
             or row.relname.startswith("crm_relationship_")
+            or row.relname.startswith("private_asr_corpus_")
         )
     }
     policies = {
@@ -1538,6 +1543,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
             and row.table_name != "crm_relationship_v2_state"
         )
         or row.table_name.startswith("crm_relationship_")
+        or row.table_name.startswith("private_asr_corpus_")
     }
     privilege_names = ("select_ok", "insert_ok", "update_ok", "delete_ok")
     privileges = {
@@ -1562,6 +1568,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
             row.table_name.startswith("crm_relationship_")
             and row.table_name != "crm_relationship_v2_state"
         )
+        or row.table_name.startswith("private_asr_corpus_")
     }
     receipt_update_columns = {
         row.column_name
@@ -2759,6 +2766,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "email_sync_state_observations": (True, True),
         "email_message_artifacts": (True, True),
         "email_attachment_artifacts": (True, True),
+        "private_asr_corpus_manifests": (True, True),
+        "private_asr_corpus_releases": (True, True),
         "work_items": (True, True),
         "workflow_runs": (True, True),
         "workflow_command_receipts": (True, True),
@@ -2876,6 +2885,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
     standard_tenant_rls_tables = tenant_rls_tables - {
         "audit_events",
         "outbox_deliveries",
+        "private_asr_corpus_manifests",
+        "private_asr_corpus_releases",
     }
     assert set(policies) == {
         (table_name, f"pol_{table_name}_{policy_kind}"[:63])
@@ -2889,6 +2900,10 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         ("outbox_deliveries", "pol_outbox_deliveries_tenant_read"),
         ("outbox_deliveries", "pol_outbox_deliveries_dispatcher"),
         ("outbox_deliveries", "pol_outbox_deliveries_migration_maintenance"),
+        ("private_asr_corpus_manifests", "pol_private_asr_corpus_manifests_tenant_isolation"),
+        ("private_asr_corpus_manifests", "pol_private_asr_corpus_manifests_migration_maintenance"),
+        ("private_asr_corpus_releases", "pol_private_asr_corpus_releases_tenant_isolation"),
+        ("private_asr_corpus_releases", "pol_private_asr_corpus_releases_migration_maintenance"),
     }
     for table_name in standard_tenant_rls_tables:
         tenant_policy = policies[(table_name, f"pol_{table_name}_tenant_isolation")]
@@ -2899,6 +2914,13 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
             (MIGRATION_ROLE,),
             "true",
             "true",
+        )
+    for table_name in ("private_asr_corpus_manifests", "private_asr_corpus_releases"):
+        tenant_policy = policies[(table_name, f"pol_{table_name}_tenant_isolation")]
+        assert tenant_policy[0] == (RUNTIME_ROLE,)
+        assert tenant_policy[1] is not None and tenant_policy[2] is None
+        assert policies[(table_name, f"pol_{table_name}_migration_maintenance")] == (
+            (MIGRATION_ROLE,), "true", "true",
         )
     audit_read = policies[("audit_events", "pol_audit_events_tenant_read")]
     audit_append = policies[("audit_events", "pol_audit_events_tenant_append")]
@@ -2962,6 +2984,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "email_sync_state_observations": (True, True, False, False),
         "email_message_artifacts": (True, True, False, False),
         "email_attachment_artifacts": (True, True, False, False),
+        "private_asr_corpus_manifests": (True, False, False, False),
+        "private_asr_corpus_releases": (True, False, False, False),
         "idempotency_receipts": (True, True, False, False),
         "initial_workspace_bootstrap": (False, False, False, False),
         "outbox_intents": (False, True, False, False),
