@@ -58,6 +58,22 @@ class CitationExcerptResolver(Protocol):
     ) -> CitationExcerpt | None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class CitationExcerptResolverChain:
+    """Resolve across disjoint versioned locator contracts."""
+
+    resolvers: tuple[CitationExcerptResolver, ...]
+
+    async def resolve(
+        self, citation: Citation, *, historical: bool
+    ) -> CitationExcerpt | None:
+        for resolver in self.resolvers:
+            resolved = await resolver.resolve(citation, historical=historical)
+            if resolved is not None:
+                return resolved
+        return None
+
+
 class CitationInspectorService(Protocol):
     async def inspect(
         self,
@@ -284,6 +300,7 @@ def _scope(context: TrustedPersistenceContext) -> tuple[UUID, UUID]:
 __all__ = [
     "CitationDisclosureRevalidator",
     "CitationExcerptResolver",
+    "CitationExcerptResolverChain",
     "CitationInspectorRequester",
     "CitationInspectorRequesterError",
     "CitationInspectionUnavailable",
