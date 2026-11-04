@@ -180,6 +180,46 @@ def _report_retention_evidence(
     return evidence
 
 
+def _source_identity_key(
+    *,
+    workspace_id: UUID,
+    environment_id: UUID,
+    source_object_id: UUID,
+    source_revision_id: UUID,
+    source_revision_digest: str,
+) -> tuple[UUID, UUID, UUID, UUID, str]:
+    return (
+        workspace_id,
+        environment_id,
+        source_object_id,
+        source_revision_id,
+        source_revision_digest,
+    )
+
+
+def _aggregate_retention_evidence(
+    admitted: AdmittedSourceRevision,
+    disposition: Any,
+    *,
+    version: int,
+) -> dict[str, object]:
+    """Serialize per-source aggregate retention evidence with stable identity."""
+    revision = admitted.source_revision
+    evidence: dict[str, object] = {
+        "source_revision_id": str(revision.revision_id),
+        "disposition": disposition.model_dump(mode="json"),
+    }
+    if version == 2:
+        evidence.update({
+            "schema_version": "private-asr-aggregate-retention-binding:v2",
+            "workspace_id": str(admitted.workspace_id),
+            "environment_id": str(admitted.environment_id),
+            "source_object_id": str(admitted.source_object.source_object_id),
+            "source_revision_digest": revision.revision_digest,
+        })
+    return evidence
+
+
 class PostgreSQLPrivateASRStorage:
     """Scoped #771/#772 adapter backed by one PostgreSQL database.
 
@@ -852,7 +892,13 @@ class PostgreSQLPrivateASRStorage:
                     admitted, retention_disposition, version=retention_binding_version,
                 ))
                 admitted_records.append(admitted)
-            retention_dispositions.sort(key=lambda item: str(item["source_revision_id"]))
+            retention_dispositions.sort(key=lambda item: (
+                str(item.get("workspace_id", "")),
+                str(item.get("environment_id", "")),
+                str(item.get("source_object_id", "")),
+                str(item["source_revision_id"]),
+                str(item.get("source_revision_digest", "")),
+            ))
             if not await self._manifest_lineage.verify_current(
                 transaction=session,
                 context=context,
@@ -1188,11 +1234,81 @@ class PostgreSQLPrivateASRStorage:
                 for item in bindings
             ):
                 raise PrivateASRStorageDenied("Private ASR aggregate lineage denied.")
+            source_identity_keys = tuple(
+                _source_identity_key(
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                    source_object_id=item.source_object_id,
+                    source_revision_id=item.source_revision_id,
+                    source_revision_digest=item.source_revision_digest,
+                )
+                for item in bindings
+            )
+            if len(set(source_identity_keys)) != len(source_identity_keys):
+                raise PrivateASRStorageDenied("Private ASR aggregate lineage denied.")
 
-            originals_by_revision: dict[UUID, Any] = {}
-            admitted_by_revision: dict[UUID, AdmittedSourceRevision] = {}
+            stored_report_dispositions: dict[
+                tuple[UUID, UUID, UUID, UUID, str], object
+            ] = {}
+            report_retention_evidence = report_row["retention_disposition"]
+            if not isinstance(report_retention_evidence, list) or len(
+                report_retention_evidence
+            ) != len(source_identity_keys):
+                raise PrivateASRStorageDenied("Private ASR aggregate lineage denied.")
+            for item in report_retention_evidence:
+                if not isinstance(item, dict):
+                    raise PrivateASRStorageDenied("Private ASR aggregate lineage denied.")
+                try:
+                    if item.get("schema_version") == "private-asr-report-retention-binding:v2":
+                        if set(item) != {
+                            "schema_version", "workspace_id", "environment_id",
+                            "source_object_id", "source_revision_id",
+                            "source_revision_digest", "disposition",
+                        }:
+                            raise ValueError
+                        identity = _source_identity_key(
+                            workspace_id=UUID(item["workspace_id"]),
+                            environment_id=UUID(item["environment_id"]),
+                            source_object_id=UUID(item["source_object_id"]),
+                            source_revision_id=UUID(item["source_revision_id"]),
+                            source_revision_digest=item["source_revision_digest"],
+                        )
+                    elif (
+                        len(source_identity_keys) == 1
+                        and set(item) == {"source_revision_id", "disposition"}
+                        and UUID(item["source_revision_id"])
+                        == source_identity_keys[0][3]
+                    ):
+                        identity = source_identity_keys[0]
+                    else:
+                        raise ValueError
+                    if identity not in source_identity_keys or identity in stored_report_dispositions:
+                        raise ValueError
+                    if not isinstance(item["disposition"], dict):
+                        raise ValueError
+                    stored_report_dispositions[identity] = item["disposition"]
+                except (KeyError, TypeError, ValueError):
+                    raise PrivateASRStorageDenied(
+                        "Private ASR aggregate lineage denied."
+                    ) from None
+            if set(stored_report_dispositions) != set(source_identity_keys):
+                raise PrivateASRStorageDenied("Private ASR aggregate lineage denied.")
+
+            originals_by_identity: dict[
+                tuple[UUID, UUID, UUID, UUID, str], Any
+            ] = {}
+            admitted_by_identity: dict[
+                tuple[UUID, UUID, UUID, UUID, str], AdmittedSourceRevision
+            ] = {}
             source_paths: list[tuple[UUID, UUID, UUID, UUID]] = []
             for binding in bindings:
+                identity = _source_identity_key(
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                    source_object_id=binding.source_object_id,
+                    source_revision_id=binding.source_revision_id,
+                    source_revision_digest=binding.source_revision_digest,
+                )
                 originals = (await self._execute(session, select(
                     private_asr_artifacts.c.admitted_record,
                     private_asr_artifacts.c.source_object_id,
@@ -1215,40 +1331,37 @@ class PostgreSQLPrivateASRStorage:
                 if (
                     original["source_object_id"] != binding.source_object_id
                     or original["source_revision_digest"] != binding.source_revision_digest
-                    or original["retention_profile_ref"] != retention_profile_ref.reference_id
+                    or original["retention_profile_ref"]
+                    != admitted.retention_profile_ref.reference_id
+                    or admitted.workspace_id != workspace_id
+                    or admitted.environment_id != environment_id
                     or admitted.source_revision.revision_id != binding.source_revision_id
                     or admitted.source_object.source_object_id != binding.source_object_id
                     or admitted.source_revision.revision_digest != binding.source_revision_digest
                 ):
                     raise PrivateASRStorageDenied("Private ASR aggregate lineage denied.")
-                originals_by_revision[binding.source_revision_id] = original
-                admitted_by_revision[binding.source_revision_id] = admitted
+                originals_by_identity[identity] = original
+                admitted_by_identity[identity] = admitted
                 source_paths.append((
                     workspace_id, environment_id, binding.source_object_id,
                     binding.source_revision_id,
                 ))
             await self._lock_source_admission_paths(session, tuple(source_paths))
 
-            stored_report_dispositions = {
-                UUID(item["source_revision_id"]): item["disposition"]
-                for item in report_row["retention_disposition"]
-            }
             aggregate_dispositions: list[dict[str, object]] = []
             aggregate_expiries: list[datetime] = []
-            for admitted in sorted(
-                admitted_by_revision.values(),
-                key=lambda item: (
-                    str(item.source_object.source_object_id),
-                    str(item.source_revision.revision_id),
-                ),
+            aggregate_binding_version = 1 if len(source_identity_keys) == 1 else 2
+            for identity, admitted in sorted(
+                admitted_by_identity.items(),
+                key=lambda pair: (str(pair[0][2]), str(pair[0][3]), pair[0][4]),
             ):
                 revision_id = admitted.source_revision.revision_id
-                if originals_by_revision[revision_id]["expires_at"] <= now:
+                if originals_by_identity[identity]["expires_at"] <= now:
                     raise PrivateASRStorageDenied("Private ASR aggregate authorization denied.")
                 report_disposition = await self._locked_source(
                     session,
                     admitted,
-                    retention_profile_ref=retention_profile_ref,
+                    retention_profile_ref=admitted.retention_profile_ref,
                     artifact_class=RetentionArtifactClass.PRIVATE_ASR_DETAILED_REPORT,
                     starting_event=RetentionStartingEvent.REPORT_GENERATED,
                     starting_at=report_row["created_at"],
@@ -1258,14 +1371,14 @@ class PostgreSQLPrivateASRStorage:
                 if (
                     report_disposition is None
                     or report_row["expires_at"] <= now
-                    or stored_report_dispositions.get(revision_id)
+                    or stored_report_dispositions.get(identity)
                     != report_disposition.model_dump(mode="json")
                     or not await self._authority.recheck(admitted, evaluated_at=now)
                 ):
                     raise PrivateASRStorageDenied("Private ASR aggregate authorization denied.")
                 aggregate_disposition = await self._current_retention(
                     session,
-                    retention_profile_ref,
+                    admitted.retention_profile_ref,
                     context=context,
                     admitted=admitted,
                     artifact_class=RetentionArtifactClass.PRIVATE_ASR_SANITIZED_AGGREGATE,
@@ -1276,10 +1389,11 @@ class PostgreSQLPrivateASRStorage:
                 if aggregate_disposition.expires_at <= now:
                     raise PrivateASRStorageDenied("Private ASR aggregate authorization denied.")
                 aggregate_expiries.append(aggregate_disposition.expires_at)
-                aggregate_dispositions.append({
-                    "source_revision_id": str(revision_id),
-                    "disposition": aggregate_disposition.model_dump(mode="json"),
-                })
+                aggregate_dispositions.append(_aggregate_retention_evidence(
+                    admitted,
+                    aggregate_disposition,
+                    version=aggregate_binding_version,
+                ))
 
             if not await self._manifest_lineage.verify_current(
                 transaction=session,
@@ -1369,6 +1483,7 @@ class PostgreSQLPrivateASRStorage:
                 private_asr_aggregate_exports.c.privacy_policy_approval_version,
                 private_asr_aggregate_exports.c.payload_sha256,
                 private_asr_aggregate_exports.c.audit_receipt_id,
+                private_asr_aggregate_exports.c.retention_disposition,
             ).where(
                 private_asr_aggregate_exports.c.workspace_id == workspace_id,
                 private_asr_aggregate_exports.c.environment_id == environment_id,
@@ -1382,6 +1497,7 @@ class PostgreSQLPrivateASRStorage:
                 != sanitized.privacy_policy_approval_version
                 or existing["payload_sha256"] != payload_digest
                 or existing["audit_receipt_id"] != audit_receipt_id
+                or existing["retention_disposition"] != aggregate_dispositions
             ):
                 raise PrivateASRStorageDenied("Private ASR aggregate idempotency conflict.")
 
@@ -1964,6 +2080,9 @@ class PostgreSQLPrivateASRStorage:
             ))).scalar_one_or_none()
             if audit is None:
                 raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
+            stored_report_dispositions: dict[
+                tuple[UUID, UUID, UUID, UUID, str], object
+            ] = {}
             if row["kind"] == "report":
                 binding_rows = (await session.execute(select(
                     private_asr_report_sources.c.source_record_id,
@@ -2000,16 +2119,6 @@ class PostgreSQLPrivateASRStorage:
                 if len(versioned_retention) != len(stored_retention) or len(set(versioned_retention)) != 1:
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 retention_binding_version = 2 if versioned_retention[0] else 1
-                if retention_binding_version == 2 and len({
-                    item.get("source_revision_id") for item in stored_retention
-                }) != len(stored_retention):
-                    raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
-                if retention_binding_version == 2 and (
-                    len(stored_retention) != len(source_ids)
-                    or {item["source_revision_id"] for item in stored_retention}
-                    != {str(source_id) for source_id in source_ids}
-                ):
-                    raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 report_bindings = tuple(
                     PrivateReportSourceBinding(
                         record_id=item["source_record_id"], dataset_id=row["dataset_id"],
@@ -2019,6 +2128,56 @@ class PostgreSQLPrivateASRStorage:
                         split=CorpusSplit(item["split"]),
                     ) for item in binding_rows
                 )
+                expected_source_keys = {
+                    _source_identity_key(
+                        workspace_id=workspace_id,
+                        environment_id=environment_id,
+                        source_object_id=item.source_object_id,
+                        source_revision_id=item.source_revision_id,
+                        source_revision_digest=item.source_revision_digest,
+                    )
+                    for item in report_bindings
+                }
+                if len(expected_source_keys) != len(report_bindings):
+                    raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
+                for item in stored_retention:
+                    try:
+                        if retention_binding_version == 2:
+                            if set(item) != {
+                                "schema_version", "workspace_id", "environment_id",
+                                "source_object_id", "source_revision_id",
+                                "source_revision_digest", "disposition",
+                            }:
+                                raise ValueError
+                            identity = _source_identity_key(
+                                workspace_id=UUID(item["workspace_id"]),
+                                environment_id=UUID(item["environment_id"]),
+                                source_object_id=UUID(item["source_object_id"]),
+                                source_revision_id=UUID(item["source_revision_id"]),
+                                source_revision_digest=item["source_revision_digest"],
+                            )
+                        else:
+                            if (
+                                len(expected_source_keys) != 1
+                                or set(item) != {"source_revision_id", "disposition"}
+                            ):
+                                raise ValueError
+                            identity = next(iter(expected_source_keys))
+                            if UUID(item["source_revision_id"]) != identity[3]:
+                                raise ValueError
+                        if (
+                            identity not in expected_source_keys
+                            or identity in stored_report_dispositions
+                            or not isinstance(item["disposition"], dict)
+                        ):
+                            raise ValueError
+                        stored_report_dispositions[identity] = item["disposition"]
+                    except (KeyError, TypeError, ValueError):
+                        raise PrivateASRStorageDenied(
+                            "Private ASR storage authorization denied."
+                        ) from None
+                if set(stored_report_dispositions) != expected_source_keys:
+                    raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 if self._manifest_lineage is None or not await self._manifest_lineage.verify_current(
                     transaction=session, context=context, dataset_id=row["dataset_id"],
                     manifest_version=row["manifest_version"],
@@ -2043,43 +2202,37 @@ class PostgreSQLPrivateASRStorage:
                     private_asr_artifacts.c.expires_at > self._clock(),
                     private_asr_artifacts.c.tombstoned_at.is_(None),
                 ).order_by(private_asr_artifacts.c.source_revision_id))).mappings().all()
-                if len(source_rows) != len(source_ids):
+                if len(source_rows) != len(expected_source_keys):
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 admitted_values = [item["admitted_record"] for item in source_rows]
+                resolved_source_keys: set[tuple[UUID, UUID, UUID, UUID, str]] = set()
                 for source_row in source_rows:
                     admitted_source = _admitted_from_jsonb(source_row["admitted_record"])
-                    matched = [
-                        item for item in report_bindings
-                        if item.source_revision_id == admitted_source.source_revision.revision_id
-                    ]
-                    if not matched or any(
-                        item.source_object_id != source_row["source_object_id"]
-                        or item.source_revision_digest != source_row["source_revision_digest"]
-                        for item in matched
+                    identity = _source_identity_key(
+                        workspace_id=workspace_id,
+                        environment_id=environment_id,
+                        source_object_id=admitted_source.source_object.source_object_id,
+                        source_revision_id=admitted_source.source_revision.revision_id,
+                        source_revision_digest=admitted_source.source_revision.revision_digest,
+                    )
+                    if (
+                        identity not in expected_source_keys
+                        or identity in resolved_source_keys
+                        or source_row["source_object_id"] != identity[2]
+                        or source_row["source_revision_digest"] != identity[4]
                     ):
                         raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
-                    if retention_binding_version == 2:
-                        evidence = [
-                            item for item in stored_retention
-                            if item.get("source_revision_id")
-                            == str(admitted_source.source_revision.revision_id)
-                        ]
-                        if len(evidence) != 1 or any(
-                            evidence[0].get(field) != expected
-                            for field, expected in (
-                                ("workspace_id", str(workspace_id)),
-                                ("environment_id", str(environment_id)),
-                                ("source_object_id", str(admitted_source.source_object.source_object_id)),
-                                ("source_revision_digest", admitted_source.source_revision.revision_digest),
-                            )
-                        ):
-                            raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
+                    resolved_source_keys.add(identity)
+                if resolved_source_keys != expected_source_keys:
+                    raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
             elif row["admitted_record"] is not None:
                 admitted_values = [row["admitted_record"]]
             else:
                 raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
             current_retention_expiries: list[datetime] = []
-            current_retention_dispositions: list[dict[str, object]] = []
+            current_report_dispositions: dict[
+                tuple[UUID, UUID, UUID, UUID, str], object
+            ] = {}
             admitted_records = sorted(
                 (_admitted_from_jsonb(value) for value in admitted_values),
                 key=lambda item: (
@@ -2121,19 +2274,20 @@ class PostgreSQLPrivateASRStorage:
                 if disposition is None:
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
                 current_retention_expiries.append(disposition.expires_at)
-                current_retention_dispositions.append(_report_retention_evidence(
-                    admitted,
-                    disposition,
-                    version=retention_binding_version if row["kind"] == "report" else 1,
-                ))
+                if row["kind"] == "report":
+                    identity = _source_identity_key(
+                        workspace_id=workspace_id,
+                        environment_id=environment_id,
+                        source_object_id=admitted.source_object.source_object_id,
+                        source_revision_id=admitted.source_revision.revision_id,
+                        source_revision_digest=admitted.source_revision.revision_digest,
+                    )
+                    current_report_dispositions[identity] = disposition.model_dump(mode="json")
                 await self._check_admitted(admitted, context)
             if min(current_retention_expiries) != row["expires_at"]:
                 raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
             if row["kind"] == "report":
-                current_retention_dispositions.sort(
-                    key=lambda item: str(item["source_revision_id"])
-                )
-                if row["retention_disposition"] != current_retention_dispositions:
+                if current_report_dispositions != stored_report_dispositions:
                     raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
             if row["source_revision_id"] is not None:
                 fence = (await session.execute(select(private_asr_source_fences.c.revoked).where(
