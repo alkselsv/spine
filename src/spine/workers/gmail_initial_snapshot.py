@@ -16,6 +16,12 @@ from spine.application.gmail_initial_snapshot import (
     GmailInitialSnapshotReader,
     GmailInitialSnapshotResult,
 )
+from spine.application.gmail_history_cursor_recovery import (
+    GmailHistoryCursorRecoveryCommand,
+    GmailHistoryCursorRecoveryCoordinator,
+    GmailHistoryCursorRecoveryProfile,
+    GmailHistoryCursorRecoveryReceipt,
+)
 from spine.application.persistence.context import (
     PersistenceOperation,
     TrustedPersistenceContext,
@@ -46,6 +52,21 @@ class GmailInitialSnapshotOperation:
         if command.scope != self.scope:
             raise ValueError("Gmail snapshot command is outside the composed scope")
         return await self.coordinator.run(command)
+
+    async def recover_history_cursor(
+        self,
+        command: GmailHistoryCursorRecoveryCommand,
+        profile: GmailHistoryCursorRecoveryProfile,
+    ) -> GmailHistoryCursorRecoveryReceipt:
+        """Recover one stale cursor through this operation's same no-gap reader."""
+
+        if command.scope != self.scope:
+            raise ValueError("Gmail recovery command is outside the composed scope")
+        return await GmailHistoryCursorRecoveryCoordinator(
+            sync=self.coordinator.sync,
+            reconciliation=self,
+            profile=profile,
+        ).reconcile(command)
 
 
 def create_gmail_initial_snapshot_operation(

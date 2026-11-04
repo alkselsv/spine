@@ -75,6 +75,14 @@ if TYPE_CHECKING:
         GoogleSheetsRemovalState,
         InMemoryGoogleSheetsLifecycleRepository,
     )
+    from .gmail_history_cursor_recovery import (
+        GmailHistoryCursorRecoveryCommand,
+        GmailHistoryCursorRecoveryCoordinator,
+        GmailHistoryCursorRecoveryPort,
+        GmailHistoryCursorRecoveryProfile,
+        GmailHistoryCursorRecoveryReceipt,
+        GmailHistoryCursorRecoveryState,
+    )
 
 __all__ = [
     "AnswerQuestionAuthorizedContext",
@@ -161,6 +169,12 @@ __all__ = [
     "GoogleSheetsRemovalPolicy",
     "GoogleSheetsRemovalState",
     "InMemoryGoogleSheetsLifecycleRepository",
+    "GmailHistoryCursorRecoveryCommand",
+    "GmailHistoryCursorRecoveryCoordinator",
+    "GmailHistoryCursorRecoveryPort",
+    "GmailHistoryCursorRecoveryProfile",
+    "GmailHistoryCursorRecoveryReceipt",
+    "GmailHistoryCursorRecoveryState",
     "ExplicitTranscriptPublicationPolicy",
     "InMemoryTranscriptPublicationRepository",
     "PublishTranscriptCommand",
@@ -284,6 +298,15 @@ def __getattr__(name: str) -> object:
             "InMemoryGoogleSheetsLifecycleRepository",
         }:
             module_name = "spine.application.google_sheets_lifecycle"
+        if name in {
+            "GmailHistoryCursorRecoveryCommand",
+            "GmailHistoryCursorRecoveryCoordinator",
+            "GmailHistoryCursorRecoveryPort",
+            "GmailHistoryCursorRecoveryProfile",
+            "GmailHistoryCursorRecoveryReceipt",
+            "GmailHistoryCursorRecoveryState",
+        }:
+            module_name = "spine.application.gmail_history_cursor_recovery"
         if name in {
             "AuthorizedQAStreamService",
             "QAEventLogStore",

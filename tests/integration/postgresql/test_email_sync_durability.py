@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from datetime import datetime, timezone
 import hashlib
 from types import SimpleNamespace
@@ -37,6 +37,12 @@ from spine.application.gmail_initial_snapshot import (
     GmailSnapshotMessageCommand,
     GmailSnapshotPage,
     gmail_snapshot_effect_key,
+)
+from spine.application.gmail_history_cursor_recovery import (
+    GmailHistoryCursorRecoveryCommand,
+    GmailHistoryCursorRecoveryCoordinator,
+    GmailHistoryCursorRecoveryProfile,
+    GmailHistoryCursorRecoveryState,
 )
 from spine.connectors.gmail_checkpoints import (
     decode_gmail_history_checkpoint,
@@ -113,6 +119,9 @@ from spine.connectors.yandex_mail_incremental import (
     encode_yandex_mail_incremental_checkpoint,
 )
 from spine.connectors.gmail_history import (
+    GmailHistoryPageRequest,
+    GmailHistoryProviderError,
+    GmailHistoryReader,
     GmailHistoryResult,
     GmailHistoryState,
     gmail_history_scope_digest,
@@ -1973,6 +1982,157 @@ async def test_postgresql_gmail_snapshot_crash_replays_every_durable_boundary(
     )
     assert sum(page.terminal for page in recovered.attempt.pages) == 1
     assert all(page.committed for page in recovered.attempt.pages)
+
+
+async def test_postgresql_gmail_history_cursor_recovery_preserves_old_cursor(
+    email_sync_repository,
+) -> None:
+    repository, *_ = email_sync_repository
+    snapshot, snapshot_command = _postgresql_gmail_snapshot(
+        repository,
+        attempt_key="issue-839-postgresql-recovery-snapshot",
+    )
+    history_applier = GmailIncrementalHistoryApplier(
+        snapshot.sync,
+        snapshot_command.scope,
+        _UnusedGmailHistoryFactory(),
+    )
+    stale = await history_applier.start(
+        attempt_key="issue-839-postgresql-stale-history",
+        start_history_id="98",
+    )
+
+    class _History404:
+        async def list_history(
+            self, request: GmailHistoryPageRequest
+        ) -> Mapping[str, object]:
+            del request
+            raise GmailHistoryProviderError(404)
+
+    history_404 = await GmailHistoryReader(
+        _History404(), scope=snapshot_command.scope, max_pages=1
+    ).read(start_history_id="98", max_results=10)
+    held = await history_applier.apply(
+        stale.attempt_id,
+        history_404,
+        start_history_id="98",
+    )
+    assert held.status is EmailSyncStatus.RECONCILIATION_REQUIRED
+    assert held.committed_checkpoint == "98"
+    recovery = GmailHistoryCursorRecoveryCoordinator(
+        sync=snapshot.sync,
+        reconciliation=snapshot,
+        profile=GmailHistoryCursorRecoveryProfile(
+            snapshot_page_size=snapshot_command.snapshot_page_size,
+            max_snapshot_pages=snapshot_command.max_snapshot_pages,
+            history_page_size=snapshot_command.history_page_size,
+            max_history_pages=snapshot_command.max_history_pages,
+            max_message_bytes=snapshot_command.max_message_bytes,
+            access_policy_version_id=snapshot_command.access_policy_version_id,
+        ),
+    )
+    recovery_command = GmailHistoryCursorRecoveryCommand(
+        scope=snapshot_command.scope,
+        stale_attempt_id=stale.attempt_id,
+        stale_checkpoint="98",
+    )
+
+    first = await recovery.reconcile(recovery_command)
+    replay = await recovery.reconcile(recovery_command)
+    fenced = await snapshot.sync.get_attempt(
+        stale.attempt_id,
+        workspace_id=snapshot_command.scope.workspace_id,
+        environment_id=snapshot_command.scope.environment_id,
+    )
+    successor = await snapshot.sync.get_attempt(
+        first.reconciliation_attempt_id,
+        workspace_id=snapshot_command.scope.workspace_id,
+        environment_id=snapshot_command.scope.environment_id,
+    )
+
+    assert first.state is GmailHistoryCursorRecoveryState.COMPLETE
+    assert replay == first
+    assert fenced.status is EmailSyncStatus.RECONCILIATION_REQUIRED
+    assert fenced.committed_checkpoint == "98"
+    assert successor.status is EmailSyncStatus.COMPLETE
+    assert successor.committed_checkpoint != "98"
+    assert [page.page_kind for page in successor.pages] == [
+        EmailSyncPageKind.HISTORY_BASELINE,
+        EmailSyncPageKind.SNAPSHOT_PAGE,
+        EmailSyncPageKind.SNAPSHOT_PAGE,
+        EmailSyncPageKind.HISTORY_DRAIN,
+        EmailSyncPageKind.AGGREGATE_CHECKPOINT,
+    ]
+    assert all(not page.lifecycle_receipts for page in successor.pages)
+
+
+async def test_postgresql_gmail_history_cursor_recovery_crash_replays_successor(
+    email_sync_repository,
+) -> None:
+    repository, *_ = email_sync_repository
+    crashing = _CrashAfterPostgreSQLPageOccurrence(
+        repository, EmailSyncPageKind.SNAPSHOT_PAGE, 1
+    )
+    snapshot, snapshot_command = _postgresql_gmail_snapshot(
+        crashing,
+        attempt_key="issue-839-postgresql-crash-recovery-snapshot",
+    )
+    history_applier = GmailIncrementalHistoryApplier(
+        snapshot.sync,
+        snapshot_command.scope,
+        _UnusedGmailHistoryFactory(),
+    )
+    stale = await history_applier.start(
+        attempt_key="issue-839-postgresql-crash-stale-history",
+        start_history_id="98",
+    )
+
+    class _History404:
+        async def list_history(
+            self, request: GmailHistoryPageRequest
+        ) -> Mapping[str, object]:
+            del request
+            raise GmailHistoryProviderError(404)
+
+    history_404 = await GmailHistoryReader(
+        _History404(), scope=snapshot_command.scope, max_pages=1
+    ).read(start_history_id="98", max_results=10)
+    await history_applier.apply(
+        stale.attempt_id,
+        history_404,
+        start_history_id="98",
+    )
+    recovery = GmailHistoryCursorRecoveryCoordinator(
+        sync=snapshot.sync,
+        reconciliation=snapshot,
+        profile=GmailHistoryCursorRecoveryProfile(
+            snapshot_page_size=snapshot_command.snapshot_page_size,
+            max_snapshot_pages=snapshot_command.max_snapshot_pages,
+            history_page_size=snapshot_command.history_page_size,
+            max_history_pages=snapshot_command.max_history_pages,
+            max_message_bytes=snapshot_command.max_message_bytes,
+            access_policy_version_id=snapshot_command.access_policy_version_id,
+        ),
+    )
+    recovery_command = GmailHistoryCursorRecoveryCommand(
+        scope=snapshot_command.scope,
+        stale_attempt_id=stale.attempt_id,
+        stale_checkpoint="98",
+    )
+
+    with pytest.raises(_PostgreSQLProcessCrash, match="snapshot_page:1"):
+        await recovery.reconcile(recovery_command)
+    recovered = await recovery.reconcile(recovery_command)
+
+    assert recovered.state is GmailHistoryCursorRecoveryState.COMPLETE
+    successor = await snapshot.sync.get_attempt(
+        recovered.reconciliation_attempt_id,
+        workspace_id=snapshot_command.scope.workspace_id,
+        environment_id=snapshot_command.scope.environment_id,
+    )
+    assert successor.status is EmailSyncStatus.COMPLETE
+    assert successor.committed_checkpoint != "98"
+    assert sum(page.terminal for page in successor.pages) == 1
 
 
 async def test_email_sync_migration_supports_downgrade_and_upgrade(

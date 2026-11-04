@@ -28,6 +28,12 @@ from spine.application.gmail_initial_snapshot import (
     GmailSnapshotPageRequest,
     gmail_snapshot_effect_key,
 )
+from spine.application.gmail_history_cursor_recovery import (
+    GmailHistoryCursorRecoveryCommand,
+    GmailHistoryCursorRecoveryCoordinator,
+    GmailHistoryCursorRecoveryProfile,
+    GmailHistoryCursorRecoveryState,
+)
 from spine.connectors.gmail_checkpoints import (
     decode_gmail_history_checkpoint,
     encode_gmail_history_checkpoint,
@@ -101,12 +107,20 @@ def test_command_rejects_multi_label_scope_without_complete_coverage_plan() -> N
 
 
 class Admission:
-    def __init__(self, *, stale_after: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        stale_after: int | None = None,
+        state: EmailSyncAdmissionState = EmailSyncAdmissionState.ALLOWED,
+    ) -> None:
         self.calls = 0
         self.stale_after = stale_after
+        self.state = state
 
     async def check(self, admission: EmailSyncAdmission) -> EmailSyncAdmissionState:
         del admission
+        if self.state is not EmailSyncAdmissionState.ALLOWED:
+            return self.state
         self.calls += 1
         if self.stale_after is not None and self.calls > self.stale_after:
             return EmailSyncAdmissionState.STALE_GENERATION
@@ -477,3 +491,218 @@ async def test_stale_generation_before_terminal_commit_requires_reconciliation()
     assert result.attempt.status is EmailSyncStatus.RECONCILIATION_REQUIRED
     assert result.attempt.committed_checkpoint is None
     assert not any(page.terminal and page.committed for page in result.attempt.pages)
+
+
+@pytest.mark.asyncio
+async def test_stale_history_cursor_recovery_reuses_no_gap_snapshot_protocol() -> None:
+    reader = ScriptedReader()
+    messages = CanonicalMessages()
+    snapshot = service(reader, messages)
+    stale = await snapshot.sync.create_attempt(
+        scope(),
+        attempt_key="gmail-incremental-stale",
+        initial_checkpoint="gmail-old-checkpoint",
+    )
+    await snapshot.sync.require_reconciliation(
+        stale.attempt_id,
+        workspace_id=scope().workspace_id,
+        environment_id=scope().environment_id,
+        failure_code="gmail_history_cursor_stale",
+    )
+    recovery = GmailHistoryCursorRecoveryCoordinator(
+        sync=snapshot.sync,
+        reconciliation=snapshot,
+        profile=GmailHistoryCursorRecoveryProfile(
+            snapshot_page_size=2,
+            max_snapshot_pages=3,
+            history_page_size=100,
+            max_history_pages=3,
+            max_message_bytes=8192,
+            access_policy_version_id=POLICY_ID,
+        ),
+    )
+
+    result = await recovery.reconcile(
+        GmailHistoryCursorRecoveryCommand(
+            scope=scope(),
+            stale_attempt_id=stale.attempt_id,
+            stale_checkpoint="gmail-old-checkpoint",
+        )
+    )
+    successor = await snapshot.sync.get_attempt(
+        result.reconciliation_attempt_id,
+        workspace_id=scope().workspace_id,
+        environment_id=scope().environment_id,
+    )
+    fenced = await snapshot.sync.get_attempt(
+        stale.attempt_id,
+        workspace_id=scope().workspace_id,
+        environment_id=scope().environment_id,
+    )
+
+    assert result.state is GmailHistoryCursorRecoveryState.COMPLETE
+    assert successor.status is EmailSyncStatus.COMPLETE
+    assert successor.committed_checkpoint is not None
+    assert successor.committed_checkpoint != "gmail-old-checkpoint"
+    assert fenced.status is EmailSyncStatus.RECONCILIATION_REQUIRED
+    assert fenced.committed_checkpoint == "gmail-old-checkpoint"
+    assert [page.page_kind for page in successor.pages] == [
+        EmailSyncPageKind.HISTORY_BASELINE,
+        EmailSyncPageKind.SNAPSHOT_PAGE,
+        EmailSyncPageKind.SNAPSHOT_PAGE,
+        EmailSyncPageKind.HISTORY_DRAIN,
+        EmailSyncPageKind.AGGREGATE_CHECKPOINT,
+    ]
+    assert not any(page.lifecycle_receipts for page in successor.pages)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ("partial_snapshot", "provider_outage"))
+async def test_stale_history_cursor_recovery_holds_cursor_without_false_deletion(
+    failure: str,
+) -> None:
+    reader = ScriptedReader()
+    if failure == "partial_snapshot":
+        second_page = encode_gmail_snapshot_page_checkpoint(scope(), "page-2")
+        reader.pages[second_page] = reader.pages[second_page].model_copy(
+            update={"complete": False, "error_code": "provider_unavailable"}
+        )
+    else:
+        reader.history = reader.history.model_copy(
+            update={
+                "state": GmailHistoryState.INCOMPLETE,
+                "terminal_history_id": None,
+                "error_code": "provider_unavailable",
+            }
+        )
+    snapshot = service(reader, CanonicalMessages())
+    stale = await snapshot.sync.create_attempt(
+        scope(), attempt_key=f"gmail-recovery-{failure}", initial_checkpoint="old"
+    )
+    await snapshot.sync.require_reconciliation(
+        stale.attempt_id,
+        workspace_id=scope().workspace_id,
+        environment_id=scope().environment_id,
+        failure_code="gmail_history_cursor_stale",
+    )
+    recovery = GmailHistoryCursorRecoveryCoordinator(
+        sync=snapshot.sync,
+        reconciliation=snapshot,
+        profile=GmailHistoryCursorRecoveryProfile(
+            snapshot_page_size=2,
+            max_snapshot_pages=3,
+            history_page_size=100,
+            max_history_pages=3,
+            max_message_bytes=8192,
+            access_policy_version_id=POLICY_ID,
+        ),
+    )
+
+    result = await recovery.reconcile(
+        GmailHistoryCursorRecoveryCommand(
+            scope=scope(), stale_attempt_id=stale.attempt_id, stale_checkpoint="old"
+        )
+    )
+    successor = await snapshot.sync.get_attempt(
+        result.reconciliation_attempt_id,
+        workspace_id=scope().workspace_id,
+        environment_id=scope().environment_id,
+    )
+
+    assert result.state is GmailHistoryCursorRecoveryState.INCOMPLETE
+    assert successor.status is EmailSyncStatus.RECONCILIATION_REQUIRED
+    assert successor.committed_checkpoint == "old"
+    assert not any(page.lifecycle_receipts for page in successor.pages)
+
+
+@pytest.mark.asyncio
+async def test_stale_history_cursor_recovery_revocation_blocks_provider_effects() -> None:
+    reader = ScriptedReader()
+    messages = CanonicalMessages()
+    admission = Admission()
+    snapshot = service(reader, messages, admission=admission)
+    stale = await snapshot.sync.create_attempt(
+        scope(), attempt_key="gmail-recovery-revoked", initial_checkpoint="old"
+    )
+    await snapshot.sync.require_reconciliation(
+        stale.attempt_id,
+        workspace_id=scope().workspace_id,
+        environment_id=scope().environment_id,
+        failure_code="gmail_history_cursor_stale",
+    )
+    admission.state = EmailSyncAdmissionState.REVOKED
+    recovery = GmailHistoryCursorRecoveryCoordinator(
+        sync=snapshot.sync,
+        reconciliation=snapshot,
+        profile=GmailHistoryCursorRecoveryProfile(
+            snapshot_page_size=2,
+            max_snapshot_pages=3,
+            history_page_size=100,
+            max_history_pages=3,
+            max_message_bytes=8192,
+            access_policy_version_id=POLICY_ID,
+        ),
+    )
+
+    result = await recovery.reconcile(
+        GmailHistoryCursorRecoveryCommand(
+            scope=scope(), stale_attempt_id=stale.attempt_id, stale_checkpoint="old"
+        )
+    )
+    fenced = await snapshot.sync.get_attempt(
+        stale.attempt_id,
+        workspace_id=scope().workspace_id,
+        environment_id=scope().environment_id,
+    )
+
+    assert result.state is GmailHistoryCursorRecoveryState.SUSPENDED
+    assert result.reconciliation_attempt_id is None
+    assert fenced.status is EmailSyncStatus.SUSPENDED
+    assert fenced.committed_checkpoint == "old"
+    assert messages.calls == []
+
+
+@pytest.mark.asyncio
+async def test_stale_history_cursor_recovery_retries_same_successor_after_crash() -> None:
+    reader = ScriptedReader()
+    repository = CrashAfterDurableSave("snapshot_page")
+    snapshot = service(reader, CanonicalMessages(), repository=repository)
+    stale = await snapshot.sync.create_attempt(
+        scope(), attempt_key="gmail-recovery-crash", initial_checkpoint="old"
+    )
+    await snapshot.sync.require_reconciliation(
+        stale.attempt_id,
+        workspace_id=scope().workspace_id,
+        environment_id=scope().environment_id,
+        failure_code="gmail_history_cursor_stale",
+    )
+    recovery = GmailHistoryCursorRecoveryCoordinator(
+        sync=snapshot.sync,
+        reconciliation=snapshot,
+        profile=GmailHistoryCursorRecoveryProfile(
+            snapshot_page_size=2,
+            max_snapshot_pages=3,
+            history_page_size=100,
+            max_history_pages=3,
+            max_message_bytes=8192,
+            access_policy_version_id=POLICY_ID,
+        ),
+    )
+    recovery_command = GmailHistoryCursorRecoveryCommand(
+        scope=scope(), stale_attempt_id=stale.attempt_id, stale_checkpoint="old"
+    )
+
+    with pytest.raises(SyntheticProcessCrash, match="after snapshot_page"):
+        await recovery.reconcile(recovery_command)
+    recovered = await recovery.reconcile(recovery_command)
+    replay = await recovery.reconcile(recovery_command)
+
+    assert recovered.state is GmailHistoryCursorRecoveryState.COMPLETE
+    assert replay == recovered
+    successor = await snapshot.sync.get_attempt(
+        recovered.reconciliation_attempt_id,
+        workspace_id=scope().workspace_id,
+        environment_id=scope().environment_id,
+    )
+    assert successor.status is EmailSyncStatus.COMPLETE
+    assert successor.committed_checkpoint != "old"

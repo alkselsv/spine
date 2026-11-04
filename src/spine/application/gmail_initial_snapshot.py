@@ -88,6 +88,7 @@ class GmailInitialSnapshotCommand(DefinitionModel):
     attempt_key: str = Field(
         min_length=1, max_length=255, pattern=r"^[A-Za-z0-9_.:-]+$"
     )
+    initial_checkpoint: str | None = Field(default=None, max_length=4096, repr=False)
     snapshot_page_size: int = Field(ge=1, le=500)
     max_snapshot_pages: int = Field(ge=1, le=10_000)
     history_page_size: int = Field(ge=1, le=500)
@@ -205,7 +206,11 @@ class GmailInitialSnapshotCoordinator:
         self, command: GmailInitialSnapshotCommand
     ) -> GmailInitialSnapshotResult:
         scope = command.scope
-        attempt = await self.sync.create_attempt(scope, attempt_key=command.attempt_key)
+        attempt = await self.sync.create_attempt(
+            scope,
+            attempt_key=command.attempt_key,
+            initial_checkpoint=command.initial_checkpoint,
+        )
         if attempt.status in {
             EmailSyncStatus.COMPLETE,
             EmailSyncStatus.RECONCILIATION_REQUIRED,

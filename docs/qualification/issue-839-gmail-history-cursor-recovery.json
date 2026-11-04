@@ -1,0 +1,22 @@
+{
+  "schema_version": "issue-839-gmail-history-cursor-recovery-evidence:v1",
+  "issue": 839,
+  "offline_result": "PASS",
+  "live_gmail_semantics": "NOT_VERIFIED",
+  "fixture_policy": "Synthetic Gmail cursors, history responses and PostgreSQL state only; no Gmail credentials, network calls, subjects, addresses, filenames or message content.",
+  "proved_transition": [
+    "404_history_cursor_is_typed_reconciliation_required",
+    "stale_checkpoint_is_preserved_on_the_fenced_attempt",
+    "bounded_baseline_snapshot_history_drain_publishes_one_successor_cursor",
+    "partial_or_revoked_recovery_does_not_create_tombstone_effects",
+    "duplicate_and_crash_retry_reuses_the_same_reconciliation_attempt"
+  ],
+  "durability_evidence": [
+    "tests/application/test_gmail_history_cursor_recovery.py",
+    "tests/application/test_gmail_initial_snapshot.py::test_stale_history_cursor_recovery_reuses_no_gap_snapshot_protocol",
+    "tests/application/test_gmail_initial_snapshot.py::test_stale_history_cursor_recovery_revocation_blocks_provider_effects",
+    "tests/integration/postgresql/test_email_sync_durability.py::test_postgresql_gmail_history_cursor_recovery_preserves_old_cursor",
+    "tests/integration/postgresql/test_email_sync_durability.py::test_postgresql_gmail_history_cursor_recovery_crash_replays_successor"
+  ],
+  "unverified_prerequisite": "A separately authorized live qualification must prove Gmail history retention and concurrent provider semantics for the exact account, scope, adapter and operating limits."
+}
