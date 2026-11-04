@@ -6,6 +6,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
+import json
 from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -30,6 +31,17 @@ class EmailSyncAdmissionState(str, Enum):
     REVOKED = "revoked"
     STALE_GENERATION = "stale_generation"
     DENIED = "denied"
+
+
+class EmailSyncPageKind(str, Enum):
+    """Stable semantic kind for durable provider coverage stages."""
+
+    PROVIDER_PAGE = "provider_page"
+    DISCOVERY = "discovery"
+    FOLDER_GENERATION = "folder_generation"
+    UID_PAGE = "uid_page"
+    FOLDER_COMPLETE = "folder_complete"
+    AGGREGATE_CHECKPOINT = "aggregate_checkpoint"
 
 
 class EmailSyncAdmission(DefinitionModel):
@@ -96,12 +108,16 @@ class EmailSyncPage(DefinitionModel):
 
     workspace_id: UUID
     environment_id: UUID
+    page_kind: EmailSyncPageKind = EmailSyncPageKind.PROVIDER_PAGE
     page_id: str = Field(
         min_length=1, max_length=255, pattern=r"^[A-Za-z0-9_.:-]+$"
     )
     requested_checkpoint: str | None = Field(default=None, max_length=4096)
     next_checkpoint: str | None = Field(default=None, max_length=4096)
     terminal: bool = False
+    publish_checkpoint: bool = True
+    evidence_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    evidence_cursor: str | None = Field(default=None, max_length=4096, repr=False)
     effects: tuple[EmailSyncEffect, ...]
 
     @model_validator(mode="after")
@@ -109,7 +125,15 @@ class EmailSyncPage(DefinitionModel):
         keys = tuple(effect.effect_key for effect in self.effects)
         if len(keys) != len(set(keys)):
             raise ValueError("page effect keys must be unique")
-        if self.requested_checkpoint == self.next_checkpoint and not self.terminal:
+        if not self.publish_checkpoint and (
+            self.next_checkpoint is not None or self.terminal
+        ):
+            raise ValueError("a staged page cannot publish a checkpoint or terminate")
+        if (
+            self.publish_checkpoint
+            and self.requested_checkpoint == self.next_checkpoint
+            and not self.terminal
+        ):
             raise ValueError("a nonterminal page must advance its opaque checkpoint")
         return self
 
@@ -117,6 +141,7 @@ class EmailSyncPage(DefinitionModel):
 class EmailSyncPageState(DefinitionModel):
     workspace_id: UUID
     environment_id: UUID
+    page_kind: EmailSyncPageKind = EmailSyncPageKind.PROVIDER_PAGE
     page_id: str = Field(
         min_length=1, max_length=255, pattern=r"^[A-Za-z0-9_.:-]+$"
     )
@@ -126,6 +151,9 @@ class EmailSyncPageState(DefinitionModel):
     # durable receipts and the coordinator is ready to publish the page.
     next_checkpoint: str | None = Field(default=None, max_length=4096)
     terminal: bool
+    publish_checkpoint: bool = True
+    evidence_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    evidence_cursor: str | None = Field(default=None, max_length=4096, repr=False)
     effects: tuple[EmailSyncEffect, ...]
     effect_receipts: tuple[EmailSyncEffectReceipt, ...] = ()
     committed: bool = False
@@ -266,6 +294,59 @@ class EmailSyncCoordinator:
     ) -> EmailSyncAttempt:
         """Apply a page idempotently and publish its opaque cursor after receipts."""
 
+        return await self._apply_page(
+            attempt_id,
+            page,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            supplied_receipts=(),
+        )
+
+    async def record_durable_page(
+        self,
+        attempt_id: UUID,
+        page: EmailSyncPage,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        receipts: tuple[EmailSyncEffectReceipt, ...],
+    ) -> EmailSyncAttempt:
+        """Record already-durable canonical receipts before cursor publication.
+
+        Provider-specific coordinators use this after their canonical ingestion
+        port has returned durable acceptance receipts. PostgreSQL still verifies
+        those acceptance references when a later aggregate checkpoint advances.
+        """
+
+        receipt_keys = tuple(receipt.effect_key for receipt in receipts)
+        effect_keys = tuple(effect.effect_key for effect in page.effects)
+        if (
+            len(receipt_keys) != len(set(receipt_keys))
+            or set(receipt_keys) != set(effect_keys)
+            or any(not receipt.durable for receipt in receipts)
+        ):
+            raise ValueError("durable page receipts must cover every effect exactly once")
+        return await self._apply_page(
+            attempt_id,
+            page,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            supplied_receipts=receipts,
+        )
+
+    async def _apply_page(
+        self,
+        attempt_id: UUID,
+        page: EmailSyncPage,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        supplied_receipts: tuple[EmailSyncEffectReceipt, ...],
+    ) -> EmailSyncAttempt:
+        supplied_by_key = {
+            receipt.effect_key: receipt for receipt in supplied_receipts
+        }
+
         attempt = await self._require(attempt_id, workspace_id, environment_id)
         known = self._page(attempt, page.page_id)
         if known is not None and not self._matches(known, page):
@@ -330,10 +411,14 @@ class EmailSyncCoordinator:
             known = EmailSyncPageState(
                 workspace_id=page.workspace_id,
                 environment_id=page.environment_id,
+                page_kind=page.page_kind,
                 page_id=page.page_id,
                 page_digest=self._page_digest(page),
                 requested_checkpoint=page.requested_checkpoint,
                 terminal=page.terminal,
+                publish_checkpoint=page.publish_checkpoint,
+                evidence_digest=page.evidence_digest,
+                evidence_cursor=page.evidence_cursor,
                 effects=page.effects,
             )
             attempt = await self._save(
@@ -349,10 +434,12 @@ class EmailSyncCoordinator:
             receipt = self._receipt_for(known, effect.effect_key)
             if receipt is not None and receipt.durable:
                 continue
-            try:
-                receipt = await self._effects.apply(effect)
-            except Exception:
-                return await self._set_incomplete(attempt, known)
+            receipt = supplied_by_key.get(effect.effect_key)
+            if receipt is None:
+                try:
+                    receipt = await self._effects.apply(effect)
+                except Exception:
+                    return await self._set_incomplete(attempt, known)
             if receipt.effect_key != effect.effect_key or not receipt.durable:
                 return await self._set_incomplete(attempt, known)
             known = known.model_copy(
@@ -369,6 +456,16 @@ class EmailSyncCoordinator:
         known = known.model_copy(
             update={"next_checkpoint": page.next_checkpoint, "committed": True}
         )
+        if not known.publish_checkpoint:
+            return await self._replace_page(
+                attempt.model_copy(
+                    update={
+                        "status": EmailSyncStatus.RUNNING,
+                        "failure_code": None,
+                    }
+                ),
+                known,
+            )
         attempt = attempt.model_copy(
             update={
                 "committed_checkpoint": known.next_checkpoint,
@@ -381,6 +478,61 @@ class EmailSyncCoordinator:
             }
         )
         return await self._replace_page(attempt, known)
+
+    async def mark_incomplete(
+        self,
+        attempt_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        failure_code: str,
+    ) -> EmailSyncAttempt:
+        """Hold the aggregate checkpoint after incomplete provider coverage."""
+
+        self._validate_failure_code(failure_code)
+        attempt = await self._require(attempt_id, workspace_id, environment_id)
+        if attempt.status in {
+            EmailSyncStatus.COMPLETE,
+            EmailSyncStatus.SUSPENDED,
+            EmailSyncStatus.RECONCILIATION_REQUIRED,
+            EmailSyncStatus.FAILED,
+        }:
+            return attempt
+        return await self._save(
+            attempt.model_copy(
+                update={
+                    "status": EmailSyncStatus.INCOMPLETE,
+                    "failure_code": failure_code,
+                }
+            )
+        )
+
+    async def require_reconciliation(
+        self,
+        attempt_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        failure_code: str,
+    ) -> EmailSyncAttempt:
+        """Fence an attempt whose provider or authorization generation changed."""
+
+        self._validate_failure_code(failure_code)
+        attempt = await self._require(attempt_id, workspace_id, environment_id)
+        if attempt.status in {
+            EmailSyncStatus.COMPLETE,
+            EmailSyncStatus.SUSPENDED,
+            EmailSyncStatus.FAILED,
+        }:
+            return attempt
+        return await self._save(
+            attempt.model_copy(
+                update={
+                    "status": EmailSyncStatus.RECONCILIATION_REQUIRED,
+                    "failure_code": failure_code,
+                }
+            )
+        )
 
     async def cancel(
         self,
@@ -570,7 +722,15 @@ class EmailSyncCoordinator:
 
     @staticmethod
     def _page_digest(page: EmailSyncPage) -> str:
-        return hashlib.sha256(page.model_dump_json().encode("utf-8")).hexdigest()
+        payload = page.model_dump(mode="json")
+        if page.page_kind is EmailSyncPageKind.PROVIDER_PAGE:
+            # Preserve the digest of pages created before the semantic kind was
+            # introduced; provider-specific kinds remain part of new identity.
+            payload.pop("page_kind")
+        encoded = json.dumps(
+            payload, separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
     @staticmethod
     def _receipt_for(
@@ -601,6 +761,7 @@ __all__ = [
     "EmailSyncEffectPort",
     "EmailSyncEffectReceipt",
     "EmailSyncPage",
+    "EmailSyncPageKind",
     "EmailSyncPageState",
     "EmailSyncRepository",
     "EmailSyncStatus",
