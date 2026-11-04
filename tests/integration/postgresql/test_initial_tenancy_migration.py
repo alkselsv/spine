@@ -1413,6 +1413,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "private_asr_source_fences",
         "private_asr_report_sources",
         "private_asr_aggregate_exports",
+        "private_asr_corpus_manifests",
+        "private_asr_corpus_releases",
     }
     tables = set(
         (
@@ -1451,7 +1453,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
                     "'crm_relationship_lifecycle_events','crm_relationship_eligibility_heads',"
                     "'crm_relationship_idempotency','crm_relationship_v2_state',"
                     "'private_asr_artifacts','private_asr_source_fences',"
-                    "'private_asr_report_sources','private_asr_aggregate_exports'))"
+                    "'private_asr_report_sources','private_asr_aggregate_exports',"
+                    "'private_asr_corpus_manifests','private_asr_corpus_releases'))"
                 )
             )
         ).scalars()
@@ -1479,7 +1482,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
                      "'crm_relationship_lifecycle_events','crm_relationship_eligibility_heads',"
                      "'crm_relationship_idempotency','crm_relationship_v2_state',"
                      "'private_asr_artifacts','private_asr_source_fences',"
-                     "'private_asr_report_sources','private_asr_aggregate_exports')")
+                     "'private_asr_report_sources','private_asr_aggregate_exports',"
+                     "'private_asr_corpus_manifests','private_asr_corpus_releases')")
             )
         ).scalars()
     )
@@ -1508,6 +1512,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         and (
             row.relname not in policy_tables
             or row.relname.startswith("crm_relationship_")
+            or row.relname.startswith("private_asr_corpus_")
         )
     }
     policies = {
@@ -1538,6 +1543,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
             and row.table_name != "crm_relationship_v2_state"
         )
         or row.table_name.startswith("crm_relationship_")
+        or row.table_name.startswith("private_asr_corpus_")
     }
     privilege_names = ("select_ok", "insert_ok", "update_ok", "delete_ok")
     privileges = {
@@ -1562,6 +1568,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
             row.table_name.startswith("crm_relationship_")
             and row.table_name != "crm_relationship_v2_state"
         )
+        or row.table_name.startswith("private_asr_corpus_")
     }
     receipt_update_columns = {
         row.column_name
@@ -2773,6 +2780,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "email_sync_state_observations": (True, True),
         "email_message_artifacts": (True, True),
         "email_attachment_artifacts": (True, True),
+        "private_asr_corpus_manifests": (True, True),
+        "private_asr_corpus_releases": (True, True),
         "email_attachment_processing_receipts": (True, True),
         "work_items": (True, True),
         "workflow_runs": (True, True),
@@ -2891,6 +2900,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
     standard_tenant_rls_tables = tenant_rls_tables - {
         "audit_events",
         "outbox_deliveries",
+        "private_asr_corpus_manifests",
+        "private_asr_corpus_releases",
     }
     assert set(policies) == {
         (table_name, f"pol_{table_name}_{policy_kind}"[:63])
@@ -2904,6 +2915,10 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         ("outbox_deliveries", "pol_outbox_deliveries_tenant_read"),
         ("outbox_deliveries", "pol_outbox_deliveries_dispatcher"),
         ("outbox_deliveries", "pol_outbox_deliveries_migration_maintenance"),
+        ("private_asr_corpus_manifests", "pol_private_asr_corpus_manifests_tenant_isolation"),
+        ("private_asr_corpus_manifests", "pol_private_asr_corpus_manifests_migration_maintenance"),
+        ("private_asr_corpus_releases", "pol_private_asr_corpus_releases_tenant_isolation"),
+        ("private_asr_corpus_releases", "pol_private_asr_corpus_releases_migration_maintenance"),
     }
     for table_name in standard_tenant_rls_tables:
         tenant_policy = policies[(table_name, f"pol_{table_name}_tenant_isolation")]
@@ -2914,6 +2929,13 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
             (MIGRATION_ROLE,),
             "true",
             "true",
+        )
+    for table_name in ("private_asr_corpus_manifests", "private_asr_corpus_releases"):
+        tenant_policy = policies[(table_name, f"pol_{table_name}_tenant_isolation")]
+        assert tenant_policy[0] == (RUNTIME_ROLE,)
+        assert tenant_policy[1] is not None and tenant_policy[2] is None
+        assert policies[(table_name, f"pol_{table_name}_migration_maintenance")] == (
+            (MIGRATION_ROLE,), "true", "true",
         )
     audit_read = policies[("audit_events", "pol_audit_events_tenant_read")]
     audit_append = policies[("audit_events", "pol_audit_events_tenant_append")]
@@ -2977,6 +2999,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "email_sync_state_observations": (True, True, False, False),
         "email_message_artifacts": (True, True, False, False),
         "email_attachment_artifacts": (True, True, False, False),
+        "private_asr_corpus_manifests": (True, False, False, False),
+        "private_asr_corpus_releases": (True, False, False, False),
         "email_attachment_processing_receipts": (True, True, False, False),
         "idempotency_receipts": (True, True, False, False),
         "initial_workspace_bootstrap": (False, False, False, False),
@@ -3552,6 +3576,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "email_message_artifacts",
         "email_attachment_artifacts",
         "email_attachment_processing_receipts",
+        "private_asr_corpus_manifests",
+        "private_asr_corpus_releases",
     }
     assert constraints == {
         "alembic_version_pkc",
@@ -3652,6 +3678,16 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
     } | AUTHORIZATION_DIRECTORY_CONSTRAINTS | AUDIT_CONSTRAINTS | DELIVERY_CONSTRAINTS | ADMISSION_CONSTRAINTS | {
         "uq_audit_events_tenant_event",
         "uq_outbox_intents_tenant_event",
+        "pk_private_asr_corpus_manifests",
+        "uq_private_asr_corpus_manifest_version",
+        "ck_private_asr_corpus_manifests_ck_private_asr_corpus_m_479d",
+        "ck_private_asr_corpus_manifests_ck_private_asr_corpus_m_8e2d",
+        "pk_private_asr_corpus_releases",
+        "fk_private_asr_corpus_release_manifest",
+        "ck_private_asr_corpus_releases_ck_private_asr_corpus_re_5a09",
+        "ck_private_asr_corpus_releases_ck_private_asr_corpus_re_5ab2",
+        "ck_private_asr_corpus_releases_ck_private_asr_corpus_re_f139",
+        "ck_private_asr_corpus_releases_ck_private_asr_corpus_re_808b",
     }
     assert set(columns) == {
         ("alembic_version", "version_num"),
@@ -3822,6 +3858,25 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         ("email_attachment_processing_receipts", "receipt_digest"),
         ("email_attachment_processing_receipts", "record"),
         ("email_attachment_processing_receipts", "completed_at"),
+        ("private_asr_corpus_manifests", "workspace_id"),
+        ("private_asr_corpus_manifests", "environment_id"),
+        ("private_asr_corpus_manifests", "purpose"),
+        ("private_asr_corpus_manifests", "dataset_id"),
+        ("private_asr_corpus_manifests", "manifest_id"),
+        ("private_asr_corpus_manifests", "manifest_version"),
+        ("private_asr_corpus_manifests", "manifest_sha256"),
+        ("private_asr_corpus_manifests", "manifest_payload"),
+        ("private_asr_corpus_manifests", "created_at"),
+        ("private_asr_corpus_releases", "workspace_id"),
+        ("private_asr_corpus_releases", "environment_id"),
+        ("private_asr_corpus_releases", "purpose"),
+        ("private_asr_corpus_releases", "dataset_id"),
+        ("private_asr_corpus_releases", "generation"),
+        ("private_asr_corpus_releases", "manifest_id"),
+        ("private_asr_corpus_releases", "manifest_version"),
+        ("private_asr_corpus_releases", "manifest_sha256"),
+        ("private_asr_corpus_releases", "status"),
+        ("private_asr_corpus_releases", "updated_at"),
     } | AUTHORIZATION_DIRECTORY_COLUMNS | AUDIT_COLUMNS | DELIVERY_COLUMNS | ADMISSION_COLUMNS
     assert columns[("workspaces", "id")] == ("uuid", "NO", None)
     assert columns[("environments", "id")] == ("uuid", "NO", None)
@@ -3882,6 +3937,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "uq_email_attachment_artifacts_part_profile",
         "pk_email_attachment_processing_receipts",
         "uq_email_attachment_processing_receipts_artifact_profile",
+        "pk_private_asr_corpus_manifests",
+        "uq_private_asr_corpus_manifest_version",
+        "pk_private_asr_corpus_releases",
         "uq_email_sync_attempts_key",
         "ix_email_sync_attempts_active",
         "pk_context_profiles",
@@ -4356,7 +4414,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'projection_drifts', 'drive_snapshot_runs', 'drive_change_runs', 'yandex_disk_reconciliation_runs', 'mounted_fs_reconciliation_runs', 'mounted_fs_removal_policies', 'mounted_fs_removal_authorities', 'google_sheets_sync_runs', 'google_sheets_identity_dispositions', 'drive_lifecycle_decisions', 'google_sheets_absence_candidates', 'google_sheets_removal_decisions', 'register_link_claims', 'register_association_acceptances', 'original_upload_records', "
                         "'qa_agent_artifacts', 'qa_agent_results', 'email_sync_attempts', 'email_sync_pages', "
                         "'email_sync_effect_receipts', 'email_sync_state_observations', 'email_message_artifacts', "
-                        "'email_attachment_artifacts', 'private_asr_artifacts', 'private_asr_source_fences', "
+                        "'email_attachment_artifacts', "
+                        "'private_asr_artifacts', 'private_asr_source_fences', "
+                        "'private_asr_corpus_manifests', 'private_asr_corpus_releases', "
                         "'private_asr_report_sources', 'private_asr_aggregate_exports', "
                         "'email_attachment_processing_receipts')"
                     )
@@ -4424,6 +4484,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "email_message_artifacts": (True, True),
         "email_attachment_artifacts": (True, True),
         "email_attachment_processing_receipts": (True, True),
+        "private_asr_corpus_manifests": (True, True),
+        "private_asr_corpus_releases": (True, True),
         "idempotency_receipts": (True, True),
         "initial_workspace_bootstrap": (True, True),
         "outbox_intents": (True, True),
@@ -4545,7 +4607,12 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "qa_agent_artifacts": (True, True),
             "qa_agent_results": (True, True),
         }
-    standard_tables = set(tables) - {"outbox_deliveries", "crm_relationship_v2_state"}
+    standard_tables = set(tables) - {
+        "outbox_deliveries",
+        "crm_relationship_v2_state",
+        "private_asr_corpus_manifests",
+        "private_asr_corpus_releases",
+    }
     assert set(policies) == {
         (table_name, f"pol_{table_name}_{policy_kind}"[:63])
         for table_name in standard_tables
@@ -4558,6 +4625,22 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         (
             "private_asr_aggregate_exports",
             "pol_private_asr_aggregate_exports_live_report",
+        ),
+        (
+            "private_asr_corpus_manifests",
+            "pol_private_asr_corpus_manifests_tenant_isolation",
+        ),
+        (
+            "private_asr_corpus_manifests",
+            "pol_private_asr_corpus_manifests_migration_maintenance",
+        ),
+        (
+            "private_asr_corpus_releases",
+            "pol_private_asr_corpus_releases_tenant_isolation",
+        ),
+        (
+            "private_asr_corpus_releases",
+            "pol_private_asr_corpus_releases_migration_maintenance",
         ),
     }
     for table_name in standard_tables:
@@ -4587,6 +4670,19 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             (table_name, f"pol_{table_name}_migration_maintenance"[:63])
         ]
         assert maintenance == ([MIGRATION_ROLE], "true", "true")
+    for table_name in (
+        "private_asr_corpus_manifests",
+        "private_asr_corpus_releases",
+    ):
+        tenant_policy = policies[(table_name, f"pol_{table_name}_tenant_isolation")]
+        assert tenant_policy[0] == [RUNTIME_ROLE]
+        assert tenant_policy[1] is not None
+        assert tenant_policy[2] is None
+        assert policies[(table_name, f"pol_{table_name}_migration_maintenance")] == (
+            [MIGRATION_ROLE],
+            "true",
+            "true",
+        )
     assert policies[("outbox_intents", "pol_outbox_intents_dispatcher_read")][0] == [
         DISPATCHER_ROLE
     ]
@@ -5978,6 +6074,7 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20270106_105_private_asr_retention_disposition.py",
         "20270107_106_private_asr_aggregate_tombstone.py",
         "20270108_107_email_attachment_processing.py",
+        "20270109_108_private_asr_manifest_authority.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "transactional_failure_probe.py").write_text(

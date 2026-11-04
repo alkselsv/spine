@@ -15,7 +15,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 import pytest
 import pytest_asyncio
 from pydantic import SecretStr
-from sqlalchemy import event, func, insert, select, text, update
+from sqlalchemy import delete, event, func, insert, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
@@ -2624,6 +2624,640 @@ async def test_postgresql_private_asr_report_rejects_manifest_lineage_mismatch(
         ))).scalar_one_or_none()
     assert report_count == 0
     assert success_receipt is None
+
+
+async def test_postgresql_trusted_manifest_authority_resolves_exact_current_release(
+    private_asr_database: _Database,
+) -> None:
+    import hashlib
+    import json
+
+    from spine.infrastructure.private_asr.manifest_authority import (
+        PostgreSQLPrivateASRManifestAuthority,
+        private_asr_corpus_manifests,
+        private_asr_corpus_releases,
+    )
+
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799810)
+    binding = prepared.bindings[0]
+    manifest_id = synthetic_uuid(799811)
+    payload = {
+        "dataset_id": str(binding.dataset_id),
+        "version": prepared.report.manifest_version,
+        "workspace_id": str(prepared.case.source.workspace_id),
+        "environment_id": str(prepared.case.source.environment_id),
+        "purpose": "asr_model_evaluation",
+        "records": [{
+            "record_id": str(binding.record_id),
+            "workspace_id": str(prepared.case.source.workspace_id),
+            "environment_id": str(prepared.case.source.environment_id),
+            "split": binding.split.value,
+            "source_binding": {
+                "source_object_id": str(binding.source_object_id),
+                "source_revision_id": str(binding.source_revision_id),
+                "source_revision_digest": binding.source_revision_digest,
+            },
+        }],
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    prepared.report = prepared.report.model_copy(update={"manifest_sha256": digest})
+    prepared.store._manifest_lineage = PostgreSQLPrivateASRManifestAuthority()
+    scope = prepared.case.source
+    async with private_asr_database.migration.begin() as connection:
+        await connection.execute(insert(private_asr_corpus_manifests).values(
+            workspace_id=scope.workspace_id, environment_id=scope.environment_id,
+            purpose="asr_model_evaluation", dataset_id=binding.dataset_id,
+            manifest_id=manifest_id, manifest_version=prepared.report.manifest_version,
+            manifest_sha256=digest, manifest_payload=payload, created_at=NOW,
+        ))
+        await connection.execute(insert(private_asr_corpus_releases).values(
+            workspace_id=scope.workspace_id, environment_id=scope.environment_id,
+            purpose="asr_model_evaluation", dataset_id=binding.dataset_id,
+            generation=1, manifest_id=manifest_id,
+            manifest_version=prepared.report.manifest_version,
+            manifest_sha256=digest, status="released", updated_at=NOW,
+        ))
+
+    stored = await _commit_synthetic_report(prepared, idempotency_key="trusted-manifest-release")
+    assert stored.report_ref.reference_id
+
+    async with private_asr_database.migration.begin() as connection:
+        await connection.execute(update(private_asr_corpus_releases).where(
+            private_asr_corpus_releases.c.workspace_id == scope.workspace_id,
+            private_asr_corpus_releases.c.environment_id == scope.environment_id,
+            private_asr_corpus_releases.c.dataset_id == binding.dataset_id,
+        ).values(generation=2, manifest_id=None, manifest_version=None,
+                 manifest_sha256=None, status="withdrawn", updated_at=NOW))
+    with pytest.raises(PrivateASRStorageDenied):
+        await _commit_synthetic_report(prepared, idempotency_key="withdrawn-manifest-release")
+
+
+async def _prepare_race_manifest_case(
+    private_asr_database: _Database, *, seed: int, mutation: str | None = None,
+) -> SimpleNamespace:
+    import hashlib
+    import json
+
+    from spine.infrastructure.private_asr.manifest_authority import (
+        PostgreSQLPrivateASRManifestAuthority,
+        private_asr_corpus_manifests,
+        private_asr_corpus_releases,
+    )
+
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=seed)
+    binding = prepared.bindings[0]
+    manifest_id = synthetic_uuid(seed + 1)
+    payload = {
+        "dataset_id": str(binding.dataset_id),
+        "version": prepared.report.manifest_version,
+        "workspace_id": str(prepared.case.source.workspace_id),
+        "environment_id": str(prepared.case.source.environment_id),
+        "purpose": "asr_model_evaluation",
+        "records": [{
+            "record_id": str(binding.record_id),
+            "workspace_id": str(prepared.case.source.workspace_id),
+            "environment_id": str(prepared.case.source.environment_id),
+            "split": binding.split.value,
+            "source_binding": {
+                "source_object_id": str(binding.source_object_id),
+                "source_revision_id": str(binding.source_revision_id),
+                "source_revision_digest": binding.source_revision_digest,
+            },
+        }],
+    }
+    record = payload["records"][0]
+    other_uuid = str(synthetic_uuid(seed + 700))
+    if mutation == "payload_missing_record":
+        payload["records"] = []
+    elif mutation == "payload_duplicate_record":
+        payload["records"].append(dict(record))
+    elif mutation == "payload_source_object":
+        record["source_binding"]["source_object_id"] = other_uuid
+    elif mutation == "payload_source_revision":
+        record["source_binding"]["source_revision_id"] = other_uuid
+    elif mutation == "payload_revision_digest":
+        record["source_binding"]["source_revision_digest"] = "f" * 64
+    elif mutation == "payload_split":
+        record["split"] = CorpusSplit.QUALIFICATION.value
+    elif mutation == "payload_record_workspace":
+        record["workspace_id"] = other_uuid
+    elif mutation == "payload_record_environment":
+        record["environment_id"] = other_uuid
+    elif mutation == "payload_dataset":
+        payload["dataset_id"] = other_uuid
+    elif mutation == "payload_version":
+        payload["version"] = "synthetic-manifest:unexpected"
+    elif mutation == "payload_workspace":
+        payload["workspace_id"] = other_uuid
+    elif mutation == "payload_environment":
+        payload["environment_id"] = other_uuid
+    elif mutation == "payload_purpose":
+        payload["purpose"] = "contract_test"
+    digest = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    stored_digest = "f" * 64 if mutation == "payload_digest_mismatch" else digest
+    prepared.report = prepared.report.model_copy(update={"manifest_sha256": stored_digest})
+    prepared.store._manifest_lineage = PostgreSQLPrivateASRManifestAuthority()
+    scope = prepared.case.source
+    # The migration-role connection is the isolated privileged governance fixture;
+    # publication below always uses prepared.runtime_sessions (spine_runtime).
+    async with private_asr_database.migration.begin() as connection:
+        await connection.execute(insert(private_asr_corpus_manifests).values(
+            workspace_id=scope.workspace_id, environment_id=scope.environment_id,
+            purpose="asr_model_evaluation", dataset_id=binding.dataset_id,
+            manifest_id=manifest_id, manifest_version=prepared.report.manifest_version,
+            manifest_sha256=stored_digest, manifest_payload=payload, created_at=NOW,
+        ))
+        await connection.execute(insert(private_asr_corpus_releases).values(
+            workspace_id=scope.workspace_id, environment_id=scope.environment_id,
+            purpose="asr_model_evaluation", dataset_id=binding.dataset_id,
+            generation=1, manifest_id=manifest_id,
+            manifest_version=prepared.report.manifest_version,
+            manifest_sha256=stored_digest, status="released", updated_at=NOW,
+        ))
+    return prepared
+
+
+async def _wait_for_release_advisory_wait(
+    private_asr_database: _Database, prepared: SimpleNamespace,
+) -> None:
+    identity = (
+        f"{prepared.case.source.workspace_id}:{prepared.case.source.environment_id}:"
+        f"asr_model_evaluation:{prepared.report.dataset_id}"
+    )
+    statement = text("""
+        WITH target AS (
+            SELECT pg_catalog.hashtextextended(:identity, 811) AS key
+        )
+        SELECT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_locks AS lock, target
+            WHERE lock.locktype = 'advisory'
+              AND lock.granted IS FALSE
+              AND lock.classid = (((target.key >> 32) & 4294967295)::oid)
+              AND lock.objid = ((target.key & 4294967295)::oid)
+              AND lock.objsubid = 1
+        )
+    """)
+    async with private_asr_database.migration.connect() as observer:
+        async def wait_until_blocked() -> None:
+            while True:
+                blocked = await observer.scalar(statement, {"identity": identity})
+                if blocked:
+                    return
+                # Yield to the lock waiter without introducing a timing delay.
+                await asyncio.sleep(0)
+
+        try:
+            await asyncio.wait_for(wait_until_blocked(), timeout=10)
+        except asyncio.TimeoutError:
+            raise AssertionError("expected PostgreSQL advisory lock waiter was not observed") from None
+
+
+async def _assert_authority_denies_report_without_side_effects(
+    prepared: SimpleNamespace, *, idempotency_key: str,
+) -> None:
+    from spine.infrastructure.private_asr.manifest_authority import (
+        PostgreSQLPrivateASRManifestAuthority,
+    )
+
+    assert type(prepared.store._manifest_lineage) is PostgreSQLPrivateASRManifestAuthority
+    with pytest.raises(PrivateASRStorageDenied) as denied:
+        await _commit_synthetic_report(prepared, idempotency_key=idempotency_key)
+    assert str(denied.value) == "Private ASR report lineage rejected."
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        report_count = (await session.execute(select(func.count()).select_from(
+            private_asr_artifacts
+        ).where(private_asr_artifacts.c.idempotency_key == idempotency_key))).scalar_one()
+        success_audit = (await session.execute(select(audit_events.c.audit_event_id).where(
+            audit_events.c.audit_event_id == prepared.report_receipt_ref.reference_id,
+        ))).scalar_one_or_none()
+    assert report_count == 0
+    assert success_audit is None
+
+
+@pytest.mark.parametrize("manifest_case", (
+    "report_digest_substituted",
+    "report_version_substituted",
+    "report_unknown_dataset",
+    "payload_digest_mismatch",
+    "payload_missing_record",
+    "payload_duplicate_record",
+    "payload_source_object",
+    "payload_source_revision",
+    "payload_revision_digest",
+    "payload_split",
+    "payload_record_workspace",
+    "payload_record_environment",
+    "payload_dataset",
+    "payload_version",
+    "payload_workspace",
+    "payload_environment",
+    "payload_purpose",
+    "caller_record_unknown",
+))
+async def test_postgresql_trusted_manifest_negative_cases_deny_before_publication(
+    private_asr_database: _Database,
+    manifest_case: str,
+) -> None:
+    seed = 799900 + (
+        "report_digest_substituted report_version_substituted report_unknown_dataset "
+        "payload_digest_mismatch payload_missing_record payload_duplicate_record "
+        "payload_source_object payload_source_revision payload_revision_digest "
+        "payload_split payload_record_workspace payload_record_environment payload_dataset "
+        "payload_version payload_workspace payload_environment payload_purpose caller_record_unknown"
+    ).split().index(manifest_case)
+    mutation = None if manifest_case.startswith("report_") or manifest_case == "caller_record_unknown" else manifest_case
+    prepared = await _prepare_race_manifest_case(
+        private_asr_database, seed=seed, mutation=mutation,
+    )
+    if manifest_case == "report_digest_substituted":
+        prepared.report = prepared.report.model_copy(update={"manifest_sha256": "e" * 64})
+    elif manifest_case == "report_version_substituted":
+        prepared.report = prepared.report.model_copy(update={
+            "manifest_version": "synthetic-manifest:stale",
+        })
+    elif manifest_case == "report_unknown_dataset":
+        unknown_dataset = synthetic_uuid(seed + 701)
+        prepared.report = prepared.report.model_copy(update={"dataset_id": unknown_dataset})
+        prepared.bindings = tuple(
+            binding.model_copy(update={"dataset_id": unknown_dataset})
+            for binding in prepared.bindings
+        )
+    elif manifest_case == "caller_record_unknown":
+        unknown_record = synthetic_uuid(seed + 702)
+        prepared.bindings = tuple(
+            binding.model_copy(update={"record_id": unknown_record})
+            for binding in prepared.bindings
+        )
+        outcome = prepared.report.outcomes[0]
+        prepared.report = prepared.report.model_copy(update={
+            "outcomes": (outcome.model_copy(update={
+                "record_ref": outcome.record_ref.model_copy(update={"reference_id": unknown_record}),
+            }),),
+        })
+    await _assert_authority_denies_report_without_side_effects(
+        prepared, idempotency_key=f"authority-denial-{manifest_case}",
+    )
+
+
+@pytest.mark.parametrize("release_case", ("missing", "withdrawn", "superseded", "other_digest"))
+async def test_postgresql_trusted_manifest_release_negative_cases_deny_publication(
+    private_asr_database: _Database,
+    release_case: str,
+) -> None:
+    import hashlib
+    import json
+
+    from spine.infrastructure.private_asr.manifest_authority import (
+        private_asr_corpus_manifests,
+        private_asr_corpus_releases,
+    )
+
+    seed = 799930 + ("missing withdrawn superseded other_digest".split().index(release_case))
+    prepared = await _prepare_race_manifest_case(private_asr_database, seed=seed)
+    workspace_id = prepared.case.source.workspace_id
+    environment_id = prepared.case.source.environment_id
+    dataset_id = prepared.report.dataset_id
+    async with private_asr_database.migration.begin() as connection:
+        release_where = (
+            private_asr_corpus_releases.c.workspace_id == workspace_id,
+            private_asr_corpus_releases.c.environment_id == environment_id,
+            private_asr_corpus_releases.c.dataset_id == dataset_id,
+        )
+        if release_case == "missing":
+            await connection.execute(delete(private_asr_corpus_releases).where(*release_where))
+        elif release_case == "withdrawn":
+            await connection.execute(update(private_asr_corpus_releases).where(*release_where).values(
+                generation=2, manifest_id=None, manifest_version=None,
+                manifest_sha256=None, status="withdrawn", updated_at=NOW,
+            ))
+        elif release_case == "other_digest":
+            await connection.execute(update(private_asr_corpus_releases).where(*release_where).values(
+                generation=2, manifest_sha256="e" * 64, updated_at=NOW,
+            ))
+        else:
+            current = (await connection.execute(select(
+                private_asr_corpus_manifests.c.manifest_id,
+                private_asr_corpus_manifests.c.manifest_payload,
+            ).where(
+                private_asr_corpus_manifests.c.workspace_id == workspace_id,
+                private_asr_corpus_manifests.c.environment_id == environment_id,
+                private_asr_corpus_manifests.c.dataset_id == dataset_id,
+                private_asr_corpus_manifests.c.manifest_version == prepared.report.manifest_version,
+            ))).mappings().one()
+            new_payload = dict(current["manifest_payload"])
+            new_payload["version"] = "synthetic-manifest:replacement"
+            new_digest = hashlib.sha256(
+                json.dumps(new_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            new_manifest_id = synthetic_uuid(seed + 703)
+            await connection.execute(insert(private_asr_corpus_manifests).values(
+                workspace_id=workspace_id, environment_id=environment_id,
+                purpose="asr_model_evaluation", dataset_id=dataset_id,
+                manifest_id=new_manifest_id, manifest_version=new_payload["version"],
+                manifest_sha256=new_digest, manifest_payload=new_payload, created_at=NOW,
+            ))
+            await connection.execute(update(private_asr_corpus_releases).where(*release_where).values(
+                generation=2, manifest_id=new_manifest_id,
+                manifest_version=new_payload["version"], manifest_sha256=new_digest,
+                status="released", updated_at=NOW,
+            ))
+    await _assert_authority_denies_report_without_side_effects(
+        prepared, idempotency_key=f"release-denial-{release_case}",
+    )
+
+
+@pytest.mark.parametrize("scope_case", ("workspace", "environment", "purpose"))
+async def test_postgresql_trusted_manifest_authority_denies_wrong_scope_or_purpose(
+    private_asr_database: _Database,
+    scope_case: str,
+) -> None:
+    from spine.infrastructure.private_asr.manifest_authority import (
+        PostgreSQLPrivateASRManifestAuthority,
+    )
+
+    scope_seed = 799940 + 10 * ("workspace environment purpose".split().index(scope_case))
+    prepared = await _prepare_race_manifest_case(private_asr_database, seed=scope_seed)
+    if scope_case == "workspace":
+        scope = EnvironmentScope(
+            workspace_id=synthetic_uuid(scope_seed + 1),
+            environment_id=prepared.case.source.environment_id,
+        )
+        purpose = PersistencePurpose("asr_model_evaluation")
+    elif scope_case == "environment":
+        scope = EnvironmentScope(
+            workspace_id=prepared.case.source.workspace_id,
+            environment_id=synthetic_uuid(scope_seed + 2),
+        )
+        purpose = PersistencePurpose("asr_model_evaluation")
+    else:
+        scope = EnvironmentScope(
+            workspace_id=prepared.case.source.workspace_id,
+            environment_id=prepared.case.source.environment_id,
+        )
+        purpose = PersistencePurpose("contract_test")
+    context = prepared.boundary.worker(
+        scope=scope,
+        service_principal_id=synthetic_uuid(scope_seed + 3),
+        purpose=purpose,
+        operation=PersistenceOperation("run_private_asr_evaluation"),
+        trace_id=synthetic_uuid(scope_seed + 4),
+    )
+    resolver = prepared.store._manifest_lineage
+    assert type(resolver) is PostgreSQLPrivateASRManifestAuthority
+    async with prepared.runtime_sessions() as session, session.begin():
+        if scope_case == "purpose":
+            await session.execute(text("select set_config('spine.workspace_id', :value, true)"), {
+                "value": str(scope.workspace_id),
+            })
+            await session.execute(text("select set_config('spine.environment_id', :value, true)"), {
+                "value": str(scope.environment_id),
+            })
+            await session.execute(text("select set_config('spine.purpose', :value, true)"), {
+                "value": purpose.value,
+            })
+        else:
+            await prepared.store._set_scope(session, context)
+        allowed = await resolver.verify_current(
+            transaction=session,
+            context=context,
+            dataset_id=prepared.report.dataset_id,
+            manifest_version=prepared.report.manifest_version,
+            manifest_sha256=prepared.report.manifest_sha256,
+            retention_profile_ref=prepared.applicability_ref,
+            source_bindings=prepared.bindings,
+        )
+    assert allowed is False
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_authority_rls_grants_and_manifest_immutability(
+    private_asr_database: _Database,
+) -> None:
+    from spine.infrastructure.private_asr.manifest_authority import (
+        private_asr_corpus_manifests,
+        private_asr_corpus_releases,
+    )
+
+    seed = 799970
+    prepared = await _prepare_race_manifest_case(private_asr_database, seed=seed)
+    table_names = ("private_asr_corpus_manifests", "private_asr_corpus_releases")
+    async with private_asr_database.migration.connect() as connection:
+        bypass_rls = await connection.scalar(text(
+            "SELECT rolbypassrls FROM pg_catalog.pg_roles WHERE rolname = :role"
+        ), {"role": RUNTIME_ROLE})
+        security_rows = (await connection.execute(text("""
+            SELECT relation.relname, relation.relrowsecurity, relation.relforcerowsecurity,
+                has_table_privilege(:runtime, relation.oid, 'SELECT') AS can_select,
+                has_table_privilege(:runtime, relation.oid, 'INSERT') AS can_insert,
+                has_table_privilege(:runtime, relation.oid, 'UPDATE') AS can_update,
+                has_table_privilege(:runtime, relation.oid, 'DELETE') AS can_delete,
+                pg_catalog.pg_has_role(:runtime, :governance, 'MEMBER') AS is_governance
+            FROM pg_catalog.pg_class AS relation
+            JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = 'spine' AND relation.relname IN
+                ('private_asr_corpus_manifests','private_asr_corpus_releases')
+        """), {"runtime": RUNTIME_ROLE, "governance": MIGRATION_ROLE})).mappings().all()
+    assert bypass_rls is False
+    assert {row["relname"] for row in security_rows} == set(table_names)
+    assert all(row["relrowsecurity"] and row["relforcerowsecurity"] for row in security_rows)
+    assert all((row["can_select"], row["can_insert"], row["can_update"], row["can_delete"])
+               == (True, False, False, False) for row in security_rows)
+    assert all(row["is_governance"] is False for row in security_rows)
+
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        own_scope_visible = (await session.execute(select(func.count()).select_from(
+            private_asr_corpus_manifests
+        ).where(private_asr_corpus_manifests.c.dataset_id == prepared.report.dataset_id))).scalar_one() == 1
+        await session.execute(text("select set_config('spine.workspace_id', :value, true)"), {
+            "value": str(synthetic_uuid(seed + 1)),
+        })
+        foreign_workspace_visible = (await session.execute(select(func.count()).select_from(
+            private_asr_corpus_manifests
+        ))).scalar_one() > 0
+    assert own_scope_visible
+    assert not foreign_workspace_visible
+
+    with pytest.raises(DBAPIError):
+        async with prepared.runtime_sessions() as session, session.begin():
+            await prepared.store._set_scope(session, prepared.context)
+            await session.execute(update(private_asr_corpus_manifests).where(
+                private_asr_corpus_manifests.c.dataset_id == prepared.report.dataset_id,
+            ).values(manifest_version="runtime-forgery"))
+
+    with pytest.raises(DBAPIError):
+        async with private_asr_database.migration.begin() as connection:
+            await connection.execute(update(private_asr_corpus_manifests).where(
+                private_asr_corpus_manifests.c.workspace_id == prepared.case.source.workspace_id,
+                private_asr_corpus_manifests.c.environment_id == prepared.case.source.environment_id,
+                private_asr_corpus_manifests.c.dataset_id == prepared.report.dataset_id,
+            ).values(manifest_version="governance-forgery"))
+    with pytest.raises(DBAPIError):
+        async with private_asr_database.migration.begin() as connection:
+            await connection.execute(delete(private_asr_corpus_manifests).where(
+                private_asr_corpus_manifests.c.workspace_id == prepared.case.source.workspace_id,
+                private_asr_corpus_manifests.c.environment_id == prepared.case.source.environment_id,
+                private_asr_corpus_manifests.c.dataset_id == prepared.report.dataset_id,
+            ))
+
+
+@pytest.mark.asyncio
+async def test_postgresql_asr_release_withdrawal_wins_before_report_commit(
+    private_asr_database: _Database,
+) -> None:
+    from spine.infrastructure.private_asr.manifest_authority import private_asr_corpus_releases
+
+    prepared = await _prepare_race_manifest_case(private_asr_database, seed=799820)
+    workspace_id = prepared.case.source.workspace_id
+    environment_id = prepared.case.source.environment_id
+    dataset_id = prepared.report.dataset_id
+    withdrawal_updated = asyncio.Event()
+    finish_withdrawal = asyncio.Event()
+    publication_callback_called = False
+
+    async def withdraw_release() -> None:
+        async with private_asr_database.migration.begin() as connection:
+            await connection.execute(update(private_asr_corpus_releases).where(
+                private_asr_corpus_releases.c.workspace_id == workspace_id,
+                private_asr_corpus_releases.c.environment_id == environment_id,
+                private_asr_corpus_releases.c.dataset_id == dataset_id,
+            ).values(generation=2, manifest_id=None, manifest_version=None,
+                     manifest_sha256=None, status="withdrawn", updated_at=NOW))
+            withdrawal_updated.set()
+            await finish_withdrawal.wait()
+
+    async def on_report_commit() -> None:
+        nonlocal publication_callback_called
+        publication_callback_called = True
+
+    withdrawal = asyncio.create_task(withdraw_release())
+    publication: asyncio.Task | None = None
+    try:
+        await asyncio.wait_for(withdrawal_updated.wait(), timeout=10)
+        publication = asyncio.create_task(_commit_synthetic_report(
+            prepared,
+            idempotency_key="withdrawal-first-race-report",
+            callback=on_report_commit,
+        ))
+        await _wait_for_release_advisory_wait(private_asr_database, prepared)
+        assert not publication.done()
+        finish_withdrawal.set()
+        await asyncio.wait_for(withdrawal, timeout=10)
+        with pytest.raises(PrivateASRStorageDenied) as denied:
+            await asyncio.wait_for(publication, timeout=10)
+        assert str(denied.value) == "Private ASR report lineage rejected."
+    finally:
+        finish_withdrawal.set()
+        tasks = [withdrawal]
+        if publication is not None:
+            tasks.append(publication)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    assert publication_callback_called is False
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        report_visible = (await session.execute(select(func.count()).select_from(
+            private_asr_artifacts
+        ).where(
+            private_asr_artifacts.c.idempotency_key == "withdrawal-first-race-report",
+        ))).scalar_one() == 0
+        success_audit_visible = (await session.execute(select(audit_events.c.audit_event_id).where(
+            audit_events.c.audit_event_id == prepared.report_receipt_ref.reference_id,
+        ))).scalar_one_or_none() is not None
+    assert report_visible
+    assert not success_audit_visible
+
+
+@pytest.mark.asyncio
+async def test_postgresql_asr_report_commit_wins_before_release_withdrawal(
+    private_asr_database: _Database,
+) -> None:
+    from spine.infrastructure.private_asr.manifest_authority import private_asr_corpus_releases
+
+    prepared = await _prepare_race_manifest_case(private_asr_database, seed=799840)
+    workspace_id = prepared.case.source.workspace_id
+    environment_id = prepared.case.source.environment_id
+    dataset_id = prepared.report.dataset_id
+    publication_current = asyncio.Event()
+    finish_publication = asyncio.Event()
+    withdrawal_updated = asyncio.Event()
+
+    async def hold_publication_before_commit() -> None:
+        publication_current.set()
+        await finish_publication.wait()
+
+    async def withdraw_release() -> None:
+        async with private_asr_database.migration.begin() as connection:
+            await connection.execute(update(private_asr_corpus_releases).where(
+                private_asr_corpus_releases.c.workspace_id == workspace_id,
+                private_asr_corpus_releases.c.environment_id == environment_id,
+                private_asr_corpus_releases.c.dataset_id == dataset_id,
+            ).values(generation=2, manifest_id=None, manifest_version=None,
+                     manifest_sha256=None, status="withdrawn", updated_at=NOW))
+        withdrawal_updated.set()
+
+    publication = asyncio.create_task(_commit_synthetic_report(
+        prepared,
+        idempotency_key="report-first-race-report",
+        callback=hold_publication_before_commit,
+    ))
+    withdrawal: asyncio.Task | None = None
+    try:
+        await asyncio.wait_for(publication_current.wait(), timeout=10)
+        withdrawal = asyncio.create_task(withdraw_release())
+        await _wait_for_release_advisory_wait(private_asr_database, prepared)
+        assert not withdrawal.done()
+        finish_publication.set()
+        stored = await asyncio.wait_for(publication, timeout=10)
+        await asyncio.wait_for(withdrawal_updated.wait(), timeout=10)
+        await asyncio.wait_for(withdrawal, timeout=10)
+    finally:
+        finish_publication.set()
+        tasks = [publication]
+        if withdrawal is not None:
+            tasks.append(withdrawal)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        historical_visible = (await session.execute(select(
+            (private_asr_artifacts.c.status == "committed")
+            & (private_asr_artifacts.c.manifest_version == prepared.report.manifest_version)
+            & (private_asr_artifacts.c.manifest_sha256 == prepared.report.manifest_sha256)
+        ).where(
+            private_asr_artifacts.c.artifact_id == stored.report_ref.reference_id,
+            private_asr_artifacts.c.kind == "report",
+        ))).scalar_one_or_none() is True
+        original_audit_visible = (await session.execute(select(audit_events.c.audit_event_id).where(
+            audit_events.c.audit_event_id == prepared.report_receipt_ref.reference_id,
+        ))).scalar_one_or_none() is not None
+    assert historical_visible
+    assert original_audit_visible
+
+    with pytest.raises(PrivateASRStorageDenied) as denied:
+        await _commit_synthetic_report(
+            prepared, idempotency_key="report-after-withdrawal-race",
+        )
+    assert str(denied.value) == "Private ASR report lineage rejected."
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        denied_report_count = (await session.execute(select(func.count()).select_from(
+            private_asr_artifacts
+        ).where(
+            private_asr_artifacts.c.idempotency_key == "report-after-withdrawal-race",
+        ))).scalar_one()
+    assert denied_report_count == 0
 
 
 async def test_postgresql_private_asr_runtime_cannot_rewrite_committed_report(
