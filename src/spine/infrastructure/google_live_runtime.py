@@ -73,6 +73,7 @@ _MANIFEST_KEYS = (
     "GOOGLE_ALLOWED_FILE_IDS",
     "GOOGLE_SPREADSHEET_IDS",
     "GOOGLE_NUMERIC_SHEET_IDS",
+    "GOOGLE_NUMERIC_SHEET_TITLES_JSON",
     "GOOGLE_SHARED_DRIVE_STATUS",
     "GOOGLE_RESOURCE_SCOPE_VERSION",
     "SPINE_GOOGLE_CONNECTION_VERSION_ID",
@@ -106,6 +107,30 @@ def _csv(environment: Mapping[str, str], name: str) -> tuple[str, ...]:
             "Google private qualification environment is incomplete"
         )
     return values
+
+
+def _json_string_list(environment: Mapping[str, str], name: str) -> tuple[str, ...]:
+    try:
+        value = json.loads(_required(environment, name))
+    except (json.JSONDecodeError, TypeError):
+        raise GoogleLiveQualificationRefused(
+            "Google private qualification environment is incomplete"
+        ) from None
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(not isinstance(item, str) or not item for item in value)
+        or len(set(value)) != len(value)
+    ):
+        raise GoogleLiveQualificationRefused(
+            "Google private qualification environment is incomplete"
+        )
+    return tuple(value)
+
+
+def _qualified_sheet_range(title: str) -> str:
+    escaped_title = title.replace("'", "''")
+    return f"'{escaped_title}'!A2:E5000"
 
 
 def _manifest_digest(environment: Mapping[str, str]) -> str:
@@ -151,7 +176,15 @@ def build_google_live_config_from_environment(
     allowed_files = _csv(environment, "GOOGLE_ALLOWED_FILE_IDS")
     spreadsheets = _csv(environment, "GOOGLE_SPREADSHEET_IDS")
     sheet_ids_text = _csv(environment, "GOOGLE_NUMERIC_SHEET_IDS")
-    if len(allowed_files) != 3 or len(spreadsheets) != 1 or len(sheet_ids_text) != 2:
+    sheet_titles = _json_string_list(
+        environment, "GOOGLE_NUMERIC_SHEET_TITLES_JSON"
+    )
+    if (
+        len(allowed_files) != 3
+        or len(spreadsheets) != 1
+        or len(sheet_ids_text) != 2
+        or len(sheet_titles) != len(sheet_ids_text)
+    ):
         raise GoogleLiveQualificationRefused(
             "Google private qualification allowlist is unsupported"
         )
@@ -238,9 +271,9 @@ def build_google_live_config_from_environment(
                 columns=columns,
                 developer_metadata_key="spine_immutable_business_id",
             ),
-            a1_ranges=("A2:E5000",),
+            a1_ranges=(_qualified_sheet_range(sheet_title),),
         )
-        for sheet_id in sheet_ids
+        for sheet_id, sheet_title in zip(sheet_ids, sheet_titles, strict=True)
     )
     return GoogleLiveQualificationConfig(
         opt_in=environment.get("SPINE_GOOGLE_LIVE_CONFIG_OPT_IN") == "1",

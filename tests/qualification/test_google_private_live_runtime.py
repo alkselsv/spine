@@ -20,6 +20,9 @@ from spine.infrastructure.google_live_runtime import (
 )
 
 
+# Keep this expected order independent from the production constant. Importing
+# that constant here would make the manifest-digest tests pass tautologically
+# when production accidentally omitted or reordered an approved field.
 MANIFEST_KEYS = (
     "GOOGLE_QUALIFICATION_ACCOUNT",
     "GOOGLE_CLOUD_PROJECT_ID",
@@ -29,6 +32,7 @@ MANIFEST_KEYS = (
     "GOOGLE_ALLOWED_FILE_IDS",
     "GOOGLE_SPREADSHEET_IDS",
     "GOOGLE_NUMERIC_SHEET_IDS",
+    "GOOGLE_NUMERIC_SHEET_TITLES_JSON",
     "GOOGLE_SHARED_DRIVE_STATUS",
     "GOOGLE_RESOURCE_SCOPE_VERSION",
     "SPINE_GOOGLE_CONNECTION_VERSION_ID",
@@ -47,6 +51,13 @@ MANIFEST_KEYS = (
 )
 
 
+def _approve_manifest(values: dict[str, str]) -> None:
+    material = "".join(f"{key}={values[key]}\n" for key in MANIFEST_KEYS)
+    values["SPINE_GOOGLE_QUALIFICATION_MANIFEST_SHA256"] = hashlib.sha256(
+        material.encode()
+    ).hexdigest()
+
+
 def _environment() -> dict[str, str]:
     values = {
         "GOOGLE_QUALIFICATION_ACCOUNT": "synthetic@example.test",
@@ -57,6 +68,9 @@ def _environment() -> dict[str, str]:
         "GOOGLE_ALLOWED_FILE_IDS": "synthetic-pdf,synthetic-docx,synthetic-doc",
         "GOOGLE_SPREADSHEET_IDS": "synthetic-spreadsheet",
         "GOOGLE_NUMERIC_SHEET_IDS": "0,12345",
+        "GOOGLE_NUMERIC_SHEET_TITLES_JSON": (
+            '["Qualification Data", "Ops\u0027 2026"]'
+        ),
         "GOOGLE_SHARED_DRIVE_STATUS": "NOT_EXERCISED",
         "GOOGLE_RESOURCE_SCOPE_VERSION": "google-615-phase1-scope:v1",
         "GOOGLE_PDF_FILE_ID": "synthetic-pdf",
@@ -80,10 +94,7 @@ def _environment() -> dict[str, str]:
         "SPINE_GOOGLE_OAUTH_CLIENT_SECRET": "synthetic-client-secret",
         "SPINE_GOOGLE_OAUTH_REFRESH_TOKEN": "synthetic-refresh-token",
     }
-    material = "".join(f"{key}={values[key]}\n" for key in MANIFEST_KEYS)
-    values["SPINE_GOOGLE_QUALIFICATION_MANIFEST_SHA256"] = hashlib.sha256(
-        material.encode()
-    ).hexdigest()
+    _approve_manifest(values)
     return values
 
 
@@ -144,6 +155,14 @@ def test_private_environment_builds_exact_approved_phase1_config() -> None:
         0,
         12345,
     )
+    assert tuple(target.a1_ranges for target in config.sheet_targets) == (
+        ("'Qualification Data'!A2:E5000",),
+        ("'Ops'' 2026'!A2:E5000",),
+    )
+    assert tuple(
+        tuple(column.coordinate for column in target.profile.columns)
+        for target in config.sheet_targets
+    ) == (("A", "B", "C", "D", "E"), ("A", "B", "C", "D", "E"))
     assert config.request_policy.max_requests_per_run == 500
     assert config.execution_envelope.max_run_duration_seconds == 1800.0
     assert config.shared_drive_approved is False
@@ -159,6 +178,45 @@ def test_private_environment_rejects_manifest_digest_mismatch() -> None:
 
     with pytest.raises(GoogleLiveQualificationRefused, match="manifest"):
         build_google_live_config_from_environment(environment)
+
+
+def test_private_environment_rejects_sheet_title_count_mismatch() -> None:
+    environment = _environment()
+    environment["GOOGLE_NUMERIC_SHEET_TITLES_JSON"] = '["Only one"]'
+    _approve_manifest(environment)
+
+    with pytest.raises(
+        GoogleLiveQualificationRefused,
+        match="Google private qualification allowlist is unsupported",
+    ):
+        build_google_live_config_from_environment(environment)
+
+
+def test_private_environment_rejects_duplicate_sheet_titles() -> None:
+    environment = _environment()
+    environment["GOOGLE_NUMERIC_SHEET_TITLES_JSON"] = '["Repeated", "Repeated"]'
+    _approve_manifest(environment)
+
+    with pytest.raises(
+        GoogleLiveQualificationRefused,
+        match="Google private qualification environment is incomplete",
+    ):
+        build_google_live_config_from_environment(environment)
+
+
+def test_private_environment_rejects_malformed_sheet_titles_without_disclosure() -> None:
+    environment = _environment()
+    protected_title = "Private Synthetic Sheet"
+    environment["GOOGLE_NUMERIC_SHEET_TITLES_JSON"] = protected_title
+    _approve_manifest(environment)
+
+    with pytest.raises(GoogleLiveQualificationRefused) as error:
+        build_google_live_config_from_environment(environment)
+
+    assert str(error.value) == "Google private qualification environment is incomplete"
+    assert protected_title not in str(error.value)
+    assert environment["GOOGLE_SPREADSHEET_IDS"] not in str(error.value)
+    assert environment["GOOGLE_NUMERIC_SHEET_IDS"] not in str(error.value)
 
 
 @pytest.mark.asyncio
