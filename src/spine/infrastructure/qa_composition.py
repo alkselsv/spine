@@ -579,6 +579,15 @@ class PostgreSQLCitationInspectorService:
             authorization_generation=requester.authorization_generation,
         )
         async with self.uow_factory(context) as uow:
+            def citation_context_factory(
+                workspace_id: UUID, environment_id: UUID
+            ) -> TrustedPersistenceContext:
+                return _citation_context(
+                    context,
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                )
+
             inspector = ProtectedCitationInspector(
                 citation_repository=uow.answer_disclosures,  # type: ignore[attr-defined]
                 context_bundle_repository=uow.context_bundles,  # type: ignore[attr-defined]
@@ -594,26 +603,14 @@ class PostgreSQLCitationInspectorService:
                         EmailMessageCitationExcerptResolver(
                             PostgreSQLEmailArtifactRepository(
                                 self.session_factory,  # type: ignore[arg-type]
-                                context_factory=lambda workspace_id, environment_id: (
-                                    _citation_context(
-                                        context,
-                                        workspace_id=workspace_id,
-                                        environment_id=environment_id,
-                                    )
-                                ),
+                                context_factory=citation_context_factory,
                                 context_verifier=self.context_verifier,  # type: ignore[arg-type]
                             )
                         ),
                         ParsedArtifactCitationExcerptResolver(
                             PostgreSQLParsedArtifactRepository(
                                 self.session_factory,  # type: ignore[arg-type]
-                                context_factory=lambda workspace_id, environment_id: (
-                                    _citation_context(
-                                        context,
-                                        workspace_id=workspace_id,
-                                        environment_id=environment_id,
-                                    )
-                                ),
+                                context_factory=citation_context_factory,
                                 context_verifier=self.context_verifier,  # type: ignore[arg-type]
                             )
                         ),

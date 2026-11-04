@@ -218,8 +218,7 @@ digests. Citation Inspector resolves that locator only from the immutable artifa
 after fresh AccessPolicy, lifecycle and retention revalidation; malformed,
 tombstoned, revoked, cross-tenant or digest-mismatched references, plus superseded
 references in ordinary current inspection, return the same content-free unavailable
-outcome. Attachment locators remain a separate
-successor contract.
+outcome. Attachment locators remain a separate successor contract.
 Opaque generation-bound checkpoints advance only after all covered canonical
 acceptance and outbox effects are durable; partial scans and stale generations
 hold the cursor for retry or reconciliation. The offline-only decision and its

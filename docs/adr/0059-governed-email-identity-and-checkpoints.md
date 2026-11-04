@@ -90,6 +90,46 @@ download, a parsed artifact or a checkpoint never publishes content on its own.
 Current Access Policy, lifecycle, retention and parent/child lineage checks
 continue to govern processing, retrieval and citation.
 
+## Message citation locator
+
+`email-message-locator:v1` is the additive stable locator contract for message
+body evidence. Its `StableLocator.kind` is `message`. The bounded canonical value
+uses this field order:
+
+```text
+em1|source_revision_uuid_hex|source_revision_digest|artifact_uuid_hex|
+artifact_digest|mime_parser_profile_digest|html_sanitizer_profile_digest|
+mime_part_path|p_or_h|start_codepoint|end_codepoint|
+representation_digest|excerpt_digest
+```
+
+`p` identifies decoded inline `text/plain`; `h` identifies plain text produced by
+the exact complete sanitized-HTML derivative. Fixed profile prefixes are restored
+from the contract version. UUIDs use lowercase 32-character hexadecimal form,
+digests use lowercase SHA-256, ranges are half-open Unicode codepoint offsets and
+the representation and excerpt digests hash UTF-8 bytes. The complete locator is
+also protected by the existing `canonical-projection-locator:v1` digest carried by
+the evidence reference.
+
+Resolution requires exact agreement between the citation evidence, tenant,
+Source Revision ID and digest, original digest, processed artifact ID and digest,
+parser and sanitizer profiles, MIME part, representation, range and both text
+digests. Only complete non-attachment message body parts are eligible; nested
+`message/rfc822` content remains outside this message-body locator. Resolution
+reads the immutable processed artifact, never the mailbox or raw provider payload,
+and occurs only after Citation Inspector has freshly revalidated AccessPolicy,
+lifecycle and retention.
+
+This contract is additive and does not reinterpret locators in active snapshots.
+To emit it, an eligible email source is processed and projected through a normal
+successor publication pinned to the exact artifact/profile. Rebuild or validation
+failure leaves the last active publication authoritative. Operational rollback is
+another successor using the previously qualified processing and locator versions;
+published evidence is never mutated in place. Synthetic golden vectors and
+`qa.email_citation_resolution:v1` are the deterministic regression gate for exact
+resolution and fail-closed rejection. Attachment citations require a separate
+successor locator and are not encoded by `em1`.
+
 ## Checkpoints and no-gap publication
 
 A checkpoint is an opaque, versioned, generation-bound synchronization cursor,

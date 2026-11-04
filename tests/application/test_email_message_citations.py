@@ -70,6 +70,14 @@ class ArtifactReader:
         return None
 
 
+class FailingArtifactReader:
+    async def get(self, **_kwargs):
+        raise RuntimeError(
+            "token-858 raw-provider-payload protected-subject "
+            "sender@example.test protected.eml Plain body evidence"
+        )
+
+
 def _artifact() -> EmailMessageArtifact:
     base = candidate_output().answer.citations[0]
     evidence = base.evidence_reference
@@ -178,6 +186,50 @@ def _citation(
     )
     return base.model_copy(
         update={"context_bundle": context_bundle, "evidence_reference": evidence}
+    )
+
+
+def _inspector_fixture(
+    artifact: EmailMessageArtifact,
+    locator: EmailMessageCitationLocator,
+    *,
+    state: CurrentState,
+    reader: object | None = None,
+) -> tuple[ProtectedCitationInspector, Citation]:
+    email_citation = _citation(artifact, locator)
+    bundle = _bundle(email_citation.evidence_reference)
+    decision = compose_answer_disclosure(_request(), accepted_at=NOW)
+    assert decision.accepted_answer is not None
+    accepted = decision.accepted_answer
+    persisted = accepted.answer.citations[0]
+    email_citation = email_citation.model_copy(
+        update={
+            "citation_id": persisted.citation_id,
+            "answer_id": persisted.answer_id,
+            "context_bundle": bundle.lineage_reference,
+        }
+    )
+    accepted = accepted.model_copy(
+        update={
+            "answer": accepted.answer.model_copy(
+                update={"citations": (email_citation,)}
+            )
+        }
+    )
+    return (
+        ProtectedCitationInspector(
+            citation_repository=CitationRepository(accepted),
+            context_bundle_repository=ContextBundleRepository(bundle),
+            disclosure_revalidator=DisclosureRevalidationService(
+                state_provider=state,
+                result_repository=InMemoryDisclosureValidationResultRepository(),
+                clock=lambda: NOW,
+            ),
+            excerpt_resolver=EmailMessageCitationExcerptResolver(
+                reader or ArtifactReader(artifact)  # type: ignore[arg-type]
+            ),
+        ),
+        email_citation,
     )
 
 
@@ -307,12 +359,77 @@ async def test_email_locator_is_isolated_between_workspaces() -> None:
 
 
 @pytest.mark.asyncio
+async def test_authorized_email_citation_inspection_releases_exact_range() -> None:
+    artifact = _artifact()
+    locator = _locator(
+        artifact,
+        representation="plain_text",
+        part_path="1.1",
+        text="Plain body evidence",
+        start=6,
+        end=10,
+    )
+    inspector, citation = _inspector_fixture(
+        artifact,
+        locator,
+        state=CurrentState(),
+    )
+
+    result = await inspector.inspect(
+        context=context(),
+        requester=CitationInspectorRequester(SUBJECT),
+        citation_id=citation.citation_id,
+    )
+
+    assert result.evidence is not None
+    assert result.evidence.excerpt == "body"
+
+
+@pytest.mark.asyncio
+async def test_email_citation_repository_failure_does_not_disclose_sensitive_details() -> None:
+    artifact = _artifact()
+    locator = _locator(
+        artifact,
+        representation="plain_text",
+        part_path="1.1",
+        text="Plain body evidence",
+        start=6,
+        end=10,
+    )
+    inspector, citation = _inspector_fixture(
+        artifact,
+        locator,
+        state=CurrentState(),
+        reader=FailingArtifactReader(),
+    )
+
+    result = await inspector.inspect(
+        context=context(),
+        requester=CitationInspectorRequester(SUBJECT),
+        citation_id=citation.citation_id,
+    )
+
+    serialized = result.model_dump_json()
+    assert result.evidence is None
+    for protected in (
+        "token-858",
+        "raw-provider-payload",
+        "protected-subject",
+        "sender@example.test",
+        "protected.eml",
+        "Plain body evidence",
+    ):
+        assert protected not in serialized
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "updates",
     (
         {"contributor_authorized": False},
         {"retention_eligible": False},
         {"tombstoned": True},
+        {"revision_current": False, "current_revision_id": UUID(int=998)},
         {
             "superseded": True,
             "revision_current": False,
@@ -324,44 +441,18 @@ async def test_email_citation_inspection_revalidates_current_authority_before_re
     updates: dict[str, object],
 ) -> None:
     artifact = _artifact()
-    text = "Plain body evidence"
     locator = _locator(
         artifact,
         representation="plain_text",
         part_path="1.1",
-        text=text,
+        text="Plain body evidence",
         start=6,
         end=10,
     )
-    email_citation = _citation(artifact, locator)
-    bundle = _bundle(email_citation.evidence_reference)
-    decision = compose_answer_disclosure(_request(), accepted_at=NOW)
-    assert decision.accepted_answer is not None
-    accepted = decision.accepted_answer
-    persisted = accepted.answer.citations[0]
-    email_citation = email_citation.model_copy(
-        update={
-            "citation_id": persisted.citation_id,
-            "answer_id": persisted.answer_id,
-            "context_bundle": bundle.lineage_reference,
-        }
-    )
-    accepted = accepted.model_copy(
-        update={
-            "answer": accepted.answer.model_copy(
-                update={"citations": (email_citation,)}
-            )
-        }
-    )
-    inspector = ProtectedCitationInspector(
-        citation_repository=CitationRepository(accepted),
-        context_bundle_repository=ContextBundleRepository(bundle),
-        disclosure_revalidator=DisclosureRevalidationService(
-            state_provider=CurrentState(**updates),
-            result_repository=InMemoryDisclosureValidationResultRepository(),
-            clock=lambda: NOW,
-        ),
-        excerpt_resolver=EmailMessageCitationExcerptResolver(ArtifactReader(artifact)),
+    inspector, email_citation = _inspector_fixture(
+        artifact,
+        locator,
+        state=CurrentState(**updates),
     )
 
     result = await inspector.inspect(

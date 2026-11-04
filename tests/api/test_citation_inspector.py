@@ -35,6 +35,9 @@ class UnavailableCitationInspector:
 
 
 class AvailableEmailCitationInspector:
+    def __init__(self, representation: str) -> None:
+        self.representation = representation
+
     async def inspect(self, **kwargs):
         del kwargs
         source_object_id = UUID(int=101)
@@ -46,8 +49,8 @@ class AvailableEmailCitationInspector:
             artifact_digest="2" * 64,
             parser_profile=f"mime-parser:v1:{'3' * 64}",
             sanitizer_profile=f"email-html-sanitizer:v1:{'4' * 64}",
-            part_path="1.1",
-            representation="plain_text",
+            part_path="1.1" if self.representation == "plain_text" else "1.2",
+            representation=self.representation,
             start_codepoint=6,
             end_codepoint=10,
             representation_digest="5" * 64,
@@ -140,11 +143,14 @@ async def test_citation_inspector_uses_safe_error_for_unavailable_content() -> N
 
 
 @pytest.mark.asyncio
-async def test_citation_inspector_returns_authorized_email_range_and_locator_lineage() -> None:
+@pytest.mark.parametrize("representation", ("plain_text", "sanitized_html_text"))
+async def test_citation_inspector_returns_authorized_email_range_and_locator_lineage(
+    representation: str,
+) -> None:
     application = authorized_app([])
     install_citation_inspector_routes(
         application,
-        service=AvailableEmailCitationInspector(),  # type: ignore[arg-type]
+        service=AvailableEmailCitationInspector(representation),  # type: ignore[arg-type]
     )
 
     async with httpx.AsyncClient(

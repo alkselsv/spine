@@ -4,6 +4,7 @@ from uuid import UUID
 import pytest
 
 from spine.application.citation_inspector import (
+    CitationExcerptResolverChain,
     CitationInspectorRequester,
     ProtectedCitationInspector,
 )
@@ -119,6 +120,12 @@ class ExactExcerptResolver:
         return value.model_copy(update=self.updates) if self.updates else value
 
 
+class NoExcerptResolver:
+    async def resolve(self, citation, *, historical):
+        del citation, historical
+        return None
+
+
 class CurrentState:
     def __init__(self, **updates):
         self.requester_authorized = updates.pop("requester_authorized", True)
@@ -173,6 +180,20 @@ def inspector_with_state(accepted, bundle, state) -> ProtectedCitationInspector:
         ),
         excerpt_resolver=ExactExcerptResolver(),
     )
+
+
+@pytest.mark.asyncio
+async def test_citation_excerpt_resolver_chain_falls_through_disjoint_contracts() -> None:
+    decision = compose_answer_disclosure(_request(), accepted_at=NOW)
+    assert decision.accepted_answer is not None
+    citation = decision.accepted_answer.answer.citations[0]
+
+    result = await CitationExcerptResolverChain(
+        resolvers=(NoExcerptResolver(), ExactExcerptResolver())
+    ).resolve(citation, historical=False)
+
+    assert result is not None
+    assert result.excerpt == "The policy applies to this customer."
 
 
 @pytest.mark.asyncio
