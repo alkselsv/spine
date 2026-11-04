@@ -28,7 +28,8 @@ from spine.application.private_asr_corpus import (
     CorpusRecheckUnavailable,
     CorpusVerificationError,
     PrivateReportReceipt,
-    PrivateReportStoragePort,
+    PrivateReportSourceBinding,
+    ScopedPrivateReportStoragePort,
     PrivacySanitizationError,
     PurposeAdmissionRequest,
     SanitizedReportBuilder,
@@ -54,6 +55,7 @@ from spine.domain.evaluations.private_asr_corpus import (
     PrivateCorpusManifest,
     PrivateCorpusRecord,
     PrivateReference,
+    SanitizedCorpusReport,
     calculate_coverage,
     qualification_sufficiency,
     validate_split_isolation,
@@ -256,6 +258,27 @@ class PrivateAggregateExportPort(Protocol):
     ) -> None: ...
 
 
+class ScopedPrivateAggregateExportPort(Protocol):
+    async def export_sanitized(
+        self, payload: bytes, *, context: TrustedPersistenceContext,
+        authorize_export: Callable[[], Any],
+    ) -> None: ...
+
+
+class TransactionalPrivateAggregateExportPort(Protocol):
+    """Publishes a typed sanitized result through an atomic restricted adapter."""
+
+    async def publish_sanitized_aggregate(
+        self,
+        sanitized_report: SanitizedCorpusReport,
+        *,
+        report_id: UUID,
+        idempotency_key: str,
+        context: TrustedPersistenceContext,
+        authorize_export: Callable[[], Any],
+    ) -> PrivateReference: ...
+
+
 class GovernedPrivateDatasetResolver:
     """Binds records from a validated manifest; it never accepts paths or URLs."""
 
@@ -294,10 +317,10 @@ class PrivateRealASREvaluationRunner:
         audio_preparation: GovernedPrivateAudioPreparationPort,
         processing_profile: TranscriptionProcessingProfile,
         runtime_factory: PrivateCandidateRuntimeFactory,
-        reports: PrivateReportStoragePort,
+        reports: ScopedPrivateReportStoragePort,
         report_audit: PrivateReportAuditPort,
         aggregate_builder: SanitizedReportBuilder,
-        aggregate_export: PrivateAggregateExportPort,
+        aggregate_export: ScopedPrivateAggregateExportPort | TransactionalPrivateAggregateExportPort,
         clock: Callable[[], datetime],
         candidate_id: str,
         configuration: PrivateCandidateConfiguration,
@@ -704,10 +727,35 @@ class PrivateRealASREvaluationRunner:
         except Exception:
             raise PrivacySanitizationError("aggregate release authorization is unavailable") from None
         try:
-            await self._aggregate_export.export_sanitized(
-                sanitized.model_dump_json(exclude={"privacy_policy_approval", "workspace_id", "environment_id"}).encode(),
-                context=trusted,
-            )
+            async def authorize_export() -> None:
+                if not await self._admission.verify_complementary_disclosure_risk(
+                    report, sanitized, context=trusted
+                ):
+                    raise PrivacySanitizationError("aggregate disclosure risk denied")
+                if not await self._admission.current_release_authorized(report, context=trusted):
+                    raise PrivacySanitizationError("aggregate release is not currently authorized")
+
+            publish = getattr(self._aggregate_export, "publish_sanitized_aggregate", None)
+            if callable(publish):
+                await publish(
+                    sanitized,
+                    report_id=report.report_id,
+                    idempotency_key=(
+                        f"private-asr-aggregate:v1:{report.report_id}:"
+                        f"{sanitized.privacy_policy_version}:"
+                        f"{sanitized.privacy_policy_approval_version}"
+                    ),
+                    context=trusted,
+                    authorize_export=authorize_export,
+                )
+            else:
+                await self._aggregate_export.export_sanitized(
+                    sanitized.model_dump_json(exclude={
+                        "privacy_policy_approval", "workspace_id", "environment_id",
+                    }).encode(),
+                    context=trusted,
+                    authorize_export=authorize_export,
+                )
         except Exception:
             raise PrivacySanitizationError("aggregate export failed") from None
 
@@ -1025,8 +1073,37 @@ class PrivateRealASREvaluationRunner:
         try:
             receipt = await self._reports.store_private_report(
                 report.model_dump_json().encode(),
+                report_id=report.report_id,
+                idempotency_key=f"private-asr-report:{report.report_id}",
+                source_bindings=tuple(sorted((
+                    PrivateReportSourceBinding(
+                        record_id=outcome.record_ref.reference_id,
+                        dataset_id=manifest.dataset_id,
+                        source_object_id=next(
+                            record.source_binding.source_object_id
+                            for record in manifest.records
+                            if record.record_id == outcome.record_ref.reference_id
+                        ),
+                        source_revision_id=next(
+                            record.source_binding.source_revision_id
+                            for record in manifest.records
+                            if record.record_id == outcome.record_ref.reference_id
+                        ),
+                        source_revision_digest=next(
+                            record.source_binding.source_revision_digest
+                            for record in manifest.records
+                            if record.record_id == outcome.record_ref.reference_id
+                        ),
+                        split=next(
+                            record.split for record in manifest.records
+                            if record.record_id == outcome.record_ref.reference_id
+                        ),
+                    )
+                    for outcome in report.outcomes
+                ), key=lambda item: str(item.record_id))),
                 retention_profile_ref=report.retention_profile_ref,
                 audit_receipt_ref=report.audit_receipt_ref,
+                context=context,
                 authorize_commit=authorize_commit,
             )
             if receipt.retention_profile_ref != report.retention_profile_ref:
@@ -1122,6 +1199,7 @@ def _aggregate_measurements(report: PrivateRealASREvaluationReport):
 __all__ = [
     "ApprovedPrivateAnnotation", "EvaluationDataAdmissionPort", "GovernedPrivateDatasetResolver",
     "PrivateAggregateExportPort", "PrivateCandidateRuntime",
+    "TransactionalPrivateAggregateExportPort",
     "PrivateCandidateRuntimeFactory", "PrivateEvaluationUnavailable",
     "PrivateRealASREvaluationRunner",
     "SpeechToTextCandidateRuntime",

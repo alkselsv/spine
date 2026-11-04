@@ -27,7 +27,12 @@ class RetentionTargetKind(str, Enum):
 
 
 class RetentionArtifactClass(str, Enum):
-    """Source-bearing artifact classes governed by an applicability binding."""
+    """Source-bearing artifact classes governed by an applicability binding.
+
+    The private-ASR values are additive taxonomy only. Their existence does not
+    approve a policy, applicability binding, retention term, or processing
+    purpose. Until those authorities exist, ASR storage must fail closed.
+    """
 
     ORIGINAL = "original"
     PARSED_CONTENT = "parsed_content"
@@ -35,6 +40,12 @@ class RetentionArtifactClass(str, Enum):
     PROJECTION = "projection"
     CACHED_ANSWER = "cached_answer"
     CITATION = "citation"
+    PRIVATE_ASR_SOURCE_ORIGINAL = "private_asr_source_original"
+    PRIVATE_ASR_STAGING = "private_asr_staging"
+    PRIVATE_ASR_ANNOTATION = "private_asr_annotation"
+    PRIVATE_ASR_DETAILED_REPORT = "private_asr_detailed_report"
+    PRIVATE_ASR_SANITIZED_AGGREGATE = "private_asr_sanitized_aggregate"
+    PRIVATE_ASR_AUDIT_EVIDENCE = "private_asr_audit_evidence"
 
 
 class RetentionAuthorityKind(str, Enum):

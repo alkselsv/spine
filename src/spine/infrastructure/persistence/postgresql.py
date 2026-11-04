@@ -351,6 +351,10 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     active_projections as _ACTIVE_PROJECTIONS,
     projection_drifts as _PROJECTION_DRIFTS,
 )
+from spine.infrastructure.persistence.postgresql_source_locks import (
+    lock_admission_revision,
+    lock_source_lifecycle_shared,
+)
 from spine.infrastructure.persistence.postgresql_qa_sessions import (
     PostgreSQLQASessionRepository,
 )
@@ -388,43 +392,6 @@ _VALIDATE_CURRENT_PERSISTENCE_AUTHORITY = text(
     "nullif(:service_principal_id, '')::uuid, :workspace_id, :environment_id, "
     ":purpose, :operation) IS NOT NULL)"
 )
-
-
-def _admission_serialization_key(
-    *,
-    workspace_id: UUID,
-    environment_id: UUID,
-    source_object_id: UUID,
-    revision_id: UUID,
-) -> tuple[int, int]:
-    """Return stable namespaced int4 parts for the admission transaction lock."""
-
-    lock_id = uuid5(
-        NAMESPACE_URL,
-        "spine.admission-serialization.v1:"
-        f"{workspace_id}:{environment_id}:{source_object_id}:{revision_id}",
-    )
-    return (
-        int.from_bytes(lock_id.bytes[:4], byteorder="big", signed=True),
-        int.from_bytes(lock_id.bytes[4:8], byteorder="big", signed=True),
-    )
-
-
-async def _lock_admission_revision(
-    uow: "PostgreSQLTenantUnitOfWork",
-    *,
-    workspace_id: UUID,
-    environment_id: UUID,
-    source_object_id: UUID,
-    revision_id: UUID,
-) -> None:
-    key = _admission_serialization_key(
-        workspace_id=workspace_id,
-        environment_id=environment_id,
-        source_object_id=source_object_id,
-        revision_id=revision_id,
-    )
-    await uow._execute(select(func.pg_advisory_xact_lock(*key)))
 
 
 class _Lifecycle(Enum):
@@ -469,10 +436,11 @@ async def _lock_and_validate_lifecycle_eligibility(
     if scope_source_object_id is not None:
         lock_ids.add(scope_source_object_id)
     for locked_source_id in sorted(lock_ids, key=str):
-        lock_key = f"{workspace_id}:{environment_id}:{locked_source_id}"
-        await uow._execute(
-            text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:key, 0))"),
-            {"key": lock_key},
+        await lock_source_lifecycle_shared(
+            uow._execute,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            source_object_id=locked_source_id,
         )
     result = await uow._execute(
         select(
@@ -3361,8 +3329,8 @@ class _PostgreSQLCanonicalAcceptanceRepository:
             .mappings()
             .one()
         )
-        await _lock_admission_revision(
-            self._uow,
+        await lock_admission_revision(
+            self._uow._execute,
             workspace_id=scope.workspace_id,
             environment_id=scope.environment_id,
             source_object_id=source.source_object_id,
@@ -4876,8 +4844,8 @@ class _PostgreSQLAdmissionRepository:
     async def append_decision(self, decision: AdmissionDecision) -> AdmissionDecision:
         self._uow._guard_active()
         scope_predicates = self._scope_predicates(decision)
-        await _lock_admission_revision(
-            self._uow,
+        await lock_admission_revision(
+            self._uow._execute,
             workspace_id=decision.workspace_id,
             environment_id=decision.environment_id,
             source_object_id=decision.source_object_id,
@@ -7770,6 +7738,11 @@ class PostgreSQLTenantUnitOfWork:
         """
 
         return await self._execute(statement, parameters)
+
+    async def flush_audit_events(self) -> None:
+        """Insert queued canonical events into this transaction without commit."""
+        self._guard_active()
+        await self._flush_audit_events()
 
     async def _execute_during_entry(
         self, statement: object, parameters: object | None = None

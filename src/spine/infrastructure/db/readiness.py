@@ -207,6 +207,47 @@ async def verify_database_readiness(
             if not _runtime_table_privileges_are_safe(tables):
                 raise DatabaseReadinessError("database runtime privileges are not ready")
 
+            artifact_update_columns = set(
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT attribute.attname "
+                            "FROM pg_attribute AS attribute "
+                            "WHERE attribute.attrelid = "
+                            "'spine.private_asr_artifacts'::regclass "
+                            "AND attribute.attnum > 0 AND NOT attribute.attisdropped "
+                            "AND has_column_privilege(current_user, "
+                            "'spine.private_asr_artifacts', attribute.attname, 'UPDATE')"
+                        )
+                    )
+                ).scalars()
+            )
+            if artifact_update_columns != {
+                "status", "payload", "byte_length", "content_sha256", "expires_at",
+                "tombstoned_at", "audit_receipt_ref",
+            }:
+                raise DatabaseReadinessError("database runtime privileges are not ready")
+
+            source_fence_update_columns = set(
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT attribute.attname "
+                            "FROM pg_attribute AS attribute "
+                            "WHERE attribute.attrelid = "
+                            "'spine.private_asr_source_fences'::regclass "
+                            "AND attribute.attnum > 0 AND NOT attribute.attisdropped "
+                            "AND has_column_privilege(current_user, "
+                            "'spine.private_asr_source_fences', attribute.attname, 'UPDATE')"
+                        )
+                    )
+                ).scalars()
+            )
+            if source_fence_update_columns != {
+                "revoked", "epoch", "reason", "updated_at",
+            }:
+                raise DatabaseReadinessError("database runtime privileges are not ready")
+
             resolver_privileges = (
                 await connection.execute(
                     text(
@@ -598,6 +639,10 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "corrected_transcript_artifacts": ExpectedTablePrivileges(
             True, True, True, False, False
         ),
+        "private_asr_artifacts": ExpectedTablePrivileges(True, True, True, False, False),
+        "private_asr_source_fences": ExpectedTablePrivileges(True, True, True, False, False),
+        "private_asr_report_sources": ExpectedTablePrivileges(True, True, True, False, False),
+        "private_asr_aggregate_exports": ExpectedTablePrivileges(True, True, True, False, False),
     }
     if set(tables) != set(expected):
         return False

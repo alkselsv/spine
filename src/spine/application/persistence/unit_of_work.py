@@ -88,6 +88,10 @@ class TenantUnitOfWork(Protocol):
 
     async def rollback(self) -> None: ...
 
+    async def flush_audit_events(self) -> None:
+        """Make pending canonical audit rows visible inside this transaction."""
+        ...
+
 
 class TenantUnitOfWorkFactory(Protocol):
     def __call__(self, context: TrustedPersistenceContext) -> TenantUnitOfWork: ...

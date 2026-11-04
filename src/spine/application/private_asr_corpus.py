@@ -5,10 +5,11 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from datetime import datetime
 import hashlib
+import json
 from typing import Literal, Protocol
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, StrictInt, model_validator
+from pydantic import ConfigDict, Field, StrictBool, StrictInt, model_validator
 
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -21,6 +22,7 @@ from spine.domain.evaluations.private_asr_corpus import (
     AggregateMetric,
     ApprovedPrivacyPolicy,
     AudioDigestVerification,
+    CorpusSplit,
     PrivateReference,
     PrivacyPolicy,
     QualificationSufficiency,
@@ -161,6 +163,161 @@ class PrivateReportReceipt(PrivateASRApplicationContract):
     retention_profile_ref: PrivateReference
 
 
+class PrivateReportSourceBinding(PrivateASRApplicationContract):
+    """Exact private report case to immutable source-revision lineage."""
+
+    record_id: UUID
+    dataset_id: UUID
+    source_object_id: UUID
+    source_revision_id: UUID
+    source_revision_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    split: CorpusSplit
+
+
+class PrivateArtifactSourceLineage(PrivateASRApplicationContract):
+    """Source lineage resolved from persisted artifact/source rows for deletion."""
+
+    source_object_id: UUID
+    source_revision_id: UUID
+    source_revision_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    record_id: UUID | None = None
+    dataset_id: UUID | None = None
+    split: CorpusSplit | None = None
+
+    @model_validator(mode="after")
+    def validate_manifest_binding(self) -> "PrivateArtifactSourceLineage":
+        manifest_fields = (self.record_id, self.dataset_id, self.split)
+        if any(value is not None for value in manifest_fields) and any(
+            value is None for value in manifest_fields
+        ):
+            raise ValueError("artifact source manifest lineage must be complete")
+        if self.source_object_id.int == 0 or self.source_revision_id.int == 0:
+            raise ValueError("artifact source lineage identifiers must be non-zero")
+        return self
+
+
+class PrivateArtifactDeletionRequest(PrivateASRApplicationContract):
+    """Transaction-scoped request to expire or discard one persisted artifact.
+
+    The storage adapter constructs this only after resolving exact scoped rows.
+    The authority must resolve current retention/deletion rules and holds using
+    the supplied transaction; caller references alone never authorize deletion.
+    """
+
+    schema_version: Literal["private-asr-artifact-deletion-request:v1"] = (
+        "private-asr-artifact-deletion-request:v1"
+    )
+    artifact_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    artifact_kind: Literal["staging", "original", "annotation", "report", "aggregate_export"]
+    action: Literal["retention_expiration", "staging_cleanup"]
+    expected_state_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    retention_profile_ref: PrivateReference
+    retention_deadline: datetime
+    requested_at: datetime
+    source_lineage: tuple[PrivateArtifactSourceLineage, ...]
+    manifest_version: str | None = None
+    manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_request(self) -> "PrivateArtifactDeletionRequest":
+        if any(
+            value.int == 0
+            for value in (self.artifact_id, self.workspace_id, self.environment_id)
+        ) or not self.source_lineage:
+            raise ValueError("artifact deletion request requires exact lineage")
+        if any(
+            value.tzinfo is None or value.utcoffset() is None
+            for value in (self.retention_deadline, self.requested_at)
+        ):
+            raise ValueError("artifact deletion timestamps must be timezone-aware")
+        if self.action == "staging_cleanup" and self.artifact_kind != "staging":
+            raise ValueError("staging cleanup applies only to staging artifacts")
+        if self.artifact_kind == "aggregate_export" and self.action != "retention_expiration":
+            raise ValueError("aggregate exports may only be deleted on retention expiry")
+        if (self.manifest_version is None) != (self.manifest_sha256 is None):
+            raise ValueError("artifact manifest lineage must be complete")
+        return self
+
+    def calculate_digest(self) -> str:
+        payload = self.model_dump(mode="json")
+        return hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+
+class PrivateArtifactDeletionAuthorization(PrivateASRApplicationContract):
+    """Current authority result fenced to one exact deletion request."""
+
+    schema_version: Literal["private-asr-artifact-deletion-authorization:v1"] = (
+        "private-asr-artifact-deletion-authorization:v1"
+    )
+    request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    authorization_ref: PrivateReference
+    authority_version: str = Field(pattern=r"^[a-z][a-z0-9_.:-]{0,63}$")
+    revocation_epoch: StrictInt = Field(ge=0)
+    valid_until: datetime
+    authorized: StrictBool
+
+    @model_validator(mode="after")
+    def validate_authorization(self) -> "PrivateArtifactDeletionAuthorization":
+        if (
+            self.authorization_ref.reference_kind != "private_asr_deletion_authorization"
+            or self.authorization_ref.reference_id.int == 0
+            or self.valid_until.tzinfo is None
+            or self.valid_until.utcoffset() is None
+        ):
+            raise ValueError("artifact deletion authorization is invalid")
+        return self
+
+
+class PrivateArtifactDeletionAuthority(Protocol):
+    """Resolve current deletion authority inside the artifact transaction.
+
+    Implementations must bind the decision to the supplied request digest and
+    keep its approval/revocation epoch valid through the transaction commit.
+    External authorities need a coordinated fence or bounded commit lease.
+    """
+
+    async def authorize_deletion(
+        self,
+        request: PrivateArtifactDeletionRequest,
+        *,
+        context: TrustedPersistenceContext,
+        transaction: object,
+    ) -> PrivateArtifactDeletionAuthorization: ...
+
+
+class ScopedPrivateArtifactDeletionAuditPort(Protocol):
+    """Append content-free deletion evidence in the artifact transaction."""
+
+    async def append_artifact_deletion(
+        self,
+        transaction: object,
+        *,
+        request: PrivateArtifactDeletionRequest,
+        authorization: PrivateArtifactDeletionAuthorization,
+        context: TrustedPersistenceContext,
+    ) -> PrivateReference: ...
+
+
+class PrivateASRManifestLineageVerifier(Protocol):
+    """Verify that report lineage is admitted by the current exact manifest."""
+
+    async def verify_current(
+        self,
+        *,
+        transaction: object,
+        context: TrustedPersistenceContext,
+        dataset_id: UUID,
+        manifest_version: str,
+        manifest_sha256: str,
+        retention_profile_ref: PrivateReference,
+        source_bindings: tuple[PrivateReportSourceBinding, ...],
+    ) -> bool: ...
+
+
 class AggregateMeasurement(PrivateASRApplicationContract):
     """Closed aggregate input; deliberately has no row, locator or text fields."""
 
@@ -226,16 +383,39 @@ class OriginalReferencePort(Protocol):
     ) -> PrivateReference: ...
 
 
-class DerivedStagingPort(Protocol):
-    async def begin(self, admitted: AdmittedSourceRevision) -> PrivateReference: ...
-
-    async def append(self, staging_ref: PrivateReference, chunk: bytes) -> None: ...
-
-    async def finalize(
-        self, staging_ref: PrivateReference, *, sha256: str, byte_length: int
+class ScopedOriginalReferencePort(Protocol):
+    async def bind_immutable_original(
+        self, admitted: AdmittedSourceRevision, *, sha256: str, byte_length: int,
+        context: TrustedPersistenceContext,
     ) -> PrivateReference: ...
 
+
+class DerivedStagingPort(Protocol):
+    async def begin(self, admitted: AdmittedSourceRevision) -> PrivateReference: ...
+    async def append(self, staging_ref: PrivateReference, chunk: bytes) -> None: ...
+    async def finalize(self, staging_ref: PrivateReference, *, sha256: str,
+                       byte_length: int) -> PrivateReference: ...
     async def discard(self, staging_ref: PrivateReference) -> None: ...
+
+
+class ScopedDerivedStagingPort(Protocol):
+    async def begin(
+        self, admitted: AdmittedSourceRevision, *, context: TrustedPersistenceContext
+    ) -> PrivateReference: ...
+
+    async def append(
+        self, staging_ref: PrivateReference, chunk: bytes, *,
+        context: TrustedPersistenceContext,
+    ) -> None: ...
+
+    async def finalize(
+        self, staging_ref: PrivateReference, *, sha256: str, byte_length: int,
+        context: TrustedPersistenceContext,
+    ) -> PrivateReference: ...
+
+    async def discard(
+        self, staging_ref: PrivateReference, *, context: TrustedPersistenceContext
+    ) -> None: ...
 
 
 class PrivateAnnotationStoragePort(Protocol):
@@ -244,12 +424,25 @@ class PrivateAnnotationStoragePort(Protocol):
     ) -> PrivateReference: ...
 
 
+class ScopedPrivateAnnotationStoragePort(Protocol):
+    async def store_immutable_annotation(
+        self, admitted: AdmittedSourceRevision, record_id: UUID,
+        annotation_version: int, payload: bytes, *,
+        retention_profile_ref: PrivateReference,
+        audit_receipt_ref: PrivateReference,
+        context: TrustedPersistenceContext,
+    ) -> PrivateReference: ...
+
+
 class PrivateReportStoragePort(Protocol):
     """Restricted report store with an authorization fence at its commit point.
 
     The implementation must invoke ``authorize_commit`` after preparing the
     write and immediately before its atomic commit; a refusal must leave no
-    report visible.
+    report visible. Because a full PostgreSQL transaction can be retried after
+    a translated serialization failure, the callback must be read-only and
+    safe to invoke more than once. It must not consume a one-shot approval or
+    perform an external side effect.
     """
 
     async def store_private_report(
@@ -262,16 +455,58 @@ class PrivateReportStoragePort(Protocol):
     ) -> PrivateReportReceipt: ...
 
 
+class ScopedPrivateReportStoragePort(Protocol):
+    """Context-aware report port; callback is read-only and retry-safe.
+
+    The callback runs inside the atomic commit transaction and may run again
+    after a bounded full-transaction retry. External approval leases require a
+    coordinated fence contract and cannot be acquired through this callback.
+    """
+
+    async def store_private_report(
+        self,
+        payload: bytes,
+        *,
+        report_id: UUID,
+        idempotency_key: str,
+        source_bindings: tuple[PrivateReportSourceBinding, ...],
+        retention_profile_ref: PrivateReference,
+        audit_receipt_ref: PrivateReference,
+        context: TrustedPersistenceContext,
+        authorize_commit: Callable[[], Awaitable[None]],
+    ) -> PrivateReportReceipt: ...
+
+
 class CleanupPort(Protocol):
     async def delete_private_reference(self, reference: PrivateReference) -> None: ...
+
+
+class ScopedCleanupPort(Protocol):
+    async def delete_private_reference(
+        self, reference: PrivateReference, *, context: TrustedPersistenceContext
+    ) -> None: ...
 
 
 class RevocationFencePort(Protocol):
     async def fence(self, source_revision_id: UUID, *, reason: VersionIdentifier) -> None: ...
 
 
+class ScopedRevocationFencePort(Protocol):
+    async def fence(
+        self, source_revision_id: UUID, *, reason: VersionIdentifier,
+        context: TrustedPersistenceContext,
+    ) -> None: ...
+
+
 class RetentionExpirationPort(Protocol):
     async def expire(self, reference: PrivateReference, *, policy_ref: PrivateReference) -> None: ...
+
+
+class ScopedRetentionExpirationPort(Protocol):
+    async def expire(
+        self, reference: PrivateReference, *, policy_ref: PrivateReference,
+        context: TrustedPersistenceContext,
+    ) -> None: ...
 
 
 class AuditReceiptPort(Protocol):
@@ -281,6 +516,17 @@ class AuditReceiptPort(Protocol):
         operation: VersionIdentifier,
         source_revision_id: UUID | None,
         outcome: VersionIdentifier,
+    ) -> PrivateReference: ...
+
+
+class ScopedAuditReceiptPort(Protocol):
+    async def receipt(
+        self,
+        *,
+        operation: VersionIdentifier,
+        source_revision_id: UUID | None,
+        outcome: VersionIdentifier,
+        context: TrustedPersistenceContext,
     ) -> PrivateReference: ...
 
 
@@ -297,6 +543,23 @@ class PrivacyPolicyApprovalPort(Protocol):
         environment_id: UUID,
         context: TrustedPersistenceContext,
     ) -> ApprovedPrivacyPolicy | None: ...
+
+
+class PrivateAggregatePublicationAuthorityPort(Protocol):
+    """Resolves current privacy and release authority in the export transaction.
+
+    A production implementation must use the canonical approval owners and
+    their revocation fence. Fixture-only implementations belong in tests.
+    """
+
+    async def verify_current_publication(
+        self,
+        transaction: object,
+        *,
+        report_id: UUID,
+        sanitized_report: SanitizedCorpusReport,
+        context: TrustedPersistenceContext,
+    ) -> bool: ...
 
 
 class TrustedMetadataInventory:
@@ -356,11 +619,11 @@ class TwoStageSourceAdmission:
         policies: AccessPolicyPort,
         authority: AdmissionAuthorityPort,
         contexts: TrustedContextVerifier,
-        audit: AuditReceiptPort,
+        audit: ScopedAuditReceiptPort,
         revisions: SourceRevisionIdentityPort,
         content: AdmittedRevisionContentPort,
-        staging: DerivedStagingPort,
-        originals: OriginalReferencePort,
+        staging: ScopedDerivedStagingPort,
+        originals: ScopedOriginalReferencePort,
         clock: ClockPort,
     ) -> None:
         self._policies = policies
@@ -440,6 +703,7 @@ class TwoStageSourceAdmission:
             operation="private_asr_source_admission",
             source_revision_id=revision.revision_id,
             outcome="allowed",
+            context=trusted_context,
         )
         return AdmittedSourceRevision(
             source_object=source,
@@ -484,7 +748,7 @@ class TwoStageSourceAdmission:
         revision = admitted.source_revision
         if not await self._authority.recheck(admitted, evaluated_at=self._now()):
             raise CorpusAdmissionDenied("admission was revoked before staging")
-        staging_ref = await self._staging.begin(admitted)
+        staging_ref = await self._staging.begin(admitted, context=trusted_context)
         digest = hashlib.sha256()
         byte_length = 0
         try:
@@ -507,7 +771,9 @@ class TwoStageSourceAdmission:
                     raise CorpusVerificationError("source stream returned invalid data")
                 digest.update(chunk)
                 byte_length += len(chunk)
-                await self._staging.append(staging_ref, chunk)
+                await self._staging.append(
+                    staging_ref, chunk, context=trusted_context
+                )
             actual_digest = digest.hexdigest()
             if byte_length != revision.byte_length:
                 raise CorpusVerificationError("source revision byte length changed")
@@ -533,12 +799,15 @@ class TwoStageSourceAdmission:
                 operation="private_asr_content_verification",
                 source_revision_id=revision.revision_id,
                 outcome="verified",
+                context=trusted_context,
             )
             staged_ref = await self._staging.finalize(
-                staging_ref, sha256=actual_digest, byte_length=byte_length
+                staging_ref, sha256=actual_digest, byte_length=byte_length,
+                context=trusted_context,
             )
             original_ref = await self._originals.bind_immutable_original(
-                admitted, sha256=actual_digest, byte_length=byte_length
+                admitted, sha256=actual_digest, byte_length=byte_length,
+                context=trusted_context,
             )
             return ContentVerificationResult(
                 admitted=admitted,
@@ -554,7 +823,7 @@ class TwoStageSourceAdmission:
                 original_ref=original_ref,
             )
         except BaseException:
-            await self._staging.discard(staging_ref)
+            await self._staging.discard(staging_ref, context=trusted_context)
             raise
 
     async def recheck_current(
@@ -754,9 +1023,13 @@ __all__ = [
     "AdmissionAuthorityPort", "AggregateMeasurement", "AuditReceiptPort",
     "CleanupPort", "ClockPort", "ContentVerificationResult", "CorpusAdmissionDenied",
     "CorpusVerificationError", "DerivedStagingPort", "MetadataInventoryEntry",
-    "MetadataInventoryPort", "OriginalReferencePort", "PrivacyPolicyApprovalPort", "PrivacySanitizationError",
-    "PrivateAnnotationStoragePort", "PrivateReportReceipt", "PrivateReportStoragePort",
+    "MetadataInventoryPort", "OriginalReferencePort", "PrivacyPolicyApprovalPort",
+    "PrivateAggregatePublicationAuthorityPort", "PrivacySanitizationError",
+    "PrivateAnnotationStoragePort", "PrivateReportReceipt", "PrivateReportSourceBinding", "PrivateReportStoragePort",
     "PurposeAdmissionRequest", "RetentionExpirationPort", "RevocationFencePort",
+    "ScopedAuditReceiptPort", "ScopedCleanupPort", "ScopedDerivedStagingPort",
+    "ScopedOriginalReferencePort", "ScopedPrivateAnnotationStoragePort",
+    "ScopedPrivateReportStoragePort", "ScopedRetentionExpirationPort", "ScopedRevocationFencePort",
     "SanitizedReportBuilder", "SourceRevisionIdentityPort", "TrustedMetadataInventory",
     "TwoStageSourceAdmission", "VerifiedAuthority",
 ]
