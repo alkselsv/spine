@@ -72,6 +72,7 @@ from spine.application.transcript_review import (
     TranscriptReviewPublicationGateway,
     TranscriptReviewService,
 )
+from spine.application.transcription_status import TranscriptionStatusQuery
 from spine.application.persistence.context import (
     EnvironmentScope,
     PersistenceOperation,
@@ -106,7 +107,9 @@ from spine.infrastructure.ingestion_composition import (
     register_ingestion_outbox_events,
 )
 from spine.infrastructure.parsed_content_composition import (
+    ProductionCurrentSourceDisclosureAuthorization,
     ProductionParsedContentAuthorizer,
+    ProductionTranscriptionStatusAuthorization,
     ProductionTranscriptEvidenceAuthorization,
     UnitOfWorkParsedContentDecisionAudit,
 )
@@ -412,14 +415,23 @@ def create_production_app(
         context_factory=transcript_context_factory,
         context_verifier=request_boundary,
     )
-    transcript_authorization = ProductionTranscriptEvidenceAuthorization(
+    source_disclosure_authorization = ProductionCurrentSourceDisclosureAuthorization(
         uow_factory=persistence.uow_factory,
         authorizer=parsed_content_authorizer,
         decision_audit=parsed_content_decision_audit,
     )
+    transcript_authorization = ProductionTranscriptEvidenceAuthorization(
+        source_authorization=source_disclosure_authorization,
+    )
     transcript_evidence_inspector = TranscriptEvidenceInspector(
         publications=transcript_publications,
         authorization=transcript_authorization,
+    )
+    transcription_status_reader = TranscriptionStatusQuery(
+        repository=transcript_artifacts,
+        authorization=ProductionTranscriptionStatusAuthorization(
+            source_disclosure_authorization
+        ),
     )
     transcript_review_service = None
     if resolved_api.transcript_review_policy_reference is not None:
@@ -536,6 +548,7 @@ def create_production_app(
         requirements_evidence_service=requirements_evidence_service,
         transcript_evidence_inspector_service=transcript_evidence_inspector,
         transcript_review_service=transcript_review_service,
+        transcription_status_reader=transcription_status_reader,
         provider_connection_service=provider_connections,
         provider_connection_cursor_secret=(
             resolved_api.cursor_secret.get_secret_value().encode("utf-8")

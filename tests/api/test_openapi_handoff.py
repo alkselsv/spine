@@ -45,6 +45,9 @@ def test_generation_export_matches_backend_openapi_document(tmp_path: Path) -> N
     assert "/api/v1/knowledge/documents/{source_object_id}/revisions/{source_revision_id}/parsed-content" in document["paths"]
     assert "/api/v1/runs" in document["paths"]
     assert "/api/v1/runs/{run_id}" in document["paths"]
+    assert "/api/v1/transcriptions/{job_id}" in document["paths"]
+    transcription_status = document["paths"]["/api/v1/transcriptions/{job_id}"]["get"]
+    assert transcription_status["operationId"] == "transcription.status.read"
 
     start_run = document["paths"]["/api/v1/runs"]["post"]
     assert start_run["operationId"] == "workflow.runs.start"

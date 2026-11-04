@@ -33,7 +33,9 @@ from spine.domain.sources import (
     RevisionKind,
 )
 from spine.infrastructure.parsed_content_composition import (
+    ProductionCurrentSourceDisclosureAuthorization,
     ProductionParsedContentAuthorizer,
+    ProductionTranscriptionStatusAuthorization,
     UnitOfWorkParsedContentDecisionAudit,
 )
 
@@ -117,21 +119,25 @@ class AuditUnitOfWork:
 
 
 class CurrentAuthorizationUnitOfWork:
-    def __init__(self, *, grant_read: bool = True) -> None:
+    def __init__(self, *, grant_read: bool = True, current_revision_id: UUID = REVISION_ID) -> None:
         policy_id = UUID(int=12)
         self.sources = SimpleNamespace(
             resolve_source=lambda source_id: _value(
                 SimpleNamespace(source_object_id=source_id)
             ),
             resolve_revision=lambda revision_id: _value(
-                SimpleNamespace(revision_id=revision_id, observed_at=NOW)
+                SimpleNamespace(
+                    revision_id=revision_id,
+                    revision_digest="c" * 64,
+                    observed_at=NOW,
+                )
             ),
             list_provenance=lambda revision_id: _value((revision_id,)),
         )
         self.canonical = SimpleNamespace(
             resolve_current=lambda source_id: _value(
                 SimpleNamespace(
-                    current_revision_id=REVISION_ID,
+                    current_revision_id=current_revision_id,
                     current_revision_kind=RevisionKind.CONTENT,
                 )
             )
@@ -339,3 +345,150 @@ async def test_production_authorizer_fails_closed_without_current_authority(
     assert decision.allowed is False
     assert decision.reason_code is reason
     assert decision.policy_evidence == ()
+
+
+@pytest.mark.asyncio
+async def test_transcription_source_disclosure_revalidates_current_revision_and_policy() -> None:
+    writer = RecordingAuditWriter()
+    uow_factory = lambda trusted: CurrentAuthorizationUnitOfWork()
+    adapter = ProductionCurrentSourceDisclosureAuthorization(
+        uow_factory=uow_factory,
+        authorizer=ProductionParsedContentAuthorizer(
+            uow_factory=uow_factory,
+            authority_resolver=CurrentHumanAuthorityResolver(),
+        ),
+        decision_audit=UnitOfWorkParsedContentDecisionAudit(
+            uow_factory=lambda trusted: AuditUnitOfWork(writer),
+            audit_events=AuditEventRegistry.with_default_families(),
+        ),
+    )
+
+    snapshot = await adapter.recheck(
+        context=context(),
+        requester=ParsedContentInspectionRequester(
+            subject_id=SUBJECT_ID,
+            authorization_generation=1,
+        ),
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        source_object_id=SOURCE_ID,
+        source_revision_id=REVISION_ID,
+        source_revision_digest="c" * 64,
+    )
+
+    assert snapshot.allowed is True
+    assert snapshot.current_revision_id == REVISION_ID
+    assert snapshot.current_revision_digest == "c" * 64
+    assert writer.events[0].outcome is AuditOutcome.ALLOWED
+
+
+@pytest.mark.asyncio
+async def test_transcription_source_disclosure_fails_closed_after_source_revocation() -> None:
+    writer = RecordingAuditWriter()
+    uow_factory = lambda trusted: CurrentAuthorizationUnitOfWork(
+        grant_read=False,
+    )
+    adapter = ProductionCurrentSourceDisclosureAuthorization(
+        uow_factory=uow_factory,
+        authorizer=ProductionParsedContentAuthorizer(
+            uow_factory=uow_factory,
+            authority_resolver=CurrentHumanAuthorityResolver(),
+        ),
+        decision_audit=UnitOfWorkParsedContentDecisionAudit(
+            uow_factory=lambda trusted: AuditUnitOfWork(writer),
+            audit_events=AuditEventRegistry.with_default_families(),
+        ),
+    )
+
+    snapshot = await adapter.recheck(
+        context=context(),
+        requester=ParsedContentInspectionRequester(
+            subject_id=SUBJECT_ID,
+            authorization_generation=1,
+        ),
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        source_object_id=SOURCE_ID,
+        source_revision_id=REVISION_ID,
+        source_revision_digest="c" * 64,
+    )
+
+    assert snapshot.allowed is False
+    assert snapshot.current_revision_id is None
+    assert snapshot.current_revision_digest is None
+    assert writer.events[0].outcome is AuditOutcome.DENIED
+
+
+@pytest.mark.asyncio
+async def test_transcription_status_rejects_stale_current_source_revision() -> None:
+    writer = RecordingAuditWriter()
+    uow_factory = lambda trusted: CurrentAuthorizationUnitOfWork(
+        current_revision_id=UUID(int=99),
+    )
+    source_authorization = ProductionCurrentSourceDisclosureAuthorization(
+        uow_factory=uow_factory,
+        authorizer=ProductionParsedContentAuthorizer(
+            uow_factory=uow_factory,
+            authority_resolver=CurrentHumanAuthorityResolver(),
+        ),
+        decision_audit=UnitOfWorkParsedContentDecisionAudit(
+            uow_factory=lambda trusted: AuditUnitOfWork(writer),
+            audit_events=AuditEventRegistry.with_default_families(),
+        ),
+    )
+
+    decision = await ProductionTranscriptionStatusAuthorization(
+        source_authorization=source_authorization,
+    ).recheck(
+        context=context(),
+        requester=ParsedContentInspectionRequester(
+            subject_id=SUBJECT_ID,
+            authorization_generation=1,
+        ),
+        job=SimpleNamespace(
+            job_id=UUID(int=17),
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+            source_object_id=SOURCE_ID,
+            source_revision_id=REVISION_ID,
+            source_revision_digest="c" * 64,
+        ),
+    )
+
+    assert decision.allowed is False
+    assert decision.reason_code == "source_stale"
+    assert decision.workspace_id is None
+
+
+@pytest.mark.asyncio
+async def test_transcription_source_disclosure_rejects_environment_mismatch_before_lookup() -> None:
+    writer = RecordingAuditWriter()
+    uow_factory = lambda trusted: CurrentAuthorizationUnitOfWork()
+    adapter = ProductionCurrentSourceDisclosureAuthorization(
+        uow_factory=uow_factory,
+        authorizer=ProductionParsedContentAuthorizer(
+            uow_factory=uow_factory,
+            authority_resolver=CurrentHumanAuthorityResolver(),
+        ),
+        decision_audit=UnitOfWorkParsedContentDecisionAudit(
+            uow_factory=lambda trusted: AuditUnitOfWork(writer),
+            audit_events=AuditEventRegistry.with_default_families(),
+        ),
+    )
+
+    snapshot = await adapter.recheck(
+        context=context(),
+        requester=ParsedContentInspectionRequester(
+            subject_id=SUBJECT_ID,
+            authorization_generation=1,
+        ),
+        workspace_id=WORKSPACE_ID,
+        environment_id=UUID(int=98),
+        source_object_id=SOURCE_ID,
+        source_revision_id=REVISION_ID,
+        source_revision_digest="c" * 64,
+    )
+
+    assert snapshot.allowed is False
+    assert snapshot.reason_code == "scope_denied"
+    assert writer.events == []

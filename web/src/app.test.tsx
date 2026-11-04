@@ -25,6 +25,46 @@ function renderApp(router: ReturnType<typeof createMemoryRouter>, auth?: AuthSta
 }
 
 describe('application bootstrap', () => {
+  it('test_transcription_status_direct_link_mounts_inside_the_production_control_plane', async () => {
+    const jobId = '30000000-0000-4000-8000-000000000001';
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockImplementation((input) => {
+      const rawUrl = input instanceof Request ? input.url : String(input);
+      const url = new URL(rawUrl);
+      if (!url.pathname.startsWith('/api/v1/transcriptions/')) {
+        return Promise.resolve(Response.json({}, { status: 503 }));
+      }
+      return Promise.resolve(Response.json({
+        schema_version: 1,
+        workspace_id: '10000000-0000-4000-8000-000000000001',
+        environment_id: '20000000-0000-4000-8000-000000000001',
+        data: {
+          schema_version: 'transcription-status:v1',
+          status: 'pending',
+          job_id: jobId,
+          source_object_id: '40000000-0000-4000-8000-000000000001',
+          source_revision_id: '50000000-0000-4000-8000-000000000001',
+          processing_profile_reference: 'meeting-audio:v2',
+          adapter_reference: 'asr-primary:v3',
+          model_config_reference: 'whisper-large-v3:ru',
+          created_at: '2026-11-04T08:00:00Z',
+          cancellation_requested: false,
+        },
+      }));
+    }));
+    const router = createMemoryRouter(appRoutes, { initialEntries: [`/transcriptions/${jobId}`] });
+
+    renderApp(router, {
+      status: 'authenticated',
+      role: 'administrator',
+      identityVersion: 'principal-a',
+      getBearerCredential: () => 'test-token',
+    });
+
+    expect(await screen.findByRole('heading', { name: 'Статус расшифровки' })).toBeVisible();
+    expect(screen.getByRole('navigation', { name: 'Разделы workspace' })).toBeVisible();
+    expect(await screen.findByText('Расшифровка выполняется')).toBeVisible();
+  });
+
   it('test_primary_product_routes_render_the_original_spine_ui_shell', async () => {
     const router = createMemoryRouter(appRoutes, { initialEntries: ['/knowledge/documents'] });
 

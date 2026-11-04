@@ -24,12 +24,14 @@ from spine.application.transcript_publication import (
     TranscriptAuthorizationSnapshot,
     TranscriptAuthorizationSnapshotV2,
 )
+from spine.application.transcription_status import TranscriptionStatusAuthorization
 from spine.application.persistence.context import (
     EnvironmentScope,
     TrustedPersistenceContext,
 )
 from spine.application.persistence.unit_of_work import UnitOfWorkFactory
 from spine.domain.sources import RevisionKind
+from spine.domain.artifacts import TranscriptionJob
 from spine.domain.audit import (
     AuditObjectReference,
     AuditOutcome,
@@ -176,8 +178,8 @@ class UnitOfWorkParsedContentDecisionAudit(ParsedContentDecisionAudit):
 
 
 @dataclass(frozen=True, slots=True)
-class ProductionTranscriptEvidenceAuthorization:
-    """Current human source authorization and revision state for transcript reads."""
+class ProductionCurrentSourceDisclosureAuthorization:
+    """Current human authority and revision state for one source disclosure."""
 
     uow_factory: UnitOfWorkFactory
     authorizer: ProductionParsedContentAuthorizer
@@ -193,9 +195,7 @@ class ProductionTranscriptEvidenceAuthorization:
         source_object_id: UUID,
         source_revision_id: UUID,
         source_revision_digest: str,
-        transcript_artifact_id: UUID,
     ) -> TranscriptAuthorizationSnapshot:
-        del transcript_artifact_id
         scope = context.scope
         if not isinstance(scope, EnvironmentScope) or (
             scope.workspace_id,
@@ -252,6 +252,87 @@ class ProductionTranscriptEvidenceAuthorization:
             reason_code="allowed" if allowed else "authorization_denied",
             authorization_decision_reference=decision.decision_reference,
             audit_reference=audit_reference,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionTranscriptEvidenceAuthorization:
+    """Artifact-exact transcript evidence seam backed by current source authority."""
+
+    source_authorization: ProductionCurrentSourceDisclosureAuthorization
+
+    async def recheck(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        requester: ParsedContentInspectionRequester,
+        workspace_id: UUID,
+        environment_id: UUID,
+        source_object_id: UUID,
+        source_revision_id: UUID,
+        source_revision_digest: str,
+        transcript_artifact_id: UUID,
+    ) -> TranscriptAuthorizationSnapshot:
+        del transcript_artifact_id
+        return await self.source_authorization.recheck(
+            context=context,
+            requester=requester,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            source_object_id=source_object_id,
+            source_revision_id=source_revision_id,
+            source_revision_digest=source_revision_digest,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionTranscriptionStatusAuthorization:
+    """Bind safe job status to current source disclosure authority."""
+
+    source_authorization: ProductionCurrentSourceDisclosureAuthorization
+
+    async def recheck(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        requester: ParsedContentInspectionRequester,
+        job: TranscriptionJob,
+    ) -> TranscriptionStatusAuthorization:
+        snapshot = await self.source_authorization.recheck(
+            context=context,
+            requester=requester,
+            workspace_id=job.workspace_id,
+            environment_id=job.environment_id,
+            source_object_id=job.source_object_id,
+            source_revision_id=job.source_revision_id,
+            source_revision_digest=job.source_revision_digest,
+        )
+        allowed = bool(
+            snapshot.allowed
+            and snapshot.workspace_id == job.workspace_id
+            and snapshot.environment_id == job.environment_id
+            and snapshot.source_object_id == job.source_object_id
+            and snapshot.current_revision_id == job.source_revision_id
+            and snapshot.current_revision_digest == job.source_revision_digest
+        )
+        if not allowed:
+            return TranscriptionStatusAuthorization(
+                allowed=False,
+                authorization_generation=snapshot.authorization_generation,
+                reason_code=(
+                    "source_stale" if snapshot.allowed else snapshot.reason_code
+                ),
+            )
+        return TranscriptionStatusAuthorization(
+            allowed=True,
+            authorization_generation=snapshot.authorization_generation,
+            reason_code="allowed",
+            workspace_id=job.workspace_id,
+            environment_id=job.environment_id,
+            job_id=job.job_id,
+            source_object_id=job.source_object_id,
+            source_revision_id=job.source_revision_id,
+            source_revision_digest=job.source_revision_digest,
         )
 
 
@@ -353,6 +434,9 @@ class _RequestIdentityAuthority:
 
 
 __all__ = [
+    "ProductionCurrentSourceDisclosureAuthorization",
     "ProductionParsedContentAuthorizer",
+    "ProductionTranscriptionStatusAuthorization",
+    "ProductionTranscriptEvidenceAuthorization",
     "UnitOfWorkParsedContentDecisionAudit",
 ]
