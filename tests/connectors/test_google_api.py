@@ -310,7 +310,7 @@ async def test_drive_snapshot_and_changes_map_every_provider_page() -> None:
 
 
 @pytest.mark.asyncio
-async def test_drive_changes_accept_documented_v3_response_without_change_id() -> None:
+async def test_drive_changes_accept_documented_v3_changelist_fields() -> None:
     class DriveV3ContractTransport:
         def __init__(self) -> None:
             self.requests: list[GoogleApiRequest] = []
@@ -322,7 +322,7 @@ async def test_drive_changes_accept_documented_v3_response_without_change_id() -
                     status_code=200,
                     json_body={"access_token": "token", "expires_in": 3600},
                 )
-            if "changeId" in request.query["fields"]:
+            if "incompleteSearch" in request.query["fields"]:
                 return GoogleApiResponse(
                     status_code=400,
                     json_body={"error": {"status": "INVALID_ARGUMENT"}},
@@ -352,7 +352,9 @@ async def test_drive_changes_accept_documented_v3_response_without_change_id() -
     page = await service.list_changes(_connection(), RESOURCE_SCOPE, "start-9")
 
     assert page.new_start_page_token == "start-10"
+    assert page.incomplete_search is False
     assert page.changes[0].change_key == "file:file-2:version:7:removed:false"
+    assert "changeId" not in transport.requests[1].query["fields"]
     assert len(transport.requests) == 2
 
 
