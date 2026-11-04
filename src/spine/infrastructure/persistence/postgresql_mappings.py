@@ -1017,6 +1017,63 @@ email_attachment_artifacts = Table(
     ),
 )
 
+email_attachment_processing_receipts = Table(
+    "email_attachment_processing_receipts", metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("processing_receipt_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("attachment_artifact_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("processor_profile", Text, nullable=False),
+    Column("authority_digest", String(64), nullable=False),
+    Column("disposition", Text, nullable=False),
+    Column("child_source_object_id", PostgreSQLUUID(as_uuid=True)),
+    Column("child_source_revision_id", PostgreSQLUUID(as_uuid=True)),
+    Column("child_processing_receipt_id", PostgreSQLUUID(as_uuid=True)),
+    Column("parsed_artifact_id", PostgreSQLUUID(as_uuid=True)),
+    Column("parsed_artifact_digest", String(64)),
+    Column("receipt_digest", String(64), nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("completed_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "processing_receipt_id",
+        name="pk_email_attachment_processing_receipts",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "attachment_artifact_id", "processor_profile",
+        "authority_digest",
+        name="uq_email_attachment_processing_receipts_artifact_profile",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "attachment_artifact_id"],
+        [
+            "spine.email_attachment_artifacts.workspace_id",
+            "spine.email_attachment_artifacts.environment_id",
+            "spine.email_attachment_artifacts.artifact_id",
+        ],
+        name="fk_email_attachment_processing_receipts_attachment",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "child_source_object_id", "child_source_revision_id"],
+        [
+            "spine.source_revisions.workspace_id",
+            "spine.source_revisions.environment_id",
+            "spine.source_revisions.source_object_id",
+            "spine.source_revisions.revision_id",
+        ],
+        name="fk_email_attachment_processing_receipts_child_revision",
+    ),
+    ForeignKeyConstraint(
+        ["child_processing_receipt_id"],
+        ["spine.processing_receipts.processing_receipt_id"],
+        name="fk_email_attachment_processing_receipts_child_processing",
+    ),
+    ForeignKeyConstraint(
+        ["parsed_artifact_id"],
+        ["spine.parsed_documents.artifact_id"],
+        name="fk_email_attachment_processing_receipts_parsed_artifact",
+    ),
+)
+
 transcription_jobs = Table(
     "transcription_jobs",
     metadata,
@@ -2752,6 +2809,7 @@ current_trusted_canonical_acceptance_selectors = Table(
 
 __all__ = [
     "email_attachment_artifacts",
+    "email_attachment_processing_receipts",
     "email_message_artifacts",
     "email_sync_attempts",
     "email_sync_pages",

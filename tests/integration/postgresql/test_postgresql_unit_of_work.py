@@ -1119,6 +1119,18 @@ async def test_postgresql_email_attachment_replay_is_tenant_scoped_and_immutable
     from spine.infrastructure.persistence.email_attachments import PostgreSQLEmailAttachmentRepository
 
     original = b"From: synthetic@example.test\r\nContent-Type: message/rfc822\r\n\r\nSynthetic"
+    from spine.application.email_attachment_ingestion import (
+        EmailAttachmentProcessingConflict,
+        PROCESSOR_PROFILE,
+    )
+    from spine.domain.artifacts.email_attachment import (
+        EmailAttachmentProcessingDisposition,
+        EmailAttachmentProcessingReceipt,
+        email_attachment_processing_receipt_digest,
+    )
+    from spine.infrastructure.persistence.email_attachment_processing import (
+        PostgreSQLEmailAttachmentProcessingRepository,
+    )
     case = await prepare_canonical_case(postgresql_adapter, 85500, original_content=original)
     async with postgresql_adapter.uow_factory(case.context) as uow:
         acceptance = await uow.canonical.accept(case.command)
@@ -1145,6 +1157,9 @@ async def test_postgresql_email_attachment_replay_is_tenant_scoped_and_immutable
         )
 
     repository = PostgreSQLEmailAttachmentRepository(
+        session_factory, context_factory=context_factory, context_verifier=boundary
+    )
+    processing_repository = PostgreSQLEmailAttachmentProcessingRepository(
         session_factory, context_factory=context_factory, context_verifier=boundary
     )
     profile = "email-attachment-extractor:v1:" + "c" * 64
@@ -1204,6 +1219,57 @@ async def test_postgresql_email_attachment_replay_is_tenant_scoped_and_immutable
             source_revision_id=case.revision.revision_id,
         )) == 1
 
+        processing_provisional = EmailAttachmentProcessingReceipt.model_construct(
+            processing_receipt_id=synthetic_uuid(85610), workspace_id=artifact.workspace_id,
+            environment_id=artifact.environment_id, parent_source_object_id=artifact.source_object_id,
+            parent_source_revision_id=artifact.source_revision_id,
+            parent_source_revision_digest=artifact.source_revision_digest,
+            parent_canonical_acceptance_id=artifact.canonical_acceptance_id,
+            attachment_artifact_id=artifact.artifact_id,
+            attachment_artifact_digest=artifact.artifact_sha256,
+            mime_part_path=artifact.mime_part_path,
+            attachment_content_sha256=artifact.content_sha256,
+            attachment_byte_length=artifact.byte_length, media_type=artifact.media_type,
+            policy_version="email-attachment-policy:v1", authority_digest="e" * 64,
+            processor_profile=PROCESSOR_PROFILE,
+            disposition=EmailAttachmentProcessingDisposition.UNSUPPORTED,
+            original_disposition="retained_fenced", child_source_object_id=None,
+            child_source_revision_id=None, child_processing_receipt_id=None,
+            parsed_artifact_id=None, parsed_artifact_digest=None,
+            completed_at=datetime(2026, 10, 1, tzinfo=timezone.utc), receipt_sha256="0" * 64,
+        )
+        processing_receipt = EmailAttachmentProcessingReceipt.model_validate(
+            processing_provisional.model_copy(update={
+                "receipt_sha256": email_attachment_processing_receipt_digest(processing_provisional)
+            }).model_dump()
+        )
+        stored, replayed = await asyncio.gather(
+            processing_repository.persist(processing_receipt),
+            processing_repository.persist(processing_receipt),
+        )
+        assert sorted((stored.replay, replayed.replay)) == [False, True]
+        assert await processing_repository.resolve(
+            workspace_id=artifact.workspace_id, environment_id=artifact.environment_id,
+            attachment_artifact_id=artifact.artifact_id, processor_profile=PROCESSOR_PROFILE,
+            authority_digest="e" * 64,
+        ) == processing_receipt
+        assert await processing_repository.resolve(
+            workspace_id=synthetic_uuid(85611), environment_id=synthetic_uuid(85612),
+            attachment_artifact_id=artifact.artifact_id, processor_profile=PROCESSOR_PROFILE,
+            authority_digest="e" * 64,
+        ) is None
+        conflicting_provisional = processing_receipt.model_copy(update={
+            "disposition": EmailAttachmentProcessingDisposition.DANGEROUS,
+            "receipt_sha256": "0" * 64,
+        })
+        conflicting = EmailAttachmentProcessingReceipt.model_validate(
+            conflicting_provisional.model_copy(update={
+                "receipt_sha256": email_attachment_processing_receipt_digest(conflicting_provisional)
+            }).model_dump()
+        )
+        with pytest.raises(EmailAttachmentProcessingConflict):
+            await processing_repository.persist(conflicting)
+
         migration_engine = create_async_engine(
             postgresql_contract_database.migration_url.get_secret_value(),
             hide_parameters=True,
@@ -1215,6 +1281,34 @@ async def test_postgresql_email_attachment_replay_is_tenant_scoped_and_immutable
                     await connection.execute(
                         text("UPDATE spine.email_attachment_artifacts SET content_sha256 = :digest WHERE artifact_id = :id"),
                         {"digest": "d" * 64, "id": artifact.artifact_id},
+                    )
+            poisoned = processing_receipt.model_dump(mode="json")
+            poisoned_id = synthetic_uuid(85614)
+            poisoned["workspace_id"] = str(synthetic_uuid(85613))
+            poisoned["processing_receipt_id"] = str(poisoned_id)
+            with pytest.raises(IntegrityError):
+                async with migration_engine.begin() as connection:
+                    await connection.execute(
+                        text(
+                            "INSERT INTO spine.email_attachment_processing_receipts "
+                            "(workspace_id, environment_id, processing_receipt_id, attachment_artifact_id, "
+                            "processor_profile, authority_digest, disposition, receipt_digest, record, completed_at) "
+                            "VALUES (:workspace_id, :environment_id, :processing_receipt_id, :attachment_artifact_id, "
+                            ":processor_profile, :authority_digest, :disposition, :receipt_digest, "
+                            "CAST(:record AS jsonb), :completed_at)"
+                        ),
+                        {
+                            "workspace_id": artifact.workspace_id,
+                            "environment_id": artifact.environment_id,
+                            "processing_receipt_id": poisoned_id,
+                            "attachment_artifact_id": artifact.artifact_id,
+                            "processor_profile": PROCESSOR_PROFILE,
+                            "authority_digest": "f" * 64,
+                            "disposition": "unsupported",
+                            "receipt_digest": processing_receipt.receipt_sha256,
+                            "record": json.dumps(poisoned),
+                            "completed_at": processing_receipt.completed_at,
+                        },
                     )
         finally:
             await migration_engine.dispose()
