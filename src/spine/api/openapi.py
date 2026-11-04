@@ -85,12 +85,14 @@ from spine.application.requirements_evidence import (
 )
 from spine.api.transcript_evidence import TranscriptEvidenceInspectorService
 from spine.api.transcript_reviews import TranscriptReviewCommandService
+from spine.api.transcriptions import TranscriptionStatusReader
 from spine.application.transcript_review import (
     ReviewTranscriptCommand,
     TranscriptReviewInspection,
     TranscriptReviewResult,
 )
 from spine.application.transcript_inspection import TranscriptInspectionResult
+from spine.application.transcription_status import TranscriptionStatusSnapshot
 from spine.domain.artifacts import TimeRangeLocator
 from spine.application.connections.management import ProviderConnectionManager
 from spine.application.workflow_runs import (
@@ -462,6 +464,12 @@ class _UnavailableTranscriptReviewService:
         raise RuntimeError("The OpenAPI composition is not executable.")
 
 
+class _UnavailableTranscriptionStatusReader:
+    async def get_status(self, **kwargs) -> TranscriptionStatusSnapshot:
+        del kwargs
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+
 class _UnavailableProviderConnectionService:
     async def configure(self, *args, **kwargs):
         del args, kwargs
@@ -568,6 +576,10 @@ def create_openapi_app() -> FastAPI:
         transcript_review_service=cast(
             TranscriptReviewCommandService,
             _UnavailableTranscriptReviewService(),
+        ),
+        transcription_status_reader=cast(
+            TranscriptionStatusReader,
+            _UnavailableTranscriptionStatusReader(),
         ),
         provider_connection_service=cast(
             ProviderConnectionManager,

@@ -874,6 +874,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/transcriptions/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Transcription.Status.Read */
+        get: operations["transcription.status.read"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ask": {
         parameters: {
             query?: never;
@@ -2236,6 +2253,31 @@ export interface components {
         /** ApiResponseEnvelope[TranscriptReviewResponse] */
         ApiResponseEnvelope_TranscriptReviewResponse_: {
             data: components["schemas"]["TranscriptReviewResponse"];
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiResponseEnvelope[TranscriptionStatusSnapshot] */
+        ApiResponseEnvelope_TranscriptionStatusSnapshot_: {
+            data: components["schemas"]["TranscriptionStatusSnapshot"];
             /**
              * Environment Id
              * Format: uuid
@@ -6643,6 +6685,46 @@ export interface components {
              * @constant
              */
             schema_version: "transcription-failure-provenance:v1";
+        };
+        /**
+         * TranscriptionStatus
+         * @enum {string}
+         */
+        TranscriptionStatus: "pending" | "completed" | "partial" | "failed" | "cancelled" | "unavailable" | "permission_denied";
+        /**
+         * TranscriptionStatusSnapshot
+         * @description Current processing state without audio handles or provider payloads.
+         */
+        TranscriptionStatusSnapshot: {
+            /** Adapter Reference */
+            adapter_reference?: string | null;
+            /** Cancellation Requested */
+            cancellation_requested?: boolean | null;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            /** Job Id */
+            job_id?: string | null;
+            /** Model Config Reference */
+            model_config_reference?: string | null;
+            /** Processing Profile Reference */
+            processing_profile_reference?: string | null;
+            /** Retryable */
+            retryable?: boolean | null;
+            /**
+             * Schema Version
+             * @default transcription-status:v1
+             * @constant
+             */
+            schema_version: "transcription-status:v1";
+            /** Source Object Id */
+            source_object_id?: string | null;
+            /** Source Revision Id */
+            source_revision_id?: string | null;
+            status: components["schemas"]["TranscriptionStatus"];
+            /** Terminal Code */
+            terminal_code?: string | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -12503,6 +12585,112 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope_TranscriptReviewInspection_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "transcription.status.read": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope_TranscriptionStatusSnapshot_"];
                 };
             };
             /** @description Safe request error. */
