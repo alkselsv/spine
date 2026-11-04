@@ -76,7 +76,13 @@ state. A removal without a returned file resource uses the existing conservative
 `unknown` version component; it does not invent provider identity or establish
 deletion authority. See the official
 [`Change` resource](https://developers.google.com/workspace/drive/api/reference/rest/v3/changes).
-The exact post-#931 live Changes response remains unverified until the fix is
+The v3 `ChangeList` response likewise has no `incompleteSearch` field: its
+top-level selector is limited to `nextPageToken`, `newStartPageToken` and
+`changes`. Spine's `DriveChangePage.incomplete_search` remains an internal
+conservative signal and is set when exact folder membership cannot be proved;
+it is not read from an undocumented provider field. See the official
+[`changes.list` response](https://developers.google.com/workspace/drive/api/reference/rest/v3/changes/list#response-body).
+The exact post-#934 live Changes response remains unverified until the fix is
 merged, post-merge preflight passes and #615 records a new one-shot owner
 authorization.
 

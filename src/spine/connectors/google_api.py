@@ -801,7 +801,7 @@ class GoogleApiService:
             "supportsAllDrives": str(scope.supports_all_drives).lower(),
             "includeItemsFromAllDrives": str(scope.supports_all_drives).lower(),
             "fields": (
-                "nextPageToken,newStartPageToken,incompleteSearch,"
+                "nextPageToken,newStartPageToken,"
                 "changes(fileId,removed,file(id,driveId,version,trashed,parents))"
             ),
         }
@@ -825,10 +825,7 @@ class GoogleApiService:
             page_token=page_token,
             next_page_token=_optional_string(payload, "nextPageToken"),
             new_start_page_token=_optional_string(payload, "newStartPageToken"),
-            incomplete_search=(
-                _required_bool(payload, "incompleteSearch", default=False)
-                or ambiguous_membership
-            ),
+            incomplete_search=ambiguous_membership,
             changes=changes,
         )
 
