@@ -14,7 +14,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import pytest
 import pytest_asyncio
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 from sqlalchemy import delete, event, func, insert, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
@@ -142,12 +142,20 @@ class _SyntheticRetentionApproval:
 class _SyntheticRetentionTerms:
     """Explicit test-only terms; never registered by production composition."""
 
-    def __init__(self, policy_id, version_id, policy_digest):
+    def __init__(
+        self, policy_id, version_id, policy_digest, *,
+        resolved_exception_references=(), resolved_legal_hold_references=(),
+        active_legal_hold_references=(),
+    ):
         self.policy_id = policy_id
         self.version_id = version_id
         self.policy_digest = policy_digest
         self.terms_digest = "d" * 64
         self.duration_seconds = 1800
+        self.terms_version = "test-synthetic-retention:v1"
+        self.resolved_exception_references = resolved_exception_references
+        self.resolved_legal_hold_references = resolved_legal_hold_references
+        self.active_legal_hold_references = active_legal_hold_references
 
     async def resolve(self, binding, artifact_class, context, transaction):
         del context, transaction
@@ -163,7 +171,7 @@ class _SyntheticRetentionTerms:
             retention_policy_digest=self.policy_digest,
             artifact_class=artifact_class,
             terms_id=synthetic_uuid(796001),
-            terms_version="test-synthetic-retention:v1",
+            terms_version=self.terms_version,
             terms_digest=self.terms_digest,
             starting_event=(
                 RetentionStartingEvent.REPORT_GENERATED
@@ -172,6 +180,9 @@ class _SyntheticRetentionTerms:
             ),
             duration_seconds=self.duration_seconds,
             approval_evidence_reference=synthetic_uuid(796002),
+            resolved_exception_references=self.resolved_exception_references,
+            resolved_legal_hold_references=self.resolved_legal_hold_references,
+            active_legal_hold_references=self.active_legal_hold_references,
             deletion_obligation_reference=synthetic_uuid(796003),
             backup_obligation_reference=synthetic_uuid(796004),
             approved=True,
@@ -213,11 +224,16 @@ class _SyntheticManifestLineage:
 class _SyntheticArtifactDeletionAuthority:
     """Fixture-scoped deletion grant; never registered by production wiring."""
 
-    def __init__(self, *, allow: bool = True) -> None:
+    def __init__(self, *, allow: bool = True, response_case: str | None = None) -> None:
         self.allow = allow
+        self.response_case = response_case
+        self.calls = 0
+        self.last_request = None
 
     async def authorize_deletion(self, request, *, context, transaction):
         del transaction
+        self.calls += 1
+        self.last_request = request
         allowed = (
             (
                 request.action == "retention_expiration"
@@ -229,7 +245,7 @@ class _SyntheticArtifactDeletionAuthority:
             context.scope.workspace_id == request.workspace_id
             and context.scope.environment_id == request.environment_id
         )
-        return PrivateArtifactDeletionAuthorization(
+        authorization = PrivateArtifactDeletionAuthorization(
             request_digest=request.calculate_digest(),
             authorization_ref=PrivateReference(
                 reference_id=synthetic_uuid(798001),
@@ -240,6 +256,79 @@ class _SyntheticArtifactDeletionAuthority:
             valid_until=request.requested_at + timedelta(days=1),
             authorized=allowed,
         )
+        if self.response_case == "unauthorized":
+            return authorization.model_copy(update={"authorized": False})
+        if self.response_case == "wrong_digest":
+            return authorization.model_copy(update={"request_digest": "f" * 64})
+        if self.response_case == "expired":
+            return authorization.model_copy(update={"valid_until": request.requested_at})
+        if self.response_case == "zero_epoch":
+            return authorization.model_copy(update={"revocation_epoch": 0})
+        if self.response_case == "invalid_version":
+            return authorization.model_copy(update={"authority_version": "INVALID VERSION"})
+        if self.response_case == "wrong_state_binding":
+            forged = request.model_copy(update={"expected_state_digest": "f" * 64})
+            return authorization.model_copy(update={"request_digest": forged.calculate_digest()})
+        if self.response_case == "wrong_action":
+            forged = request.model_copy(update={"action": "staging_cleanup"})
+            return authorization.model_copy(update={"request_digest": forged.calculate_digest()})
+        if self.response_case == "wrong_artifact_identity":
+            forged = request.model_copy(update={"artifact_id": synthetic_uuid(798005)})
+            return authorization.model_copy(update={"request_digest": forged.calculate_digest()})
+        if self.response_case == "wrong_source_binding":
+            lineage = request.source_lineage[0].model_copy(
+                update={"source_revision_digest": "f" * 64},
+            )
+            forged = request.model_copy(update={"source_lineage": (lineage,)})
+            return authorization.model_copy(update={"request_digest": forged.calculate_digest()})
+        if self.response_case in {
+            "wrong_retention_generation", "wrong_policy_digest", "wrong_terms_version",
+            "wrong_terms_digest", "wrong_retention_deadline", "wrong_profile",
+            "wrong_source_object", "wrong_source_revision", "wrong_source_digest",
+        }:
+            if self.response_case == "wrong_source_object":
+                lineage = request.source_lineage[0].model_copy(
+                    update={"source_object_id": synthetic_uuid(798002)},
+                )
+                forged = request.model_copy(update={"source_lineage": (lineage,)})
+            elif self.response_case == "wrong_source_revision":
+                lineage = request.source_lineage[0].model_copy(
+                    update={"source_revision_id": synthetic_uuid(798003)},
+                )
+                forged = request.model_copy(update={"source_lineage": (lineage,)})
+            elif self.response_case == "wrong_source_digest":
+                lineage = request.source_lineage[0].model_copy(
+                    update={"source_revision_digest": "e" * 64},
+                )
+                forged = request.model_copy(update={"source_lineage": (lineage,)})
+            elif self.response_case == "wrong_profile":
+                forged = request.model_copy(update={
+                    "retention_profile_ref": PrivateReference(
+                        reference_id=synthetic_uuid(798004), reference_kind="retention_applicability",
+                    ),
+                })
+            else:
+                nested_field, nested_value = {
+                    "wrong_retention_generation": ("applicability_generation", 2),
+                    "wrong_policy_digest": ("policy_digest", "e" * 64),
+                    "wrong_terms_version": ("terms_version", "different-terms:v2"),
+                    "wrong_terms_digest": ("terms_digest", "e" * 64),
+                    "wrong_retention_deadline": (
+                        "deadline", request.retention_bindings[0].deadline + timedelta(seconds=1),
+                    ),
+                }[self.response_case]
+                retention = request.retention_bindings[0].model_copy(
+                    update={nested_field: nested_value},
+                )
+                forged = request.model_copy(update={"retention_bindings": (retention,)})
+            return authorization.model_copy(update={"request_digest": forged.calculate_digest()})
+        if self.response_case == "wrong_retention_binding":
+            retention = request.retention_bindings[0].model_copy(
+                update={"terms_digest": "f" * 64},
+            )
+            forged = request.model_copy(update={"retention_bindings": (retention,)})
+            return authorization.model_copy(update={"request_digest": forged.calculate_digest()})
+        return authorization
 
 
 class _SyntheticAggregatePublicationAuthority:
@@ -288,6 +377,93 @@ class _SyntheticPrivacyApprovalReader:
         return approval
 
 
+async def _expired_original_deletion_case(
+    database: _Database,
+    *,
+    seed: int,
+    authority: _SyntheticArtifactDeletionAuthority | None,
+    exception_references=(),
+    legal_hold_references=(),
+    active_legal_hold_references=(),
+):
+    clock = _ControlledClock(NOW)
+    prepared = await _prepare_synthetic_report_case(
+        database,
+        seed=seed,
+        deletion_authority=authority,
+        clock=clock,
+        exception_references=exception_references,
+        legal_hold_references=legal_hold_references,
+        active_legal_hold_references=active_legal_hold_references,
+    )
+    clock.current = NOW + timedelta(minutes=31)
+    context = prepared.boundary.worker(
+        scope=EnvironmentScope(
+            workspace_id=prepared.case.source.workspace_id,
+            environment_id=prepared.case.source.environment_id,
+        ),
+        service_principal_id=synthetic_uuid(seed + 20),
+        purpose=PersistencePurpose("asr_model_evaluation"),
+        operation=PersistenceOperation("private_asr_retention_expiration"),
+        trace_id=synthetic_uuid(seed + 21),
+    )
+    return prepared, context
+
+
+async def _original_deletion_state(prepared):
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        row = (await session.execute(select(
+            private_asr_artifacts.c.artifact_id,
+            private_asr_artifacts.c.kind,
+            private_asr_artifacts.c.status,
+            private_asr_artifacts.c.source_object_id,
+            private_asr_artifacts.c.source_revision_id,
+            private_asr_artifacts.c.source_revision_digest,
+            private_asr_artifacts.c.content_sha256,
+            private_asr_artifacts.c.byte_length,
+            private_asr_artifacts.c.retention_profile_ref,
+            private_asr_artifacts.c.audit_receipt_ref,
+            private_asr_artifacts.c.dataset_id,
+            private_asr_artifacts.c.manifest_version,
+            private_asr_artifacts.c.manifest_sha256,
+            private_asr_artifacts.c.retention_disposition,
+            private_asr_artifacts.c.expires_at,
+            private_asr_artifacts.c.created_at,
+            private_asr_artifacts.c.tombstoned_at,
+            private_asr_artifacts.c.payload,
+        ).where(
+            private_asr_artifacts.c.workspace_id == prepared.case.source.workspace_id,
+            private_asr_artifacts.c.environment_id == prepared.case.source.environment_id,
+            private_asr_artifacts.c.artifact_id == prepared.original_ref.reference_id,
+        ))).mappings().one()
+        audits = (await session.execute(select(
+            audit_events.c.audit_event_id,
+        ).where(
+            audit_events.c.workspace_id == prepared.case.source.workspace_id,
+            audit_events.c.environment_id == prepared.case.source.environment_id,
+            audit_events.c.target_id == prepared.original_ref.reference_id,
+            audit_events.c.reason == "private_asr_artifact_expired",
+        ).order_by(audit_events.c.audit_event_id))).scalars().all()
+    state = {
+        "artifact_id": str(row["artifact_id"]), "kind": row["kind"],
+        "status": row["status"], "source_object_id": str(row["source_object_id"]),
+        "source_revision_id": str(row["source_revision_id"]),
+        "source_revision_digest": row["source_revision_digest"],
+        "content_sha256": row["content_sha256"], "byte_length": row["byte_length"],
+        "retention_profile_ref": str(row["retention_profile_ref"]),
+        "audit_receipt_ref": str(row["audit_receipt_ref"]),
+        "dataset_id": str(row["dataset_id"]) if row["dataset_id"] else None,
+        "manifest_version": row["manifest_version"],
+        "manifest_sha256": row["manifest_sha256"],
+        "retention_disposition": row["retention_disposition"],
+        "expires_at": row["expires_at"].isoformat(),
+        "created_at": row["created_at"].isoformat(),
+    }
+    digest = sha256(json.dumps(state, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return row, digest, tuple(audits)
+
+
 @pytest.mark.asyncio
 async def test_postgresql_private_asr_expired_original_is_tombstoned_with_audit(
     private_asr_database: _Database,
@@ -317,6 +493,21 @@ async def test_postgresql_private_asr_expired_original_is_tombstoned_with_audit(
         policy_ref=prepared.applicability_ref,
         context=cleanup_context,
     )
+    tombstoned_state, tombstoned_digest, deletion_audits = await _original_deletion_state(prepared)
+    assert tombstoned_state["status"] == "tombstoned"
+    assert tombstoned_state["payload"] == b""
+    assert len(deletion_audits) == 1
+    calls_before_retry = prepared.store._deletion_authority.calls
+    await prepared.store.expire(
+        prepared.original_ref,
+        policy_ref=prepared.applicability_ref,
+        context=cleanup_context,
+    )
+    retried_state, retried_digest, retried_audits = await _original_deletion_state(prepared)
+    assert retried_digest == tombstoned_digest
+    assert dict(retried_state) == dict(tombstoned_state)
+    assert retried_audits == deletion_audits
+    assert prepared.store._deletion_authority.calls == calls_before_retry
     async with prepared.runtime_sessions() as session, session.begin():
         await prepared.store._set_scope(session, cleanup_context)
         row = (await session.execute(select(
@@ -340,13 +531,6 @@ async def test_postgresql_private_asr_expired_original_is_tombstoned_with_audit(
     assert row.payload == b""
     assert row.tombstoned_at == deletion_clock
     assert deletion_events == 1
-
-    await prepared.store.expire(
-        prepared.original_ref,
-        policy_ref=prepared.applicability_ref,
-        context=cleanup_context,
-    )
-
 
 @pytest.mark.asyncio
 async def test_postgresql_private_asr_report_expires_after_original_tombstone(
@@ -462,6 +646,381 @@ async def test_postgresql_private_asr_expiration_denies_without_deletion_authori
         ).where(private_asr_artifacts.c.artifact_id == prepared.original_ref.reference_id))).one()
         assert row.status == "committed"
         assert row.payload != b""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response_case",
+    (
+        "unauthorized", "wrong_digest", "expired", "zero_epoch", "invalid_version",
+        "wrong_state_binding", "wrong_action", "wrong_artifact_identity",
+        "wrong_source_binding", "wrong_source_object",
+        "wrong_source_revision", "wrong_source_digest", "wrong_retention_generation",
+        "wrong_policy_digest", "wrong_terms_version", "wrong_terms_digest",
+        "wrong_retention_deadline", "wrong_profile", "wrong_retention_binding",
+    ),
+)
+async def test_postgresql_private_asr_invalid_deletion_grant_denies_without_mutation(
+    private_asr_database: _Database,
+    response_case: str,
+) -> None:
+    authority = _SyntheticArtifactDeletionAuthority(response_case=response_case)
+    prepared, context = await _expired_original_deletion_case(
+        private_asr_database, seed=801000 + 10 * (
+            "unauthorized wrong_digest expired zero_epoch invalid_version "
+            "wrong_state_binding wrong_action wrong_artifact_identity wrong_source_binding "
+            "wrong_source_object wrong_source_revision "
+            "wrong_source_digest wrong_retention_generation wrong_policy_digest wrong_terms_version "
+            "wrong_terms_digest wrong_retention_deadline wrong_profile wrong_retention_binding"
+        ).split().index(response_case), authority=authority,
+    )
+    before, before_digest, before_audits = await _original_deletion_state(prepared)
+    with pytest.raises(PrivateASRStorageDenied) as denied:
+        await prepared.store.expire(
+            prepared.original_ref, policy_ref=prepared.applicability_ref, context=context,
+        )
+    after, after_digest, after_audits = await _original_deletion_state(prepared)
+    assert str(denied.value) == "Private ASR deletion authorization denied."
+    assert before_digest == after_digest
+    assert before["status"] == after["status"] == "committed"
+    assert before["payload"] == after["payload"] != b""
+    assert before["tombstoned_at"] is after["tombstoned_at"] is None
+    assert before_audits == after_audits == ()
+    assert authority.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("denial_case", ("workspace", "environment", "artifact_kind", "artifact_id", "action"))
+async def test_postgresql_private_asr_wrong_scope_or_identity_denies_without_mutation(
+    private_asr_database: _Database,
+    denial_case: str,
+) -> None:
+    seed = 802000 + 10 * ("workspace environment artifact_kind artifact_id action".split().index(denial_case))
+    authority = _SyntheticArtifactDeletionAuthority()
+    prepared, context = await _expired_original_deletion_case(
+        private_asr_database, seed=seed, authority=authority,
+    )
+    before, before_digest, before_audits = await _original_deletion_state(prepared)
+    reference = prepared.original_ref
+    if denial_case == "workspace":
+        context = prepared.boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=synthetic_uuid(seed + 30),
+                environment_id=prepared.case.source.environment_id,
+            ),
+            service_principal_id=synthetic_uuid(seed + 31),
+            purpose=PersistencePurpose("asr_model_evaluation"),
+            operation=PersistenceOperation("private_asr_retention_expiration"),
+            trace_id=synthetic_uuid(seed + 32),
+        )
+    elif denial_case == "environment":
+        context = prepared.boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=prepared.case.source.workspace_id,
+                environment_id=synthetic_uuid(seed + 33),
+            ),
+            service_principal_id=synthetic_uuid(seed + 34),
+            purpose=PersistencePurpose("asr_model_evaluation"),
+            operation=PersistenceOperation("private_asr_retention_expiration"),
+            trace_id=synthetic_uuid(seed + 35),
+        )
+    elif denial_case == "artifact_kind":
+        reference = PrivateReference(
+            reference_id=reference.reference_id, reference_kind="private_asr_report",
+        )
+    elif denial_case == "artifact_id":
+        reference = PrivateReference(
+            reference_id=synthetic_uuid(seed + 36), reference_kind="private_asr_original",
+        )
+    with pytest.raises(PrivateASRStorageDenied):
+        if denial_case == "action":
+            cleanup_context = prepared.boundary.worker(
+                scope=EnvironmentScope(
+                    workspace_id=prepared.case.source.workspace_id,
+                    environment_id=prepared.case.source.environment_id,
+                ),
+                service_principal_id=synthetic_uuid(seed + 37),
+                purpose=PersistencePurpose("asr_model_evaluation"),
+                operation=PersistenceOperation("private_asr_cleanup"),
+                trace_id=synthetic_uuid(seed + 38),
+            )
+            await prepared.store.delete_private_reference(
+                reference, context=cleanup_context,
+            )
+        else:
+            await prepared.store.expire(
+                reference, policy_ref=prepared.applicability_ref, context=context,
+            )
+    after, after_digest, after_audits = await _original_deletion_state(prepared)
+    assert before_digest == after_digest
+    assert before["status"] == after["status"] == "committed"
+    assert before["payload"] == after["payload"] != b""
+    assert before["tombstoned_at"] is after["tombstoned_at"] is None
+    assert before_audits == after_audits == ()
+    assert authority.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_active_hold_denies_before_deletion_authority(
+    private_asr_database: _Database,
+) -> None:
+    hold_id = synthetic_uuid(803001)
+    authority = _SyntheticArtifactDeletionAuthority()
+    prepared, context = await _expired_original_deletion_case(
+        private_asr_database, seed=803000, authority=authority,
+        legal_hold_references=(hold_id,),
+    )
+    # Seed the artifact under the previously approved terms, then make the
+    # trusted terms provider report the active hold before deletion is checked.
+    prepared.terms_authority.active_legal_hold_references = (hold_id,)
+    before, before_digest, before_audits = await _original_deletion_state(prepared)
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.expire(
+            prepared.original_ref, policy_ref=prepared.applicability_ref, context=context,
+        )
+    after, after_digest, after_audits = await _original_deletion_state(prepared)
+    assert before_digest == after_digest
+    assert before["status"] == after["status"] == "committed"
+    assert before["payload"] == after["payload"] != b""
+    assert before_audits == after_audits == ()
+    assert authority.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_unresolved_exception_denies_deletion(
+    private_asr_database: _Database,
+) -> None:
+    exception_id = synthetic_uuid(803101)
+    authority = _SyntheticArtifactDeletionAuthority()
+    prepared, context = await _expired_original_deletion_case(
+        private_asr_database, seed=803100, authority=authority,
+        exception_references=(exception_id,),
+    )
+    prepared.terms_authority.resolved_exception_references = (synthetic_uuid(803102),)
+    before, before_digest, before_audits = await _original_deletion_state(prepared)
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.expire(
+            prepared.original_ref, policy_ref=prepared.applicability_ref, context=context,
+        )
+    after, after_digest, after_audits = await _original_deletion_state(prepared)
+    assert before_digest == after_digest
+    assert before["status"] == after["status"] == "committed"
+    assert before["payload"] == after["payload"] != b""
+    assert before_audits == after_audits == ()
+    assert authority.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_stale_applicability_denies_deletion(
+    private_asr_database: _Database,
+) -> None:
+    authority = _SyntheticArtifactDeletionAuthority()
+    prepared, context = await _expired_original_deletion_case(
+        private_asr_database, seed=803200, authority=authority,
+    )
+    replacement = prepared.applicability.model_copy(update={
+        "applicability_id": synthetic_uuid(803230),
+        "expected_current_applicability_id": prepared.applicability.applicability_id,
+        "expected_current_generation": prepared.applicability.generation,
+        "generation": prepared.applicability.generation + 1,
+        "audit_event_id": synthetic_uuid(803231),
+        "outbox_event_id": synthetic_uuid(803232),
+    })
+    await prepared.retention_repository.record_applicability(
+        replacement, prepared.governance_context,
+    )
+    before, before_digest, before_audits = await _original_deletion_state(prepared)
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.expire(
+            prepared.original_ref, policy_ref=prepared.applicability_ref, context=context,
+        )
+    after, after_digest, after_audits = await _original_deletion_state(prepared)
+    assert before_digest == after_digest
+    assert before["status"] == after["status"] == "committed"
+    assert before["payload"] == after["payload"] != b""
+    assert before_audits == after_audits == ()
+    assert authority.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_current_terms_mismatch_denies_deletion(
+    private_asr_database: _Database,
+) -> None:
+    authority = _SyntheticArtifactDeletionAuthority()
+    prepared, context = await _expired_original_deletion_case(
+        private_asr_database, seed=803400, authority=authority,
+    )
+    prepared.terms_authority.policy_digest = "f" * 64
+    before, before_digest, before_audits = await _original_deletion_state(prepared)
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.expire(
+            prepared.original_ref, policy_ref=prepared.applicability_ref, context=context,
+        )
+    after, after_digest, after_audits = await _original_deletion_state(prepared)
+    assert before_digest == after_digest
+    assert before["status"] == after["status"] == "committed"
+    assert before["payload"] == after["payload"] != b""
+    assert before_audits == after_audits == ()
+    assert authority.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_changed_retention_deadline_denies_deletion(
+    private_asr_database: _Database,
+) -> None:
+    authority = _SyntheticArtifactDeletionAuthority()
+    prepared, context = await _expired_original_deletion_case(
+        private_asr_database, seed=803500, authority=authority,
+    )
+    prepared.terms_authority.duration_seconds += 60
+    before, before_digest, before_audits = await _original_deletion_state(prepared)
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.expire(
+            prepared.original_ref, policy_ref=prepared.applicability_ref, context=context,
+        )
+    after, after_digest, after_audits = await _original_deletion_state(prepared)
+    assert before_digest == after_digest
+    assert before["status"] == after["status"] == "committed"
+    assert before["payload"] == after["payload"] != b""
+    assert before_audits == after_audits == ()
+    assert authority.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_approved_exception_is_bound_to_deletion_request(
+    private_asr_database: _Database,
+) -> None:
+    exception_id = synthetic_uuid(803601)
+    authority = _SyntheticArtifactDeletionAuthority()
+    prepared, context = await _expired_original_deletion_case(
+        private_asr_database, seed=803600, authority=authority,
+        exception_references=(exception_id,),
+    )
+    await prepared.store.expire(
+        prepared.original_ref, policy_ref=prepared.applicability_ref, context=context,
+    )
+    assert authority.last_request.retention_bindings[0].exception_references == (exception_id,)
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_retention_snapshot_cannot_be_substituted_across_revisions(
+    private_asr_database: _Database,
+) -> None:
+    authority = _SyntheticArtifactDeletionAuthority()
+    prepared, context = await _expired_original_deletion_case(
+        private_asr_database, seed=803650, authority=authority,
+    )
+    await prepared.store.expire(
+        prepared.original_ref, policy_ref=prepared.applicability_ref, context=context,
+    )
+    request = authority.last_request
+    first_lineage = request.source_lineage[0]
+    first_retention = request.retention_bindings[0]
+    second_lineage = first_lineage.model_copy(update={
+        "source_object_id": synthetic_uuid(803651),
+        "source_revision_id": synthetic_uuid(803652),
+        "source_revision_digest": "e" * 64,
+    })
+    second_retention = first_retention.model_copy(update={
+        "source_object_id": second_lineage.source_object_id,
+        "source_revision_id": second_lineage.source_revision_id,
+        "source_revision_digest": second_lineage.source_revision_digest,
+    })
+    multi_source = request.model_copy(update={
+        "source_lineage": (first_lineage, second_lineage),
+        "retention_bindings": (first_retention, second_retention),
+    })
+    validated = PrivateArtifactDeletionRequest.model_validate_json(multi_source.model_dump_json())
+    assert len(validated.source_lineage) == len(validated.retention_bindings) == 2
+
+    substituted = second_retention.model_copy(update={
+        "source_object_id": first_lineage.source_object_id,
+        "source_revision_id": first_lineage.source_revision_id,
+        "source_revision_digest": first_lineage.source_revision_digest,
+    })
+    forged = multi_source.model_copy(update={
+        "retention_bindings": (first_retention, substituted),
+    })
+    with pytest.raises(ValidationError):
+        PrivateArtifactDeletionRequest.model_validate_json(forged.model_dump_json())
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_deletion_denial_selects_no_payload(
+    private_asr_database: _Database,
+) -> None:
+    authority = _SyntheticArtifactDeletionAuthority(response_case="unauthorized")
+    prepared, context = await _expired_original_deletion_case(
+        private_asr_database, seed=803300, authority=authority,
+    )
+    payload_selects: list[str] = []
+
+    def observe_payload_select(conn, cursor, statement, parameters, execution_context, executemany):
+        if "select spine.private_asr_artifacts.payload" in statement.lower():
+            payload_selects.append(statement)
+
+    event.listen(
+        private_asr_database.runtime.sync_engine, "before_cursor_execute", observe_payload_select,
+    )
+    try:
+        with pytest.raises(PrivateASRStorageDenied):
+            await prepared.store.expire(
+                prepared.original_ref, policy_ref=prepared.applicability_ref, context=context,
+            )
+    finally:
+        event.remove(
+            private_asr_database.runtime.sync_engine, "before_cursor_execute", observe_payload_select,
+        )
+    assert payload_selects == []
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_deletion_audit_failure_rolls_back_and_preserves_read(
+    private_asr_database: _Database,
+) -> None:
+    authority = _SyntheticArtifactDeletionAuthority()
+    prepared, context = await _expired_original_deletion_case(
+        private_asr_database, seed=803700, authority=authority,
+    )
+    before, before_digest, before_audits = await _original_deletion_state(prepared)
+
+    class FailingDeletionAudit:
+        async def append_artifact_deletion(self, *args, **kwargs):
+            raise RuntimeError("synthetic deletion audit failure")
+
+    failing_store = _storage_for_transaction_probe(
+        prepared,
+        uow_factory=prepared.store._uow_factory,
+        audit_receipts=FailingDeletionAudit(),
+    )
+    with pytest.raises(PrivateASRStorageDenied):
+        await failing_store.expire(
+            prepared.original_ref, policy_ref=prepared.applicability_ref, context=context,
+        )
+
+    after, after_digest, after_audits = await _original_deletion_state(prepared)
+    assert before_digest == after_digest
+    assert before["status"] == after["status"] == "committed"
+    assert before["payload"] == after["payload"] != b""
+    assert before["tombstoned_at"] is after["tombstoned_at"] is None
+    assert before_audits == after_audits == ()
+    prepared.clock.current = NOW
+    assert await prepared.store.read_private_reference(
+        prepared.original_ref, context=prepared.context,
+    ) == b"synthetic ASR source bytes for restricted storage integration"
+    prepared.clock.current = NOW + timedelta(minutes=31)
+    authority.allow = False
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.expire(
+            prepared.original_ref, policy_ref=prepared.applicability_ref, context=context,
+        )
+    after_denied_retry, denied_retry_digest, denied_retry_audits = (
+        await _original_deletion_state(prepared)
+    )
+    assert denied_retry_digest == before_digest
+    assert after_denied_retry["status"] == "committed"
+    assert after_denied_retry["payload"] == before["payload"]
+    assert denied_retry_audits == ()
 
 
 @pytest.mark.asyncio
@@ -949,6 +1508,8 @@ async def _prepare_synthetic_report_case(
     private_asr_database: _Database, *, seed: int = 795000,
     deletion_authority=None, clock=None, leave_staging: bool = False,
     lifecycle_source: bool = False, aggregate_authority=None,
+    exception_references=(), legal_hold_references=(),
+    active_legal_hold_references=(),
 ) -> SimpleNamespace:
     clock = clock or (lambda: NOW)
     runtime_sessions = async_sessionmaker(
@@ -1057,8 +1618,8 @@ async def _prepare_synthetic_report_case(
         approving_authority_kind=RetentionAuthorityKind.DATA_PORTAL,
         effective_from=NOW - timedelta(minutes=1),
         effective_until=NOW + timedelta(days=1),
-        exception_references=(),
-        legal_hold_references=(),
+        exception_references=exception_references,
+        legal_hold_references=legal_hold_references,
         expected_current_applicability_id=None,
         expected_current_generation=0,
         generation=1,
@@ -1129,7 +1690,12 @@ async def _prepare_synthetic_report_case(
         environment_id=case.source.environment_id,
         retention_profile_ref=applicability_ref, bindings=bindings,
     )
-    terms_authority = _SyntheticRetentionTerms(policy_id, policy_version_id, policy_digest)
+    terms_authority = _SyntheticRetentionTerms(
+        policy_id, policy_version_id, policy_digest,
+        resolved_exception_references=exception_references,
+        resolved_legal_hold_references=legal_hold_references,
+        active_legal_hold_references=active_legal_hold_references,
+    )
     resolver = PostgreSQLPrivateASRRetentionResolver(
         approvals=_SyntheticRetentionApproval(),
         terms=terms_authority,

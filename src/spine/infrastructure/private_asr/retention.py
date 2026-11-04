@@ -12,7 +12,7 @@ import json
 from typing import Any
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
 from sqlalchemy import and_, select
 
 from spine.application.persistence.context import EnvironmentScope, TrustedPersistenceContext
@@ -122,7 +122,7 @@ class PostgreSQLPrivateASRRetentionResolver:
             )
         except PrivateASRRetentionDenied:
             raise
-        except Exception:
+        except ValidationError:
             raise PrivateASRRetentionDenied() from None
 
     async def _resolve(

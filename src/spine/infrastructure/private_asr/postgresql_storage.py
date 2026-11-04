@@ -15,11 +15,13 @@ import re
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from pydantic import ValidationError
 from sqlalchemy import BigInteger, Boolean, Column, DateTime, Index, LargeBinary, MetaData, String, Table, Text, func, insert, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from spine.application.persistence.context import EnvironmentScope, TrustedContextVerifier, TrustedPersistenceContext
+from spine.application.persistence.errors import InvalidPersistenceContextError
 from spine.application.persistence.retry import RetryEligibility, run_with_transaction_retry
 from spine.application.persistence.unit_of_work import UnitOfWorkFactory
 from spine.application.private_asr_corpus import (
@@ -56,6 +58,7 @@ from spine.infrastructure.persistence.postgresql_source_locks import (
 )
 from spine.infrastructure.private_asr.retention import (
     PostgreSQLPrivateASRRetentionResolver,
+    PrivateASRRetentionDenied,
     PrivateASRRetentionDisposition,
 )
 
@@ -206,8 +209,32 @@ def _retention_binding_from_snapshot(
     binding["active_legal_hold_references"] = ()
     try:
         return PrivateArtifactRetentionBinding.model_validate_json(json.dumps(binding))
-    except Exception:
+    except ValidationError:
         raise PrivateASRStorageDenied("Private ASR deletion authorization denied.") from None
+
+
+def _validated_deletion_authorization(
+    value: object,
+    *,
+    request: PrivateArtifactDeletionRequest,
+    evaluated_at: datetime,
+) -> PrivateArtifactDeletionAuthorization:
+    if not isinstance(value, PrivateArtifactDeletionAuthorization):
+        raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+    try:
+        authorization = PrivateArtifactDeletionAuthorization.model_validate_json(
+            value.model_dump_json()
+        )
+    except ValidationError:
+        raise PrivateASRStorageDenied("Private ASR deletion authorization denied.") from None
+    if (
+        not authorization.authorized
+        or authorization.request_digest != request.calculate_digest()
+        or authorization.revocation_epoch < 1
+        or authorization.valid_until <= evaluated_at
+    ):
+        raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+    return authorization
 
 
 class PostgreSQLPrivateASRStorage:
@@ -336,13 +363,20 @@ class PostgreSQLPrivateASRStorage:
     ):
         if self._retention_resolver is None:
             raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
-        return await self._retention_resolver.resolve(
-            transaction, context=context, profile_ref=profile_ref,
-            source=admitted.source_object, revision=admitted.source_revision,
-            artifact_class=artifact_class, starting_event=starting_event,
-            starting_at=starting_at, evaluated_at=self._clock(),
-            allow_expired=allow_expired,
-        )
+        try:
+            return await self._retention_resolver.resolve(
+                transaction, context=context, profile_ref=profile_ref,
+                source=admitted.source_object, revision=admitted.source_revision,
+                artifact_class=artifact_class, starting_event=starting_event,
+                starting_at=starting_at, evaluated_at=self._clock(),
+                allow_expired=allow_expired,
+            )
+        except asyncio.CancelledError:
+            raise
+        except PrivateASRRetentionDenied:
+            raise PrivateASRStorageDenied(
+                "Private ASR storage authorization denied."
+            ) from None
 
     async def _lock_source_admission_path(
         self,
@@ -1056,13 +1090,20 @@ class PostgreSQLPrivateASRStorage:
 
     async def expire(self, reference: PrivateReference, *, policy_ref: PrivateReference,
                      context: TrustedPersistenceContext) -> None:
-        await self._delete_authorized_artifact(
-            reference,
-            policy_ref=policy_ref,
-            context=context,
-            action="retention_expiration",
-            expected_operation="private_asr_retention_expiration",
-        )
+        try:
+            await self._delete_authorized_artifact(
+                reference,
+                policy_ref=policy_ref,
+                context=context,
+                action="retention_expiration",
+                expected_operation="private_asr_retention_expiration",
+            )
+        except asyncio.CancelledError:
+            raise
+        except InvalidPersistenceContextError:
+            raise PrivateASRStorageDenied(
+                "Private ASR deletion authorization denied."
+            ) from None
 
     async def export_sanitized(self, payload: bytes, *, context: TrustedPersistenceContext,
                                authorize_export: Callable[[], Any]) -> None:
@@ -1663,10 +1704,9 @@ class PostgreSQLPrivateASRStorage:
                 raise
             except Exception:
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.") from None
-            if (not isinstance(authz, PrivateArtifactDeletionAuthorization) or not authz.authorized
-                    or authz.request_digest != request.calculate_digest()
-                    or authz.revocation_epoch < 1 or authz.valid_until <= now):
-                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+            authz = _validated_deletion_authorization(
+                authz, request=request, evaluated_at=now,
+            )
             writer = getattr(self._audit_receipts, "append_artifact_deletion", None)
             if writer is None:
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
@@ -1924,13 +1964,9 @@ class PostgreSQLPrivateASRStorage:
                 raise
             except Exception:
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.") from None
-            if not isinstance(authz, PrivateArtifactDeletionAuthorization) or (
-                not authz.authorized
-                or authz.request_digest != request.calculate_digest()
-                or authz.revocation_epoch < 1
-                or authz.valid_until <= now
-            ):
-                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+            authz = _validated_deletion_authorization(
+                authz, request=request, evaluated_at=now,
+            )
             current = (await self._execute(transaction, select(
                 private_asr_artifacts.c.status,
                 private_asr_artifacts.c.content_sha256,
