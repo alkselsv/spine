@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
 
+import httpx
 import pytest
 
 from spine.connectors.google_api import (
@@ -17,6 +18,7 @@ from spine.connectors.google_api import (
     GoogleApiResponse,
     GoogleDesktopOAuthMaterial,
     GoogleResourceScope,
+    HttpxGoogleApiTransport,
 )
 from spine.connectors.google_live_qualification import (
     GoogleLiveExecutionAuthorization,
@@ -1628,6 +1630,36 @@ async def test_offline_composition_reports_remaining_closed_failure_classes(
     assert report.retry_disposition == disposition
     assert "raw-provider-detail-sentinel" not in report.model_dump_json()
     assert responses == []
+
+
+@pytest.mark.asyncio
+async def test_offline_composition_reports_httpx_stream_failure_as_transport() -> None:
+    config = _config(opt_in=True)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == config.endpoints.oauth_token_url:
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                json={"access_token": "synthetic-token", "expires_in": 3600},
+            )
+        raise httpx.StreamError("raw-stream-error provider-id-sentinel")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        report = await _composed_runner(
+            config, HttpxGoogleApiTransport(client)
+        ).run(environment_opt_in=True)
+
+    assert report.status == "failed"
+    assert report.failure_code == "provider_unavailable"
+    assert report.failure_stage == "drive"
+    assert report.failure_class == "transport"
+    assert report.retry_disposition == "attempts_exhausted"
+    assert report.oauth_request_attempts == 1
+    assert report.drive_request_attempts == 1
+    assert report.sheets_request_attempts == 0
+    assert "raw-stream-error" not in report.model_dump_json()
+    assert "provider-id-sentinel" not in report.model_dump_json()
 
 
 @pytest.mark.asyncio

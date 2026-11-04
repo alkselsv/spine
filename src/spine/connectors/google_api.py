@@ -427,7 +427,7 @@ class HttpxGoogleApiTransport:
                 failure_class="timeout",
                 retry_disposition="stopped_before_retry",
             ) from None
-        except httpx.RequestError:
+        except (httpx.RequestError, httpx.StreamError):
             raise GoogleProviderReadError(
                 failure_class="transport",
                 retry_disposition="stopped_before_retry",
