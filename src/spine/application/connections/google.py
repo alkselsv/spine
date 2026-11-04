@@ -81,6 +81,13 @@ GoogleProviderRetryDisposition = Literal[
     "not_retryable",
     "stopped_before_retry",
 ]
+GoogleProviderPolicyFailureCode = Literal[
+    "provider_policy_denied",
+    "provider_oauth_scope_insufficient",
+    "provider_file_not_downloadable",
+    "provider_file_permission_denied",
+    "provider_download_restricted",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +135,11 @@ class GoogleProviderReadError(GoogleConnectionError):
             )
         if isinstance(self, GoogleProviderQuotaError):
             return GoogleProviderQuotaError(retry_disposition=retry_disposition)
+        if isinstance(self, GoogleProviderPolicyError):
+            return GoogleProviderPolicyError(
+                failure_code=self.policy_failure_code,
+                retry_disposition=retry_disposition,
+            )
         return GoogleProviderReadError(
             failure_code=self.failure_code,
             failure_class=self.failure_class,
@@ -168,11 +180,17 @@ class GoogleProviderQuotaError(GoogleProviderReadError):
 class GoogleProviderPolicyError(GoogleProviderReadError):
     """A provider policy or scope denial that requires operator action."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        failure_code: GoogleProviderPolicyFailureCode = "provider_policy_denied",
+        retry_disposition: GoogleProviderRetryDisposition = "not_retryable",
+    ) -> None:
+        self.policy_failure_code = failure_code
         super().__init__(
-            failure_code="provider_policy_denied",
+            failure_code=failure_code,
             failure_class="policy",
-            retry_disposition="not_retryable",
+            retry_disposition=retry_disposition,
         )
 
 
@@ -655,6 +673,7 @@ __all__ = [
     "GoogleProviderAuthorizationError",
     "GoogleProviderQuotaError",
     "GoogleProviderPolicyError",
+    "GoogleProviderPolicyFailureCode",
     "GoogleProviderNotFoundError",
     "GoogleReadAdmission",
     "GoogleReadCommand",

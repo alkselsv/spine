@@ -797,6 +797,130 @@ async def test_drive_download_and_export_preserve_bytes_and_media_type() -> None
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reason", "failure_code"),
+    (
+        ("insufficientPermissions", "provider_oauth_scope_insufficient"),
+        ("fileNotDownloadable", "provider_file_not_downloadable"),
+        ("insufficientFilePermissions", "provider_file_permission_denied"),
+        ("download_restricted_for_revision", "provider_download_restricted"),
+    ),
+)
+async def test_drive_download_known_policy_reason_is_typed_and_sanitized(
+    reason: str, failure_code: str
+) -> None:
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(
+                status_code=403,
+                json_body={
+                    "error": {
+                        "status": "PERMISSION_DENIED",
+                        "errors": [
+                            {
+                                "reason": reason,
+                                "message": "private-file-id provider-payload-sentinel",
+                            }
+                        ],
+                    }
+                },
+            ),
+        ]
+    )
+
+    with pytest.raises(GoogleProviderPolicyError) as captured:
+        await _service(RecordingCredentialResolver(), transport).download(
+            _connection(), RESOURCE_SCOPE, "file-1", "42"
+        )
+
+    assert captured.value.failure_code == failure_code
+    assert captured.value.failure_class == "policy"
+    assert captured.value.retry_disposition == "not_retryable"
+    assert "private-file-id" not in str(captured.value)
+    assert "provider-payload-sentinel" not in str(captured.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_payload",
+    (
+        "fileNotDownloadable",
+        {"status": "fileNotDownloadable"},
+        {
+            "status": "PERMISSION_DENIED",
+            "errors": [{"reason": "futurePolicyReason"}],
+        },
+        {"status": "PERMISSION_DENIED"},
+        {
+            "status": "PERMISSION_DENIED",
+            "errors": "provider-payload-sentinel",
+        },
+    ),
+)
+async def test_drive_download_unrecognized_policy_reason_remains_generic(
+    error_payload: object,
+) -> None:
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(
+                status_code=403,
+                json_body={"error": error_payload},
+            ),
+        ]
+    )
+
+    with pytest.raises(GoogleProviderPolicyError) as captured:
+        await _service(RecordingCredentialResolver(), transport).download(
+            _connection(), RESOURCE_SCOPE, "file-1", "42"
+        )
+
+    assert captured.value.failure_code == "provider_policy_denied"
+    assert captured.value.failure_class == "policy"
+    assert captured.value.retry_disposition == "not_retryable"
+    assert "provider-payload-sentinel" not in str(captured.value)
+
+
+@pytest.mark.asyncio
+async def test_sheets_policy_reason_remains_generic() -> None:
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(
+                status_code=403,
+                json_body={
+                    "error": {
+                        "status": "PERMISSION_DENIED",
+                        "errors": [{"reason": "insufficientPermissions"}],
+                    }
+                },
+            ),
+        ]
+    )
+
+    with pytest.raises(GoogleProviderPolicyError) as captured:
+        await _service(
+            RecordingCredentialResolver(),
+            transport,
+            sheet_profiles=(_sheet_profile(),),
+        ).get_spreadsheet(_connection(), RESOURCE_SCOPE, "sheet-1", 123)
+
+    assert captured.value.failure_code == "provider_policy_denied"
+    assert captured.value.failure_class == "policy"
+    assert captured.value.retry_disposition == "not_retryable"
+
+
+@pytest.mark.asyncio
 async def test_transient_provider_failure_retries_with_configured_backoff() -> None:
     delays: list[float] = []
 
