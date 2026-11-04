@@ -211,6 +211,14 @@ Gmail message IDs and IMAP folder/`UIDVALIDITY`/UID identify provider messages;
 RFC `Message-ID` and thread/reply headers remain evidence, not canonical identity
 or business association. Label, folder and flag changes are state observations,
 while raw MIME and attachment artifacts retain immutable Source Revision lineage.
+`email-message-locator:v1` pins an exact message Source Revision digest, processed
+artifact and parser/sanitizer profiles, eligible MIME body part, plain or
+sanitized-HTML-derived representation, codepoint range and representation/excerpt
+digests. Citation Inspector resolves that locator only from the immutable artifact
+after fresh AccessPolicy, lifecycle and retention revalidation; malformed,
+tombstoned, revoked, cross-tenant or digest-mismatched references, plus superseded
+references in ordinary current inspection, return the same content-free unavailable
+outcome. Attachment locators remain a separate successor contract.
 Opaque generation-bound checkpoints advance only after all covered canonical
 acceptance and outbox effects are durable; partial scans and stale generations
 hold the cursor for retry or reconciliation. The offline-only decision and its

@@ -39,9 +39,11 @@ from spine.application.processing_disposition import (
     CanonicalCurrentProcessingDispositionAuthority,
 )
 from spine.application.citation_inspector import (
+    CitationExcerptResolverChain,
     CitationInspectorRequester,
     ProtectedCitationInspector,
 )
+from spine.application.email_citations import EmailMessageCitationExcerptResolver
 from spine.application.persistence.context import EnvironmentScope, TrustedPersistenceContext
 from spine.domain.capabilities import (
     AnswerDisclosureRecord,
@@ -67,6 +69,9 @@ from spine.infrastructure.disclosure_constraints import (
 from spine.infrastructure.persistence.parsed_artifacts import (
     ParsedArtifactCitationExcerptResolver,
     PostgreSQLParsedArtifactRepository,
+)
+from spine.infrastructure.persistence.email_artifacts import (
+    PostgreSQLEmailArtifactRepository,
 )
 
 
@@ -574,6 +579,15 @@ class PostgreSQLCitationInspectorService:
             authorization_generation=requester.authorization_generation,
         )
         async with self.uow_factory(context) as uow:
+            def citation_context_factory(
+                workspace_id: UUID, environment_id: UUID
+            ) -> TrustedPersistenceContext:
+                return _citation_context(
+                    context,
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                )
+
             inspector = ProtectedCitationInspector(
                 citation_repository=uow.answer_disclosures,  # type: ignore[attr-defined]
                 context_bundle_repository=uow.context_bundles,  # type: ignore[attr-defined]
@@ -584,17 +598,22 @@ class PostgreSQLCitationInspectorService:
                     ),
                     result_repository=uow.disclosure_validations,  # type: ignore[attr-defined]
                 ),
-                excerpt_resolver=ParsedArtifactCitationExcerptResolver(
-                    PostgreSQLParsedArtifactRepository(
-                        self.session_factory,  # type: ignore[arg-type]
-                        context_factory=lambda workspace_id, environment_id: (
-                            _citation_context(
-                                context,
-                                workspace_id=workspace_id,
-                                environment_id=environment_id,
+                excerpt_resolver=CitationExcerptResolverChain(
+                    resolvers=(
+                        EmailMessageCitationExcerptResolver(
+                            PostgreSQLEmailArtifactRepository(
+                                self.session_factory,  # type: ignore[arg-type]
+                                context_factory=citation_context_factory,
+                                context_verifier=self.context_verifier,  # type: ignore[arg-type]
                             )
                         ),
-                        context_verifier=self.context_verifier,  # type: ignore[arg-type]
+                        ParsedArtifactCitationExcerptResolver(
+                            PostgreSQLParsedArtifactRepository(
+                                self.session_factory,  # type: ignore[arg-type]
+                                context_factory=citation_context_factory,
+                                context_verifier=self.context_verifier,  # type: ignore[arg-type]
+                            )
+                        ),
                     )
                 ),
             )
