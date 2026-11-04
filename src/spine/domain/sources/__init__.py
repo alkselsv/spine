@@ -52,6 +52,12 @@ from .imap import (
     imap_external_generation,
     imap_source_identity,
 )
+from .email_lifecycle import (
+    EmailLifecycleCoverage,
+    EmailLifecycleLineage,
+    EmailLifecycleOutcome,
+    EmailLifecycleReceipt,
+)
 from .processing_admission import (
     ExactOpaqueApprovalReference,
     ProcessingAdmissionMode,
@@ -300,6 +306,10 @@ __all__ = [
     "ImapSourceIdentity",
     "imap_external_generation",
     "imap_source_identity",
+    "EmailLifecycleCoverage",
+    "EmailLifecycleLineage",
+    "EmailLifecycleOutcome",
+    "EmailLifecycleReceipt",
     "GOOGLE_EXTERNAL_GENERATION",
     "GOOGLE_EXTERNAL_NAMESPACE",
     "GOOGLE_SHEET_A1_RANGE_PATTERN",

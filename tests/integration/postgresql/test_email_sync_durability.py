@@ -46,6 +46,12 @@ from spine.application.yandex_mail_snapshot import (
     YandexMailSnapshotUidPage,
     YandexMailSnapshotUidPageCode,
 )
+from spine.application.yandex_mail_reconciliation import (
+    YandexMailReconciliationCommand,
+    YandexMailReconciliationCoordinator,
+    YandexMailReconciliationFolderEvidence,
+    YandexMailReconciliationMessage,
+)
 from spine.application.yandex_mail_uidvalidity_reset import (
     YandexMailUidValidityResetCommand,
     YandexMailUidValidityResetCoordinator,
@@ -94,6 +100,13 @@ from spine.domain.connections.email_scope import (
     EmailProviderOperation,
     MailboxReadScope,
 )
+from spine.domain.sources.email_lifecycle import (
+    EmailLifecycleCoverage,
+    EmailLifecycleLineage,
+    EmailLifecycleOutcome,
+    EmailLifecycleReceipt,
+)
+from spine.domain.sources.imap import ImapMessageKey
 from tests.contracts.persistence.outbox_events import create_outbox_event_registry
 from tests.contracts.persistence.test_canonical_acceptance_contract import (
     _activate_policy as activate_canonical_policy,
@@ -352,6 +365,205 @@ async def test_postgresql_email_sync_replays_durable_effect_receipt_after_restar
     assert resumed is not None
     assert resumed.pages == (page,)
     assert resumed.committed_checkpoint is None
+
+
+async def test_postgresql_email_sync_round_trips_lifecycle_lineage_receipts(
+    email_sync_repository,
+) -> None:
+    repository, other_repository, *_ = email_sync_repository
+    attempt = _attempt()
+    receipt = EmailLifecycleReceipt(
+        receipt_id=UUID("8e000000-0000-0000-0000-000000000001"),
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        scan_id=UUID("8e000000-0000-0000-0000-000000000002"),
+        outcome=EmailLifecycleOutcome.MOVE_OR_COPY_CANDIDATE,
+        coverage=EmailLifecycleCoverage.COMPLETE_AUTHORIZED,
+        lineage=EmailLifecycleLineage.DISTINCT_IDENTITY_CANDIDATE,
+        provider_identity="im1:" + "a" * 52,
+        candidate_provider_identity="im1:" + "b" * 52,
+        source_object_id=UUID("8e000000-0000-0000-0000-000000000003"),
+        source_revision_id=UUID("8e000000-0000-0000-0000-000000000004"),
+        candidate_source_object_id=UUID("8e000000-0000-0000-0000-000000000005"),
+        candidate_source_revision_id=UUID("8e000000-0000-0000-0000-000000000006"),
+        similarity_basis="content_sha256",
+        similarity_digest="a" * 64,
+        identity_continuity_proven=False,
+        authoritative_absence=False,
+        tombstone_authorized=False,
+        observed_at=datetime(2026, 11, 4, tzinfo=timezone.utc),
+    )
+    page = EmailSyncPageState(
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        page_kind=EmailSyncPageKind.LIFECYCLE_RECONCILIATION,
+        page_id="lifecycle.scan-1",
+        page_digest="d" * 64,
+        requested_checkpoint=None,
+        terminal=False,
+        publish_checkpoint=False,
+        effects=(),
+        lifecycle_receipts=(receipt,),
+        committed=True,
+    )
+    await repository.save(attempt.model_copy(update={"pages": (page,)}))
+
+    resumed = await repository.get(attempt.attempt_id, WORKSPACE_ID, ENVIRONMENT_ID)
+
+    assert resumed is not None
+    assert resumed.pages[0].lifecycle_receipts == (receipt,)
+    assert resumed.pages[0].lifecycle_receipts[0].tombstone_authorized is False
+    assert (
+        await other_repository.get(
+            attempt.attempt_id, OTHER_WORKSPACE_ID, OTHER_ENVIRONMENT_ID
+        )
+        is None
+    )
+
+
+async def test_postgresql_reconciliation_persists_move_evidence_and_replays(
+    email_sync_repository,
+) -> None:
+    repository, *_ = email_sync_repository
+    folder = UUID("8e000000-0000-0000-0000-000000000010")
+    connection = UUID("8e000000-0000-0000-0000-000000000011")
+    mailbox = UUID("8e000000-0000-0000-0000-000000000012")
+    scope = MailboxReadScope(
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        connection_id=connection,
+        connection_version_id=UUID("8e000000-0000-0000-0000-000000000013"),
+        provider_kind="yandex_mail",
+        resource_scope_reference=UUID("8e000000-0000-0000-0000-000000000014"),
+        mailbox_subject_reference=UUID("8e000000-0000-0000-0000-000000000015"),
+        mailbox_binding_id=mailbox,
+        authorization_generation=1,
+        configuration_generation=1,
+        scope_generation=1,
+        allowed_folder_references=(folder,),
+        allowed_operations=tuple(EmailProviderOperation),
+    )
+
+    class Admission:
+        async def check(self, admission):
+            del admission
+            return EmailSyncAdmissionState.ALLOWED
+
+    class Effects:
+        async def apply(self, effect):
+            del effect
+            raise AssertionError("reconciliation has no canonical effects")
+
+    sync = EmailSyncCoordinator(
+        repository=repository,
+        admission=Admission(),
+        effects=Effects(),
+    )
+    attempt = await sync.create_attempt(scope, attempt_key="issue-852-postgresql")
+    prefix = f"imap.folder.{folder.hex}"
+    for page in (
+        EmailSyncPage(
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+            page_kind=EmailSyncPageKind.FOLDER_GENERATION,
+            page_id=f"{prefix}.generation",
+            requested_checkpoint=None,
+            publish_checkpoint=False,
+            evidence_digest="a" * 64,
+            evidence_cursor="imap-generation:v1:101:1000",
+            effects=(),
+        ),
+        EmailSyncPage(
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+            page_kind=EmailSyncPageKind.FOLDER_COMPLETE,
+            page_id=f"{prefix}.complete",
+            requested_checkpoint=None,
+            publish_checkpoint=False,
+            evidence_digest="b" * 64,
+            effects=(),
+        ),
+    ):
+        attempt = await sync.record_durable_page(
+            attempt.attempt_id,
+            page,
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+            receipts=(),
+        )
+
+    def message(
+        uid: int, *, last_absence_receipt_id: UUID | None = None
+    ) -> YandexMailReconciliationMessage:
+        return YandexMailReconciliationMessage(
+            key=ImapMessageKey(
+                workspace_id=WORKSPACE_ID,
+                connection_id=connection,
+                mailbox_binding_id=mailbox,
+                folder_binding_id=folder,
+                uid_validity=101,
+                uid=uid,
+            ),
+            source_object_id=UUID(int=30_000 + uid),
+            source_revision_id=UUID(int=40_000 + uid),
+            content_sha256="c" * 64,
+            last_absence_receipt_id=last_absence_receipt_id,
+        )
+
+    command = YandexMailReconciliationCommand(
+        scope=scope,
+        attempt_id=attempt.attempt_id,
+        scan_id=UUID("8e000000-0000-0000-0000-000000000016"),
+        scan_completed_at=datetime(2026, 11, 4, tzinfo=timezone.utc),
+        coverage=EmailLifecycleCoverage.COMPLETE_AUTHORIZED,
+        folder_evidence=(
+            YandexMailReconciliationFolderEvidence(
+                folder_reference=folder,
+                generation_page_id=f"{prefix}.generation",
+                folder_complete_page_id=f"{prefix}.complete",
+            ),
+        ),
+        previous=(message(1),),
+        current=(message(2),),
+    )
+    coordinator = YandexMailReconciliationCoordinator(sync=sync)
+
+    completed = await coordinator.reconcile(command)
+    replay = await coordinator.reconcile(command)
+
+    assert completed.receipts == replay.receipts
+    assert {receipt.outcome for receipt in replay.receipts} == {
+        EmailLifecycleOutcome.OBSERVED,
+        EmailLifecycleOutcome.ABSENCE_EVIDENCE,
+        EmailLifecycleOutcome.MOVE_OR_COPY_CANDIDATE,
+    }
+    assert len(
+        tuple(
+            page
+            for page in replay.attempt.pages
+            if page.page_kind is EmailSyncPageKind.LIFECYCLE_RECONCILIATION
+        )
+    ) == 1
+
+    absence = next(
+        receipt
+        for receipt in completed.receipts
+        if receipt.outcome is EmailLifecycleOutcome.ABSENCE_EVIDENCE
+    )
+    reappeared = message(1, last_absence_receipt_id=absence.receipt_id)
+    reappearance_command = command.model_copy(
+        update={
+            "scan_id": UUID("8e000000-0000-0000-0000-000000000017"),
+            "previous": (reappeared,),
+            "current": (reappeared,),
+        }
+    )
+
+    reappearance = await coordinator.reconcile(reappearance_command)
+
+    assert len(reappearance.receipts) == 1
+    assert reappearance.receipts[0].outcome is EmailLifecycleOutcome.REAPPEARED
+    assert reappearance.receipts[0].predecessor_receipt_id == absence.receipt_id
 
 
 async def test_postgresql_email_sync_publishes_checkpoint_for_complete_empty_page(

@@ -25,6 +25,7 @@ from spine.application.email_sync import (
 )
 from spine.application.persistence.context import PersistenceOperation
 from spine.application.persistence.outbox import OpaqueObjectReference, OutboxEventRegistry
+from spine.domain.sources.email_lifecycle import EmailLifecycleReceipt
 from spine.infrastructure.persistence.postgresql_mappings import (
     email_sync_attempts,
     email_sync_effect_receipts,
@@ -324,6 +325,38 @@ class PostgreSQLEmailSyncRepository(EmailSyncRepository):
         if stored is None:
             raise KeyError("email sync attempt not found")
         return stored
+
+    async def resolve_lifecycle_receipt(
+        self, receipt_id: UUID, workspace_id: UUID, environment_id: UUID
+    ) -> EmailLifecycleReceipt | None:
+        async with self._uow(
+            "email_sync_lifecycle_receipt_read",
+            receipt_id,
+            workspace_id,
+            environment_id,
+        ) as uow:
+            result = await uow._execute(
+                select(
+                    email_sync_pages.c.record,
+                    email_sync_pages.c.committed,
+                ).where(
+                    email_sync_pages.c.workspace_id == workspace_id,
+                    email_sync_pages.c.environment_id == environment_id,
+                )
+            )
+            resolved: EmailLifecycleReceipt | None = None
+            for record, committed in result.all():
+                if not committed:
+                    continue
+                for payload in record.get("lifecycle_receipts", ()):
+                    candidate = EmailLifecycleReceipt.model_validate(payload)
+                    if candidate.receipt_id != receipt_id:
+                        continue
+                    if resolved is not None and resolved != candidate:
+                        raise EmailSyncConcurrentUpdateError()
+                    resolved = candidate
+            await uow.rollback()
+            return resolved
 
     async def _persist_pages(self, uow: Any, attempt: EmailSyncAttempt) -> None:
         workspace_id = attempt.admission.workspace_id
