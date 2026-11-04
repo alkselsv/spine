@@ -79,6 +79,7 @@ from spine.infrastructure.private_asr.postgresql_storage import (
     PostgreSQLPrivateASRStorage, PrivateASRStorageDenied, private_asr_artifacts,
     private_asr_aggregate_exports, private_asr_source_fences,
 )
+from spine.infrastructure.private_asr import postgresql_storage as private_asr_storage
 from spine.infrastructure.private_asr.audit import PostgreSQLPrivateASRAuditReceipts
 from spine.infrastructure.private_asr.retention import PostgreSQLPrivateASRRetentionResolver
 from spine.infrastructure.private_asr.retention import (
@@ -1321,22 +1322,27 @@ async def _allow_commit() -> None:
 
 
 async def _prepare_sanitized_aggregate(prepared, authority):
-    record_id = prepared.bindings[0].record_id
     report_values = prepared.report.model_dump(mode="python")
-    report_values["outcomes"] = (PrivateCaseOutcome(
-        record_ref=PrivateReference(
-            reference_id=record_id, reference_kind="private_asr_record",
-        ),
-        split=CorpusSplit.DEVELOPMENT,
-        disposition=PrivateCaseDisposition.MEASURED,
-        word_errors=6,
-        reference_words=20,
-        character_errors=10,
-        reference_characters=100,
-    ),)
+    report_values["outcomes"] = tuple(
+        PrivateCaseOutcome(
+            record_ref=PrivateReference(
+                reference_id=binding.record_id,
+                reference_kind="private_asr_record",
+            ),
+            split=binding.split,
+            disposition=PrivateCaseDisposition.MEASURED,
+            word_errors=6,
+            reference_words=20,
+            character_errors=10,
+            reference_characters=100,
+        )
+        for binding in prepared.bindings
+    )
+    source_count = len(prepared.bindings)
     report_values["denominators"] = PrivateEvaluationDenominators(
-        eligible=1, admitted=1, verified=1, annotated=1, scorable=1,
-        measured=1, independent_lineages=1, denied=0, revoked=0, unavailable=0,
+        eligible=source_count, admitted=source_count, verified=source_count,
+        annotated=source_count, scorable=source_count, measured=source_count,
+        independent_lineages=source_count, denied=0, revoked=0, unavailable=0,
     )
     prepared.report = PrivateRealASREvaluationReport.model_validate(report_values)
     authority.report_id = prepared.report_id
@@ -1379,8 +1385,8 @@ async def _prepare_sanitized_aggregate(prepared, authority):
         measurements=(AggregateMeasurement(
             category=AggregateCategory.OVERALL,
             metric_name=AggregateMetric.WER,
-            numerator=6,
-            denominator=20,
+            numerator=6 * source_count,
+            denominator=20 * source_count,
         ),),
         context=export_context,
     )
@@ -3638,6 +3644,7 @@ async def test_postgresql_private_asr_synthetic_aggregate_commits_with_canonical
             private_asr_aggregate_exports.c.payload_sha256,
             private_asr_aggregate_exports.c.audit_receipt_id,
             private_asr_aggregate_exports.c.payload,
+            private_asr_aggregate_exports.c.retention_disposition,
         ).where(
             private_asr_aggregate_exports.c.export_id == export_ref.reference_id,
         ))).one()
@@ -3657,10 +3664,176 @@ async def test_postgresql_private_asr_synthetic_aggregate_commits_with_canonical
     assert row.payload["aggregates"] == json.loads(
         sanitized.model_dump_json()
     )["aggregates"]
+    assert len(row.retention_disposition) == 1
+    assert set(row.retention_disposition[0]) == {"source_revision_id", "disposition"}
     exported_text = json.dumps(row.payload, sort_keys=True)
     assert str(prepared.case.source.source_object_id) not in exported_text
     assert str(prepared.case.revision.revision_id) not in exported_text
     assert prepared.case.revision.revision_digest not in exported_text
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_aggregate_persists_identity_keyed_retention_evidence(
+    private_asr_database: _Database,
+) -> None:
+    publication_authority = _SyntheticAggregatePublicationAuthority()
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database,
+        seed=812927,
+        aggregate_authority=publication_authority,
+    )
+    second_case, _, second_applicability = await _add_synthetic_report_source(
+        prepared, seed=812928,
+    )
+    prepared.bindings = tuple(reversed(prepared.bindings))
+    prepared.manifest_lineage.bindings = tuple(reversed(prepared.manifest_lineage.bindings))
+    sanitized, export_context = await _prepare_sanitized_aggregate(
+        prepared, publication_authority,
+    )
+    await _commit_synthetic_report(
+        prepared, idempotency_key="identity-keyed-aggregate-report",
+    )
+    export_ref = await prepared.store.publish_sanitized_aggregate(
+        sanitized,
+        report_id=prepared.report_id,
+        idempotency_key="identity-keyed-aggregate:v2",
+        context=export_context,
+        authorize_export=_allow_commit,
+    )
+
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, export_context)
+        evidence = (await session.execute(select(
+            private_asr_aggregate_exports.c.retention_disposition,
+        ).where(
+            private_asr_aggregate_exports.c.export_id == export_ref.reference_id,
+        ))).scalar_one()
+
+    assert len(evidence) == 2
+    by_identity = {
+        (
+            item["workspace_id"],
+            item["environment_id"],
+            item["source_object_id"],
+            item["source_revision_id"],
+            item["source_revision_digest"],
+        ): item
+        for item in evidence
+    }
+    assert set(by_identity) == {
+        (
+            str(source_case.source.workspace_id),
+            str(source_case.source.environment_id),
+            str(source_case.source.source_object_id),
+            str(source_case.revision.revision_id),
+            source_case.revision.revision_digest,
+        )
+        for source_case in (prepared.case, second_case)
+    }
+    for source_case, applicability in (
+        (prepared.case, prepared.applicability),
+        (second_case, second_applicability),
+    ):
+        identity = (
+            str(source_case.source.workspace_id),
+            str(source_case.source.environment_id),
+            str(source_case.source.source_object_id),
+            str(source_case.revision.revision_id),
+            source_case.revision.revision_digest,
+        )
+        item = by_identity[identity]
+        assert item["schema_version"] == "private-asr-aggregate-retention-binding:v2"
+        assert item["workspace_id"] == str(source_case.source.workspace_id)
+        assert item["environment_id"] == str(source_case.source.environment_id)
+        assert item["source_object_id"] == str(source_case.source.source_object_id)
+        assert item["source_revision_digest"] == source_case.revision.revision_digest
+        disposition = PrivateASRRetentionDisposition.model_validate(item["disposition"])
+        assert disposition.applicability_id == applicability.applicability_id
+        assert disposition.applicability_generation == applicability.generation
+
+
+@pytest.mark.parametrize(
+    "mutation,seed",
+    (
+        ("missing", 812930),
+        ("duplicate", 812940),
+        ("extra", 812950),
+        ("stale", 812960),
+        ("substituted", 812970),
+    ),
+)
+async def test_postgresql_private_asr_aggregate_rejects_inexact_report_retention_keys(
+    private_asr_database: _Database,
+    mutation: str,
+    seed: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publication_authority = _SyntheticAggregatePublicationAuthority()
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database,
+        seed=seed,
+        aggregate_authority=publication_authority,
+    )
+    second_case, _, _ = await _add_synthetic_report_source(prepared, seed=seed + 1)
+    sanitized, export_context = await _prepare_sanitized_aggregate(
+        prepared, publication_authority,
+    )
+    serialize_evidence = private_asr_storage._report_retention_evidence
+    calls = 0
+
+    def malformed_evidence(admitted, disposition, *, version):
+        nonlocal calls
+        evidence = serialize_evidence(admitted, disposition, version=version)
+        if version == 2 and calls == 0:
+            if mutation == "missing":
+                evidence.pop("source_object_id")
+            elif mutation == "duplicate":
+                evidence.update({
+                    "source_object_id": str(second_case.source.source_object_id),
+                    "source_revision_id": str(second_case.revision.revision_id),
+                    "source_revision_digest": second_case.revision.revision_digest,
+                })
+            elif mutation == "extra":
+                evidence.update({
+                    "source_object_id": str(synthetic_uuid(seed + 2)),
+                })
+            elif mutation == "stale":
+                evidence["source_revision_digest"] = "f" * 64
+            else:
+                evidence["source_object_id"] = str(second_case.source.source_object_id)
+        calls += 1
+        return evidence
+
+    monkeypatch.setattr(
+        private_asr_storage, "_report_retention_evidence", malformed_evidence,
+    )
+    await _commit_synthetic_report(
+        prepared, idempotency_key="inexact-aggregate-report",
+    )
+
+    callback_called = False
+
+    async def authorize_export() -> None:
+        nonlocal callback_called
+        callback_called = True
+
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.publish_sanitized_aggregate(
+            sanitized,
+            report_id=prepared.report_id,
+            idempotency_key=f"inexact-aggregate:{mutation}",
+            context=export_context,
+            authorize_export=authorize_export,
+        )
+    assert callback_called is False
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, export_context)
+        count = (await session.execute(select(func.count()).select_from(
+            private_asr_aggregate_exports,
+        ).where(
+            private_asr_aggregate_exports.c.report_id == prepared.report_id,
+        ))).scalar_one()
+    assert count == 0
 
 
 @pytest.mark.asyncio
