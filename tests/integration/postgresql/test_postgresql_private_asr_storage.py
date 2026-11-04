@@ -2626,6 +2626,74 @@ async def test_postgresql_private_asr_report_rejects_manifest_lineage_mismatch(
     assert success_receipt is None
 
 
+async def test_postgresql_trusted_manifest_authority_resolves_exact_current_release(
+    private_asr_database: _Database,
+) -> None:
+    import hashlib
+    import json
+
+    from spine.infrastructure.private_asr.manifest_authority import (
+        PostgreSQLPrivateASRManifestAuthority,
+        private_asr_corpus_manifests,
+        private_asr_corpus_releases,
+    )
+
+    prepared = await _prepare_synthetic_report_case(private_asr_database, seed=799810)
+    binding = prepared.bindings[0]
+    manifest_id = synthetic_uuid(799811)
+    payload = {
+        "dataset_id": str(binding.dataset_id),
+        "version": prepared.report.manifest_version,
+        "workspace_id": str(prepared.case.source.workspace_id),
+        "environment_id": str(prepared.case.source.environment_id),
+        "purpose": "asr_model_evaluation",
+        "records": [{
+            "record_id": str(binding.record_id),
+            "workspace_id": str(prepared.case.source.workspace_id),
+            "environment_id": str(prepared.case.source.environment_id),
+            "split": binding.split.value,
+            "source_binding": {
+                "source_object_id": str(binding.source_object_id),
+                "source_revision_id": str(binding.source_revision_id),
+                "source_revision_digest": binding.source_revision_digest,
+            },
+        }],
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    prepared.report = prepared.report.model_copy(update={"manifest_sha256": digest})
+    prepared.store._manifest_lineage = PostgreSQLPrivateASRManifestAuthority()
+    scope = prepared.case.source
+    async with private_asr_database.migration.begin() as connection:
+        await connection.execute(insert(private_asr_corpus_manifests).values(
+            workspace_id=scope.workspace_id, environment_id=scope.environment_id,
+            purpose="asr_model_evaluation", dataset_id=binding.dataset_id,
+            manifest_id=manifest_id, manifest_version=prepared.report.manifest_version,
+            manifest_sha256=digest, manifest_payload=payload, created_at=NOW,
+        ))
+        await connection.execute(insert(private_asr_corpus_releases).values(
+            workspace_id=scope.workspace_id, environment_id=scope.environment_id,
+            purpose="asr_model_evaluation", dataset_id=binding.dataset_id,
+            generation=1, manifest_id=manifest_id,
+            manifest_version=prepared.report.manifest_version,
+            manifest_sha256=digest, status="released", updated_at=NOW,
+        ))
+
+    stored = await _commit_synthetic_report(prepared, idempotency_key="trusted-manifest-release")
+    assert stored.report_ref.reference_id
+
+    async with private_asr_database.migration.begin() as connection:
+        await connection.execute(update(private_asr_corpus_releases).where(
+            private_asr_corpus_releases.c.workspace_id == scope.workspace_id,
+            private_asr_corpus_releases.c.environment_id == scope.environment_id,
+            private_asr_corpus_releases.c.dataset_id == binding.dataset_id,
+        ).values(generation=2, manifest_id=None, manifest_version=None,
+                 manifest_sha256=None, status="withdrawn", updated_at=NOW))
+    with pytest.raises(PrivateASRStorageDenied):
+        await _commit_synthetic_report(prepared, idempotency_key="withdrawn-manifest-release")
+
+
 async def test_postgresql_private_asr_runtime_cannot_rewrite_committed_report(
     private_asr_database: _Database,
 ) -> None:
