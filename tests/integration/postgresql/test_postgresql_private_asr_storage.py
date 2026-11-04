@@ -213,6 +213,9 @@ class _SyntheticManifestLineage:
 class _SyntheticArtifactDeletionAuthority:
     """Fixture-scoped deletion grant; never registered by production wiring."""
 
+    def __init__(self, *, allow: bool = True) -> None:
+        self.allow = allow
+
     async def authorize_deletion(self, request, *, context, transaction):
         del transaction
         allowed = (
@@ -222,7 +225,7 @@ class _SyntheticArtifactDeletionAuthority:
                 and request.retention_deadline <= request.requested_at
             )
             or (request.action == "staging_cleanup" and request.artifact_kind == "staging")
-        ) and (
+        ) and self.allow and (
             context.scope.workspace_id == request.workspace_id
             and context.scope.environment_id == request.environment_id
         )
@@ -2863,6 +2866,94 @@ async def test_postgresql_private_asr_aggregate_expiry_is_audited_and_idempotent
             private_asr_aggregate_exports,
         ).where(private_asr_aggregate_exports.c.export_id == export_ref.reference_id))).scalar_one()
     assert visible == 0
+
+
+async def _prepared_expired_aggregate(private_asr_database: _Database, seed: int, *, deletion_authority):
+    clock = _ControlledClock(NOW)
+    publication_authority = _SyntheticAggregatePublicationAuthority()
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database, seed=seed, aggregate_authority=publication_authority,
+        deletion_authority=deletion_authority, clock=clock,
+    )
+    sanitized, export_context = await _prepare_sanitized_aggregate(prepared, publication_authority)
+    await _commit_synthetic_report(prepared, idempotency_key=f"aggregate-negative-report-{seed}")
+    export_ref = await prepared.store.publish_sanitized_aggregate(
+        sanitized, report_id=prepared.report_id, idempotency_key=f"aggregate-negative-{seed}:v1",
+        context=export_context, authorize_export=_allow_commit,
+    )
+    deletion_context = prepared.boundary.worker(
+        scope=EnvironmentScope(workspace_id=prepared.case.source.workspace_id,
+                               environment_id=prepared.case.source.environment_id),
+        service_principal_id=synthetic_uuid(seed + 1),
+        purpose=PersistencePurpose("asr_model_evaluation"),
+        operation=PersistenceOperation("private_asr_retention_expiration"),
+        trace_id=synthetic_uuid(seed + 2),
+    )
+    clock.current = NOW + timedelta(days=3650)
+    return prepared, export_context, deletion_context, export_ref
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_aggregate_deletion_authority_denial_preserves_payload(
+    private_asr_database: _Database,
+) -> None:
+    prepared, read_context, deletion_context, export_ref = await _prepared_expired_aggregate(
+        private_asr_database, 799714, deletion_authority=_SyntheticArtifactDeletionAuthority(allow=False),
+    )
+    with pytest.raises(PrivateASRStorageDenied) as denied:
+        await prepared.store.expire_aggregate_export(
+            export_ref, policy_ref=prepared.applicability_ref, context=deletion_context,
+        )
+    assert "payload" not in str(denied.value)
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, deletion_context)
+        row = (await session.execute(select(
+            private_asr_aggregate_exports.c.tombstoned_at,
+            private_asr_aggregate_exports.c.payload,
+        ).where(private_asr_aggregate_exports.c.export_id == export_ref.reference_id))).one()
+        events = (await session.execute(select(func.count()).select_from(audit_events).where(
+            audit_events.c.target_id == export_ref.reference_id,
+            audit_events.c.reason == "private_asr_aggregate_expired",
+        ))).scalar_one()
+    assert row.tombstoned_at is None
+    assert row.payload
+    assert events == 0
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_aggregate_audit_failure_rolls_back_then_retries(
+    private_asr_database: _Database,
+) -> None:
+    prepared, read_context, deletion_context, export_ref = await _prepared_expired_aggregate(
+        private_asr_database, 799717, deletion_authority=_SyntheticArtifactDeletionAuthority(),
+    )
+    class FailingAudit:
+        async def append_artifact_deletion(self, *args, **kwargs):
+            raise RuntimeError("synthetic audit sink unavailable")
+
+    failing = _storage_for_transaction_probe(
+        prepared, uow_factory=prepared.store._uow_factory, audit_receipts=FailingAudit(),
+    )
+    with pytest.raises(PrivateASRStorageDenied):
+        await failing.expire_aggregate_export(
+            export_ref, policy_ref=prepared.applicability_ref, context=deletion_context,
+        )
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, deletion_context)
+        row = (await session.execute(select(
+            private_asr_aggregate_exports.c.tombstoned_at,
+            private_asr_aggregate_exports.c.payload,
+        ).where(private_asr_aggregate_exports.c.export_id == export_ref.reference_id))).one()
+        events = (await session.execute(select(func.count()).select_from(audit_events).where(
+            audit_events.c.target_id == export_ref.reference_id,
+            audit_events.c.reason == "private_asr_aggregate_expired",
+        ))).scalar_one()
+    assert row.tombstoned_at is None
+    assert row.payload
+    assert events == 0
+    await prepared.store.expire_aggregate_export(
+        export_ref, policy_ref=prepared.applicability_ref, context=deletion_context,
+    )
 
 
 @pytest.mark.asyncio
