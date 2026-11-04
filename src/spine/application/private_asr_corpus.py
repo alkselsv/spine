@@ -272,6 +272,164 @@ class PrivateArtifactDeletionAuthorization(PrivateASRApplicationContract):
         return self
 
 
+class CompositeSourceRetentionState(PrivateASRApplicationContract):
+    """Current, independently resolved policy facts for one source in an artifact."""
+
+    schema_version: Literal["private-artifact-source-retention-state:v1"] = (
+        "private-artifact-source-retention-state:v1"
+    )
+    source_object_id: UUID
+    source_revision_id: UUID
+    source_revision_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    current_generation: StrictInt = Field(ge=0)
+    resolved_generation: StrictInt = Field(ge=0)
+    current_applicability_resolved: StrictBool
+    required_permission_current: StrictBool
+    revoked: StrictBool
+    deletion_eligible: StrictBool
+    retention_elapsed: StrictBool
+    active_hold: StrictBool
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> "CompositeSourceRetentionState":
+        if self.source_object_id.int == 0 or self.source_revision_id.int == 0:
+            raise ValueError("source retention identity must be complete")
+        return self
+
+    @property
+    def generation_current(self) -> bool:
+        return self.current_generation == self.resolved_generation
+
+    @property
+    def available(self) -> bool:
+        return (
+            self.generation_current
+            and self.current_applicability_resolved
+            and self.required_permission_current
+            and not self.revoked
+        )
+
+
+class CompositeArtifactRetentionDecision(PrivateASRApplicationContract):
+    """All-or-nothing visibility and deletion decision over exact source lineage.
+
+    This records policy evaluation only. It never mutates source or artifact
+    lifecycle state and never treats a deadline as deletion authority.
+    """
+
+    schema_version: Literal["private-artifact-composite-retention-decision:v1"] = (
+        "private-artifact-composite-retention-decision:v1"
+    )
+    artifact_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    expected_source_lineage: tuple[PrivateArtifactSourceLineage, ...]
+    source_states: tuple[CompositeSourceRetentionState, ...]
+    whole_artifact_authorization: "CompositeDeletionAuthorizationEvidence | None" = None
+
+    @model_validator(mode="after")
+    def validate_complete_composite(self) -> "CompositeArtifactRetentionDecision":
+        identities = tuple(
+            (
+                state.source_object_id,
+                state.source_revision_id,
+                state.source_revision_digest,
+            )
+            for state in self.source_states
+        )
+        expected_identities = tuple(
+            (
+                source.source_object_id,
+                source.source_revision_id,
+                source.source_revision_digest,
+            )
+            for source in self.expected_source_lineage
+        )
+        if (
+            self.artifact_id.int == 0
+            or self.workspace_id.int == 0
+            or self.environment_id.int == 0
+            or not identities
+            or not expected_identities
+        ):
+            raise ValueError("composite retention requires artifact and source lineage")
+        if (
+            len(set(identities)) != len(identities)
+            or len(set(expected_identities)) != len(expected_identities)
+            or set(identities) != set(expected_identities)
+        ):
+            raise ValueError("composite state must match exact source lineage")
+        if self.whole_artifact_authorization is not None:
+            evidence = self.whole_artifact_authorization
+            if (
+                evidence.artifact_id != self.artifact_id
+                or evidence.workspace_id != self.workspace_id
+                or evidence.environment_id != self.environment_id
+                or evidence.lineage_sha256 != self.calculate_lineage_digest()
+            ):
+                raise ValueError("composite deletion authorization binding is invalid")
+        if self.whole_artifact_authorization is not None and not self.deletion_eligible:
+            raise ValueError("whole artifact authorization requires every source eligible")
+        return self
+
+    def calculate_lineage_digest(self) -> str:
+        canonical = sorted(
+            (
+                str(source.source_object_id),
+                str(source.source_revision_id),
+                source.source_revision_digest,
+            )
+            for source in self.expected_source_lineage
+        )
+        payload = json.dumps(canonical, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    @property
+    def available(self) -> bool:
+        return all(state.available for state in self.source_states)
+
+    @property
+    def deletion_eligible(self) -> bool:
+        return all(
+            state.generation_current
+            and state.current_applicability_resolved
+            and state.deletion_eligible
+            and state.retention_elapsed
+            and not state.active_hold
+            for state in self.source_states
+        )
+
+    @property
+    def deletion_permitted(self) -> bool:
+        return self.deletion_eligible and self.whole_artifact_authorization is not None
+
+
+class CompositeDeletionAuthorizationEvidence(PrivateASRApplicationContract):
+    """One authority result scoped to the complete immutable composite identity."""
+
+    schema_version: Literal["private-artifact-composite-deletion-authorization:v1"] = (
+        "private-artifact-composite-deletion-authorization:v1"
+    )
+    artifact_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    lineage_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    authorization_ref: PrivateReference
+
+    @model_validator(mode="after")
+    def validate_binding(self) -> "CompositeDeletionAuthorizationEvidence":
+        if (
+            any(
+                value.int == 0
+                for value in (self.artifact_id, self.workspace_id, self.environment_id)
+            )
+            or self.authorization_ref.reference_kind != "private_asr_deletion_authorization"
+            or self.authorization_ref.reference_id.int == 0
+        ):
+            raise ValueError("composite deletion authorization evidence is invalid")
+        return self
+
+
 class PrivateArtifactDeletionAuthority(Protocol):
     """Resolve current deletion authority inside the artifact transaction.
 
