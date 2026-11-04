@@ -29,7 +29,10 @@ from spine.connectors.gmail import (
     compose_gmail_history_reader,
     compose_gmail_mailbox_reader,
 )
-from spine.connectors.gmail_history import GmailHistoryState
+from spine.connectors.gmail_history import (
+    GmailHistoryState,
+    gmail_history_scope_digest,
+)
 from spine.domain.common import ContextOrigin
 from spine.domain.connections.email_scope import (
     EmailOperation,
@@ -548,6 +551,7 @@ async def test_admitted_gmail_history_pages_reach_client_with_same_exact_authori
 
     assert result.state is GmailHistoryState.COMPLETE
     assert result.terminal_history_id == "103"
+    assert result.admission_scope_digest == gmail_history_scope_digest(scope)
     assert connections.calls == 1
     assert len(client.requests) == 2
     assert [request.page_token for request in client.requests] == [None, "page-2"]

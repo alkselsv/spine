@@ -23,6 +23,11 @@ from spine.application.diagnostics import (
 from spine.application.document_ingestion import (
     ProjectionRequestPayload,
 )
+from spine.application.email_sync import (
+    EMAIL_SYNC_STATE_OBSERVED_CONSUMER_NAME,
+    EmailSyncStateObservedConsumer,
+    register_email_sync_delivery_route,
+)
 from spine.application.outbox import OutboxConsumerSuccess
 from spine.application.persistence.boundary import CanonicalBoundaryCaptureCommand
 from spine.application.persistence.context import (
@@ -131,7 +136,7 @@ from spine.memory.validation import (
     PhysicalProjectionSource,
     validate_physical_projection,
 )
-from spine.workers import OutboxWorker
+from spine.workers import OutboxConsumerBinding, OutboxWorker
 from spine.workflows.temporal.bootstrap import (
     build_ask_admission_delivery_binding,
     build_ask_cancellation_delivery_binding,
@@ -1179,6 +1184,7 @@ def create_production_outbox_worker_runtime(
     register_projection_delivery_routes(routes)
     register_ask_admission_delivery_route(routes)
     register_workflow_run_start_delivery_route(routes)
+    register_email_sync_delivery_route(routes)
     routes.seal()
     repository = PostgreSQLOutboxDeliveryRepository(
         session_factory=dispatcher_sessions,
@@ -1194,6 +1200,10 @@ def create_production_outbox_worker_runtime(
             build_ask_cancellation_delivery_binding(temporal_client),
             build_workflow_run_start_delivery_binding(temporal_client),
             build_workflow_run_signal_delivery_binding(temporal_client),
+            OutboxConsumerBinding(
+                EMAIL_SYNC_STATE_OBSERVED_CONSUMER_NAME,
+                EmailSyncStateObservedConsumer(),
+            ),
         ),
         audit_events=audit_events,
         diagnostic_events=diagnostic_events,

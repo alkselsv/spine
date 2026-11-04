@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from spine.application.email_sync import (
@@ -15,13 +15,105 @@ from spine.application.email_sync import (
     EmailSyncPageState,
     EmailSyncRepository,
     EmailSyncEffectReceipt,
+    EmailSyncStateObservation,
+    EmailSyncStateObservationRepository,
+    EmailSyncStateObservedOutboxPayload,
+    EMAIL_SYNC_STATE_OBSERVED_EVENT_TYPE,
+    EMAIL_SYNC_STATE_OBSERVED_SCHEMA_VERSION,
+    register_email_sync_outbox_event,
 )
 from spine.application.persistence.context import PersistenceOperation
+from spine.application.persistence.outbox import OpaqueObjectReference, OutboxEventRegistry
 from spine.infrastructure.persistence.postgresql_mappings import (
     email_sync_attempts,
     email_sync_effect_receipts,
     email_sync_pages,
+    email_sync_state_observations,
 )
+
+
+class PostgreSQLEmailSyncStateObservationRepository(EmailSyncStateObservationRepository):
+    """Append a state observation and its publication intent in one UoW."""
+
+    def __init__(
+        self,
+        uow_factory: Callable,
+        context_factory: Callable,
+        outbox_events: OutboxEventRegistry,
+    ) -> None:
+        self._uow_factory = uow_factory
+        self._context_factory = context_factory
+        self._outbox_events = outbox_events
+        register_email_sync_outbox_event(outbox_events)
+
+    async def record(self, observation: EmailSyncStateObservation) -> UUID:
+        context = self._context_factory(
+            PersistenceOperation("email_sync_state_observation"),
+            observation.observation_id,
+        )
+        if (
+            getattr(context.scope, "workspace_id", None) != observation.workspace_id
+            or getattr(context.scope, "environment_id", None) != observation.environment_id
+        ):
+            raise ValueError("email sync state persistence scope is invalid")
+        async with self._uow_factory(context) as uow:
+            await uow._execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                {"key": str(observation.observation_id)},
+            )
+            result = await uow._execute(
+                select(email_sync_state_observations).where(
+                    email_sync_state_observations.c.workspace_id == observation.workspace_id,
+                    email_sync_state_observations.c.environment_id == observation.environment_id,
+                    email_sync_state_observations.c.observation_id == observation.observation_id,
+                )
+            )
+            existing = result.mappings().one_or_none()
+            if existing is not None:
+                stored = EmailSyncStateObservation.model_validate(existing["record"])
+                if stored != observation:
+                    raise ValueError("email sync state observation conflicts")
+                await uow.rollback()
+                return observation.observation_id
+            intent = self._outbox_events.build_intent(
+                event_id=observation.outbox_event_id,
+                workspace_id=observation.workspace_id,
+                environment_id=observation.environment_id,
+                event_type=EMAIL_SYNC_STATE_OBSERVED_EVENT_TYPE,
+                schema_version=EMAIL_SYNC_STATE_OBSERVED_SCHEMA_VERSION,
+                payload=EmailSyncStateObservedOutboxPayload(
+                    observation_id=observation.observation_id,
+                    connection_id=observation.connection_id,
+                    mailbox_binding_id=observation.mailbox_binding_id,
+                    state_kind=observation.state_kind,
+                    provider_event_digest=observation.provider_event_digest,
+                ),
+                trace_id=context.trace_id,
+                aggregate=OpaqueObjectReference(
+                    object_type="mailbox_binding",
+                    object_id=observation.mailbox_binding_id,
+                    schema_version=1,
+                ),
+                producer_deduplication_id=f"email-sync-state:{observation.observation_id}",
+            )
+            event_id = await uow.outbox.append(intent)
+            if event_id != observation.outbox_event_id:
+                raise ValueError("email sync state outbox identity conflicts")
+            await uow._execute(
+                insert(email_sync_state_observations).values(
+                    workspace_id=observation.workspace_id,
+                    environment_id=observation.environment_id,
+                    observation_id=observation.observation_id,
+                    connection_id=observation.connection_id,
+                    mailbox_binding_id=observation.mailbox_binding_id,
+                    state_kind=observation.state_kind,
+                    provider_event_digest=observation.provider_event_digest,
+                    outbox_event_id=observation.outbox_event_id,
+                    record=observation.model_dump(mode="json"),
+                )
+            )
+            await uow.commit()
+            return observation.observation_id
 
 
 class PostgreSQLEmailSyncRepository(EmailSyncRepository):
@@ -58,6 +150,9 @@ class PostgreSQLEmailSyncRepository(EmailSyncRepository):
                     email_sync_effect_receipts.c.attempt_id == attempt_id,
                     email_sync_effect_receipts.c.workspace_id == workspace_id,
                     email_sync_effect_receipts.c.environment_id == environment_id,
+                ).order_by(
+                    email_sync_effect_receipts.c.page_id,
+                    email_sync_effect_receipts.c.effect_key,
                 )
             )
             receipt_rows = receipt_result.mappings().all()
@@ -246,4 +341,7 @@ class PostgreSQLEmailSyncRepository(EmailSyncRepository):
         return self._uow_factory(context)
 
 
-__all__ = ["PostgreSQLEmailSyncRepository"]
+__all__ = [
+    "PostgreSQLEmailSyncRepository",
+    "PostgreSQLEmailSyncStateObservationRepository",
+]
