@@ -81,6 +81,7 @@ def test_partial_failure_stays_fenced_and_retry_reuses_operation_key() -> None:
         pending,
         _event(
             SyntheticEventKind.STORE_RESULT,
+            authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
             store_ref="fake-store-a",
             store_status=SyntheticStoreStatus.FAILED,
         ),
@@ -95,6 +96,7 @@ def test_partial_failure_stays_fenced_and_retry_reuses_operation_key() -> None:
         retrying,
         _event(
             SyntheticEventKind.STORE_RESULT,
+            authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
             store_ref="fake-store-a",
             store_status=SyntheticStoreStatus.VERIFIED,
         ),
@@ -113,6 +115,7 @@ def test_partial_failure_stays_fenced_and_retry_reuses_operation_key() -> None:
         first_success,
         _event(
             SyntheticEventKind.STORE_RESULT,
+            authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
             store_ref="fake-store-b",
             store_status=SyntheticStoreStatus.VERIFIED,
         ),
@@ -121,6 +124,7 @@ def test_partial_failure_stays_fenced_and_retry_reuses_operation_key() -> None:
         complete,
         _event(
             SyntheticEventKind.STORE_RESULT,
+            authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
             store_ref="fake-store-b",
             store_status=SyntheticStoreStatus.VERIFIED,
         ),
@@ -166,6 +170,69 @@ def test_start_rechecks_authority_and_blocks_before_dispatch(
     assert blocked.state is not SyntheticCleanupState.CLEANUP_PENDING
 
 
+@pytest.mark.parametrize(
+    ("authority", "expected_code"),
+    [
+        (SyntheticAuthorityStatus.MISSING, "AUTHORITY_MISSING"),
+        (SyntheticAuthorityStatus.STALE, "AUTHORITY_STALE"),
+        (SyntheticAuthorityStatus.REVOKED, "AUTHORITY_REVOKED"),
+    ],
+)
+def test_authority_loss_during_pending_blocks_late_store_receipts(
+    authority: SyntheticAuthorityStatus,
+    expected_code: str,
+) -> None:
+    pending = _fenced_pending()
+    blocked = transition_synthetic_cleanup(
+        pending,
+        _event(SyntheticEventKind.CHECK_AUTHORITY, authority_status=authority),
+    )
+    late_receipt = transition_synthetic_cleanup(
+        blocked,
+        _event(
+            SyntheticEventKind.STORE_RESULT,
+            authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
+            store_ref="fake-store-a",
+            store_status=SyntheticStoreStatus.VERIFIED,
+        ),
+    )
+
+    assert blocked.state is SyntheticCleanupState.BLOCKED
+    assert blocked.safe_code == expected_code
+    assert blocked.fence_active
+    assert late_receipt.state is SyntheticCleanupState.BLOCKED
+    assert late_receipt.state is not SyntheticCleanupState.VERIFIED_SYNTHETIC
+
+
+@pytest.mark.parametrize(
+    ("authority", "expected_code"),
+    [
+        (SyntheticAuthorityStatus.MISSING, "AUTHORITY_MISSING"),
+        (SyntheticAuthorityStatus.STALE, "AUTHORITY_STALE"),
+        (SyntheticAuthorityStatus.REVOKED, "AUTHORITY_REVOKED"),
+    ],
+)
+def test_store_receipt_requires_fresh_current_authority(
+    authority: SyntheticAuthorityStatus,
+    expected_code: str,
+) -> None:
+    blocked = transition_synthetic_cleanup(
+        _fenced_pending(),
+        _event(
+            SyntheticEventKind.STORE_RESULT,
+            authority_status=authority,
+            store_ref="fake-store-a",
+            store_status=SyntheticStoreStatus.VERIFIED,
+        ),
+    )
+
+    assert blocked.state is SyntheticCleanupState.BLOCKED
+    assert blocked.authority_status is authority
+    assert blocked.safe_code == expected_code
+    assert blocked.store_receipts == ()
+    assert blocked.fence_active
+
+
 def test_contract_rejects_unregistered_identifier_with_fake_prefix() -> None:
     with pytest.raises(ValidationError):
         SyntheticCleanupJob(
@@ -191,6 +258,7 @@ def test_retry_rechecks_authority_and_blocks_when_not_current(
         _fenced_pending(),
         _event(
             SyntheticEventKind.STORE_RESULT,
+            authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
             store_ref="fake-store-a",
             store_status=SyntheticStoreStatus.FAILED,
         ),
@@ -217,6 +285,25 @@ def test_start_requires_explicit_authority_result() -> None:
         _event(SyntheticEventKind.START)
 
 
+def test_store_result_and_reconciliation_require_explicit_authority() -> None:
+    with pytest.raises(ValidationError):
+        _event(
+            SyntheticEventKind.STORE_RESULT,
+            store_ref="fake-store-a",
+            store_status=SyntheticStoreStatus.VERIFIED,
+        )
+    with pytest.raises(ValidationError):
+        _event(
+            SyntheticEventKind.RECONCILE_RECEIPT,
+            receipts=(
+                SyntheticStoreReceipt(
+                    store_ref="fake-store-a",
+                    status=SyntheticStoreStatus.VERIFIED,
+                ),
+            ),
+        )
+
+
 def test_unknown_commit_requires_explicit_complete_receipt_reconciliation() -> None:
     unknown = transition_synthetic_cleanup(
         _fenced_pending(),
@@ -226,6 +313,7 @@ def test_unknown_commit_requires_explicit_complete_receipt_reconciliation() -> N
         unknown,
         _event(
             SyntheticEventKind.RECONCILE_RECEIPT,
+            authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
             receipts=(
                 SyntheticStoreReceipt(
                     store_ref="fake-store-a",
@@ -243,6 +331,7 @@ def test_unknown_commit_requires_explicit_complete_receipt_reconciliation() -> N
         incomplete_reconciliation,
         _event(
             SyntheticEventKind.RECONCILE_RECEIPT,
+            authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
             receipts=(
                 SyntheticStoreReceipt(
                     store_ref="fake-store-a",
@@ -259,6 +348,35 @@ def test_unknown_commit_requires_explicit_complete_receipt_reconciliation() -> N
     assert reconciled.fence_active
 
 
+def test_unknown_commit_reconciliation_needs_fresh_authority() -> None:
+    unknown = transition_synthetic_cleanup(
+        _fenced_pending(),
+        _event(SyntheticEventKind.COMMIT_UNKNOWN),
+    )
+    rejected = transition_synthetic_cleanup(
+        unknown,
+        _event(
+            SyntheticEventKind.RECONCILE_RECEIPT,
+            authority_status=SyntheticAuthorityStatus.REVOKED,
+            receipts=(
+                SyntheticStoreReceipt(
+                    store_ref="fake-store-a",
+                    status=SyntheticStoreStatus.VERIFIED,
+                ),
+                SyntheticStoreReceipt(
+                    store_ref="fake-store-b",
+                    status=SyntheticStoreStatus.VERIFIED,
+                ),
+            ),
+        ),
+    )
+
+    assert rejected.state is SyntheticCleanupState.UNKNOWN
+    assert rejected.authority_status is SyntheticAuthorityStatus.REVOKED
+    assert rejected.safe_code == "AUTHORITY_REVOKED"
+    assert rejected.fence_active
+
+
 def test_unknown_receipt_remains_unresolved_after_reconciliation() -> None:
     unknown = transition_synthetic_cleanup(
         _fenced_pending(),
@@ -268,6 +386,7 @@ def test_unknown_receipt_remains_unresolved_after_reconciliation() -> None:
         unknown,
         _event(
             SyntheticEventKind.RECONCILE_RECEIPT,
+            authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
             receipts=(
                 SyntheticStoreReceipt(
                     store_ref="fake-store-a",
@@ -308,6 +427,7 @@ def test_restore_stays_quarantined_until_verified_synthetic_replay() -> None:
         pending,
         _event(
             SyntheticEventKind.STORE_RESULT,
+            authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
             store_ref="fake-store-a",
             store_status=SyntheticStoreStatus.VERIFIED,
         ),
@@ -334,6 +454,7 @@ def test_restore_cannot_release_without_a_pending_synthetic_replay() -> None:
         pending,
         _event(
             SyntheticEventKind.STORE_RESULT,
+            authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
             store_ref="fake-store-a",
             store_status=SyntheticStoreStatus.VERIFIED,
         ),
@@ -355,6 +476,7 @@ def test_uncovered_store_cannot_be_reported_as_verified() -> None:
         pending,
         _event(
             SyntheticEventKind.STORE_RESULT,
+            authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
             store_ref="fake-store-uncovered",
             store_status=SyntheticStoreStatus.VERIFIED,
         ),

@@ -23,13 +23,16 @@ arbitrary strings, including arbitrary values with a `fake-` prefix, are rejecte
 | PROPOSED | synthetic test authority current | FENCED_TEST_ONLY | Test-only fence on; no deletion permission |
 | FENCED_TEST_ONLY | START with freshly checked current synthetic test authority | CLEANUP_PENDING | Test-only fence remains on |
 | FENCED_TEST_ONLY | START with missing, stale or revoked authority | BLOCKED | No dispatch; authority safe code |
-| PENDING / INCOMPLETE | one fake store fails | CLEANUP_INCOMPLETE | Fence remains; `STORE_FAILED` |
-| PENDING / INCOMPLETE | fake store result unknown | UNKNOWN | Fence remains; unresolved |
-| PENDING / INCOMPLETE | all declared stores verified | VERIFIED_SYNTHETIC | Fence remains; synthetic evidence only |
+| PENDING / INCOMPLETE | authority recheck is missing, stale or revoked | BLOCKED | Fence remains; authority safe code |
+| PENDING / INCOMPLETE | store result with missing, stale or revoked authority | BLOCKED | No receipt accepted; fence remains; authority safe code |
+| PENDING / INCOMPLETE | store result with freshly checked current authority; one fake store fails | CLEANUP_INCOMPLETE | Fence remains; `STORE_FAILED` |
+| PENDING / INCOMPLETE | store result with freshly checked current authority; result unknown | UNKNOWN | Fence remains; unresolved |
+| PENDING / INCOMPLETE | each store result has freshly checked current authority; all declared stores verify | VERIFIED_SYNTHETIC | Fence remains; synthetic evidence only |
 | PENDING / INCOMPLETE | commit acknowledgement unknown | UNKNOWN | Fence remains; `COMMIT_UNKNOWN` |
-| UNKNOWN | receipt missing, incomplete, duplicate or still unknown | UNKNOWN | Fence remains; reconciliation required |
-| UNKNOWN | explicit complete receipt, all stores verified | VERIFIED_SYNTHETIC | Fence remains; fake receipts only |
-| UNKNOWN | explicit complete receipt with failure | CLEANUP_INCOMPLETE | Fence remains; retry same operation key only after current fake authority |
+| UNKNOWN | reconciliation authority missing, stale or revoked | UNKNOWN | Fence remains; authority safe code; reconciliation unresolved |
+| UNKNOWN | receipt missing, incomplete, duplicate or still unknown with current authority | UNKNOWN | Fence remains; reconciliation required |
+| UNKNOWN | explicit complete receipt with fresh current authority; all stores verified | VERIFIED_SYNTHETIC | Fence remains; fake receipts only |
+| UNKNOWN | explicit complete receipt with fresh current authority and a failure | CLEANUP_INCOMPLETE | Fence remains; retry same operation key only after current fake authority |
 | INCOMPLETE | RETRY with current synthetic test authority rechecked on this attempt | CLEANUP_PENDING | Same immutable operation key; retry count increments |
 | INCOMPLETE | RETRY with missing, stale or revoked authority | BLOCKED | Fence remains; safe authority code; no retry |
 | Any state | CANCEL | CANCELLED | Fence on; no restart transition |
@@ -44,9 +47,10 @@ produce synthetic verification. Duplicate verified store results are stable;
 replayed `START` after work has started is an unchanged no-op, including after
 verification. Each retry event carries a fresh authority result; missing,
 stale or revoked authority blocks the job before another attempt can start.
-Initial dispatch also requires a fresh current-authority result on `START`;
-missing, stale or revoked results block dispatch even after an earlier positive
-check.
+Initial dispatch requires a fresh current-authority result on `START`; every
+store-result and unknown-commit reconciliation also requires a fresh current
+authority result. Missing, stale or revoked results block active work or keep
+unknown reconciliation unresolved, even after an earlier positive check.
 
 ## Production boundary
 

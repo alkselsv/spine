@@ -149,14 +149,16 @@ class SyntheticCleanupEvent(DefinitionModel):
             SyntheticEventKind.CHECK_AUTHORITY,
             SyntheticEventKind.START,
             SyntheticEventKind.RETRY,
+            SyntheticEventKind.STORE_RESULT,
+            SyntheticEventKind.RECONCILE_RECEIPT,
         }:
             if self.authority_status is None:
-                raise ValueError("authority check, start, and retry require a synthetic authority status")
+                raise ValueError("authority-sensitive events require a synthetic authority status")
         elif self.authority_status is not None:
-            raise ValueError("only authority checks may carry authority status")
+            raise ValueError("only authority-sensitive events may carry authority status")
         if self.kind is SyntheticEventKind.STORE_RESULT:
             if self.store_ref is None or self.store_status is None:
-                raise ValueError("store result requires an opaque store reference and status")
+                raise ValueError("store result requires an opaque store reference, status and authority result")
         elif self.store_ref is not None or self.store_status is not None:
             raise ValueError("only store results may carry one store outcome")
         if self.kind is SyntheticEventKind.RECONCILE_RECEIPT:
@@ -221,6 +223,19 @@ def transition_synthetic_cleanup(
             and event.authority_status is SyntheticAuthorityStatus.CURRENT_TEST_ONLY
         ):
             return job
+        if job.state in {
+            SyntheticCleanupState.CLEANUP_PENDING,
+            SyntheticCleanupState.CLEANUP_INCOMPLETE,
+        }:
+            if event.authority_status is SyntheticAuthorityStatus.CURRENT_TEST_ONLY:
+                return job
+            return job.model_copy(
+                update={
+                    "state": SyntheticCleanupState.BLOCKED,
+                    "authority_status": event.authority_status,
+                    "safe_code": _AUTHORITY_CODES[event.authority_status],
+                }
+            )
         if job.state is not SyntheticCleanupState.PROPOSED:
             return _invalid(job)
         if event.authority_status is SyntheticAuthorityStatus.CURRENT_TEST_ONLY:
@@ -264,6 +279,20 @@ def transition_synthetic_cleanup(
         return _invalid(job)
 
     if event.kind is SyntheticEventKind.STORE_RESULT:
+        assert event.authority_status is not None
+        if event.authority_status is not SyntheticAuthorityStatus.CURRENT_TEST_ONLY:
+            if job.state in {
+                SyntheticCleanupState.CLEANUP_PENDING,
+                SyntheticCleanupState.CLEANUP_INCOMPLETE,
+            }:
+                return job.model_copy(
+                    update={
+                        "state": SyntheticCleanupState.BLOCKED,
+                        "authority_status": event.authority_status,
+                        "safe_code": _AUTHORITY_CODES[event.authority_status],
+                    }
+                )
+            return _invalid(job)
         if job.state is SyntheticCleanupState.VERIFIED_SYNTHETIC:
             existing = next(
                 (item for item in job.store_receipts if item.store_ref == event.store_ref),
@@ -352,6 +381,14 @@ def transition_synthetic_cleanup(
     if event.kind is SyntheticEventKind.RECONCILE_RECEIPT:
         if job.state is not SyntheticCleanupState.UNKNOWN:
             return _invalid(job)
+        assert event.authority_status is not None
+        if event.authority_status is not SyntheticAuthorityStatus.CURRENT_TEST_ONLY:
+            return job.model_copy(
+                update={
+                    "authority_status": event.authority_status,
+                    "safe_code": _AUTHORITY_CODES[event.authority_status],
+                }
+            )
         receipt_refs = tuple(item.store_ref for item in event.receipts)
         if (
             len(set(receipt_refs)) != len(receipt_refs)
