@@ -38,6 +38,7 @@ def test_inventory_distinguishes_lifecycle_and_cleanup_boundaries() -> None:
 def test_inventory_evidence_paths_exist_in_checkout() -> None:
     for path in (
         "src/spine/domain/artifacts/email_governance.py",
+        "src/spine/domain/sources/canonical_tombstone_selector.py",
         "src/spine/domain/sources/retention.py",
         "src/spine/application/email_artifacts.py",
         "src/spine/application/email_attachments.py",
@@ -62,5 +63,6 @@ def test_inventory_evidence_paths_exist_in_checkout() -> None:
         "src/spine/infrastructure/telemetry/diagnostics.py",
         "src/spine/infrastructure/diagnostics/sinks.py",
         "src/spine/api/diagnostics.py",
+        "tests/domain/sources/test_canonical_tombstone_v3.py",
     ):
         assert (ROOT / path).exists(), path
