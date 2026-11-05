@@ -2294,7 +2294,7 @@ def _start_recovery_worker(spec, mode: str) -> subprocess.Popen[str]:
 
 def _storage_for_transaction_probe(
     prepared, *, uow_factory, sessions=None, audit_receipts=None,
-    deletion_authority=None, clock=None,
+    deletion_authority=None, retention_resolver=None, clock=None,
 ):
     return PostgreSQLPrivateASRStorage(
         sessions=sessions or prepared.runtime_sessions,
@@ -2302,7 +2302,7 @@ def _storage_for_transaction_probe(
         authority=prepared.authority,
         access_policies=prepared.policies,
         audit_receipts=audit_receipts or prepared.audit_receipts,
-        retention_resolver=prepared.resolver,
+        retention_resolver=retention_resolver or prepared.resolver,
         manifest_lineage=prepared.manifest_lineage,
         deletion_authority=(
             deletion_authority
@@ -4291,6 +4291,13 @@ async def test_postgresql_private_asr_authorized_read_serializes_with_expiration
     report = await _commit_synthetic_report(
         prepared, idempotency_key="read-expiration-race-report",
     )
+    deletion_clock = lambda: NOW + timedelta(minutes=31)
+    deletion_resolver = PostgreSQLPrivateASRRetentionResolver(
+        approvals=prepared.resolver._approvals,
+        terms=prepared.resolver._terms,
+        test_only_allow_synthetic_sources=True,
+        clock=deletion_clock,
+    )
     authorization_entered, release_authorization = asyncio.Event(), asyncio.Event()
 
     class BlockingDeletionAuthority:
@@ -4305,7 +4312,8 @@ async def test_postgresql_private_asr_authorized_read_serializes_with_expiration
         prepared,
         uow_factory=prepared.store._uow_factory,
         deletion_authority=BlockingDeletionAuthority(),
-        clock=lambda: NOW + timedelta(minutes=31),
+        retention_resolver=deletion_resolver,
+        clock=deletion_clock,
     )
     deletion = asyncio.create_task(deletion_store.expire(
         report.report_ref,
