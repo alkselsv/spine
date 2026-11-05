@@ -63,6 +63,7 @@ from spine.application.persistence.errors import (
     AuditConflictError,
     CanonicalAuthorityConflictError,
     CanonicalEligibilityError,
+    CommitFenceInvalidatedError,
     ConstraintConflictError,
     ContextProfileApprovalError,
     ContextProfileDigestMismatchError,
@@ -7266,6 +7267,7 @@ class PostgreSQLTenantUnitOfWork:
         self._audit = _PostgreSQLAuditWriter(self)
         self._owned_claims: dict[UUID, OwnedIdempotencyClaim] = {}
         self._pending_audit_events: dict[UUID, AuditEvent] = {}
+        self._commit_guards: list[Callable[[], bool]] = []
         self._activity_scope: AbstractContextManager[None] | None = None
 
     @property
@@ -7594,6 +7596,13 @@ class PostgreSQLTenantUnitOfWork:
             )
         await self._flush_audit_events()
         await self._run_transaction_probe(PostgreSQLTransactionStage.BEFORE_COMMIT)
+        for guard in tuple(self._commit_guards):
+            try:
+                valid = guard()
+            except BaseException as error:
+                await self._terminate(error)
+            if not valid:
+                await self._terminate(CommitFenceInvalidatedError())
         assert self._session is not None
         try:
             await self._session.commit()
@@ -7610,6 +7619,7 @@ class PostgreSQLTenantUnitOfWork:
         self._lifecycle = _Lifecycle.COMMITTED
         self._owned_claims.clear()
         self._pending_audit_events.clear()
+        self._commit_guards.clear()
 
     async def rollback(self) -> None:
         self._guard_owner()
@@ -7625,6 +7635,7 @@ class PostgreSQLTenantUnitOfWork:
         self._lifecycle = _Lifecycle.ROLLED_BACK
         self._owned_claims.clear()
         self._pending_audit_events.clear()
+        self._commit_guards.clear()
 
     def _guard_owner(self) -> None:
         if self._owner is None or asyncio.current_task() is not self._owner:
@@ -7744,6 +7755,11 @@ class PostgreSQLTenantUnitOfWork:
         self._guard_active()
         await self._flush_audit_events()
 
+    def register_commit_guard(self, guard: Callable[[], bool]) -> None:
+        """Run a synchronous fence check immediately before PostgreSQL commit."""
+        self._guard_active()
+        self._commit_guards.append(guard)
+
     async def _execute_during_entry(
         self, statement: object, parameters: object | None = None
     ):
@@ -7772,6 +7788,7 @@ class PostgreSQLTenantUnitOfWork:
         self._active_context = None
         self._owned_claims.clear()
         self._pending_audit_events.clear()
+        self._commit_guards.clear()
         if session is not None:
             try:
                 await session.rollback()
@@ -7805,6 +7822,7 @@ class PostgreSQLTenantUnitOfWork:
         self._active_context = None
         self._owned_claims.clear()
         self._pending_audit_events.clear()
+        self._commit_guards.clear()
         self._session = None
         self._lifecycle = _Lifecycle.CLOSED
         if session is not None:

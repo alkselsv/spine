@@ -4,6 +4,8 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from dataclasses import replace
+import hashlib
+import json
 
 import pytest
 from sqlalchemy import insert, select, text
@@ -14,6 +16,12 @@ from spine.application.lifecycle import (
     LifecycleEligibilityQuery,
     require_current_read_eligibility,
 )
+from spine.application.commit_fence import (
+    CommitFenceBinding,
+    CommitFenceOutcomeKind,
+    canonical_commit_fence_lineage_digest,
+)
+from spine.application.private_asr_corpus import PrivateArtifactSourceLineage
 from spine.application.persistence.canonical import CanonicalAcceptanceCommand
 from spine.application.persistence.errors import CanonicalEligibilityError
 from spine.application.persistence.idempotency import IdempotencyKey
@@ -30,6 +38,11 @@ from spine.domain.sources.lifecycle import (
 )
 from spine.infrastructure.persistence.postgresql_lifecycle import (
     PostgreSQLLifecycleAuthorityRepository,
+)
+from spine.infrastructure.persistence.postgresql_commit_fence import (
+    PostgreSQLCommitFence,
+    PostgreSQLFenceOwner,
+    postgresql_f1_issuer_id,
 )
 from spine.infrastructure.persistence.postgresql_mappings import (
     audit_events,
@@ -473,6 +486,8 @@ async def test_postgresql_lifecycle_authority_persists_current_scoped_decision(
             idempotency_key=IdempotencyKey("withdrawn-unbound-canonical"),
         )
         legacy = replace(legacy, digest=legacy.expected_digest())
+
+
         async with postgresql_adapter.uow_factory(case.context) as uow:
             await uow.canonical.accept(legacy)
             await uow.commit()
@@ -499,6 +514,134 @@ async def test_postgresql_lifecycle_authority_persists_current_scoped_decision(
         )
         assert rows.scalar_one_or_none() is None
         await uow.rollback()
+
+
+async def test_postgresql_lifecycle_fence_orders_replacement_and_commit(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await _prepare_lifecycle_case(postgresql_adapter, 974000)
+    context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id, case.source.environment_id, "lifecycle_decision"
+    )
+    repository = PostgreSQLLifecycleAuthorityRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        observation_authority=_AllowObservationAuthority(),
+        decision_authority=_AllowAuthority(),
+        decision_effects=_DecisionEffects(),
+    )
+    observation = _observation(case, 974010).model_copy(
+        update={
+            "kind": LifecycleObservationKind.MOVE_WITHIN_SCOPE,
+            "reason_code": LifecycleReasonCode.MOVE_WITHIN_SCOPE,
+        }
+    )
+    decision = _decision(case, observation, context, 974020).model_copy(
+        update={
+            "effect": LifecycleDecisionEffect.ELIGIBLE,
+            "status": LifecycleEligibilityStatus.ELIGIBLE,
+        }
+    )
+    await repository.record_observation(observation, context)
+    await repository.record_decision(decision, context)
+
+    state_digest = hashlib.sha256(
+        json.dumps(
+            decision.model_dump(mode="json"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    lineage = (
+        PrivateArtifactSourceLineage(
+            source_object_id=case.source.source_object_id,
+            source_revision_id=case.revision.revision_id,
+            source_revision_digest=case.revision.revision_digest,
+        ),
+    )
+    now = datetime(2026, 10, 31, 12, tzinfo=timezone.utc)
+    binding = CommitFenceBinding(
+        issuer_id=postgresql_f1_issuer_id(PostgreSQLFenceOwner.SOURCE_LIFECYCLE),
+        approval_version=str(decision.decision_id),
+        approval_digest=state_digest,
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        purpose="test.lifecycle",
+        action="publish",
+        subject_id=case.source.source_object_id,
+        state_digest=state_digest,
+        source_lineage=lineage,
+        lineage_digest=canonical_commit_fence_lineage_digest(
+            workspace_id=case.source.workspace_id,
+            environment_id=case.source.environment_id,
+            source_lineage=lineage,
+        ),
+        generation=1,
+        revocation_epoch=1,
+        operation_id=_lifecycle_id(974030),
+        idempotency_key="issue-974-lifecycle-fence",
+        valid_from=now,
+        valid_until=datetime(2026, 10, 31, 13, tzinfo=timezone.utc),
+    )
+
+    replacement_observation = _observation(case, 974040).model_copy(
+        update={
+            "kind": LifecycleObservationKind.MOVE_WITHIN_SCOPE,
+            "reason_code": LifecycleReasonCode.MOVE_WITHIN_SCOPE,
+        }
+    )
+    replacement_decision = _decision(
+        case, replacement_observation, context, 974050
+    ).model_copy(
+        update={
+            "effect": LifecycleDecisionEffect.ELIGIBLE,
+            "status": LifecycleEligibilityStatus.ELIGIBLE,
+            "expected_current_decision_id": decision.decision_id,
+            "expected_current_generation": 1,
+            "generation": 2,
+        }
+    )
+    await repository.record_observation(replacement_observation, context)
+
+    lock_attempted = asyncio.Event()
+    backend_pids: list[int] = []
+    observed_repository = PostgreSQLLifecycleAuthorityRepository(
+        uow_factory=_observe_lock_attempt(
+            postgresql_adapter.uow_factory, lock_attempted, backend_pids
+        ),
+        observation_authority=_AllowObservationAuthority(),
+        decision_authority=_AllowAuthority(),
+        decision_effects=_DecisionEffects(),
+    )
+    async with postgresql_adapter.uow_factory(context) as consumer_uow:
+        outcome = await PostgreSQLCommitFence(
+            consumer_uow, clock=lambda: now
+        ).acquire(
+            binding,
+            owner=PostgreSQLFenceOwner.SOURCE_LIFECYCLE,
+            now=now,
+        )
+        assert outcome.outcome is CommitFenceOutcomeKind.ACQUIRED
+        replacement_task = asyncio.create_task(
+            observed_repository.record_decision(replacement_decision, context)
+        )
+        await asyncio.wait_for(lock_attempted.wait(), timeout=10)
+        assert await _wait_for_postgresql_lock_wait(
+            postgresql_adapter, context, backend_pids[0], replacement_task
+        )
+        await consumer_uow.commit()
+    await replacement_task
+
+    async with postgresql_adapter.uow_factory(context) as consumer_uow:
+        stale = await PostgreSQLCommitFence(
+            consumer_uow, clock=lambda: now
+        ).acquire(
+            binding,
+            owner=PostgreSQLFenceOwner.SOURCE_LIFECYCLE,
+            now=now,
+        )
+        assert stale.outcome is CommitFenceOutcomeKind.STALE
+        await consumer_uow.rollback()
 
 
 @pytest.mark.asyncio(loop_scope="session")

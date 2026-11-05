@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 
 import pytest
 from sqlalchemy import insert, select, update
 
 from spine.application.persistence.errors import UnexpectedPersistenceError
+from spine.application.commit_fence import (
+    CommitFenceBinding,
+    CommitFenceOutcomeKind,
+    canonical_commit_fence_lineage_digest,
+)
+from spine.application.private_asr_corpus import PrivateArtifactSourceLineage
 from spine.application.retention import (
     RetentionApplicabilityConflictError,
     RetentionApplicabilityError,
@@ -26,6 +34,11 @@ from spine.infrastructure.persistence.postgresql_mappings import (
 )
 from spine.infrastructure.persistence.postgresql_retention import (
     PostgreSQLRetentionApplicabilityRepository,
+)
+from spine.infrastructure.persistence.postgresql_commit_fence import (
+    PostgreSQLCommitFence,
+    PostgreSQLFenceOwner,
+    postgresql_f1_issuer_id,
 )
 from tests.integration.postgresql.test_postgresql_unit_of_work import (
     PersistenceAdapter,
@@ -320,3 +333,101 @@ async def test_postgresql_retention_binding_covers_each_email_derivative_class(
 
     assert recorded.artifact_classes == email_classes
     assert current == (recorded,)
+
+
+async def test_postgresql_retention_fence_orders_replacement_and_commit(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await _case(postgresql_adapter, 973000)
+    context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id,
+        case.source.environment_id,
+        "retention_applicability",
+    )
+    repository = _repository(postgresql_adapter)
+    current = _applicability(case, context, identifier=973100)
+    await repository.record_applicability(current, context)
+
+    lineage = (
+        PrivateArtifactSourceLineage(
+            source_object_id=case.source.source_object_id,
+            source_revision_id=case.revision.revision_id,
+            source_revision_digest=case.revision.revision_digest,
+        ),
+    )
+    state_digest = hashlib.sha256(
+        json.dumps(
+            current.model_dump(mode="json"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    now = datetime(2026, 10, 31, 12, tzinfo=timezone.utc)
+    binding = CommitFenceBinding(
+        issuer_id=postgresql_f1_issuer_id(
+            PostgreSQLFenceOwner.RETENTION_APPLICABILITY
+        ),
+        approval_version=str(current.applicability_id),
+        approval_digest=state_digest,
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        purpose="test.retention",
+        action="publish",
+        subject_id=case.source.source_object_id,
+        state_digest=state_digest,
+        source_lineage=lineage,
+        lineage_digest=canonical_commit_fence_lineage_digest(
+            workspace_id=case.source.workspace_id,
+            environment_id=case.source.environment_id,
+            source_lineage=lineage,
+        ),
+        generation=1,
+        revocation_epoch=1,
+        operation_id=synthetic_uuid(973200),
+        idempotency_key="issue-973-retention-fence",
+        valid_from=now - timedelta(minutes=1),
+        valid_until=now + timedelta(minutes=10),
+    )
+    replacement = current.model_copy(
+        update={
+            "applicability_id": synthetic_uuid(973300),
+            "expected_current_applicability_id": current.applicability_id,
+            "expected_current_generation": 1,
+            "generation": 2,
+            "audit_event_id": synthetic_uuid(973301),
+            "outbox_event_id": synthetic_uuid(973302),
+        }
+    )
+    started = asyncio.Event()
+
+    async def replace_current() -> None:
+        started.set()
+        await repository.record_applicability(replacement, context)
+
+    async with postgresql_adapter.uow_factory(context) as consumer_uow:
+        outcome = await PostgreSQLCommitFence(
+            consumer_uow, clock=lambda: now
+        ).acquire(
+            binding,
+            owner=PostgreSQLFenceOwner.RETENTION_APPLICABILITY,
+            now=now,
+        )
+        assert outcome.outcome is CommitFenceOutcomeKind.ACQUIRED
+        replacement_task = asyncio.create_task(replace_current())
+        await started.wait()
+        await asyncio.sleep(0.05)
+        assert not replacement_task.done()
+        await consumer_uow.commit()
+    await replacement_task
+
+    async with postgresql_adapter.uow_factory(context) as consumer_uow:
+        stale = await PostgreSQLCommitFence(
+            consumer_uow, clock=lambda: now
+        ).acquire(
+            binding,
+            owner=PostgreSQLFenceOwner.RETENTION_APPLICABILITY,
+            now=now,
+        )
+        assert stale.outcome is CommitFenceOutcomeKind.STALE
+        await consumer_uow.rollback()

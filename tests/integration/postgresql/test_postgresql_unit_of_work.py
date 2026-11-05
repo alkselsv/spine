@@ -195,6 +195,11 @@ from spine.infrastructure.persistence.postgresql import (
     PostgreSQLPersistence,
     PostgreSQLTransactionStage,
 )
+from spine.infrastructure.persistence.postgresql_commit_fence import (
+    PostgreSQLCommitFence,
+    PostgreSQLFenceOwner,
+    postgresql_f1_issuer_id,
+)
 from spine.infrastructure.persistence.postgresql_email_sync import (
     PostgreSQLEmailSyncRepository,
     PostgreSQLEmailSyncStateObservationRepository,
@@ -11909,3 +11914,315 @@ async def test_selector_migration_rollback_preserves_existing_v1_acceptance(
         )).mappings().one()
         await uow.rollback()  # type: ignore[attr-defined]
     assert dict(after_upgrade) == dict(before)
+
+
+async def test_postgresql_access_policy_fence_orders_replacement_and_commit(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    from spine.application.commit_fence import (
+        CommitFenceBinding,
+        CommitFenceOutcomeKind,
+        canonical_commit_fence_lineage_digest,
+    )
+    from spine.application.persistence.errors import CommitFenceInvalidatedError
+    from spine.application.private_asr_corpus import PrivateArtifactSourceLineage
+
+    assert postgresql_adapter.source_context is not None
+    workspace_id, environment_id = synthetic_uuid(97200), synthetic_uuid(97201)
+    await prepare_source_scope(postgresql_adapter, workspace_id, environment_id)
+    source = source_contract_source(workspace_id, environment_id)
+    revision = source_contract_revision(source, synthetic_uuid(97202))
+    source_context = postgresql_adapter.source_context(workspace_id, environment_id)
+    observation = SourceObservationCommand.create(
+        source=source,
+        revision=revision,
+        provenance=source_contract_provenance(
+            source, revision.revision_id, "fence-source-1"
+        ),
+        idempotency_key=IdempotencyKey("issue-972-access-policy-fence"),
+    )
+    async with postgresql_adapter.uow_factory(source_context) as uow:
+        await uow.sources.record_observation(observation)
+        await uow.commit()
+
+    issuer_id = synthetic_uuid(97204)
+    policy_context = postgresql_adapter.ingestion_context(
+        workspace_id, environment_id, "access_policy_activation"
+    )
+    actor_id = synthetic_uuid(97205)
+    policy = AccessPolicyVersion(
+        access_policy_version_id=synthetic_uuid(97203),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        source_object_id=source.source_object_id,
+        version=1,
+        predecessor_policy_version_id=None,
+        document_schema_version="access-policy.v1",
+        document_hash="a" * 64,
+        origin_kind=PolicyOriginKind.APPROVED_PROPOSAL,
+        origin_reference=issuer_id,
+        origin_version=1,
+        origin_hash="b" * 64,
+        created_by_canonical_human_id=actor_id,
+        created_at=datetime(2026, 11, 5, tzinfo=timezone.utc),
+    )
+    policy = policy.model_copy(
+        update={"document_hash": access_policy_document_hash(policy)}
+    )
+    activation_id = synthetic_uuid(97206)
+    audit_id, outbox_id = synthetic_uuid(97208), synthetic_uuid(97209)
+    audit_events = AuditEventRegistry.with_default_families()
+    audit = audit_events.build_event(
+        audit_event_id=audit_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_type="command.outcome",
+        schema_version=1,
+        payload=CommandAuditPayload(command_type="access_policy.activate"),
+        origin=policy_context.origin,
+        acting_subject_id=policy_context.acting_subject_id,
+        service_principal_id=policy_context.service_principal_id,
+        trace_id=policy_context.trace_id,
+        occurred_at=datetime(2026, 11, 5, tzinfo=timezone.utc),
+        outcome=AuditOutcome.ACCEPTED,
+        reason="policy_activated",
+    )
+    outbox = postgresql_adapter.outbox_events.build_intent(
+        event_id=outbox_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_type="workspace.created",
+        schema_version=1,
+        payload=WorkspaceCreatedPayload(
+            workspace=OpaqueObjectReference(
+                object_type="policy_activation",
+                object_id=activation_id,
+                schema_version=1,
+            ),
+            lifecycle_state="activated",
+        ),
+        trace_id=policy_context.trace_id,
+    )
+    command = AccessPolicyActivationCommand(
+        policy=policy,
+        requester_canonical_human_id=actor_id,
+        activator_canonical_human_id=actor_id,
+        expected_policy_version_id=None,
+        expected_policy_generation=0,
+        expected_cas_version=0,
+        activation_id=activation_id,
+        idempotency_key=IdempotencyKey("issue-972-policy-activation"),
+        audit_event_id=audit_id,
+        outbox_event_id=outbox_id,
+        activated_at=datetime(2026, 11, 5, tzinfo=timezone.utc),
+        audit_event=audit,
+        outbox_intent=outbox,
+    )
+    draft = PolicyActivationDraft(
+        values={
+            "policy_activation_id": activation_id,
+            "workspace_id": workspace_id,
+            "environment_id": environment_id,
+            "source_object_id": source.source_object_id,
+            "predecessor_policy_version_id": None,
+            "new_policy_version_id": policy.access_policy_version_id,
+            "policy_generation": 1,
+            "policy_proposal_id": None,
+            "policy_proposal_version": None,
+            "policy_proposal_hash": None,
+            "policy_approval_id": None,
+            "policy_approval_decision": None,
+            "initial_eligibility_decision_id": synthetic_uuid(97210),
+            "requester_canonical_human_id": actor_id,
+            "activator_canonical_human_id": actor_id,
+            "membership_generation": 1,
+            "authority_generation": 1,
+            "service_authority_generation": 1,
+            "audit_event_id": audit_id,
+            "outbox_event_id": outbox_id,
+            "activated_at": datetime(2026, 11, 5, tzinfo=timezone.utc),
+        }
+    )
+    async with postgresql_adapter.uow_factory(policy_context) as uow:
+        await uow.access_policies.activate(command, draft)
+        await uow.commit()
+
+    successor_policy = AccessPolicyVersion(
+        access_policy_version_id=synthetic_uuid(97211),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        source_object_id=source.source_object_id,
+        version=2,
+        predecessor_policy_version_id=policy.access_policy_version_id,
+        document_schema_version="access-policy.v1",
+        document_hash="c" * 64,
+        origin_kind=PolicyOriginKind.APPROVED_PROPOSAL,
+        origin_reference=issuer_id,
+        origin_version=1,
+        origin_hash="b" * 64,
+        created_by_canonical_human_id=actor_id,
+        created_at=datetime(2026, 11, 5, tzinfo=timezone.utc),
+    )
+    successor_policy = successor_policy.model_copy(
+        update={"document_hash": access_policy_document_hash(successor_policy)}
+    )
+    proposal = PolicyProposal(
+        policy_proposal_id=synthetic_uuid(97212),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        source_object_id=source.source_object_id,
+        proposal_version=1,
+        proposed_policy_version_id=successor_policy.access_policy_version_id,
+        proposed_policy_hash=successor_policy.document_hash,
+        requester_canonical_human_id=actor_id,
+        expected_policy_version_id=policy.access_policy_version_id,
+        expected_policy_generation=1,
+        benefit_classification=PolicyBenefitClassification.REVOCATION,
+        benefit_schema_version="policy-benefit.v1",
+        membership_generation=1,
+        authority_generation=1,
+        service_authority_generation=1,
+        submitted_at=datetime(2026, 11, 5, tzinfo=timezone.utc),
+    )
+    successor_activation_id = synthetic_uuid(97213)
+    successor_audit_id, successor_outbox_id = synthetic_uuid(97214), synthetic_uuid(97215)
+    successor_audit = audit_events.build_event(
+        audit_event_id=successor_audit_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_type="command.outcome",
+        schema_version=1,
+        payload=CommandAuditPayload(command_type="access_policy.activate"),
+        origin=policy_context.origin,
+        acting_subject_id=policy_context.acting_subject_id,
+        service_principal_id=policy_context.service_principal_id,
+        trace_id=policy_context.trace_id,
+        occurred_at=datetime(2026, 11, 5, tzinfo=timezone.utc),
+        outcome=AuditOutcome.ACCEPTED,
+        reason="policy_activated",
+    )
+    successor_outbox = postgresql_adapter.outbox_events.build_intent(
+        event_id=successor_outbox_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_type="workspace.created",
+        schema_version=1,
+        payload=WorkspaceCreatedPayload(
+            workspace=OpaqueObjectReference(
+                object_type="policy_activation",
+                object_id=successor_activation_id,
+                schema_version=1,
+            ),
+            lifecycle_state="activated",
+        ),
+        trace_id=policy_context.trace_id,
+    )
+    successor_command = AccessPolicyActivationCommand(
+        policy=successor_policy,
+        requester_canonical_human_id=actor_id,
+        activator_canonical_human_id=actor_id,
+        expected_policy_version_id=policy.access_policy_version_id,
+        expected_policy_generation=1,
+        expected_cas_version=1,
+        activation_id=successor_activation_id,
+        idempotency_key=IdempotencyKey("issue-972-policy-successor"),
+        audit_event_id=successor_audit_id,
+        outbox_event_id=successor_outbox_id,
+        activated_at=datetime(2026, 11, 5, tzinfo=timezone.utc),
+        audit_event=successor_audit,
+        outbox_intent=successor_outbox,
+        proposal=proposal,
+    )
+    successor_draft = PolicyActivationDraft(
+        values={
+            **draft.values,
+            "policy_activation_id": successor_activation_id,
+            "predecessor_policy_version_id": policy.access_policy_version_id,
+            "new_policy_version_id": successor_policy.access_policy_version_id,
+            "policy_generation": 2,
+            "policy_proposal_id": proposal.policy_proposal_id,
+            "policy_proposal_version": proposal.proposal_version,
+            "policy_proposal_hash": proposal.proposed_policy_hash,
+            "initial_eligibility_decision_id": None,
+            "audit_event_id": successor_audit_id,
+            "outbox_event_id": successor_outbox_id,
+        }
+    )
+
+    lineage = (PrivateArtifactSourceLineage(
+        source_object_id=source.source_object_id,
+        source_revision_id=revision.revision_id,
+        source_revision_digest=revision.revision_digest,
+    ),)
+    now = datetime(2026, 11, 5, 12, tzinfo=timezone.utc)
+
+    def binding(generation: int) -> CommitFenceBinding:
+        return CommitFenceBinding(
+            issuer_id=postgresql_f1_issuer_id(PostgreSQLFenceOwner.ACCESS_POLICY),
+            approval_version=str(policy.access_policy_version_id),
+            approval_digest=policy.document_hash,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            purpose="test.commit",
+            action="publish",
+            subject_id=source.source_object_id,
+            state_digest=policy.document_hash,
+            source_lineage=lineage,
+            lineage_digest=canonical_commit_fence_lineage_digest(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                source_lineage=lineage,
+            ),
+            generation=generation,
+            revocation_epoch=generation,
+            operation_id=synthetic_uuid(97207),
+            idempotency_key=f"issue-972-policy-{generation}",
+            valid_from=now - timedelta(minutes=1),
+            valid_until=now + timedelta(minutes=10),
+        )
+
+    fence_clock = [now]
+    async with postgresql_adapter.uow_factory(policy_context) as consumer_uow:
+        expiring = await PostgreSQLCommitFence(
+            consumer_uow, clock=lambda: fence_clock[0]
+        ).acquire(
+            binding(1), owner=PostgreSQLFenceOwner.ACCESS_POLICY, now=now
+        )
+        assert expiring.outcome is CommitFenceOutcomeKind.ACQUIRED
+        fence_clock[0] = binding(1).valid_until
+        with pytest.raises(CommitFenceInvalidatedError):
+            await consumer_uow.commit()
+
+    replacement_started = asyncio.Event()
+
+    async def replace_policy(expected_generation: int) -> None:
+        async with postgresql_adapter.uow_factory(policy_context) as uow:
+            replacement_started.set()
+            assert expected_generation == 1
+            await uow.access_policies.activate(successor_command, successor_draft)
+            await uow.commit()
+
+    # A consumer that owns the current-row lock commits before a replacement
+    # can become current; the replacement proceeds immediately after commit.
+    async with postgresql_adapter.uow_factory(policy_context) as consumer_uow:
+        acquired = await PostgreSQLCommitFence(
+            consumer_uow, clock=lambda: now
+        ).acquire(
+            binding(1), owner=PostgreSQLFenceOwner.ACCESS_POLICY, now=now
+        )
+        assert acquired.outcome is CommitFenceOutcomeKind.ACQUIRED
+        replacement = asyncio.create_task(replace_policy(1))
+        await replacement_started.wait()
+        await asyncio.sleep(0.05)
+        assert not replacement.done()
+        await consumer_uow.commit()
+    await replacement
+
+    async with postgresql_adapter.uow_factory(policy_context) as consumer_uow:
+        stale = await PostgreSQLCommitFence(
+            consumer_uow, clock=lambda: now
+        ).acquire(
+            binding(1), owner=PostgreSQLFenceOwner.ACCESS_POLICY, now=now
+        )
+        assert stale.outcome is CommitFenceOutcomeKind.STALE
+        await consumer_uow.rollback()
