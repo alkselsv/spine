@@ -1990,12 +1990,15 @@ def _phase1_file_metadata(
     )
 
 
-def _phase1_sheet_identity(sheet_id: int, title: str) -> GoogleApiResponse:
+def _phase1_sheet_identity(*sheets: tuple[int, str]) -> GoogleApiResponse:
     return GoogleApiResponse(
         status_code=200,
         json_body={
             "spreadsheetId": "synthetic-register",
-            "sheets": [{"properties": {"sheetId": sheet_id, "title": title}}],
+            "sheets": [
+                {"properties": {"sheetId": sheet_id, "title": title}}
+                for sheet_id, title in sheets
+            ],
         },
     )
 
@@ -2261,7 +2264,7 @@ async def test_phase1_offline_replay_completes_every_approved_read_operation() -
                 "changes": [],
             },
         ),
-        _phase1_sheet_identity(101, "records"),
+        _phase1_sheet_identity((101, "records"), (202, "archive")),
         GoogleApiResponse(
             status_code=200,
             json_body={"id": "synthetic-register", "version": "21"},
@@ -2275,7 +2278,7 @@ async def test_phase1_offline_replay_completes_every_approved_read_operation() -
             status_code=200,
             json_body={"id": "synthetic-register", "version": "21"},
         ),
-        _phase1_sheet_identity(202, "archive"),
+        _phase1_sheet_identity((101, "records"), (202, "archive")),
         GoogleApiResponse(
             status_code=200,
             json_body={"id": "synthetic-register", "version": "21"},
@@ -2432,12 +2435,10 @@ async def test_phase1_offline_replay_completes_every_approved_read_operation() -
     assert [request.query for request in identity_requests] == [
         {
             "includeGridData": "false",
-            "ranges": "'records'!A2:E5000",
             "fields": "spreadsheetId,sheets(properties(sheetId,title))",
         },
         {
             "includeGridData": "false",
-            "ranges": "'archive'!A2:E5000",
             "fields": "spreadsheetId,sheets(properties(sheetId,title))",
         },
     ]

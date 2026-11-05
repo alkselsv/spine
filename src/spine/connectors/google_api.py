@@ -1032,7 +1032,6 @@ class GoogleApiService:
                 ),
                 query={
                     "includeGridData": "false",
-                    "ranges": provider_range,
                     "fields": "spreadsheetId,sheets(properties(sheetId,title))",
                 },
                 json_expected=False,
@@ -1067,31 +1066,34 @@ class GoogleApiService:
             )
         if not sheets:
             raise GoogleSheetsIdentityContractError("provider_sheets_identity_missing")
-        if len(sheets) > 1:
-            raise GoogleSheetsIdentityContractError(
-                "provider_sheets_identity_ambiguous"
-            )
-        sheet = sheets[0]
-        properties = sheet.get("properties") if isinstance(sheet, Mapping) else None
-        if not isinstance(properties, Mapping):
-            raise GoogleSheetsIdentityContractError(
-                "provider_sheets_identity_invalid_response"
-            )
-        returned_sheet_id = properties.get("sheetId")
-        returned_title = properties.get("title")
-        if (
-            not isinstance(returned_sheet_id, int)
-            or isinstance(returned_sheet_id, bool)
-            or not isinstance(returned_title, str)
-        ):
-            raise GoogleSheetsIdentityContractError(
-                "provider_sheets_identity_invalid_response"
-            )
-        if returned_sheet_id != sheet_id:
+        matched_titles: list[str] = []
+        for sheet in sheets:
+            properties = sheet.get("properties") if isinstance(sheet, Mapping) else None
+            if not isinstance(properties, Mapping):
+                raise GoogleSheetsIdentityContractError(
+                    "provider_sheets_identity_invalid_response"
+                )
+            returned_sheet_id = properties.get("sheetId")
+            returned_title = properties.get("title")
+            if (
+                not isinstance(returned_sheet_id, int)
+                or isinstance(returned_sheet_id, bool)
+                or not isinstance(returned_title, str)
+            ):
+                raise GoogleSheetsIdentityContractError(
+                    "provider_sheets_identity_invalid_response"
+                )
+            if returned_sheet_id == sheet_id:
+                matched_titles.append(returned_title)
+        if not matched_titles:
             raise GoogleSheetsIdentityContractError(
                 "provider_sheets_identity_id_mismatch"
             )
-        if returned_title != expected_title:
+        if len(matched_titles) > 1:
+            raise GoogleSheetsIdentityContractError(
+                "provider_sheets_identity_ambiguous"
+            )
+        if matched_titles[0] != expected_title:
             raise GoogleSheetsIdentityContractError(
                 "provider_sheets_identity_title_mismatch"
             )

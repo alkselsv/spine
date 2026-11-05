@@ -143,10 +143,12 @@ manifest and effective fingerprint. The runtime always A1-quotes each title
 missing, duplicate or count-mismatched titles fail closed before provider
 transport. During an authorized live run, the Sheets adapter first performs a
 metadata-only `spreadsheets.get` restricted to `spreadsheetId` and
-`sheets.properties(sheetId,title)` for the approved range. The returned title
-and numeric sheet ID must match the approved pair before any Drive-version or
-grid-data request; stale or swapped titles therefore stop with no sheet page
-completed and no provider identity in the report.
+`sheets.properties(sheetId,title)`. The identity request is not filtered by the
+expected A1 title: the adapter selects the configured stable numeric sheet ID
+from the returned metadata and then compares its title with the approved title.
+The pair must match before any Drive-version or grid-data request; stale or
+swapped titles therefore stop with no sheet page completed and no provider
+identity in the report.
 
 Phase 1 requests only `drive.readonly` and `spreadsheets.readonly`. The consent
 command reads the exact mode-0600 Web client JSON named by
@@ -194,8 +196,8 @@ copies the provider message, resource ID or response body.
 
 Version 5 preserves every v4 field and adds disclosure-safe closed failure codes
 for the metadata-only Sheets identity check: invalid response shape, missing
-configured sheet, ambiguous multiple-sheet response, numeric sheet-ID mismatch
-and title mismatch. These codes never contain the configured or returned
+configured sheet, ambiguous duplicate numeric sheet identity, numeric sheet-ID
+mismatch and title mismatch. These codes never contain the configured or returned
 spreadsheet ID, numeric sheet ID, title, range, URL or provider payload. Other
 provider contract failures remain `provider_contract_rejected`.
 
