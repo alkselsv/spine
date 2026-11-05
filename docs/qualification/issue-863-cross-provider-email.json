@@ -1,0 +1,115 @@
+{
+  "schema_version": "issue-863-cross-provider-email:v1",
+  "ticket": 863,
+  "offline_result": "PASS",
+  "live_provider_semantics": "NOT_VERIFIED",
+  "fixture_manifest_version": "spine-cross-provider-email-fixtures:v1",
+  "fixture_policy": {
+    "synthetic_only": true,
+    "network_access": false,
+    "provider_credentials": false,
+    "real_provider_payloads": false,
+    "production_database": false
+  },
+  "provider_contract_versions": [
+    "gmail-raw-message:v1",
+    "gmail-history-checkpoint:v1",
+    "imap-raw-message-fetch:v1",
+    "imap-uidvalidity-checkpoint:v1",
+    "email-mime-parser-profile:v1",
+    "email-attachment-lineage:v1",
+    "email-message-citation:v1",
+    "email-attachment-citation:v1",
+    "canonical-source-revision:v1",
+    "authorized-context-retrieval:v1"
+  ],
+  "scenario_status": {
+    "provider_identity_and_shared_canonical_mime_attachment_retrieval": "PASS",
+    "duplicate_metadata_only_change_and_source_revision": "PASS",
+    "stale_cursor_reset_and_generation_fencing": "PASS",
+    "partial_crash_retry_and_idempotent_effects": "PASS",
+    "provider_outage_malformed_and_oversized_content": "PASS",
+    "revocation_cross_tenant_denial_and_safe_diagnostics": "PASS",
+    "postgresql_transaction_checkpoint_and_restart_durability": "PASS",
+    "provider_neutral_and_repository_compatibility": "PASS"
+  },
+  "scenario_traceability": {
+    "provider_identity_and_shared_canonical_mime_attachment_retrieval": [
+      "tests/qualification/test_issue863_cross_provider_email_qualification.py::test_equivalent_synthetic_messages_share_canonical_contracts_with_provider_specific_identity",
+      "tests/qualification/test_issue827_email_canonical_ingestion.py::test_synthetic_email_observation_reaches_canonical_acceptance_and_outbox",
+      "tests/qualification/test_issue848_imap_canonical_observation.py::test_qualified_imap_message_reaches_canonical_acceptance_and_replays",
+      "tests/qualification/test_issue848_imap_canonical_observation.py::test_copied_message_with_same_message_id_and_digest_remains_distinct",
+      "tests/connectors/test_gmail.py::test_raw_message_returns_bytes_digest_and_provider_revision_evidence",
+      "tests/ingestion/test_email_mime_parser.py::test_encoded_headers_and_multipart_alternative_produce_stable_part_tree",
+      "tests/application/test_email_attachments.py::test_authorized_attachment_is_stored_with_exact_parent_part_lineage",
+      "tests/application/test_email_message_citations.py::test_exact_email_body_range_resolves_from_pinned_artifact",
+      "tests/application/test_email_attachment_citations.py::test_exact_attachment_lineage_resolves_authorized_parsed_range"
+    ],
+    "duplicate_metadata_only_change_and_source_revision": [
+      "tests/application/test_gmail_message_state.py::test_duplicate_and_out_of_order_label_observations_converge",
+      "tests/qualification/test_issue840_gmail_message_state.py::test_metadata_only_state_and_relationships_preserve_raw_revision",
+      "tests/qualification/test_issue848_imap_canonical_observation.py::test_changed_bytes_under_immutable_imap_key_are_quarantined",
+      "tests/application/test_email_sync.py::test_duplicate_page_and_effect_replay_return_stable_receipts"
+    ],
+    "stale_cursor_reset_and_generation_fencing": [
+      "tests/application/test_gmail_history_cursor_recovery.py::test_history_404_preserves_checkpoint_and_requires_reconciliation",
+      "tests/application/test_gmail_history_cursor_recovery.py::test_recovery_starts_one_idempotent_bounded_successor_from_old_checkpoint",
+      "tests/application/test_yandex_mail_uidvalidity_reset.py::test_changed_uidvalidity_fences_old_attempt_and_starts_one_new_generation",
+      "tests/application/test_yandex_mail_uidvalidity_reset.py::test_reset_before_stale_page_rejects_effect_and_cursor"
+    ],
+    "partial_crash_retry_and_idempotent_effects": [
+      "tests/application/test_gmail_initial_snapshot.py::test_crash_after_durable_boundary_replays_without_cursor_gap",
+      "tests/application/test_gmail_initial_snapshot.py::test_unsafe_or_incomplete_coverage_requires_reconciliation_without_cursor",
+      "tests/connectors/test_yandex_mail_incremental.py::test_effect_crash_holds_checkpoint_and_reconnect_replays_same_page",
+      "tests/connectors/test_yandex_mail_incremental.py::test_partial_batch_and_provider_outage_hold_until_safe_reconnect",
+      "tests/application/test_email_attachments.py::test_attachment_replay_has_one_logical_child_effect"
+    ],
+    "provider_outage_malformed_and_oversized_content": [
+      "tests/connectors/test_gmail_history.py::test_provider_errors_return_typed_safe_history_outcomes",
+      "tests/connectors/test_yandex_mail.py::test_raw_message_malformed_provider_response_is_typed_and_safe",
+      "tests/connectors/test_yandex_mail_message_fetch.py::test_declared_oversize_stops_before_first_literal_chunk",
+      "tests/connectors/test_yandex_mail_message_fetch.py::test_truncated_literal_returns_typed_safe_incomplete_outcome",
+      "tests/application/test_email_artifacts.py::test_malformed_mime_is_recorded_as_a_bounded_defective_artifact",
+      "tests/application/test_email_attachments.py::test_oversized_attachment_fails_without_a_persisted_or_retrievable_child"
+    ],
+    "revocation_cross_tenant_denial_and_safe_diagnostics": [
+      "tests/application/connections/test_email_read_admission.py::test_stale_or_revoked_scope_is_denied_before_provider_call",
+      "tests/connectors/test_gmail.py::test_inactive_or_mismatched_connection_never_reaches_gmail",
+      "tests/connectors/test_yandex_mail.py::test_wrong_mailbox_or_folder_is_denied_before_imap",
+      "tests/qualification/test_issue848_imap_canonical_observation.py::test_wrong_tenant_or_generation_is_denied_before_provider_read",
+      "tests/application/test_email_message_citations.py::test_email_citation_inspection_revalidates_current_authority_before_resolution",
+      "tests/application/test_email_attachment_citations.py::test_revoked_parent_or_child_denies_attachment_without_excerpt",
+      "tests/qualification/test_issue853_yandex_mail_end_to_end.py::test_issue853_scripted_path_runs_admission_sync_ingestion_and_safe_diagnostics"
+    ],
+    "postgresql_transaction_checkpoint_and_restart_durability": [
+      "tests/integration/postgresql/test_email_sync_durability.py::test_postgresql_email_sync_replays_durable_effect_receipt_after_restart",
+      "tests/integration/postgresql/test_email_sync_durability.py::test_postgresql_yandex_snapshot_coordinates_two_empty_folders_and_replays",
+      "tests/integration/postgresql/test_email_sync_durability.py::test_postgresql_gmail_snapshot_crash_replays_every_durable_boundary",
+      "tests/integration/postgresql/test_email_sync_durability.py::test_postgresql_gmail_crash_after_canonical_acceptance_has_one_effect",
+      "tests/integration/postgresql/test_email_sync_durability.py::test_postgresql_email_sync_rolls_back_checkpoint_without_canonical_receipts"
+    ],
+    "provider_neutral_and_repository_compatibility": [
+      "tests/qualification/test_issue614_google_offline_qualification.py::test_issue614_traceability_matrix_covers_required_scenarios",
+      "tests/qualification/test_issue677_cross_provider_offline.py::test_issue677_matrix_points_to_existing_executable_evidence",
+      "tests/application/test_connector_ingestion.py::test_google_v1_and_provider_v2_produce_equivalent_canonical_outcomes",
+      "tests/test_architecture_scaffold.py::test_domain_layer_has_no_framework_imports"
+    ]
+  },
+  "compatibility_gates": {
+    "google_drive_and_sheets": "PASS",
+    "yandex_disk": "PASS",
+    "provider_neutral_v2": "PASS",
+    "domain_boundary": "PASS",
+    "generated_api": "PASS"
+  },
+  "privacy": {
+    "tokens_recorded": false,
+    "mailbox_addresses_recorded": false,
+    "subjects_recorded": false,
+    "folder_names_recorded": false,
+    "raw_mime_recorded": false,
+    "attachment_names_or_contents_recorded": false,
+    "provider_error_text_recorded": false
+  },
+  "unverified_prerequisite": "Live Gmail and Yandex Mail service semantics require separate authorization, approved credentials and an explicitly scoped live qualification. Offline scripted PASS is not live provider evidence."
+}
