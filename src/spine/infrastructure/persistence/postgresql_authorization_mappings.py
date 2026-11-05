@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, ForeignKeyConstraint
-from sqlalchemy import Integer, String, Table, Text, text
+from sqlalchemy import Integer, String, Table, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import ARRAY, UUID as PostgreSQLUUID
 
 from spine.infrastructure.persistence.postgresql_mappings import metadata
@@ -202,6 +202,14 @@ qualification_authority_bindings = Table(
     ForeignKeyConstraint(
         ["workspace_id", "environment_id"],
         ["spine.environments.workspace_id", "spine.environments.id"],
+    ),
+    UniqueConstraint(
+        "workspace_id",
+        "environment_id",
+        "binding_id",
+        "version",
+        "principal_id",
+        name="uq_qualification_authority_tenant_principal",
     ),
 )
 

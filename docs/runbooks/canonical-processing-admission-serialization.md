@@ -44,6 +44,11 @@ result instead of creating another acceptance.
 | Retention applicability | `PostgreSQLRetentionApplicabilityRepository.append` | current target applicability row |
 | AccessPolicy | canonical AccessPolicy activation repository | current source policy row and its existing CAS |
 | Canonical source currentness | canonical acceptance repository; legacy tombstone/content compatibility writers use the same repository | generation counter, exact revision advisory lock and `CurrentSourceHead` CAS |
+| Deletion-evidence qualification | `PostgreSQLTombstoneAuthorizationRepository.record_evidence` | separately authorized qualifier service principal; it cannot be the tombstone issuer |
+| Deletion-policy approval | `PostgreSQLTombstoneAuthorizationRepository.record_policy_approval` | exact source-contract/connection/scope current approval row |
+| Trusted tombstone issuer | `PostgreSQLTombstoneAuthorizationRepository.record_issuer` | workspace/environment current issuer row |
+| Tombstone authorization issuance | `PostgreSQLTombstoneAuthorizationRepository.issue` | exact `CurrentSourceHead`, current deletion-policy approval, then current issuer; the injected commit verifier must acquire the existing connection/scope, lifecycle, retention and legal-authority fences before returning eligible |
+| Tombstone authorization revocation/supersession | `PostgreSQLTombstoneAuthorizationRepository.record_decision` | exact current authorization-decision row after resolving the current issuer |
 
 There is no second canonical source store or processing-current pointer. Provider
 reads, byte download/verification and parser execution stay outside this lock
@@ -64,3 +69,30 @@ order and outside the canonical transaction.
 Google v1 and explicitly selected Yandex/filesystem v1 compatibility continue
 through their persisted v1 semantics. Bitrix24 S2 provenance cannot fall back to
 v1 when its processing admission is missing.
+
+## Qualified deletion authority rollout and rollback
+
+- `20270111_110` is an additive S3-5 migration. It persists content-free
+  `QualifiedDeletionEvidence:v1`, versioned deletion-policy approvals, trusted
+  issuer versions, exact `TombstoneAuthorization:v1` records and append-only
+  authorization decisions. Tenant RLS, composite foreign keys, immutable-row
+  triggers, command/head uniqueness and generation-guarded current pointers are
+  installed before any writer is composed.
+- Each authorization references the immutable canonical acceptance for its
+  expected source revision. `cas_version` remains the exact issuance snapshot
+  checked against `CurrentSourceHead`; no foreign key points back to that mutable
+  pointer, so the authorized transition can advance it.
+- This migration does not enable a canonical tombstone writer, provider mutation,
+  physical cleanup, live qualification or Bitrix24 deletion. The S3-6 writer must
+  revalidate the authorization and every current authority in its own canonical
+  UoW; an issued authorization alone has no effect on `CurrentSourceHead`.
+- Operational rollback disables the issuance composition first and leaves the
+  additive readers and tables in place. Accepted authorizations and decisions are
+  never rewritten or backfilled. Alembic downgrade is safe only before these
+  tables contain authority history; after first use, schema contraction requires a
+  separately reviewed retention-preserving migration.
+- Missing, stale, expired, revoked, superseded, mismatched or unsupported evidence,
+  policy, issuer, head, retention or legal authority returns the typed
+  `TOMBSTONE_NOT_AUTHORIZED` outcome. Exact command replay remains stable after a
+  later revocation, while a changed digest conflicts and a second authorization
+  for the same expected head is denied.
