@@ -45,7 +45,9 @@ Invalid transitions preserve the state and return `INVALID_TRANSITION`.
 only be resolved with an explicit receipt listing every required fake store;
 cancellation does not resolve it and unknown/missing receipts remain `UNKNOWN`.
 Partial or uncovered stores cannot
-produce synthetic verification. Duplicate verified store results are stable;
+produce synthetic verification. Constructed or deserialized `VERIFIED_SYNTHETIC`
+jobs also require `CURRENT_TEST_ONLY` authority, and successful store/reconciliation
+transitions persist that fresh status. Duplicate verified store results are stable;
 replayed `START` after work has started is an unchanged no-op, including after
 verification. Each retry event carries a fresh authority result; missing,
 stale or revoked authority blocks the job before another attempt can start.

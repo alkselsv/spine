@@ -243,6 +243,39 @@ def test_contract_rejects_unregistered_identifier_with_fake_prefix() -> None:
 
 
 @pytest.mark.parametrize(
+    "authority",
+    [
+        SyntheticAuthorityStatus.MISSING,
+        SyntheticAuthorityStatus.STALE,
+        SyntheticAuthorityStatus.REVOKED,
+    ],
+)
+def test_verified_job_requires_current_synthetic_authority(
+    authority: SyntheticAuthorityStatus,
+) -> None:
+    with pytest.raises(ValidationError, match="current synthetic authority"):
+        SyntheticCleanupJob(
+            operation_key="fake-operation-a",
+            workspace_ref="fake-workspace-a",
+            required_store_refs=("fake-store-a", "fake-store-b"),
+            state=SyntheticCleanupState.VERIFIED_SYNTHETIC,
+            authority_status=authority,
+            store_receipts=(
+                SyntheticStoreReceipt(
+                    store_ref="fake-store-a",
+                    status=SyntheticStoreStatus.VERIFIED,
+                ),
+                SyntheticStoreReceipt(
+                    store_ref="fake-store-b",
+                    status=SyntheticStoreStatus.VERIFIED,
+                ),
+            ),
+            fence_active=True,
+            safe_code="VERIFIED_SYNTHETIC",
+        )
+
+
+@pytest.mark.parametrize(
     ("authority", "expected_code"),
     [
         (SyntheticAuthorityStatus.MISSING, "AUTHORITY_MISSING"),
@@ -375,6 +408,42 @@ def test_unknown_commit_reconciliation_needs_fresh_authority() -> None:
     assert rejected.authority_status is SyntheticAuthorityStatus.REVOKED
     assert rejected.safe_code == "AUTHORITY_REVOKED"
     assert rejected.fence_active
+
+
+def test_successful_reconciliation_records_current_authority() -> None:
+    unknown = transition_synthetic_cleanup(
+        _fenced_pending(),
+        _event(SyntheticEventKind.COMMIT_UNKNOWN),
+    )
+    receipts = (
+        SyntheticStoreReceipt(
+            store_ref="fake-store-a",
+            status=SyntheticStoreStatus.VERIFIED,
+        ),
+        SyntheticStoreReceipt(
+            store_ref="fake-store-b",
+            status=SyntheticStoreStatus.VERIFIED,
+        ),
+    )
+    rejected = transition_synthetic_cleanup(
+        unknown,
+        _event(
+            SyntheticEventKind.RECONCILE_RECEIPT,
+            authority_status=SyntheticAuthorityStatus.REVOKED,
+            receipts=receipts,
+        ),
+    )
+    reconciled = transition_synthetic_cleanup(
+        rejected,
+        _event(
+            SyntheticEventKind.RECONCILE_RECEIPT,
+            authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
+            receipts=receipts,
+        ),
+    )
+
+    assert reconciled.state is SyntheticCleanupState.VERIFIED_SYNTHETIC
+    assert reconciled.authority_status is SyntheticAuthorityStatus.CURRENT_TEST_ONLY
 
 
 def test_cancellation_does_not_resolve_unknown_commit() -> None:

@@ -121,8 +121,11 @@ class SyntheticCleanupJob(DefinitionModel):
                 set(receipt_refs) != set(self.required_store_refs)
                 or any(item.status is not SyntheticStoreStatus.VERIFIED for item in self.store_receipts)
                 or self.safe_code != "VERIFIED_SYNTHETIC"
+                or self.authority_status is not SyntheticAuthorityStatus.CURRENT_TEST_ONLY
             ):
-                raise ValueError("synthetic verification requires verified receipts for every store")
+                raise ValueError(
+                    "synthetic verification requires verified receipts and current synthetic authority"
+                )
         if self.restore_replay_verified and self.state is not SyntheticCleanupState.VERIFIED_SYNTHETIC:
             raise ValueError("restore replay requires synthetic cleanup verification")
         if self.restore_replay_pending and not self.restore_fenced:
@@ -319,6 +322,7 @@ def transition_synthetic_cleanup(
                 update={
                     "state": SyntheticCleanupState.VERIFIED_SYNTHETIC,
                     "store_receipts": ordered,
+                    "authority_status": event.authority_status,
                     "safe_code": "VERIFIED_SYNTHETIC",
                 }
             )
@@ -414,6 +418,7 @@ def transition_synthetic_cleanup(
                     next(item for item in event.receipts if item.store_ref == ref)
                     for ref in job.required_store_refs
                 ),
+                "authority_status": event.authority_status,
                 "safe_code": (
                     "RECONCILIATION_REQUIRED"
                     if unresolved
