@@ -282,6 +282,14 @@ async def verify_database_readiness(
                         "'spine.resolve_current_qualification_target_binding"
                         "(uuid,text,uuid,uuid)', 'EXECUTE') AS target_binding_public, "
                         "has_function_privilege(current_user, "
+                        "'spine.resolve_current_deletion_qualification_authority"
+                        "(uuid,uuid,uuid,text,text)', 'EXECUTE') "
+                        "AS deletion_qualification_runtime, "
+                        "has_function_privilege('public', "
+                        "'spine.resolve_current_deletion_qualification_authority"
+                        "(uuid,uuid,uuid,text,text)', 'EXECUTE') "
+                        "AS deletion_qualification_public, "
+                        "has_function_privilege(current_user, "
                         "'spine.resolve_current_authorization_generation"
                         "(uuid,uuid)', 'EXECUTE') AS legacy_generation_runtime, "
                         "has_function_privilege(current_user, "
@@ -304,6 +312,8 @@ async def verify_database_readiness(
                 or resolver_privileges.service_public
                 or not resolver_privileges.target_binding_runtime
                 or resolver_privileges.target_binding_public
+                or not resolver_privileges.deletion_qualification_runtime
+                or resolver_privileges.deletion_qualification_public
                 or resolver_privileges.legacy_generation_runtime
                 or not resolver_privileges.correlation_runtime
                 or resolver_privileges.correlation_public
@@ -428,6 +438,30 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         ),
         "source_processing_admissions": ExpectedTablePrivileges(
             True, True, True, False, False
+        ),
+        "qualified_deletion_evidence": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "source_deletion_policy_approvals": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "current_source_deletion_policy_approvals": ExpectedTablePrivileges(
+            True, True, True, True, False
+        ),
+        "tombstone_authorization_issuers": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "current_tombstone_authorization_issuers": ExpectedTablePrivileges(
+            True, True, True, True, False
+        ),
+        "tombstone_authorizations": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "tombstone_authorization_decisions": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
+        "current_tombstone_authorization_decisions": ExpectedTablePrivileges(
+            True, True, True, True, False
         ),
         "ingestion_runs": ExpectedTablePrivileges(True, True, True, False, False),
         "ingestion_run_sources": ExpectedTablePrivileges(True, True, True, False, False),

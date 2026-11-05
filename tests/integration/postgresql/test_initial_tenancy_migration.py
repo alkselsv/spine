@@ -156,6 +156,7 @@ AUTHORIZATION_DIRECTORY_CONSTRAINTS = {
     "uq_authentication_alias_bindings_change_id",
     "uq_canonical_human_identities_created_change_id",
     "uq_qualification_binding_change_id",
+    "uq_qualification_authority_tenant_principal",
     "uq_qualification_target_digest",
     "uq_qualification_target_predecessor",
     "uq_qualification_target_series_version",
@@ -185,6 +186,7 @@ AUTHORIZATION_DIRECTORY_INDEXES = {
     "uq_authentication_alias_bindings_change_id",
     "uq_canonical_human_identities_created_change_id",
     "uq_qualification_binding_change_id",
+    "uq_qualification_authority_tenant_principal",
     "uq_qualification_target_digest",
     "uq_qualification_target_predecessor",
     "uq_qualification_target_series_version",
@@ -1678,6 +1680,14 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "canonical_acceptances",
         "source_processing_admissions",
         "current_source_heads",
+        "qualified_deletion_evidence",
+        "source_deletion_policy_approvals",
+        "current_source_deletion_policy_approvals",
+        "tombstone_authorization_issuers",
+        "current_tombstone_authorization_issuers",
+        "tombstone_authorizations",
+        "tombstone_authorization_decisions",
+        "current_tombstone_authorization_decisions",
         "parsed_documents",
         "parsed_document_segments",
         "canonical_boundaries",
@@ -2501,6 +2511,23 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
     assert indexes == {
         "alembic_version_pkc",
         "ix_environments_workspace_id",
+        "pk_qualified_deletion_evidence",
+        "uq_qualified_deletion_evidence_exact",
+        "pk_source_deletion_policy_approvals",
+        "uq_source_deletion_policy_approvals_exact",
+        "uq_source_deletion_policy_approval_generation",
+        "pk_current_source_deletion_policy_approvals",
+        "pk_tombstone_authorization_issuers",
+        "uq_tombstone_authorization_issuers_exact",
+        "uq_tombstone_authorization_issuer_generation",
+        "pk_current_tombstone_authorization_issuers",
+        "pk_tombstone_authorizations",
+        "uq_tombstone_authorizations_command",
+        "uq_tombstone_authorizations_expected_head",
+        "uq_tombstone_authorizations_transition",
+        "pk_tombstone_authorization_decisions",
+        "uq_tombstone_authorization_decisions_generation",
+        "pk_current_tombstone_authorization_decisions",
         "ix_google_sheets_identity_disposition_scope",
         "pk_requirements_acceptance_decisions",
         "pk_requirements_artifact_versions",
@@ -2860,6 +2887,14 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "canonical_acceptances": (True, True),
         "source_processing_admissions": (True, True),
         "current_source_heads": (True, True),
+        "qualified_deletion_evidence": (True, True),
+        "source_deletion_policy_approvals": (True, True),
+        "current_source_deletion_policy_approvals": (True, True),
+        "tombstone_authorization_issuers": (True, True),
+        "current_tombstone_authorization_issuers": (True, True),
+        "tombstone_authorizations": (True, True),
+        "tombstone_authorization_decisions": (True, True),
+        "current_tombstone_authorization_decisions": (True, True),
         "parsed_documents": (True, True),
         "parsed_document_segments": (True, True),
         "canonical_boundaries": (True, True),
@@ -2932,11 +2967,15 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         ("private_asr_corpus_releases", "pol_private_asr_corpus_releases_migration_maintenance"),
     }
     for table_name in standard_tenant_rls_tables:
-        tenant_policy = policies[(table_name, f"pol_{table_name}_tenant_isolation")]
+        tenant_policy = policies[
+            (table_name, f"pol_{table_name}_tenant_isolation"[:63])
+        ]
         assert tenant_policy[0] == (RUNTIME_ROLE,)
         assert tenant_policy[1] is not None
         assert tenant_policy[2] is not None
-        assert policies[(table_name, f"pol_{table_name}_migration_maintenance")] == (
+        assert policies[
+            (table_name, f"pol_{table_name}_migration_maintenance"[:63])
+        ] == (
             (MIGRATION_ROLE,),
             "true",
             "true",
@@ -3052,6 +3091,14 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "canonical_acceptances": (True, True, False, False),
         "source_processing_admissions": (True, True, False, False),
         "current_source_heads": (True, True, True, False),
+        "qualified_deletion_evidence": (True, True, False, False),
+        "source_deletion_policy_approvals": (True, True, False, False),
+        "current_source_deletion_policy_approvals": (True, True, True, False),
+        "tombstone_authorization_issuers": (True, True, False, False),
+        "current_tombstone_authorization_issuers": (True, True, True, False),
+        "tombstone_authorizations": (True, True, False, False),
+        "tombstone_authorization_decisions": (True, True, False, False),
+        "current_tombstone_authorization_decisions": (True, True, True, False),
             "canonical_boundaries": (True, True, False, False),
             "canonical_boundary_members": (True, True, False, False),
         "ontology_versions": (True, True, False, False),
@@ -3386,6 +3433,10 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', 'source_processing_admissions', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
+                            "'qualified_deletion_evidence', 'source_deletion_policy_approvals', "
+                            "'current_source_deletion_policy_approvals', 'tombstone_authorization_issuers', "
+                            "'current_tombstone_authorization_issuers', 'tombstone_authorizations', "
+                            "'tombstone_authorization_decisions', 'current_tombstone_authorization_decisions', "
                             "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', "
                             "'retention_applicabilities', 'current_retention_applicabilities', "
                             "'disclosure_holds', 'disclosure_hold_source_revisions', 'disclosure_hold_targets', "
@@ -3430,6 +3481,10 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', 'source_processing_admissions', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
+                            "'qualified_deletion_evidence', 'source_deletion_policy_approvals', "
+                            "'current_source_deletion_policy_approvals', 'tombstone_authorization_issuers', "
+                            "'current_tombstone_authorization_issuers', 'tombstone_authorizations', "
+                            "'tombstone_authorization_decisions', 'current_tombstone_authorization_decisions', "
                             "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', "
                             "'retention_applicabilities', 'current_retention_applicabilities', "
                             "'disclosure_holds', 'disclosure_hold_source_revisions', 'disclosure_hold_targets', "
@@ -3468,6 +3523,10 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', 'source_processing_admissions', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
+                            "'qualified_deletion_evidence', 'source_deletion_policy_approvals', "
+                            "'current_source_deletion_policy_approvals', 'tombstone_authorization_issuers', "
+                            "'current_tombstone_authorization_issuers', 'tombstone_authorizations', "
+                            "'tombstone_authorization_decisions', 'current_tombstone_authorization_decisions', "
                             "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', "
                             "'retention_applicabilities', 'current_retention_applicabilities', "
                             "'disclosure_holds', 'disclosure_hold_source_revisions', 'disclosure_hold_targets', "
@@ -3505,6 +3564,10 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', 'source_processing_admissions', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
+                            "'qualified_deletion_evidence', 'source_deletion_policy_approvals', "
+                            "'current_source_deletion_policy_approvals', 'tombstone_authorization_issuers', "
+                            "'current_tombstone_authorization_issuers', 'tombstone_authorizations', "
+                            "'tombstone_authorization_decisions', 'current_tombstone_authorization_decisions', "
                             "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', "
                             "'retention_applicabilities', 'current_retention_applicabilities', "
                             "'disclosure_holds', 'disclosure_hold_source_revisions', 'disclosure_hold_targets', "
@@ -3541,6 +3604,10 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', 'source_processing_admissions', "
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', "
+                            "'qualified_deletion_evidence', 'source_deletion_policy_approvals', "
+                            "'current_source_deletion_policy_approvals', 'tombstone_authorization_issuers', "
+                            "'current_tombstone_authorization_issuers', 'tombstone_authorizations', "
+                            "'tombstone_authorization_decisions', 'current_tombstone_authorization_decisions', "
                             "'lifecycle_observations', 'lifecycle_decisions', 'current_lifecycle_authorities', "
                             "'retention_applicabilities', 'current_retention_applicabilities', "
                             "'disclosure_holds', 'disclosure_hold_source_revisions', 'disclosure_hold_targets', "
@@ -4429,6 +4496,10 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'private_asr_artifacts', 'private_asr_source_fences', "
                         "'private_asr_corpus_manifests', 'private_asr_corpus_releases', "
                         "'private_asr_report_sources', 'private_asr_aggregate_exports', "
+                        "'qualified_deletion_evidence', 'source_deletion_policy_approvals', "
+                        "'current_source_deletion_policy_approvals', 'tombstone_authorization_issuers', "
+                        "'current_tombstone_authorization_issuers', 'tombstone_authorizations', "
+                        "'tombstone_authorization_decisions', 'current_tombstone_authorization_decisions', "
                         "'email_attachment_processing_receipts')"
                     )
                 )
@@ -4551,6 +4622,14 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "canonical_acceptances": (True, True),
             "source_processing_admissions": (True, True),
             "current_source_heads": (True, True),
+            "qualified_deletion_evidence": (True, True),
+            "source_deletion_policy_approvals": (True, True),
+            "current_source_deletion_policy_approvals": (True, True),
+            "tombstone_authorization_issuers": (True, True),
+            "current_tombstone_authorization_issuers": (True, True),
+            "tombstone_authorizations": (True, True),
+            "tombstone_authorization_decisions": (True, True),
+            "current_tombstone_authorization_decisions": (True, True),
         "lifecycle_observations": (True, True),
         "lifecycle_decisions": (True, True),
         "current_lifecycle_authorities": (True, True),
@@ -6090,6 +6169,7 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20270108_107_email_attachment_processing.py",
         "20270109_108_private_asr_manifest_authority.py",
         "20270110_109_gmail_message_state.py",
+        "20270111_110_tombstone_authorization.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "transactional_failure_probe.py").write_text(

@@ -2851,6 +2851,294 @@ current_trusted_canonical_acceptance_selectors = Table(
     ForeignKeyConstraint(["workspace_id", "environment_id"], ["spine.environments.workspace_id", "spine.environments.id"], name="fk_current_trusted_canonical_acceptance_selector_environment"),
 )
 
+qualified_deletion_evidence = Table(
+    "qualified_deletion_evidence",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("evidence_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("connection_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("connection_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("resource_scope_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("scope_approval_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("scope_approval_digest", String(64), nullable=False),
+    Column("qualifier_service_principal_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("qualification_authority_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("qualification_authority_generation", Integer, nullable=False),
+    Column("observation_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("profile_id", String(128), nullable=False),
+    Column("profile_version", String(64), nullable=False),
+    Column("evidence_digest", String(64), nullable=False),
+    Column("outcome", String(64), nullable=False),
+    Column("fresh_until", DateTime(timezone=True), nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("verified_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "evidence_id",
+        name="pk_qualified_deletion_evidence",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "evidence_id", "source_object_id",
+        "evidence_digest", name="uq_qualified_deletion_evidence_exact",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "source_object_id"],
+        ["spine.source_objects.workspace_id", "spine.source_objects.environment_id", "spine.source_objects.source_object_id"],
+        name="fk_qualified_deletion_evidence_source",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "qualification_authority_reference", "qualification_authority_generation", "qualifier_service_principal_id"],
+        ["spine.qualification_authority_bindings.workspace_id", "spine.qualification_authority_bindings.environment_id", "spine.qualification_authority_bindings.binding_id", "spine.qualification_authority_bindings.version", "spine.qualification_authority_bindings.principal_id"],
+        name="fk_qualified_deletion_evidence_qualification_authority",
+    ),
+)
+
+source_deletion_policy_approvals = Table(
+    "source_deletion_policy_approvals",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("approval_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("policy_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("policy_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("policy_digest", String(64), nullable=False),
+    Column("source_contract_id", String(128), nullable=False),
+    Column("source_contract_version", String(64), nullable=False),
+    Column("connection_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("resource_scope_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("approver_human_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("authority_generation", Integer, nullable=False),
+    Column("audit_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("approved_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "approval_id",
+        name="pk_source_deletion_policy_approvals",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "approval_id", "policy_version_id",
+        "policy_digest", name="uq_source_deletion_policy_approvals_exact",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "source_contract_id",
+        "source_contract_version", "connection_id", "resource_scope_reference",
+        "authority_generation", name="uq_source_deletion_policy_approval_generation",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "audit_event_id"],
+        ["spine.audit_events.workspace_id", "spine.audit_events.environment_id", "spine.audit_events.audit_event_id"],
+        name="fk_source_deletion_policy_approval_audit",
+        deferrable=True,
+        initially="DEFERRED",
+    ),
+)
+
+current_source_deletion_policy_approvals = Table(
+    "current_source_deletion_policy_approvals",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_contract_id", String(128), nullable=False),
+    Column("source_contract_version", String(64), nullable=False),
+    Column("connection_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("resource_scope_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("current_approval_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "source_contract_id",
+        "source_contract_version", "connection_id", "resource_scope_reference",
+        name="pk_current_source_deletion_policy_approvals",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "current_approval_id"],
+        ["spine.source_deletion_policy_approvals.workspace_id", "spine.source_deletion_policy_approvals.environment_id", "spine.source_deletion_policy_approvals.approval_id"],
+        name="fk_current_source_deletion_policy_approval",
+    ),
+)
+
+tombstone_authorization_issuers = Table(
+    "tombstone_authorization_issuers",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("issuer_authority_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("service_principal_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("authorized_by_human_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("authority_generation", Integer, nullable=False),
+    Column("authority_digest", String(64), nullable=False),
+    Column("audit_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("valid_from", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "issuer_authority_id",
+        name="pk_tombstone_authorization_issuers",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "issuer_authority_id",
+        "service_principal_id", "authority_generation",
+        name="uq_tombstone_authorization_issuers_exact",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "authority_generation",
+        name="uq_tombstone_authorization_issuer_generation",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "audit_event_id"],
+        ["spine.audit_events.workspace_id", "spine.audit_events.environment_id", "spine.audit_events.audit_event_id"],
+        name="fk_tombstone_authorization_issuer_audit",
+        deferrable=True,
+        initially="DEFERRED",
+    ),
+)
+
+current_tombstone_authorization_issuers = Table(
+    "current_tombstone_authorization_issuers",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("current_issuer_authority_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id",
+        name="pk_current_tombstone_authorization_issuers",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "current_issuer_authority_id"],
+        ["spine.tombstone_authorization_issuers.workspace_id", "spine.tombstone_authorization_issuers.environment_id", "spine.tombstone_authorization_issuers.issuer_authority_id"],
+        name="fk_current_tombstone_authorization_issuer",
+    ),
+)
+
+tombstone_authorizations = Table(
+    "tombstone_authorizations",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("authorization_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("qualified_evidence_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("qualified_evidence_digest", String(64), nullable=False),
+    Column("deletion_policy_approval_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("deletion_policy_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("deletion_policy_digest", String(64), nullable=False),
+    Column("issuer_authority_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("issuer_service_principal_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("issuer_authority_generation", Integer, nullable=False),
+    Column("expected_current_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("expected_current_acceptance_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("expected_current_cas_version", Integer, nullable=False),
+    Column("tombstone_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("transition_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("idempotency_key", String(255), nullable=False),
+    Column("command_digest", String(64), nullable=False),
+    Column("audit_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("issued_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "authorization_id",
+        name="pk_tombstone_authorizations",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "idempotency_key",
+        name="uq_tombstone_authorizations_command",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "source_object_id",
+        "expected_current_revision_id", "expected_current_acceptance_id",
+        "expected_current_cas_version",
+        name="uq_tombstone_authorizations_expected_head",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "source_object_id", "transition_id",
+        name="uq_tombstone_authorizations_transition",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "qualified_evidence_id", "source_object_id", "qualified_evidence_digest"],
+        ["spine.qualified_deletion_evidence.workspace_id", "spine.qualified_deletion_evidence.environment_id", "spine.qualified_deletion_evidence.evidence_id", "spine.qualified_deletion_evidence.source_object_id", "spine.qualified_deletion_evidence.evidence_digest"],
+        name="fk_tombstone_authorizations_evidence",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "deletion_policy_approval_id", "deletion_policy_version_id", "deletion_policy_digest"],
+        ["spine.source_deletion_policy_approvals.workspace_id", "spine.source_deletion_policy_approvals.environment_id", "spine.source_deletion_policy_approvals.approval_id", "spine.source_deletion_policy_approvals.policy_version_id", "spine.source_deletion_policy_approvals.policy_digest"],
+        name="fk_tombstone_authorizations_policy_approval",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "issuer_authority_id", "issuer_service_principal_id", "issuer_authority_generation"],
+        ["spine.tombstone_authorization_issuers.workspace_id", "spine.tombstone_authorization_issuers.environment_id", "spine.tombstone_authorization_issuers.issuer_authority_id", "spine.tombstone_authorization_issuers.service_principal_id", "spine.tombstone_authorization_issuers.authority_generation"],
+        name="fk_tombstone_authorizations_issuer",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "expected_current_acceptance_id", "source_object_id", "expected_current_revision_id"],
+        ["spine.canonical_acceptances.workspace_id", "spine.canonical_acceptances.environment_id", "spine.canonical_acceptances.canonical_acceptance_id", "spine.canonical_acceptances.source_object_id", "spine.canonical_acceptances.source_revision_id"],
+        name="fk_tombstone_authorizations_expected_acceptance",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "audit_event_id"],
+        ["spine.audit_events.workspace_id", "spine.audit_events.environment_id", "spine.audit_events.audit_event_id"],
+        name="fk_tombstone_authorizations_audit",
+        deferrable=True,
+        initially="DEFERRED",
+    ),
+)
+
+tombstone_authorization_decisions = Table(
+    "tombstone_authorization_decisions",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("decision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("authorization_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("disposition", String(16), nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("audit_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("decided_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "decision_id",
+        name="pk_tombstone_authorization_decisions",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "authorization_id", "decision_id", "generation",
+        name="uq_tombstone_authorization_decisions_generation",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "authorization_id"],
+        ["spine.tombstone_authorizations.workspace_id", "spine.tombstone_authorizations.environment_id", "spine.tombstone_authorizations.authorization_id"],
+        name="fk_tombstone_authorization_decisions_authorization",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "audit_event_id"],
+        ["spine.audit_events.workspace_id", "spine.audit_events.environment_id", "spine.audit_events.audit_event_id"],
+        name="fk_tombstone_authorization_decisions_audit",
+        deferrable=True,
+        initially="DEFERRED",
+    ),
+)
+
+current_tombstone_authorization_decisions = Table(
+    "current_tombstone_authorization_decisions",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("authorization_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("current_decision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "authorization_id",
+        name="pk_current_tombstone_authorization_decisions",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "authorization_id", "current_decision_id", "generation"],
+        ["spine.tombstone_authorization_decisions.workspace_id", "spine.tombstone_authorization_decisions.environment_id", "spine.tombstone_authorization_decisions.authorization_id", "spine.tombstone_authorization_decisions.decision_id", "spine.tombstone_authorization_decisions.generation"],
+        name="fk_current_tombstone_authorization_decision",
+    ),
+)
+
 __all__ = [
     "email_attachment_artifacts",
     "email_attachment_processing_receipts",
@@ -2962,4 +3250,12 @@ __all__ = [
     "current_bitrix24_disk_root_policies",
     "trusted_canonical_acceptance_selector_versions",
     "current_trusted_canonical_acceptance_selectors",
+    "qualified_deletion_evidence",
+    "source_deletion_policy_approvals",
+    "current_source_deletion_policy_approvals",
+    "tombstone_authorization_issuers",
+    "current_tombstone_authorization_issuers",
+    "tombstone_authorizations",
+    "tombstone_authorization_decisions",
+    "current_tombstone_authorization_decisions",
 ]
