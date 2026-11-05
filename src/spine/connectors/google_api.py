@@ -957,18 +957,25 @@ class GoogleApiService:
         scope = self._scope(connection, resource_scope_reference)
         self._require_spreadsheet(scope, spreadsheet_id)
         profile = self._sheet_profile(spreadsheet_id, sheet_id)
-        provider_range, next_page_token, range_complete = _paged_a1_range(
+        configured_page_range, _, _ = _paged_a1_range(
             a1_range,
             page_token,
             page_size=self._policy.sheets_page_size,
         )
-        _require_profile_columns_in_range(profile, provider_range)
-        await self._validate_sheet_identity(
+        _require_profile_columns_in_range(profile, configured_page_range)
+        grid_dimensions = await self._validate_sheet_identity(
             connection,
             resource_scope_reference,
             spreadsheet_id,
             sheet_id,
-            provider_range,
+            configured_page_range,
+        )
+        _require_profile_columns_in_grid(profile, grid_dimensions.column_count)
+        provider_range, next_page_token, range_complete = _paged_a1_range(
+            a1_range,
+            page_token,
+            page_size=self._policy.sheets_page_size,
+            grid_dimensions=grid_dimensions,
         )
         version_before = await self.get_provider_version(
             connection, resource_scope_reference, spreadsheet_id
@@ -1016,11 +1023,11 @@ class GoogleApiService:
         resource_scope_reference: OpaqueGoogleReference,
         spreadsheet_id: str,
         sheet_id: int,
-        provider_range: str,
-    ) -> None:
+        configured_page_range: str,
+    ) -> "_GoogleSheetGridDimensions":
         scope = self._scope(connection, resource_scope_reference)
         self._require_spreadsheet(scope, spreadsheet_id)
-        expected_title = _sheet_title_from_a1_range(provider_range)
+        expected_title = _sheet_title_from_a1_range(configured_page_range)
         try:
             response = await self._authorized_request(
                 connection,
@@ -1032,7 +1039,10 @@ class GoogleApiService:
                 ),
                 query={
                     "includeGridData": "false",
-                    "fields": "spreadsheetId,sheets(properties(sheetId,title))",
+                    "fields": (
+                        "spreadsheetId,sheets(properties(sheetId,title,"
+                        "gridProperties(rowCount,columnCount)))"
+                    ),
                 },
                 json_expected=False,
             )
@@ -1066,7 +1076,7 @@ class GoogleApiService:
             )
         if not sheets:
             raise GoogleSheetsIdentityContractError("provider_sheets_identity_missing")
-        matched_titles: list[str] = []
+        matches: list[tuple[str, _GoogleSheetGridDimensions]] = []
         for sheet in sheets:
             properties = sheet.get("properties") if isinstance(sheet, Mapping) else None
             if not isinstance(properties, Mapping):
@@ -1084,19 +1094,47 @@ class GoogleApiService:
                     "provider_sheets_identity_invalid_response"
                 )
             if returned_sheet_id == sheet_id:
-                matched_titles.append(returned_title)
-        if not matched_titles:
+                grid_properties = properties.get("gridProperties")
+                if not isinstance(grid_properties, Mapping):
+                    raise GoogleSheetsIdentityContractError(
+                        "provider_sheets_identity_invalid_response"
+                    )
+                row_count = grid_properties.get("rowCount")
+                column_count = grid_properties.get("columnCount")
+                if (
+                    not isinstance(row_count, int)
+                    or isinstance(row_count, bool)
+                    or row_count <= 0
+                    or not isinstance(column_count, int)
+                    or isinstance(column_count, bool)
+                    or column_count <= 0
+                ):
+                    raise GoogleSheetsIdentityContractError(
+                        "provider_sheets_identity_invalid_response"
+                    )
+                matches.append(
+                    (
+                        returned_title,
+                        _GoogleSheetGridDimensions(
+                            row_count=row_count,
+                            column_count=column_count,
+                        ),
+                    )
+                )
+        if not matches:
             raise GoogleSheetsIdentityContractError(
                 "provider_sheets_identity_id_mismatch"
             )
-        if len(matched_titles) > 1:
+        if len(matches) > 1:
             raise GoogleSheetsIdentityContractError(
                 "provider_sheets_identity_ambiguous"
             )
-        if matched_titles[0] != expected_title:
+        returned_title, grid_dimensions = matches[0]
+        if returned_title != expected_title:
             raise GoogleSheetsIdentityContractError(
                 "provider_sheets_identity_title_mismatch"
             )
+        return grid_dimensions
 
     def _scope(
         self,
@@ -1972,6 +2010,12 @@ class _ParsedSheetA1Range:
     last_row: int
 
 
+@dataclass(frozen=True, slots=True)
+class _GoogleSheetGridDimensions:
+    row_count: int
+    column_count: int
+
+
 def _parse_bounded_sheet_a1_range(value: str) -> _ParsedSheetA1Range:
     match = _BOUNDED_SHEET_A1_RANGE.fullmatch(value)
     if match is None:
@@ -1993,7 +2037,11 @@ def _parse_bounded_sheet_a1_range(value: str) -> _ParsedSheetA1Range:
 
 
 def _paged_a1_range(
-    value: str, page_token: str | None, *, page_size: int
+    value: str,
+    page_token: str | None,
+    *,
+    page_size: int,
+    grid_dimensions: _GoogleSheetGridDimensions | None = None,
 ) -> tuple[str, str | None, bool]:
     try:
         parsed = _parse_bounded_sheet_a1_range(value)
@@ -2001,23 +2049,47 @@ def _paged_a1_range(
         raise GoogleSheetsConfiguredScopeError(
             "Sheets pagination requires a bounded sheet-qualified A1 range."
         ) from None
-    if parsed.last_row < parsed.first_row:
-        raise GoogleSheetsConfiguredScopeError("Sheets A1 range is reversed.")
+    effective_last_row = (
+        parsed.last_row
+        if grid_dimensions is None
+        else min(parsed.last_row, grid_dimensions.row_count)
+    )
+    effective_last_column = (
+        parsed.end_column
+        if grid_dimensions is None
+        else _column_name(
+            min(
+                _column_index(parsed.end_column) - 1,
+                grid_dimensions.column_count - 1,
+            )
+        )
+    )
+    if effective_last_row < parsed.first_row:
+        message = (
+            "Sheets A1 range is reversed."
+            if grid_dimensions is None
+            else "Sheets A1 range is outside the provider grid."
+        )
+        raise GoogleSheetsConfiguredScopeError(message)
+    if _column_index(effective_last_column) < _column_index(parsed.start_column):
+        raise GoogleSheetsConfiguredScopeError(
+            "Sheets A1 range is outside the provider grid."
+        )
     if page_token is None:
         page_first = parsed.first_row
     elif (
         page_token.isdigit()
-        and parsed.first_row <= int(page_token) <= parsed.last_row
+        and parsed.first_row <= int(page_token) <= effective_last_row
     ):
         page_first = int(page_token)
     else:
         raise GoogleSheetsConfiguredScopeError("Sheets page token is invalid.")
-    page_last = min(parsed.last_row, page_first + page_size - 1)
-    complete = page_last == parsed.last_row
+    page_last = min(effective_last_row, page_first + page_size - 1)
+    complete = page_last == effective_last_row
     next_token = None if complete else str(page_last + 1)
     provider_range = (
         f"{parsed.title_token}!{parsed.start_column}{page_first}:"
-        f"{parsed.end_column}{page_last}"
+        f"{effective_last_column}{page_last}"
     )
     return provider_range, next_token, complete
 
@@ -2046,6 +2118,18 @@ def _require_profile_columns_in_range(
     ):
         raise GoogleSheetsConfiguredScopeError(
             "Sheets page range does not cover every configured column."
+        )
+
+
+def _require_profile_columns_in_grid(
+    profile: GoogleSheetsReadProfile,
+    column_count: int,
+) -> None:
+    if any(
+        _column_index(column.coordinate) > column_count for column in profile.columns
+    ):
+        raise GoogleSheetsConfiguredScopeError(
+            "Sheets provider grid does not contain every configured column."
         )
 
 

@@ -1503,6 +1503,7 @@ def _sheet_identity_payload() -> dict:
                 "properties": {
                     "sheetId": 123,
                     "title": "Estimate Register",
+                    "gridProperties": {"rowCount": 5000, "columnCount": 4},
                 }
             }
         ],
@@ -1564,7 +1565,10 @@ async def test_sheets_range_page_rejects_mismatched_identity_before_grid_transpo
     assert identity_request.url.endswith("/spreadsheets/sheet-1")
     assert identity_request.query == {
         "includeGridData": "false",
-        "fields": "spreadsheetId,sheets(properties(sheetId,title))",
+        "fields": (
+            "spreadsheetId,sheets(properties(sheetId,title,"
+            "gridProperties(rowCount,columnCount)))"
+        ),
     }
 
 
@@ -1621,16 +1625,42 @@ async def test_sheets_range_page_selects_identity_by_stable_numeric_sheet_id() -
             id="numeric-sheet-id-mismatch",
         ),
         pytest.param(
-            [{"properties": {"sheetId": 123, "title": "Renamed Register"}}],
+            [
+                {
+                    "properties": {
+                        "sheetId": 123,
+                        "title": "Renamed Register",
+                        "gridProperties": {"rowCount": 5000, "columnCount": 4},
+                    }
+                }
+            ],
             "provider_sheets_identity_title_mismatch",
             id="title-mismatch",
         ),
         pytest.param([], "provider_sheets_identity_missing", id="missing"),
         pytest.param(
-            [
-                {"properties": {"sheetId": 123, "title": "Estimate Register"}},
-                {"properties": {"sheetId": 123, "title": "Duplicate"}},
-            ],
+                [
+                    {
+                        "properties": {
+                            "sheetId": 123,
+                            "title": "Estimate Register",
+                            "gridProperties": {
+                                "rowCount": 5000,
+                                "columnCount": 4,
+                            },
+                        }
+                    },
+                    {
+                        "properties": {
+                            "sheetId": 123,
+                            "title": "Duplicate",
+                            "gridProperties": {
+                                "rowCount": 5000,
+                                "columnCount": 4,
+                            },
+                        }
+                    },
+                ],
             "provider_sheets_identity_ambiguous",
             id="ambiguous",
         ),
@@ -1658,6 +1688,50 @@ async def test_sheets_range_page_selects_identity_by_stable_numeric_sheet_id() -
             [{"properties": {"sheetId": 123, "title": 456}}],
             "provider_sheets_identity_invalid_response",
             id="title-not-string",
+        ),
+        pytest.param(
+            [{"properties": {"sheetId": 123, "title": "Estimate Register"}}],
+            "provider_sheets_identity_invalid_response",
+            id="grid-properties-missing",
+        ),
+        pytest.param(
+            [
+                {
+                    "properties": {
+                        "sheetId": 123,
+                        "title": "Estimate Register",
+                        "gridProperties": "invalid",
+                    }
+                }
+            ],
+            "provider_sheets_identity_invalid_response",
+            id="grid-properties-not-object",
+        ),
+        pytest.param(
+            [
+                {
+                    "properties": {
+                        "sheetId": 123,
+                        "title": "Estimate Register",
+                        "gridProperties": {"rowCount": 0, "columnCount": 4},
+                    }
+                }
+            ],
+            "provider_sheets_identity_invalid_response",
+            id="grid-row-count-not-positive",
+        ),
+        pytest.param(
+            [
+                {
+                    "properties": {
+                        "sheetId": 123,
+                        "title": "Estimate Register",
+                        "gridProperties": {"rowCount": 5000, "columnCount": 0},
+                    }
+                }
+            ],
+            "provider_sheets_identity_invalid_response",
+            id="grid-column-count-not-positive",
         ),
     ),
 )
@@ -1891,6 +1965,131 @@ async def test_sheets_range_page_preserves_representations_metadata_and_paginati
     assert first.cells[3].entered.kind == "blank"
     assert result.snapshot.rows[1].cells[2].effective.kind == "error"
     assert transport.requests[3].query["ranges"] == "'Estimate Register'!A2:D3"
+
+
+@pytest.mark.asyncio
+async def test_sheets_range_page_stops_at_current_provider_grid_boundary() -> None:
+    identity_payload = _sheet_identity_payload()
+    identity_payload["sheets"][0]["properties"]["gridProperties"] = {
+        "rowCount": 1000,
+        "columnCount": 4,
+    }
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(status_code=200, json_body=identity_payload),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"id": "sheet-1", "version": "77"},
+            ),
+            GoogleApiResponse(status_code=200, json_body=_spreadsheet_payload()),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"id": "sheet-1", "version": "77"},
+            ),
+        ]
+    )
+
+    result = await _service(
+        RecordingCredentialResolver(),
+        transport,
+        sheet_profiles=(_sheet_profile(),),
+        sheets_page_size=1000,
+    ).get_spreadsheet_range_page(
+        _connection(),
+        RESOURCE_SCOPE,
+        "sheet-1",
+        123,
+        "'Estimate Register'!A2:D5000",
+        None,
+    )
+
+    assert result.complete is True
+    assert result.next_page_token is None
+    assert transport.requests[3].query["ranges"] == "'Estimate Register'!A2:D1000"
+
+
+@pytest.mark.asyncio
+async def test_sheets_range_page_clamps_requested_columns_to_provider_grid() -> None:
+    identity_payload = _sheet_identity_payload()
+    identity_payload["sheets"][0]["properties"]["gridProperties"] = {
+        "rowCount": 1000,
+        "columnCount": 4,
+    }
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(status_code=200, json_body=identity_payload),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"id": "sheet-1", "version": "77"},
+            ),
+            GoogleApiResponse(status_code=200, json_body=_spreadsheet_payload()),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"id": "sheet-1", "version": "77"},
+            ),
+        ]
+    )
+
+    await _service(
+        RecordingCredentialResolver(),
+        transport,
+        sheet_profiles=(_sheet_profile(),),
+        sheets_page_size=2,
+    ).get_spreadsheet_range_page(
+        _connection(),
+        RESOURCE_SCOPE,
+        "sheet-1",
+        123,
+        "'Estimate Register'!A2:F5",
+        None,
+    )
+
+    assert transport.requests[3].query["ranges"] == "'Estimate Register'!A2:D3"
+
+
+@pytest.mark.asyncio
+async def test_sheets_range_page_rejects_grid_without_every_profile_column() -> None:
+    identity_payload = _sheet_identity_payload()
+    identity_payload["sheets"][0]["properties"]["gridProperties"] = {
+        "rowCount": 1000,
+        "columnCount": 3,
+    }
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(status_code=200, json_body=identity_payload),
+        ]
+    )
+
+    with pytest.raises(
+        GoogleSheetsConfiguredScopeError,
+        match="provider grid does not contain every configured column",
+    ):
+        await _service(
+            RecordingCredentialResolver(),
+            transport,
+            sheet_profiles=(_sheet_profile(),),
+        ).get_spreadsheet_range_page(
+            _connection(),
+            RESOURCE_SCOPE,
+            "sheet-1",
+            123,
+            "'Estimate Register'!A2:D5000",
+            None,
+        )
+
+    assert len(transport.requests) == 2
 
 
 @pytest.mark.asyncio
