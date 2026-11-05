@@ -23,7 +23,7 @@ semantics.
 | stale authority | `PROPOSED` → `CHECK_AUTHORITY` stale | `BLOCKED` | No dispatch; access remains denied | NOT_RUN |
 | revoked authority | `PROPOSED` → `CHECK_AUTHORITY` revoked | `BLOCKED` | No dispatch; access remains denied | NOT_RUN |
 | cross_workspace | `FENCED_TEST_ONLY` → mismatched workspace command | `BLOCKED` | Generic deny; no foreign effects/evidence | NOT_RUN |
-| duplicate_retry | `CLEANUP_INCOMPLETE` → retry same operation key; replay same command | `VERIFIED_SYNTHETIC` after every required receipt verifies | No duplicate logical fake effect; access remains fenced | NOT_RUN |
+| duplicate_retry | `CLEANUP_INCOMPLETE` → retry same operation key with fresh current test authority; replay same command | `VERIFIED_SYNTHETIC` after every required receipt verifies | No duplicate logical fake effect; access remains fenced | NOT_RUN |
 | cancellation | `CLEANUP_PENDING` → `CANCEL`, then late result | `CANCELLED` | Fence retained; late result cannot resume work | NOT_RUN |
 | unknown_commit | `CLEANUP_PENDING` → `COMMIT_UNKNOWN`, no receipt | `UNKNOWN` | No retry under a new key; all reads/publication/checkpoints denied | NOT_RUN |
 | restore quarantine/replay | `VERIFIED_SYNTHETIC` → `RESTORE_REQUESTED`, restrictions pending, replay succeeds | `VERIFIED_SYNTHETIC` | Restore stays quarantined until replay evidence; the synthetic deleted record remains unreadable after replay; this vector does not qualify real restore | NOT_RUN |
@@ -32,6 +32,13 @@ semantics.
 
 The catalog additionally pins each expected safe code, access-path denial, and
 qualification status in `tests/qualification/test_issue1002_synthetic_recovery_vectors.py`.
+
+The #1001 mapping is intentionally unqualified. Its current contract uses
+`FAILED`/`UNKNOWN` store outcomes rather than a distinct outage result and does
+not define an uncovered-store event; the cross-workspace, audit-redaction and
+restore-read checks also need application/adapter boundaries. Keep those cases
+`NOT_RUN` until the follow-up integration task selects exact transitions and
+safe codes without weakening the #1001 fence invariants.
 
 ## Fake-store boundary
 
