@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import get_args
 from uuid import UUID
 
 import httpx
@@ -29,6 +30,7 @@ from spine.connectors.google_live_qualification import (
     GoogleLiveQualificationRefused,
     GoogleLiveQualificationReport,
     GoogleLiveQualificationReportV4,
+    GoogleLiveQualificationReportV5,
     GoogleLiveQualificationProvider,
     GoogleLiveQualificationRunner,
     GoogleLiveProbeCounts,
@@ -54,6 +56,7 @@ from spine.connectors.google_execution_envelope import (
 )
 from spine.connectors.google_sheets import (
     GoogleSheetsColumn,
+    GoogleSheetsIdentityFailureCode,
     GoogleSheetsRangePage,
     GoogleSheetsReadProfile,
     GoogleSheetsSnapshot,
@@ -225,6 +228,53 @@ def test_v4_report_rejects_v5_identity_code() -> None:
         GoogleLiveQualificationReportV4.model_validate(payload)
 
 
+def test_v5_report_remains_readable_with_original_identity_codes() -> None:
+    payload = _valid_report().model_dump(mode="json")
+    payload.update(
+        {
+            "schema_version": "google-live-qualification-report:v5",
+            "status": "failed",
+            "failure_stage": "sheets",
+            "failure_class": "contract",
+            "retry_disposition": "not_retryable",
+            "failure_code": "provider_sheets_identity_missing",
+        }
+    )
+
+    report = GoogleLiveQualificationReportV5.model_validate(payload)
+
+    assert report.schema_version == "google-live-qualification-report:v5"
+    assert report.failure_code == "provider_sheets_identity_missing"
+
+
+@pytest.mark.parametrize(
+    "failure_code",
+    (
+        "provider_sheets_identity_request_rejected",
+        "provider_sheets_identity_spreadsheet_mismatch",
+    ),
+)
+def test_v5_report_rejects_v6_identity_code(failure_code: str) -> None:
+    payload = _valid_report().model_dump(mode="json")
+    payload.update(
+        {
+            "schema_version": "google-live-qualification-report:v5",
+            "status": "failed",
+            "failure_stage": "sheets",
+            "failure_class": "contract",
+            "retry_disposition": "not_retryable",
+            "failure_code": failure_code,
+        }
+    )
+
+    with pytest.raises(ValueError):
+        GoogleLiveQualificationReportV5.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "failure_code",
+    get_args(GoogleSheetsIdentityFailureCode),
+)
 @pytest.mark.parametrize(
     ("field", "value"),
     (
@@ -233,7 +283,8 @@ def test_v4_report_rejects_v5_identity_code() -> None:
         ("retry_disposition", "not_applicable"),
     ),
 )
-def test_v5_identity_code_requires_consistent_sheets_contract_evidence(
+def test_v6_identity_code_requires_consistent_sheets_contract_evidence(
+    failure_code: str,
     field: str,
     value: str,
 ) -> None:
@@ -244,7 +295,7 @@ def test_v5_identity_code_requires_consistent_sheets_contract_evidence(
             "failure_stage": "sheets",
             "failure_class": "contract",
             "retry_disposition": "not_retryable",
-            "failure_code": "provider_sheets_identity_missing",
+            "failure_code": failure_code,
             field: value,
         }
     )
@@ -662,10 +713,9 @@ def _sheet_identity_response(
     )
 
 
-@pytest.mark.asyncio
-async def test_offline_composition_reports_numeric_tab_mismatch_safely() -> None:
+def _identity_only_config() -> GoogleLiveQualificationConfig:
     config = _config(opt_in=True)
-    config = config.model_copy(
+    return config.model_copy(
         update={
             "resource_scope": config.resource_scope.model_copy(
                 update={
@@ -679,6 +729,11 @@ async def test_offline_composition_reports_numeric_tab_mismatch_safely() -> None
             ),
         }
     )
+
+
+@pytest.mark.asyncio
+async def test_offline_composition_reports_numeric_tab_mismatch_safely() -> None:
+    config = _identity_only_config()
     responses = [
         GoogleApiResponse(
             status_code=200,
@@ -692,7 +747,7 @@ async def test_offline_composition_reports_numeric_tab_mismatch_safely() -> None
     ).run(environment_opt_in=True)
 
     assert report.status == "failed"
-    assert report.schema_version == "google-live-qualification-report:v5"
+    assert report.schema_version == "google-live-qualification-report:v6"
     assert report.failure_code == "provider_sheets_identity_id_mismatch"
     assert report.failure_stage == "sheets"
     assert report.sheets_request_attempts == 1
@@ -700,6 +755,122 @@ async def test_offline_composition_reports_numeric_tab_mismatch_safely() -> None
     assert report.sheet_pages == 0
     assert "synthetic-sheet" not in report.model_dump_json()
     assert "Synthetic" not in report.model_dump_json()
+    assert responses == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("identity_response", "expected_code", "forbidden_value"),
+    (
+        pytest.param(
+            GoogleApiResponse(
+                status_code=400,
+                json_body={"error": {"message": "synthetic-provider-payload"}},
+            ),
+            "provider_sheets_identity_request_rejected",
+            "synthetic-provider-payload",
+            id="request-rejected",
+        ),
+        pytest.param(
+            _sheet_identity_response("unexpected-sheet", 1, "Synthetic"),
+            "provider_sheets_identity_spreadsheet_mismatch",
+            "unexpected-sheet",
+            id="spreadsheet-mismatch",
+        ),
+    ),
+)
+async def test_offline_composition_reports_remaining_identity_failure_safely(
+    identity_response: GoogleApiResponse,
+    expected_code: str,
+    forbidden_value: str,
+) -> None:
+    config = _identity_only_config()
+    responses = [
+        GoogleApiResponse(
+            status_code=200,
+            json_body={"access_token": "synthetic-token", "expires_in": 3600},
+        ),
+        identity_response,
+    ]
+
+    report = await _composed_runner(
+        config, QueuedResponseTransport(responses)
+    ).run(environment_opt_in=True)
+
+    assert report.status == "failed"
+    assert report.schema_version == "google-live-qualification-report:v6"
+    assert report.failure_code == expected_code
+    assert report.failure_stage == "sheets"
+    assert report.failure_class == "contract"
+    assert report.retry_disposition == "not_retryable"
+    assert report.sheets_request_attempts == 1
+    assert report.sheet_pages == 0
+    assert "synthetic-sheet" not in report.model_dump_json()
+    assert forbidden_value not in report.model_dump_json()
+    assert responses == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("responses", "expected_oauth_attempts", "expected_sheets_attempts"),
+    (
+        pytest.param(
+            [
+                GoogleApiResponse(
+                    status_code=400,
+                    json_body={"error": "unsupported_grant_type"},
+                )
+            ],
+            1,
+            0,
+            id="initial-refresh",
+        ),
+        pytest.param(
+            [
+                GoogleApiResponse(
+                    status_code=200,
+                    json_body={"access_token": "first-token", "expires_in": 3600},
+                ),
+                GoogleApiResponse(status_code=401, json_body={}),
+                GoogleApiResponse(
+                    status_code=400,
+                    json_body={"error": "unsupported_grant_type"},
+                ),
+            ],
+            2,
+            1,
+            id="refresh-after-identity-401",
+        ),
+    ),
+)
+async def test_offline_composition_preserves_oauth_contract_failure_during_identity(
+    responses: list[GoogleApiResponse],
+    expected_oauth_attempts: int,
+    expected_sheets_attempts: int,
+) -> None:
+    config = _identity_only_config()
+    config = config.model_copy(
+        update={
+            "request_policy": config.request_policy.model_copy(
+                update={
+                    "max_attempts": 2,
+                    "backoff_ceiling_seconds": (0.0,),
+                }
+            )
+        }
+    )
+
+    report = await _composed_runner(
+        config, QueuedResponseTransport(responses)
+    ).run(environment_opt_in=True)
+
+    assert report.status == "failed"
+    assert report.failure_code == "provider_contract_rejected"
+    assert report.failure_stage == "oauth_refresh"
+    assert report.failure_class == "contract"
+    assert report.retry_disposition == "not_retryable"
+    assert report.oauth_request_attempts == expected_oauth_attempts
+    assert report.sheets_request_attempts == expected_sheets_attempts
     assert responses == []
 
 
@@ -1107,7 +1278,7 @@ async def test_offline_composition_records_oauth_transport_failure_attempt() -> 
 
     report = await runner.run(environment_opt_in=True)
 
-    assert report.schema_version == "google-live-qualification-report:v5"
+    assert report.schema_version == "google-live-qualification-report:v6"
     assert report.status == "failed"
     assert report.failure_code == "provider_unavailable"
     assert report.failure_stage == "oauth_refresh"
@@ -1168,7 +1339,7 @@ async def test_offline_composition_records_closed_drive_download_policy_reason()
     ).run(environment_opt_in=True)
     serialized = report.model_dump_json()
 
-    assert report.schema_version == "google-live-qualification-report:v5"
+    assert report.schema_version == "google-live-qualification-report:v6"
     assert report.failure_code == "provider_oauth_scope_insufficient"
     assert report.failure_stage == "drive"
     assert report.failure_class == "policy"
@@ -2140,7 +2311,7 @@ async def test_phase1_offline_replay_completes_every_approved_read_operation() -
         },
         sort_keys=True,
     )
-    assert report.schema_version == "google-live-qualification-report:v5"
+    assert report.schema_version == "google-live-qualification-report:v6"
     assert report.metadata_reads == 3
     assert report.downloads == 2
     assert report.exports == 2

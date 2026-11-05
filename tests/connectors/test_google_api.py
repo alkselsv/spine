@@ -1701,12 +1701,79 @@ async def test_sheets_range_page_classifies_invalid_identity_envelope(
 
 
 @pytest.mark.asyncio
-async def test_sheets_range_page_preserves_identity_request_contract_failure() -> None:
+@pytest.mark.parametrize(
+    ("identity_response", "expected_code"),
+    (
+        pytest.param(
+            GoogleApiResponse(status_code=400, json_body={"error": {}}),
+            "provider_sheets_identity_request_rejected",
+            id="request-rejected",
+        ),
+        pytest.param(
+            GoogleApiResponse(
+                status_code=200,
+                json_body={
+                    "spreadsheetId": "unexpected-sheet",
+                    "sheets": [
+                        {
+                            "properties": {
+                                "sheetId": 123,
+                                "title": "Estimate Register",
+                            }
+                        }
+                    ],
+                },
+            ),
+            "provider_sheets_identity_spreadsheet_mismatch",
+            id="spreadsheet-mismatch",
+        ),
+    ),
+)
+async def test_sheets_range_page_classifies_remaining_identity_failure(
+    identity_response: GoogleApiResponse,
+    expected_code: str,
+) -> None:
     transport = RecordingTransport(
         [
             GoogleApiResponse(
                 status_code=200,
                 json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            identity_response,
+        ]
+    )
+
+    with pytest.raises(GoogleSheetsIdentityContractError) as captured:
+        await _service(
+            RecordingCredentialResolver(),
+            transport,
+            sheet_profiles=(_sheet_profile(),),
+            sheets_page_size=2,
+        ).get_spreadsheet_range_page(
+            _connection(),
+            RESOURCE_SCOPE,
+            "sheet-1",
+            123,
+            "'Estimate Register'!A2:D5",
+            None,
+        )
+
+    assert captured.value.failure_code == expected_code
+    assert str(captured.value) == "Google Sheets identity response was rejected."
+
+
+@pytest.mark.asyncio
+async def test_sheets_range_page_preserves_grid_request_contract_failure() -> None:
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(status_code=200, json_body=_sheet_identity_payload()),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"id": "sheet-1", "version": "77"},
             ),
             GoogleApiResponse(status_code=400, json_body={"error": {}}),
         ]

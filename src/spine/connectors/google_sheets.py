@@ -67,6 +67,8 @@ GoogleSheetsIdentityFailureCode = Literal[
     "provider_sheets_identity_id_mismatch",
     "provider_sheets_identity_invalid_response",
     "provider_sheets_identity_missing",
+    "provider_sheets_identity_request_rejected",
+    "provider_sheets_identity_spreadsheet_mismatch",
     "provider_sheets_identity_title_mismatch",
 ]
 

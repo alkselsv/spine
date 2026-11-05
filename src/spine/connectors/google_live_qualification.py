@@ -318,11 +318,58 @@ class GoogleLiveQualificationReportV4(DefinitionModel):
         return self
 
 
-class GoogleLiveQualificationReport(GoogleLiveQualificationReportV4):
-    """Current disclosure-safe Google qualification report contract."""
+GoogleSheetsIdentityFailureCodeV5 = Literal[
+    "provider_sheets_identity_ambiguous",
+    "provider_sheets_identity_id_mismatch",
+    "provider_sheets_identity_invalid_response",
+    "provider_sheets_identity_missing",
+    "provider_sheets_identity_title_mismatch",
+]
 
+
+def _require_consistent_sheets_identity_failure_evidence(
+    *,
+    failure_code: str | None,
+    failure_stage: GoogleLiveFailureStage | None,
+    failure_class: GoogleLiveFailureClass | None,
+    retry_disposition: GoogleLiveRetryDisposition | None,
+    identity_failure_codes: tuple[str, ...],
+) -> None:
+    if failure_code in identity_failure_codes and (
+        failure_stage,
+        failure_class,
+        retry_disposition,
+    ) != ("sheets", "contract", "not_retryable"):
+        raise ValueError("Google Sheets identity failure evidence is inconsistent")
+
+
+class GoogleLiveQualificationReportV5(GoogleLiveQualificationReportV4):
     schema_version: Literal["google-live-qualification-report:v5"] = (
         "google-live-qualification-report:v5"
+    )
+    failure_code: (
+        GoogleLiveFailureCodeV4 | GoogleSheetsIdentityFailureCodeV5 | None
+    ) = None
+
+    @model_validator(mode="after")
+    def validate_sheets_identity_failure_evidence(
+        self,
+    ) -> "GoogleLiveQualificationReportV5":
+        _require_consistent_sheets_identity_failure_evidence(
+            failure_code=self.failure_code,
+            failure_stage=self.failure_stage,
+            failure_class=self.failure_class,
+            retry_disposition=self.retry_disposition,
+            identity_failure_codes=get_args(GoogleSheetsIdentityFailureCodeV5),
+        )
+        return self
+
+
+class GoogleLiveQualificationReport(GoogleLiveQualificationReportV5):
+    """Current disclosure-safe Google qualification report contract."""
+
+    schema_version: Literal["google-live-qualification-report:v6"] = (
+        "google-live-qualification-report:v6"
     )
     failure_code: GoogleLiveFailureCodeV4 | GoogleSheetsIdentityFailureCode | None = (
         None
@@ -332,14 +379,13 @@ class GoogleLiveQualificationReport(GoogleLiveQualificationReportV4):
     def validate_sheets_identity_failure_evidence(
         self,
     ) -> "GoogleLiveQualificationReport":
-        if self.failure_code in get_args(GoogleSheetsIdentityFailureCode) and (
-            self.failure_stage,
-            self.failure_class,
-            self.retry_disposition,
-        ) != ("sheets", "contract", "not_retryable"):
-            raise ValueError(
-                "Google Sheets identity failure evidence is inconsistent"
-            )
+        _require_consistent_sheets_identity_failure_evidence(
+            failure_code=self.failure_code,
+            failure_stage=self.failure_stage,
+            failure_class=self.failure_class,
+            retry_disposition=self.retry_disposition,
+            identity_failure_codes=get_args(GoogleSheetsIdentityFailureCode),
+        )
         return self
 
 
@@ -880,6 +926,7 @@ __all__ = [
     "GoogleLiveQualificationRefused",
     "GoogleLiveQualificationReport",
     "GoogleLiveQualificationReportV4",
+    "GoogleLiveQualificationReportV5",
     "GoogleLiveQualificationRunner",
     "GoogleLiveProbeCounts",
     "GoogleSharedDriveApproval",

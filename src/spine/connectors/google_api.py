@@ -43,6 +43,7 @@ from spine.application.connections.google import (
     GoogleProviderPolicyFailureCode,
     GoogleProviderQuotaError,
     GoogleProviderReadError,
+    GoogleProviderRequestRejectedError,
 )
 from spine.connectors.google_drive import (
     DriveChange,
@@ -1020,21 +1021,26 @@ class GoogleApiService:
         scope = self._scope(connection, resource_scope_reference)
         self._require_spreadsheet(scope, spreadsheet_id)
         expected_title = _sheet_title_from_a1_range(provider_range)
-        response = await self._authorized_request(
-            connection,
-            provider_api="sheets",
-            method="GET",
-            url=(
-                f"{self._endpoints.sheets_base_url.rstrip('/')}/spreadsheets/"
-                f"{quote(spreadsheet_id, safe='')}"
-            ),
-            query={
-                "includeGridData": "false",
-                "ranges": provider_range,
-                "fields": "spreadsheetId,sheets(properties(sheetId,title))",
-            },
-            json_expected=False,
-        )
+        try:
+            response = await self._authorized_request(
+                connection,
+                provider_api="sheets",
+                method="GET",
+                url=(
+                    f"{self._endpoints.sheets_base_url.rstrip('/')}/spreadsheets/"
+                    f"{quote(spreadsheet_id, safe='')}"
+                ),
+                query={
+                    "includeGridData": "false",
+                    "ranges": provider_range,
+                    "fields": "spreadsheetId,sheets(properties(sheetId,title))",
+                },
+                json_expected=False,
+            )
+        except GoogleProviderRequestRejectedError:
+            raise GoogleSheetsIdentityContractError(
+                "provider_sheets_identity_request_rejected"
+            ) from None
         try:
             payload = self._json_success(response)
         except GoogleProviderContractError:
@@ -1052,8 +1058,8 @@ class GoogleApiService:
                 "provider_sheets_identity_invalid_response"
             )
         if returned_spreadsheet_id != spreadsheet_id:
-            raise GoogleSheetsConfiguredScopeError(
-                "Sheets identity response is outside the configured spreadsheet."
+            raise GoogleSheetsIdentityContractError(
+                "provider_sheets_identity_spreadsheet_mismatch"
             )
         if not isinstance(sheets, list):
             raise GoogleSheetsIdentityContractError(
@@ -1330,7 +1336,9 @@ class GoogleApiService:
                     retry_disposition="stopped_before_retry",
                 )
             else:
-                raise GoogleProviderContractError("Google provider request failed.")
+                raise GoogleProviderRequestRejectedError(
+                    "Google provider request failed."
+                )
             if attempt + 1 == self._policy.max_attempts:
                 if isinstance(failure, GoogleProviderReadError):
                     raise failure.with_retry_disposition("attempts_exhausted")

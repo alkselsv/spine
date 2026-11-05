@@ -209,6 +209,10 @@ class GoogleProviderContractError(GoogleConnectionError):
     """A provider response violated a typed, fail-closed reader contract."""
 
 
+class GoogleProviderRequestRejectedError(GoogleProviderContractError):
+    """A provider request was rejected outside the typed success contract."""
+
+
 class GoogleProviderExecutionError(RuntimeError):
     """A typed execution boundary stopped provider work safely."""
 
@@ -667,6 +671,7 @@ __all__ = [
     "GoogleConnectionRepository",
     "GoogleProvider",
     "GoogleProviderContractError",
+    "GoogleProviderRequestRejectedError",
     "GoogleProviderExecutionError",
     "GoogleProviderFailureEvidence",
     "GoogleProviderReadError",
