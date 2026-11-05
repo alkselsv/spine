@@ -46,6 +46,7 @@ def test_inventory_evidence_paths_exist_in_checkout() -> None:
         "src/spine/application/projection_recovery_execution.py",
         "src/spine/application/projection_publication.py",
         "src/spine/infrastructure/persistence/projection.py",
+        "src/spine/infrastructure/persistence/postgresql_fenced_unit_of_work.py",
         "src/spine/memory/cognee/context_projection.py",
         "src/spine/memory/cognee/recovery.py",
         "src/spine/application/persistence/workflow_runs.py",
@@ -64,5 +65,6 @@ def test_inventory_evidence_paths_exist_in_checkout() -> None:
         "src/spine/infrastructure/diagnostics/sinks.py",
         "src/spine/api/diagnostics.py",
         "tests/domain/sources/test_canonical_tombstone_v3.py",
+        "tests/infrastructure/persistence/test_postgresql_fenced_unit_of_work.py",
     ):
         assert (ROOT / path).exists(), path
