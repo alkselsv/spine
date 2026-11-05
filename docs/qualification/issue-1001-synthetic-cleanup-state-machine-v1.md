@@ -10,6 +10,8 @@ It must never be consumed as permission to delete production data.
 The contract intentionally has no source selector, provider identifier, Gmail
 payload field, artifact field allowlist, retention duration, credentials, store
 adapter or production authorization field. Every model forbids extra fields.
+Opaque identifiers use a closed vocabulary of synthetic fixture constants;
+arbitrary strings, including arbitrary values with a `fake-` prefix, are rejected.
 
 ## States and transition outcomes
 
@@ -19,7 +21,8 @@ adapter or production authorization field. Every model forbids extra fields.
 | PROPOSED | authority stale | BLOCKED | No cleanup; `AUTHORITY_STALE` |
 | PROPOSED | authority revoked | BLOCKED | No cleanup; `AUTHORITY_REVOKED` |
 | PROPOSED | synthetic test authority current | FENCED_TEST_ONLY | Test-only fence on; no deletion permission |
-| FENCED_TEST_ONLY | START | CLEANUP_PENDING | Test-only fence remains on |
+| FENCED_TEST_ONLY | START with freshly checked current synthetic test authority | CLEANUP_PENDING | Test-only fence remains on |
+| FENCED_TEST_ONLY | START with missing, stale or revoked authority | BLOCKED | No dispatch; authority safe code |
 | PENDING / INCOMPLETE | one fake store fails | CLEANUP_INCOMPLETE | Fence remains; `STORE_FAILED` |
 | PENDING / INCOMPLETE | fake store result unknown | UNKNOWN | Fence remains; unresolved |
 | PENDING / INCOMPLETE | all declared stores verified | VERIFIED_SYNTHETIC | Fence remains; synthetic evidence only |
@@ -27,7 +30,8 @@ adapter or production authorization field. Every model forbids extra fields.
 | UNKNOWN | receipt missing, incomplete, duplicate or still unknown | UNKNOWN | Fence remains; reconciliation required |
 | UNKNOWN | explicit complete receipt, all stores verified | VERIFIED_SYNTHETIC | Fence remains; fake receipts only |
 | UNKNOWN | explicit complete receipt with failure | CLEANUP_INCOMPLETE | Fence remains; retry same operation key only after current fake authority |
-| INCOMPLETE | RETRY with current synthetic test authority | CLEANUP_PENDING | Same immutable operation key; retry count increments |
+| INCOMPLETE | RETRY with current synthetic test authority rechecked on this attempt | CLEANUP_PENDING | Same immutable operation key; retry count increments |
+| INCOMPLETE | RETRY with missing, stale or revoked authority | BLOCKED | Fence remains; safe authority code; no retry |
 | Any state | CANCEL | CANCELLED | Fence on; no restart transition |
 | Any state | restore requested | State unchanged | Restore quarantine on; replay marked pending and any prior replay result cleared |
 | VERIFIED_SYNTHETIC with replay pending | successful synthetic restore replay | VERIFIED_SYNTHETIC | Restore quarantine may release in this model only after replay evidence |
@@ -36,7 +40,13 @@ Invalid transitions preserve the state and return `INVALID_TRANSITION`.
 `BLOCKED` has no path back to cleanup on that operation. An unknown commit can
 only be resolved with an explicit receipt listing every required fake store;
 unknown/missing receipts remain `UNKNOWN`. Partial or uncovered stores cannot
-produce synthetic verification. Duplicate verified store results are stable.
+produce synthetic verification. Duplicate verified store results are stable;
+replayed `START` after work has started is an unchanged no-op, including after
+verification. Each retry event carries a fresh authority result; missing,
+stale or revoked authority blocks the job before another attempt can start.
+Initial dispatch also requires a fresh current-authority result on `START`;
+missing, stale or revoked results block dispatch even after an earlier positive
+check.
 
 ## Production boundary
 

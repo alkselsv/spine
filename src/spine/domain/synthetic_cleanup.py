@@ -8,21 +8,21 @@ is a test observation and is not a production authorization type.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import ConfigDict, Field, StringConstraints, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from spine.domain.common import DefinitionModel
 
 
-FakeOpaqueId = Annotated[
-    str,
-    StringConstraints(
-        min_length=6,
-        max_length=54,
-        pattern=r"^fake-[a-z0-9][a-z0-9-]{0,48}$",
-    ),
-]
+class FakeOpaqueId(str, Enum):
+    """Closed vocabulary for the synthetic fixture; arbitrary IDs are rejected."""
+
+    OPERATION_A = "fake-operation-a"
+    WORKSPACE_A = "fake-workspace-a"
+    STORE_A = "fake-store-a"
+    STORE_B = "fake-store-b"
+    STORE_UNCOVERED = "fake-store-uncovered"
 
 
 class SyntheticCleanupState(str, Enum):
@@ -145,9 +145,13 @@ class SyntheticCleanupEvent(DefinitionModel):
 
     @model_validator(mode="after")
     def validate_event_shape(self) -> "SyntheticCleanupEvent":
-        if self.kind is SyntheticEventKind.CHECK_AUTHORITY:
+        if self.kind in {
+            SyntheticEventKind.CHECK_AUTHORITY,
+            SyntheticEventKind.START,
+            SyntheticEventKind.RETRY,
+        }:
             if self.authority_status is None:
-                raise ValueError("authority check requires a synthetic authority status")
+                raise ValueError("authority check, start, and retry require a synthetic authority status")
         elif self.authority_status is not None:
             raise ValueError("only authority checks may carry authority status")
         if self.kind is SyntheticEventKind.STORE_RESULT:
@@ -238,13 +242,25 @@ def transition_synthetic_cleanup(
         )
 
     if event.kind is SyntheticEventKind.START:
-        if job.state is SyntheticCleanupState.CLEANUP_PENDING:
+        if job.state in {
+            SyntheticCleanupState.CLEANUP_PENDING,
+            SyntheticCleanupState.CLEANUP_INCOMPLETE,
+            SyntheticCleanupState.VERIFIED_SYNTHETIC,
+            SyntheticCleanupState.CANCELLED,
+            SyntheticCleanupState.UNKNOWN,
+        }:
             return job
-        if (
-            job.state is SyntheticCleanupState.FENCED_TEST_ONLY
-            and job.authority_status is SyntheticAuthorityStatus.CURRENT_TEST_ONLY
-        ):
-            return job.model_copy(update={"state": SyntheticCleanupState.CLEANUP_PENDING})
+        if job.state is SyntheticCleanupState.FENCED_TEST_ONLY:
+            assert event.authority_status is not None
+            if event.authority_status is SyntheticAuthorityStatus.CURRENT_TEST_ONLY:
+                return job.model_copy(update={"state": SyntheticCleanupState.CLEANUP_PENDING})
+            return job.model_copy(
+                update={
+                    "state": SyntheticCleanupState.BLOCKED,
+                    "authority_status": event.authority_status,
+                    "safe_code": _AUTHORITY_CODES[event.authority_status],
+                }
+            )
         return _invalid(job)
 
     if event.kind is SyntheticEventKind.STORE_RESULT:
@@ -309,18 +325,24 @@ def transition_synthetic_cleanup(
         return _invalid(job)
 
     if event.kind is SyntheticEventKind.RETRY:
-        if (
-            job.state is SyntheticCleanupState.CLEANUP_PENDING
-            and job.authority_status is SyntheticAuthorityStatus.CURRENT_TEST_ONLY
-        ):
-            return job
-        if (
-            job.state is SyntheticCleanupState.CLEANUP_INCOMPLETE
-            and job.authority_status is SyntheticAuthorityStatus.CURRENT_TEST_ONLY
-        ):
+        assert event.authority_status is not None
+        if job.state is SyntheticCleanupState.CLEANUP_PENDING:
+            if event.authority_status is SyntheticAuthorityStatus.CURRENT_TEST_ONLY:
+                return job
+            return _invalid(job)
+        if job.state is SyntheticCleanupState.CLEANUP_INCOMPLETE:
+            if event.authority_status is not SyntheticAuthorityStatus.CURRENT_TEST_ONLY:
+                return job.model_copy(
+                    update={
+                        "state": SyntheticCleanupState.BLOCKED,
+                        "authority_status": event.authority_status,
+                        "safe_code": _AUTHORITY_CODES[event.authority_status],
+                    }
+                )
             return job.model_copy(
                 update={
                     "state": SyntheticCleanupState.CLEANUP_PENDING,
+                    "authority_status": event.authority_status,
                     "retry_count": job.retry_count + 1,
                     "safe_code": "NONE",
                 }

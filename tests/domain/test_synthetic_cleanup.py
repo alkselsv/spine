@@ -36,7 +36,13 @@ def _fenced_pending(job: SyntheticCleanupJob | None = None) -> SyntheticCleanupJ
             authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
         ),
     )
-    return transition_synthetic_cleanup(fenced, _event(SyntheticEventKind.START))
+    return transition_synthetic_cleanup(
+        fenced,
+        _event(
+            SyntheticEventKind.START,
+            authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
+        ),
+    )
 
 
 @pytest.mark.parametrize(
@@ -79,8 +85,12 @@ def test_partial_failure_stays_fenced_and_retry_reuses_operation_key() -> None:
             store_status=SyntheticStoreStatus.FAILED,
         ),
     )
-    retrying = transition_synthetic_cleanup(failed, _event(SyntheticEventKind.RETRY))
-    retry_replay = transition_synthetic_cleanup(retrying, _event(SyntheticEventKind.RETRY))
+    retry_event = _event(
+        SyntheticEventKind.RETRY,
+        authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
+    )
+    retrying = transition_synthetic_cleanup(failed, retry_event)
+    retry_replay = transition_synthetic_cleanup(retrying, retry_event)
     first_success = transition_synthetic_cleanup(
         retrying,
         _event(
@@ -117,6 +127,94 @@ def test_partial_failure_stays_fenced_and_retry_reuses_operation_key() -> None:
     )
     assert complete.state is SyntheticCleanupState.VERIFIED_SYNTHETIC
     assert duplicate == complete
+    assert transition_synthetic_cleanup(
+        complete,
+        _event(
+            SyntheticEventKind.START,
+            authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
+        ),
+    ) == complete
+
+
+@pytest.mark.parametrize(
+    ("authority", "expected_code"),
+    [
+        (SyntheticAuthorityStatus.MISSING, "AUTHORITY_MISSING"),
+        (SyntheticAuthorityStatus.STALE, "AUTHORITY_STALE"),
+        (SyntheticAuthorityStatus.REVOKED, "AUTHORITY_REVOKED"),
+    ],
+)
+def test_start_rechecks_authority_and_blocks_before_dispatch(
+    authority: SyntheticAuthorityStatus,
+    expected_code: str,
+) -> None:
+    fenced = transition_synthetic_cleanup(
+        _job(),
+        _event(
+            SyntheticEventKind.CHECK_AUTHORITY,
+            authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
+        ),
+    )
+    blocked = transition_synthetic_cleanup(
+        fenced,
+        _event(SyntheticEventKind.START, authority_status=authority),
+    )
+
+    assert blocked.state is SyntheticCleanupState.BLOCKED
+    assert blocked.authority_status is authority
+    assert blocked.safe_code == expected_code
+    assert blocked.state is not SyntheticCleanupState.CLEANUP_PENDING
+
+
+def test_contract_rejects_unregistered_identifier_with_fake_prefix() -> None:
+    with pytest.raises(ValidationError):
+        SyntheticCleanupJob(
+            operation_key="fake-provider-message-id",
+            workspace_ref="fake-workspace-a",
+            required_store_refs=("fake-store-a",),
+        )
+
+
+@pytest.mark.parametrize(
+    ("authority", "expected_code"),
+    [
+        (SyntheticAuthorityStatus.MISSING, "AUTHORITY_MISSING"),
+        (SyntheticAuthorityStatus.STALE, "AUTHORITY_STALE"),
+        (SyntheticAuthorityStatus.REVOKED, "AUTHORITY_REVOKED"),
+    ],
+)
+def test_retry_rechecks_authority_and_blocks_when_not_current(
+    authority: SyntheticAuthorityStatus,
+    expected_code: str,
+) -> None:
+    incomplete = transition_synthetic_cleanup(
+        _fenced_pending(),
+        _event(
+            SyntheticEventKind.STORE_RESULT,
+            store_ref="fake-store-a",
+            store_status=SyntheticStoreStatus.FAILED,
+        ),
+    )
+    blocked = transition_synthetic_cleanup(
+        incomplete,
+        _event(SyntheticEventKind.RETRY, authority_status=authority),
+    )
+
+    assert blocked.state is SyntheticCleanupState.BLOCKED
+    assert blocked.authority_status is authority
+    assert blocked.safe_code == expected_code
+    assert blocked.fence_active
+    assert blocked.state is not SyntheticCleanupState.VERIFIED_SYNTHETIC
+
+
+def test_retry_requires_explicit_authority_result() -> None:
+    with pytest.raises(ValidationError):
+        _event(SyntheticEventKind.RETRY)
+
+
+def test_start_requires_explicit_authority_result() -> None:
+    with pytest.raises(ValidationError):
+        _event(SyntheticEventKind.START)
 
 
 def test_unknown_commit_requires_explicit_complete_receipt_reconciliation() -> None:
@@ -191,7 +289,13 @@ def test_cancelled_work_remains_fenced_and_cannot_restart() -> None:
         _fenced_pending(),
         _event(SyntheticEventKind.CANCEL),
     )
-    restarted = transition_synthetic_cleanup(cancelled, _event(SyntheticEventKind.START))
+    restarted = transition_synthetic_cleanup(
+        cancelled,
+        _event(
+            SyntheticEventKind.START,
+            authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
+        ),
+    )
 
     assert cancelled.state is SyntheticCleanupState.CANCELLED
     assert cancelled.fence_active
