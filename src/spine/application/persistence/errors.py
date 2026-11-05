@@ -48,6 +48,14 @@ class CommitFenceInvalidatedError(PersistenceError):
     """A transaction-bound commit fence expired before PostgreSQL commit."""
 
 
+class InvalidCommitFenceConfigurationError(PersistenceError):
+    """A protected transaction has no safe, explicit timing configuration."""
+
+
+class CommitFenceReleaseError(PersistenceError):
+    """A closed protected transaction could not conclusively release its permit."""
+
+
 class ConstraintConflictError(PersistenceError):
     """A known persistence invariant rejected the requested change."""
 

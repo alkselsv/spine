@@ -2,6 +2,11 @@
 
 from spine.infrastructure.persistence.in_memory import InMemoryPersistence
 from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
+from spine.infrastructure.persistence.postgresql_fenced_unit_of_work import (
+    PostgreSQLCommitFenceTiming,
+    PostgreSQLFencedUnitOfWork,
+    PostgreSQLFencedUnitOfWorkFactory,
+)
 from spine.infrastructure.persistence.postgresql_operational_metrics import (
     PostgreSQLOperationalMetricsStore,
 )
@@ -82,6 +87,9 @@ from spine.infrastructure.persistence.projection_composition import (
 __all__ = [
     "InMemoryPersistence",
     "PostgreSQLPersistence",
+    "PostgreSQLCommitFenceTiming",
+    "PostgreSQLFencedUnitOfWork",
+    "PostgreSQLFencedUnitOfWorkFactory",
     "PostgreSQLOperationalMetricsStore",
     "PostgreSQLOperationalCorrelationStore",
     "PostgreSQLBackupRecoveryRepository",
