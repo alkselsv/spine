@@ -2148,6 +2148,7 @@ canonical_acceptances = Table(
     Column("canonical_acceptance_schema_version", Integer, nullable=False, server_default="1"),
     Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("revision_kind", Text),
     Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("predecessor_revision_id", PostgreSQLUUID(as_uuid=True)),
@@ -2159,6 +2160,9 @@ canonical_acceptances = Table(
     Column("admission_decision_id", PostgreSQLUUID(as_uuid=True)),
     Column("access_policy_version_id", PostgreSQLUUID(as_uuid=True)),
     Column("processing_admission_id", PostgreSQLUUID(as_uuid=True)),
+    Column("tombstone_authorization_id", PostgreSQLUUID(as_uuid=True)),
+    Column("tombstone_authorization_digest", String(64)),
+    Column("transition_id", PostgreSQLUUID(as_uuid=True)),
     Column("provenance_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("idempotency_receipt_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("audit_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
@@ -2171,6 +2175,25 @@ canonical_acceptances = Table(
         "source_object_id",
         "source_revision_id",
         name="uq_canonical_acceptances_scope_source_revision",
+    ),
+    ForeignKeyConstraint(
+        [
+            "workspace_id",
+            "environment_id",
+            "tombstone_authorization_id",
+            "source_object_id",
+            "tombstone_authorization_digest",
+            "transition_id",
+        ],
+        [
+            "spine.tombstone_authorizations.workspace_id",
+            "spine.tombstone_authorizations.environment_id",
+            "spine.tombstone_authorizations.authorization_id",
+            "spine.tombstone_authorizations.source_object_id",
+            "spine.tombstone_authorizations.command_digest",
+            "spine.tombstone_authorizations.transition_id",
+        ],
+        name="fk_canonical_acceptances_tombstone_authorization",
     ),
 )
 
@@ -2851,6 +2874,99 @@ current_trusted_canonical_acceptance_selectors = Table(
     ForeignKeyConstraint(["workspace_id", "environment_id"], ["spine.environments.workspace_id", "spine.environments.id"], name="fk_current_trusted_canonical_acceptance_selector_environment"),
 )
 
+trusted_canonical_tombstone_selector_versions = Table(
+    "trusted_canonical_tombstone_selector_versions",
+    metadata,
+    Column("selector_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("selector_series_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("selector_version", Integer, nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_contract_id", String(128), nullable=False),
+    Column("source_contract_version", String(64), nullable=False),
+    Column("provider_kind", String(64), nullable=False),
+    Column("connection_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("resource_scope_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("mode", String(32), nullable=False),
+    Column("approval_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("predecessor_selector_id", PostgreSQLUUID(as_uuid=True)),
+    Column("audit_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("idempotency_identity", String(255), nullable=False),
+    Column("valid_from", DateTime(timezone=True), nullable=False),
+    Column("valid_until", DateTime(timezone=True), nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "selector_id",
+        name="pk_trusted_canonical_tombstone_selectors",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "selector_series_id", "selector_version",
+        name="uq_trusted_canonical_tombstone_selector_version",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "source_contract_id",
+        "source_object_id", "source_contract_version", "provider_kind", "connection_id",
+        "resource_scope_reference", "selector_version",
+        name="uq_trusted_canonical_tombstone_selector_scope_version",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "selector_series_id", "selector_id",
+        name="uq_trusted_canonical_tombstone_selector_series_id",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "idempotency_identity",
+        name="uq_trusted_canonical_tombstone_selector_idempotency",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "source_object_id"],
+        [
+            "spine.source_objects.workspace_id",
+            "spine.source_objects.environment_id",
+            "spine.source_objects.source_object_id",
+        ],
+        name="fk_trusted_canonical_tombstone_selector_source",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "audit_reference"],
+        ["spine.audit_events.workspace_id", "spine.audit_events.environment_id", "spine.audit_events.audit_event_id"],
+        name="fk_trusted_canonical_tombstone_selector_audit",
+        deferrable=True,
+        initially="DEFERRED",
+    ),
+)
+
+current_trusted_canonical_tombstone_selectors = Table(
+    "current_trusted_canonical_tombstone_selectors",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("selector_series_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("current_selector_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("cas_version", Integer, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "selector_series_id",
+        name="pk_current_trusted_canonical_tombstone_selector",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "selector_series_id", "current_selector_id"],
+        [
+            "spine.trusted_canonical_tombstone_selector_versions.workspace_id",
+            "spine.trusted_canonical_tombstone_selector_versions.environment_id",
+            "spine.trusted_canonical_tombstone_selector_versions.selector_series_id",
+            "spine.trusted_canonical_tombstone_selector_versions.selector_id",
+        ],
+        name="fk_current_trusted_canonical_tombstone_selector",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id"],
+        ["spine.environments.workspace_id", "spine.environments.id"],
+        name="fk_current_trusted_canonical_tombstone_selector_environment",
+    ),
+)
+
 qualified_deletion_evidence = Table(
     "qualified_deletion_evidence",
     metadata,
@@ -3055,6 +3171,11 @@ tombstone_authorizations = Table(
         "workspace_id", "environment_id", "source_object_id", "transition_id",
         name="uq_tombstone_authorizations_transition",
     ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "authorization_id", "source_object_id",
+        "command_digest", "transition_id",
+        name="uq_tombstone_authorizations_acceptance_link",
+    ),
     ForeignKeyConstraint(
         ["workspace_id", "environment_id", "qualified_evidence_id", "source_object_id", "qualified_evidence_digest"],
         ["spine.qualified_deletion_evidence.workspace_id", "spine.qualified_deletion_evidence.environment_id", "spine.qualified_deletion_evidence.evidence_id", "spine.qualified_deletion_evidence.source_object_id", "spine.qualified_deletion_evidence.evidence_digest"],
@@ -3250,6 +3371,8 @@ __all__ = [
     "current_bitrix24_disk_root_policies",
     "trusted_canonical_acceptance_selector_versions",
     "current_trusted_canonical_acceptance_selectors",
+    "trusted_canonical_tombstone_selector_versions",
+    "current_trusted_canonical_tombstone_selectors",
     "qualified_deletion_evidence",
     "source_deletion_policy_approvals",
     "current_source_deletion_policy_approvals",

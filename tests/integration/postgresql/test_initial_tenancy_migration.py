@@ -1411,6 +1411,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "crm_relationship_v2_state",
         "trusted_canonical_acceptance_selector_versions",
         "current_trusted_canonical_acceptance_selectors",
+        "trusted_canonical_tombstone_selector_versions",
+        "current_trusted_canonical_tombstone_selectors",
         "private_asr_artifacts",
         "private_asr_source_fences",
         "private_asr_report_sources",
@@ -1464,6 +1466,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
                     "'crm_relationship_claims','crm_relationship_receipts','crm_relationship_eligibility',"
                     "'crm_relationship_lifecycle_events','crm_relationship_eligibility_heads',"
                     "'crm_relationship_idempotency','crm_relationship_v2_state',"
+                    "'trusted_canonical_tombstone_selector_versions','current_trusted_canonical_tombstone_selectors',"
                     "'private_asr_artifacts','private_asr_source_fences',"
                     "'private_asr_report_sources','private_asr_aggregate_exports',"
                     "'private_asr_corpus_manifests','private_asr_corpus_releases'))"
@@ -1494,6 +1497,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
                      "'crm_relationship_claims','crm_relationship_receipts','crm_relationship_eligibility',"
                      "'crm_relationship_lifecycle_events','crm_relationship_eligibility_heads',"
                      "'crm_relationship_idempotency','crm_relationship_v2_state',"
+                     "'trusted_canonical_tombstone_selector_versions','current_trusted_canonical_tombstone_selectors',"
                      "'private_asr_artifacts','private_asr_source_fences',"
                      "'private_asr_report_sources','private_asr_aggregate_exports',"
                      "'private_asr_corpus_manifests','private_asr_corpus_releases')")
@@ -2525,6 +2529,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "uq_tombstone_authorizations_command",
         "uq_tombstone_authorizations_expected_head",
         "uq_tombstone_authorizations_transition",
+        "uq_tombstone_authorizations_acceptance_link",
+        "ix_canonical_acceptances_tombstone_authorization",
         "pk_tombstone_authorization_decisions",
         "uq_tombstone_authorization_decisions_generation",
         "pk_current_tombstone_authorization_decisions",
@@ -3420,7 +3426,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "JOIN pg_namespace AS source_namespace "
                         "ON source_namespace.oid = relation.relnamespace "
                         "WHERE source_namespace.nspname = 'spine' AND relation.relname IN "
-                            "('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', 'crm_relationship_identities', 'crm_relationship_profiles', 'crm_relationship_authority_heads', 'crm_relationship_claims', 'crm_relationship_receipts', 'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', 'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', 'crm_relationship_v2_state', 'trusted_canonical_acceptance_selector_versions', 'current_trusted_canonical_acceptance_selectors', 'gmail_message_label_observations', 'gmail_message_label_heads', 'gmail_message_relationship_evidence', "
+                            "('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', 'crm_relationship_identities', 'crm_relationship_profiles', 'crm_relationship_authority_heads', 'crm_relationship_claims', 'crm_relationship_receipts', 'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', 'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', 'crm_relationship_v2_state', 'trusted_canonical_acceptance_selector_versions', 'current_trusted_canonical_acceptance_selectors', 'trusted_canonical_tombstone_selector_versions', 'current_trusted_canonical_tombstone_selectors', 'gmail_message_label_observations', 'gmail_message_label_heads', 'gmail_message_relationship_evidence', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                          "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', 'ingestion_runs', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -3469,7 +3475,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "WHERE table_schema = 'spine' "
                             "AND table_name NOT LIKE 'source_canonical%' "
                             "AND table_name <> 'requirements_acceptance_decisions' "
-                            "AND table_name NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', 'crm_relationship_identities', 'crm_relationship_profiles', 'crm_relationship_authority_heads', 'crm_relationship_claims', 'crm_relationship_receipts', 'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', 'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', 'crm_relationship_v2_state', 'trusted_canonical_acceptance_selector_versions', 'current_trusted_canonical_acceptance_selectors', 'gmail_message_label_observations', 'gmail_message_label_heads', 'gmail_message_relationship_evidence', "
+                            "AND table_name NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', 'crm_relationship_identities', 'crm_relationship_profiles', 'crm_relationship_authority_heads', 'crm_relationship_claims', 'crm_relationship_receipts', 'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', 'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', 'crm_relationship_v2_state', 'trusted_canonical_acceptance_selector_versions', 'current_trusted_canonical_acceptance_selectors', 'trusted_canonical_tombstone_selector_versions', 'current_trusted_canonical_tombstone_selectors', 'gmail_message_label_observations', 'gmail_message_label_heads', 'gmail_message_relationship_evidence', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                             "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -3511,7 +3517,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "WHERE schemaname = 'spine' "
                             "AND indexname NOT LIKE 'pk_source_canonical%' "
                             "AND tablename <> 'requirements_acceptance_decisions' "
-                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', 'crm_relationship_identities', 'crm_relationship_profiles', 'crm_relationship_authority_heads', 'crm_relationship_claims', 'crm_relationship_receipts', 'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', 'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', 'crm_relationship_v2_state', 'trusted_canonical_acceptance_selector_versions', 'current_trusted_canonical_acceptance_selectors', 'gmail_message_label_observations', 'gmail_message_label_heads', 'gmail_message_relationship_evidence', "
+                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', 'crm_relationship_identities', 'crm_relationship_profiles', 'crm_relationship_authority_heads', 'crm_relationship_claims', 'crm_relationship_receipts', 'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', 'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', 'crm_relationship_v2_state', 'trusted_canonical_acceptance_selector_versions', 'current_trusted_canonical_acceptance_selectors', 'trusted_canonical_tombstone_selector_versions', 'current_trusted_canonical_tombstone_selectors', 'gmail_message_label_observations', 'gmail_message_label_heads', 'gmail_message_relationship_evidence', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                          "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -3552,7 +3558,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "SELECT tablename FROM pg_tables WHERE schemaname = 'spine' "
                             "AND tablename NOT LIKE 'source_canonical%' "
                             "AND tablename <> 'requirements_acceptance_decisions' "
-                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', 'crm_relationship_identities', 'crm_relationship_profiles', 'crm_relationship_authority_heads', 'crm_relationship_claims', 'crm_relationship_receipts', 'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', 'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', 'crm_relationship_v2_state', 'trusted_canonical_acceptance_selector_versions', 'current_trusted_canonical_acceptance_selectors', 'gmail_message_label_observations', 'gmail_message_label_heads', 'gmail_message_relationship_evidence', "
+                        "AND tablename NOT IN ('work_items', 'workflow_runs', 'workflow_command_receipts', 'workflow_run_events', 'requirements_artifact_versions', 'transcription_jobs', 'transcription_artifacts', 'transcript_segments', 'google_connection_versions', 'google_connection_approvals', 'provider_connection_versions', 'provider_connection_approvals', 'bitrix24_disk_content_policy_versions', 'current_bitrix24_disk_content_policies', 'bitrix24_disk_root_policy_versions', 'current_bitrix24_disk_root_policies', 'bitrix24_grant_bindings', 'bitrix24_grant_authorities', 'bitrix24_oauth_attempts', 'bitrix24_oauth_callback_receipts', 'bitrix24_crm_material_claims', 'bitrix24_crm_material_acceptances', 'bitrix24_crm_material_revocations', 'crm_relationship_identities', 'crm_relationship_profiles', 'crm_relationship_authority_heads', 'crm_relationship_claims', 'crm_relationship_receipts', 'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', 'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', 'crm_relationship_v2_state', 'trusted_canonical_acceptance_selector_versions', 'current_trusted_canonical_acceptance_selectors', 'trusted_canonical_tombstone_selector_versions', 'current_trusted_canonical_tombstone_selectors', 'gmail_message_label_observations', 'gmail_message_label_heads', 'gmail_message_relationship_evidence', "
                         "'source_objects', 'source_revisions', 'source_revision_provenance', "
                          "'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
                         "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
@@ -4463,7 +4469,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'crm_relationship_claims', 'crm_relationship_receipts', "
                         "'crm_relationship_eligibility', 'crm_relationship_lifecycle_events', "
                         "'crm_relationship_eligibility_heads', 'crm_relationship_idempotency', "
-                        "'crm_relationship_v2_state', 'trusted_canonical_acceptance_selector_versions', 'current_trusted_canonical_acceptance_selectors', 'gmail_message_label_observations', 'gmail_message_label_heads', 'gmail_message_relationship_evidence', "
+                        "'crm_relationship_v2_state', 'trusted_canonical_acceptance_selector_versions', 'current_trusted_canonical_acceptance_selectors', 'trusted_canonical_tombstone_selector_versions', 'current_trusted_canonical_tombstone_selectors', 'gmail_message_label_observations', 'gmail_message_label_heads', 'gmail_message_relationship_evidence', "
                         "'admission_decisions', "
                         "'source_objects', 'source_revisions', "
                          "'source_revision_provenance', 'source_revision_receipt_associations', 'trusted_content_verification_evidence', 'transcript_publications', 'transcript_reviews', 'corrected_transcript_artifacts', "
@@ -4688,6 +4694,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "crm_relationship_v2_state": (False, False),
         "trusted_canonical_acceptance_selector_versions": (True, True),
         "current_trusted_canonical_acceptance_selectors": (True, True),
+        "trusted_canonical_tombstone_selector_versions": (True, True),
+        "current_trusted_canonical_tombstone_selectors": (True, True),
         "provider_connection_approvals": (True, True),
         "provider_connection_versions": (True, True),
         "bitrix24_disk_content_policy_versions": (True, True),
@@ -6170,6 +6178,7 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20270109_108_private_asr_manifest_authority.py",
         "20270110_109_gmail_message_state.py",
         "20270111_110_tombstone_authorization.py",
+        "20270112_111_canonical_tombstone_v3.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "transactional_failure_probe.py").write_text(

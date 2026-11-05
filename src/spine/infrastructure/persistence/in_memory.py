@@ -308,6 +308,7 @@ class _Store:
         transaction_lock: asyncio.Lock | None = None,
         canonical_policy_repository: InMemoryAccessPolicyRepository | None = None,
         canonical_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        allow_ungoverned_tombstones: bool = False,
         boundary_id_factory: Callable[[], UUID] = uuid4,
         boundary_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
@@ -364,6 +365,7 @@ class _Store:
         self.fail_next_audit_append = False
         self.canonical_policy_repository = canonical_policy_repository
         self.canonical_clock = canonical_clock
+        self.allow_ungoverned_tombstones = allow_ungoverned_tombstones
         self.boundary_id_factory = boundary_id_factory
         self.boundary_clock = boundary_clock
         self.outbox_deliveries: dict[UUID, OutboxDelivery] = {}
@@ -2263,6 +2265,34 @@ class _CanonicalAcceptanceRepository:
                 )
             )
         current = self._heads().get(command.source.source_object_id)
+        tombstone_authorization = command.tombstone_authorization
+        if (
+            revision.kind is RevisionKind.TOMBSTONE
+            and tombstone_authorization is None
+            and not self._uow._store.allow_ungoverned_tombstones
+        ):
+            self._uow._fail(
+                CanonicalEligibilityError("Tombstone authority is unavailable.")
+            )
+        if tombstone_authorization is not None and (
+            revision.kind is not RevisionKind.TOMBSTONE
+            or command.idempotency_key.value != tombstone_authorization.idempotency_key
+            or revision.revision_id != tombstone_authorization.tombstone_revision_id
+            or current is None
+            or (
+                current.current_revision_id,
+                current.acceptance_id,
+                current.cas_version,
+            )
+            != (
+                command.expected_current_revision_id,
+                command.expected_current_acceptance_id,
+                command.expected_current_cas_version,
+            )
+        ):
+            self._uow._fail(
+                CanonicalEligibilityError("Tombstone authorization is invalid.")
+            )
         comparison: SourceOrderComparison | None = None
         if provenance.order_scheme is not None:
             try:
@@ -2515,11 +2545,18 @@ class _CanonicalAcceptanceRepository:
         )
         acceptance = CanonicalAcceptance(
             canonical_acceptance_schema_version=(
-                2 if processing_admission is not None else 1
+                3
+                if tombstone_authorization is not None
+                else (2 if processing_admission is not None else 1)
             ),
             canonical_acceptance_id=command.canonical_acceptance_id,
             source_object_id=source.source_object_id,
             source_revision_id=revision.revision_id,
+            revision_kind=(
+                RevisionKind.TOMBSTONE
+                if tombstone_authorization is not None
+                else None
+            ),
             workspace_id=scope.workspace_id,
             environment_id=scope.environment_id,
             predecessor_revision_id=current.current_revision_id if current else None,
@@ -2534,6 +2571,21 @@ class _CanonicalAcceptanceRepository:
                 None
                 if processing_admission is None
                 else processing_admission.processing_admission_id
+            ),
+            tombstone_authorization_id=(
+                None
+                if tombstone_authorization is None
+                else tombstone_authorization.authorization_id
+            ),
+            tombstone_authorization_digest=(
+                None
+                if tombstone_authorization is None
+                else tombstone_authorization.command_digest
+            ),
+            transition_id=(
+                None
+                if tombstone_authorization is None
+                else tombstone_authorization.transition_id
             ),
             provenance_id=provenance.provenance_id,
             idempotency_receipt_id=claim.receipt_id,
@@ -5860,6 +5912,7 @@ class InMemoryPersistence:
         delivery_lease_token_factory: Callable[[], UUID] = uuid4,
         canonical_policy_repository: InMemoryAccessPolicyRepository | None = None,
         canonical_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        allow_ungoverned_tombstones: bool = False,
         boundary_id_factory: Callable[[], UUID] = uuid4,
         boundary_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         ask_admission_run_id_factory: Callable[[], UUID] = uuid4,
@@ -5878,6 +5931,7 @@ class InMemoryPersistence:
             transaction_lock=transaction_lock,
             canonical_policy_repository=canonical_policy_repository,
             canonical_clock=canonical_clock,
+            allow_ungoverned_tombstones=allow_ungoverned_tombstones,
             boundary_id_factory=boundary_id_factory,
             boundary_clock=boundary_clock,
         )

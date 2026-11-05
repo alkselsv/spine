@@ -417,6 +417,10 @@ async def _accept_canonical_tombstone(
         lifecycle_query=_query(case, observation),
         operation=case.context.operation,
     )
+    if adapter.prepare_legacy_tombstone_selector is not None:
+        await adapter.prepare_legacy_tombstone_selector(
+            case.source, case.context, case.command.audit_event_id
+        )
     async with adapter.uow_factory(case.context) as uow:
         await uow.canonical.accept(command)
         await uow.commit()

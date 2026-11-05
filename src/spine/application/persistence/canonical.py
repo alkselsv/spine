@@ -43,12 +43,14 @@ from spine.domain.sources import (
     SourceRevision,
     SourceRevisionProvenance,
 )
+from spine.domain.sources.deletion_authorization import TombstoneAuthorization
 
 if TYPE_CHECKING:
     from spine.application.lifecycle import LifecycleEligibilityQuery
 
 CANONICAL_ACCEPTANCE_SCHEMA_VERSION = 1
 CANONICAL_ACCEPTANCE_V2_SCHEMA_VERSION = 2
+CANONICAL_ACCEPTANCE_V3_SCHEMA_VERSION = 3
 ALLOWED_CANONICAL_ADMISSION_PROFILES = frozenset({"admission:r1"})
 CANONICAL_ACCEPTANCE_OUTBOX_EVENT_TYPE = "canonical.accepted"
 CANONICAL_ACCEPTANCE_OUTBOX_SCHEMA_VERSION = 1
@@ -238,6 +240,8 @@ class CanonicalAcceptanceCommand:
     admission_decision_id: UUID | None
     access_policy_version_id: UUID | None
     expected_current_revision_id: UUID | None
+    expected_current_acceptance_id: UUID | None
+    expected_current_cas_version: int | None
     idempotency_key: IdempotencyKey
     canonical_acceptance_id: UUID
     audit_event_id: UUID
@@ -247,6 +251,7 @@ class CanonicalAcceptanceCommand:
     outbox_intent: OutboxIntent | None
     lifecycle_query: "LifecycleEligibilityQuery | None"
     processing_admission: SourceProcessingAdmission | None
+    tombstone_authorization: TombstoneAuthorization | None
     digest: CommandDigest
 
     def expected_digest(self) -> CommandDigest:
@@ -257,6 +262,8 @@ class CanonicalAcceptanceCommand:
             admission_decision_id=self.admission_decision_id,
             access_policy_version_id=self.access_policy_version_id,
             expected_current_revision_id=self.expected_current_revision_id,
+            expected_current_acceptance_id=self.expected_current_acceptance_id,
+            expected_current_cas_version=self.expected_current_cas_version,
             idempotency_key=self.idempotency_key,
             canonical_acceptance_id=self.canonical_acceptance_id,
             audit_event_id=self.audit_event_id,
@@ -266,6 +273,7 @@ class CanonicalAcceptanceCommand:
             outbox_intent=self.outbox_intent,
             lifecycle_query=self.lifecycle_query,
             processing_admission=self.processing_admission,
+            tombstone_authorization=self.tombstone_authorization,
             operation=self.digest.operation,
         ).digest
 
@@ -279,6 +287,8 @@ class CanonicalAcceptanceCommand:
         admission_decision_id: UUID | None = None,
         access_policy_version_id: UUID | None = None,
         expected_current_revision_id: UUID | None,
+        expected_current_acceptance_id: UUID | None = None,
+        expected_current_cas_version: int | None = None,
         idempotency_key: IdempotencyKey,
         canonical_acceptance_id: UUID,
         audit_event_id: UUID,
@@ -288,6 +298,7 @@ class CanonicalAcceptanceCommand:
         outbox_intent: OutboxIntent | None = None,
         lifecycle_query: "LifecycleEligibilityQuery | None" = None,
         processing_admission: SourceProcessingAdmission | None = None,
+        tombstone_authorization: TombstoneAuthorization | None = None,
         operation: PersistenceOperation = PersistenceOperation("canonical_acceptance"),
     ) -> "CanonicalAcceptanceCommand":
         payload = {
@@ -324,11 +335,26 @@ class CanonicalAcceptanceCommand:
                 if processing_admission is not None
                 else None
             ),
+            **(
+                {
+                    "expected_current_acceptance_id": expected_current_acceptance_id,
+                    "expected_current_cas_version": expected_current_cas_version,
+                    "tombstone_authorization": tombstone_authorization.model_dump(
+                        mode="json"
+                    ),
+                }
+                if tombstone_authorization is not None
+                else {}
+            ),
         }
         operation_schema_version = (
-            CANONICAL_ACCEPTANCE_V2_SCHEMA_VERSION
-            if processing_admission is not None
-            else CANONICAL_ACCEPTANCE_SCHEMA_VERSION
+            CANONICAL_ACCEPTANCE_V3_SCHEMA_VERSION
+            if tombstone_authorization is not None
+            else (
+                CANONICAL_ACCEPTANCE_V2_SCHEMA_VERSION
+                if processing_admission is not None
+                else CANONICAL_ACCEPTANCE_SCHEMA_VERSION
+            )
         )
         digest = digest_command(
             operation=operation,
@@ -342,6 +368,8 @@ class CanonicalAcceptanceCommand:
             admission_decision_id=admission_decision_id,
             access_policy_version_id=access_policy_version_id,
             expected_current_revision_id=expected_current_revision_id,
+            expected_current_acceptance_id=expected_current_acceptance_id,
+            expected_current_cas_version=expected_current_cas_version,
             idempotency_key=idempotency_key,
             canonical_acceptance_id=canonical_acceptance_id,
             audit_event_id=audit_event_id,
@@ -351,6 +379,7 @@ class CanonicalAcceptanceCommand:
             outbox_intent=outbox_intent,
             lifecycle_query=lifecycle_query,
             processing_admission=processing_admission,
+            tombstone_authorization=tombstone_authorization,
             digest=digest,
         )
 
@@ -395,11 +424,12 @@ class CanonicalAcceptanceResult:
 
 @dataclass(frozen=True, slots=True)
 class CanonicalAcceptanceReadResult:
-    """Persisted v1/v2 acceptance with exact processing disposition/currentness."""
+    """Persisted v1/v2/v3 acceptance with exact authority/currentness."""
 
     acceptance: CanonicalAcceptance
     processing_admission: SourceProcessingAdmission | None
     current: CurrentSourceHead | None
+    tombstone_authorization: TombstoneAuthorization | None = None
 
     def __post_init__(self) -> None:
         expected = self.acceptance.processing_admission_id
@@ -422,6 +452,30 @@ class CanonicalAcceptanceReadResult:
             self.acceptance.source_revision_id,
         ):
             raise ValueError("canonical acceptance processing scope is inconsistent")
+        expected_tombstone = self.acceptance.tombstone_authorization_id
+        actual_tombstone = (
+            None
+            if self.tombstone_authorization is None
+            else self.tombstone_authorization.authorization_id
+        )
+        if expected_tombstone != actual_tombstone:
+            raise ValueError("canonical acceptance tombstone link is incomplete")
+        if self.tombstone_authorization is not None and (
+            self.tombstone_authorization.workspace_id,
+            self.tombstone_authorization.environment_id,
+            self.tombstone_authorization.source_object_id,
+            self.tombstone_authorization.tombstone_revision_id,
+            self.tombstone_authorization.command_digest,
+            self.tombstone_authorization.transition_id,
+        ) != (
+            self.acceptance.workspace_id,
+            self.acceptance.environment_id,
+            self.acceptance.source_object_id,
+            self.acceptance.source_revision_id,
+            self.acceptance.tombstone_authorization_digest,
+            self.acceptance.transition_id,
+        ):
+            raise ValueError("canonical acceptance tombstone scope is inconsistent")
 
     @property
     def is_current(self) -> bool:
@@ -455,6 +509,10 @@ class CanonicalAcceptanceRepository(Protocol):
         self, processing_admission_id: UUID
     ) -> SourceProcessingAdmission | None: ...
 
+    async def resolve_tombstone_authorization(
+        self, authorization_id: UUID
+    ) -> TombstoneAuthorization | None: ...
+
     async def resolve_acceptance_read(
         self, canonical_acceptance_id: UUID
     ) -> CanonicalAcceptanceReadResult | None: ...
@@ -466,6 +524,7 @@ __all__ = [
     "CANONICAL_ACCEPTANCE_OUTBOX_SCHEMA_VERSION",
     "CANONICAL_ACCEPTANCE_SCHEMA_VERSION",
     "CANONICAL_ACCEPTANCE_V2_SCHEMA_VERSION",
+    "CANONICAL_ACCEPTANCE_V3_SCHEMA_VERSION",
     "CanonicalAcceptanceCommand",
     "CanonicalAcceptanceOutboxPayload",
     "CanonicalAcceptanceRepository",

@@ -1718,6 +1718,11 @@ async def _prepare_projection_successor_tombstone_case(
     )
     activation = prepared.activated.activation
     case = prepared.canonical_case
+    prepare_legacy = getattr(
+        persistence_adapter, "prepare_legacy_tombstone_selector", None
+    )
+    if prepare_legacy is not None:
+        await prepare_legacy(case.source, case.context, case.command.audit_event_id)
     context = persistence_adapter.ingestion_context(
         activation.workspace_id, activation.environment_id, "projection_run"
     )

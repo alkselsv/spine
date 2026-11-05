@@ -78,6 +78,7 @@ async def create_in_memory_adapter() -> DeliveryPersistenceAdapter:
         ).__next__,
         canonical_policy_repository=access_policies,
         canonical_clock=lambda: datetime(2026, 10, 12, tzinfo=timezone.utc),
+        allow_ungoverned_tombstones=True,
     )
     await persistence.initial_workspace_bootstrap.create_initial_workspace(
         bootstrap_authority,

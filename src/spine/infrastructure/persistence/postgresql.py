@@ -331,6 +331,7 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     lifecycle_decisions as _LIFECYCLE_DECISIONS,
     retention_applicabilities as _RETENTION_APPLICABILITIES,
     current_retention_applicabilities as _CURRENT_RETENTION_APPLICABILITIES,
+    tombstone_authorizations as _TOMBSTONE_AUTHORIZATIONS,
     trusted_canonical_acceptance_selector_versions as _CANONICAL_ACCEPTANCE_SELECTORS,
     current_trusted_canonical_acceptance_selectors as _CURRENT_CANONICAL_ACCEPTANCE_SELECTORS,
     current_bitrix24_disk_root_policies as _CURRENT_BITRIX24_ROOT_POLICIES,
@@ -355,6 +356,9 @@ from spine.infrastructure.persistence.postgresql_mappings import (
 from spine.infrastructure.persistence.postgresql_source_locks import (
     lock_admission_revision,
     lock_source_lifecycle_shared,
+)
+from spine.infrastructure.persistence.postgresql_canonical_tombstone import (
+    PostgreSQLCurrentTombstoneAuthorizationAuthority,
 )
 from spine.infrastructure.persistence.postgresql_qa_sessions import (
     PostgreSQLQASessionRepository,
@@ -2594,6 +2598,28 @@ class _PostgreSQLCanonicalAcceptanceRepository:
             else None
         )
 
+    async def resolve_tombstone_authorization(
+        self, authorization_id: UUID
+    ):
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return None
+        record = (
+            await self._uow._execute(
+                select(_TOMBSTONE_AUTHORIZATIONS.c.record).where(
+                    _TOMBSTONE_AUTHORIZATIONS.c.workspace_id == scope.workspace_id,
+                    _TOMBSTONE_AUTHORIZATIONS.c.environment_id == scope.environment_id,
+                    _TOMBSTONE_AUTHORIZATIONS.c.authorization_id == authorization_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if record is None:
+            return None
+        from spine.domain.sources.deletion_authorization import TombstoneAuthorization
+
+        return TombstoneAuthorization.model_validate(record)
+
     @staticmethod
     def _processing_values(
         admission: SourceProcessingAdmission,
@@ -3088,6 +3114,13 @@ class _PostgreSQLCanonicalAcceptanceRepository:
             acceptance=acceptance,
             processing_admission=processing_admission,
             current=await self.resolve_current(acceptance.source_object_id),
+            tombstone_authorization=(
+                await self.resolve_tombstone_authorization(
+                    acceptance.tombstone_authorization_id
+                )
+                if acceptance.tombstone_authorization_id is not None
+                else None
+            ),
         )
 
     async def _replay(
@@ -3228,6 +3261,37 @@ class _PostgreSQLCanonicalAcceptanceRepository:
         if isinstance(claim, IdempotencyReplay):
             return await self._replay(command, claim)
 
+        tombstone_authorization = command.tombstone_authorization
+        if command.revision.kind is RevisionKind.TOMBSTONE:
+            if (
+                tombstone_authorization is not None
+                and (
+                    command.admission_decision_id is not None
+                    or command.access_policy_version_id is not None
+                    or command.processing_admission is not None
+                    or command.idempotency_key.value
+                    != tombstone_authorization.idempotency_key
+                    or command.revision.revision_id
+                    != tombstone_authorization.tombstone_revision_id
+                    or command.expected_current_revision_id
+                    != tombstone_authorization.expected_current_revision_id
+                    or command.expected_current_acceptance_id
+                    != tombstone_authorization.expected_current_acceptance_id
+                    or command.expected_current_cas_version
+                    != tombstone_authorization.expected_current_cas_version
+                )
+            ):
+                await self._uow._fail(
+                    CanonicalEligibilityError("Tombstone authorization is invalid.")
+                )
+            await PostgreSQLCurrentTombstoneAuthorizationAuthority().revalidate(
+                command, self._uow
+            )
+        elif tombstone_authorization is not None:
+            await self._uow._fail(
+                CanonicalEligibilityError("Tombstone authorization is invalid.")
+            )
+
         if command.revision.kind is RevisionKind.CONTENT:
             await _lock_and_validate_lifecycle_eligibility(
                 self._uow,
@@ -3354,6 +3418,22 @@ class _PostgreSQLCanonicalAcceptanceRepository:
             .one_or_none()
         )
         current = self._head(head_row) if head_row is not None else None
+        if tombstone_authorization is not None and (
+            current is None
+            or (
+                current.current_revision_id,
+                current.acceptance_id,
+                current.cas_version,
+            )
+            != (
+                command.expected_current_revision_id,
+                command.expected_current_acceptance_id,
+                command.expected_current_cas_version,
+            )
+        ):
+            await self._uow._fail(
+                OptimisticConflictError("The expected source head is stale.")
+            )
         authoritative_revision_row = (
             (
                 await self._uow._execute(
@@ -3671,11 +3751,18 @@ class _PostgreSQLCanonicalAcceptanceRepository:
         )
         acceptance = CanonicalAcceptance(
             canonical_acceptance_schema_version=(
-                2 if processing_admission is not None else 1
+                3
+                if tombstone_authorization is not None
+                else (2 if processing_admission is not None else 1)
             ),
             canonical_acceptance_id=command.canonical_acceptance_id,
             source_object_id=source.source_object_id,
             source_revision_id=revision.revision_id,
+            revision_kind=(
+                RevisionKind.TOMBSTONE
+                if tombstone_authorization is not None
+                else None
+            ),
             workspace_id=scope.workspace_id,
             environment_id=scope.environment_id,
             predecessor_revision_id=current.current_revision_id if current else None,
@@ -3690,6 +3777,21 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                 None
                 if processing_admission is None
                 else processing_admission.processing_admission_id
+            ),
+            tombstone_authorization_id=(
+                None
+                if tombstone_authorization is None
+                else tombstone_authorization.authorization_id
+            ),
+            tombstone_authorization_digest=(
+                None
+                if tombstone_authorization is None
+                else tombstone_authorization.command_digest
+            ),
+            transition_id=(
+                None
+                if tombstone_authorization is None
+                else tombstone_authorization.transition_id
             ),
             provenance_id=provenance.provenance_id,
             idempotency_receipt_id=claim.receipt_id,
