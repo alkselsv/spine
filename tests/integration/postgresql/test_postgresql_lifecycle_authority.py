@@ -798,7 +798,7 @@ async def test_postgresql_withdrawal_serializes_after_inflight_canonical_accepta
             {withdrawal, lock_waiter}, return_when=asyncio.FIRST_COMPLETED
         )
         assert lock_waiter in completed
-        assert await _wait_for_postgresql_lock_wait(
+        assert await wait_for_postgresql_lock_wait(
             postgresql_adapter,
             context,
             backend_pids[0],
