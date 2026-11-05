@@ -133,14 +133,22 @@ applicability in canonical source-object/revision order inside one PostgreSQL
 transaction. The whole-artifact authorization still covers the complete
 versioned source lineage. A deletion fence adapter returns one
 `PrivateArtifactDeletionFenceOutcome` bound to that exact request, authorization
-and lineage; the consumer rejects incomplete or mismatched outcomes before
-writing deletion audit or tombstone state.
+and lineage. Each contributor outcome binds the request digest, authorization
+reference, complete source binding digest and source lineage. F2 permits must
+remain valid through the complete set acquisition and expire no later than the
+request or authorization. The consumer rejects incomplete or mismatched outcomes
+before writing deletion audit or tombstone state.
 
 The consumer calls `validate_before_commit` after staging the single audit and
 tombstone, then calls `complete(committed=True)` only after a known commit. On a
 known pre-commit failure it rolls back before calling `complete(committed=False)`.
 If commit outcome is unknown, it does not finish or abort external permits; they
-remain unresolved for bounded expiry and reconciliation. F2 adapters must
+remain unresolved for bounded expiry and provider reconciliation. Local
+coordinator references are discarded without settling them. If commit is known
+but provider finish fails, the artifact deletion remains committed; the provider
+must retain its fence until bounded expiry and reconcile the settlement. The
+consumer reports the known committed result rather than a denial that could be
+mistaken for rollback. F2 adapters must
 acquire each contributor in canonical source order and unwind all already
 acquired permits if a later acquisition fails. PostgreSQL F1 source locks are
 released by commit or rollback of the shared transaction.
@@ -149,3 +157,5 @@ Only the existing qualified F1 sources are enabled in production. No F2
 provider is qualified for this consumer; external, missing or ambiguous
 contributors therefore deny the complete operation. Synthetic F2 fence-port
 tests exercise consumer lifecycle only and do not qualify a production provider.
+Custom fence injection is restricted to explicitly marked test wiring until a
+versioned qualification record and provider-specific adapter are introduced.

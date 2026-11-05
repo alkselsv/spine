@@ -36,7 +36,8 @@ from spine.application.retention import (
 )
 from spine.application.private_asr_corpus import (
     AdmittedSourceRevision, PrivateArtifactDeletionAuthorization,
-    PrivateArtifactDeletionFenceOutcome, PrivateArtifactDeletionRequest,
+    PrivateArtifactDeletionFenceContributorOutcome,
+    PrivateArtifactDeletionRequest,
     PrivateReportReceipt, PrivateReportSourceBinding,
     SanitizedReportBuilder,
 )
@@ -82,6 +83,9 @@ from spine.infrastructure.private_asr.postgresql_storage import (
     PostgreSQLPrivateASRStorage, PrivateASRStorageDenied, private_asr_artifacts,
     private_asr_aggregate_exports, private_asr_report_sources,
     private_asr_source_fences,
+)
+from spine.infrastructure.private_asr.composite_deletion_fence import (
+    CompositePrivateArtifactDeletionFence,
 )
 from spine.infrastructure.private_asr import postgresql_storage as private_asr_storage
 from spine.infrastructure.private_asr.audit import PostgreSQLPrivateASRAuditReceipts
@@ -1121,62 +1125,82 @@ async def test_postgresql_private_asr_expiration_denies_without_deletion_authori
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fail_before_commit", (False, True))
+@pytest.mark.parametrize("failure_stage", (None, "acquire", "validate", "finish"))
 async def test_postgresql_private_asr_composite_fence_completes_all_permits_with_transaction(
     private_asr_database: _Database,
-    fail_before_commit: bool,
+    failure_stage: str | None,
 ) -> None:
     clock = _ControlledClock(NOW)
     deletion_authority = _SyntheticArtifactDeletionAuthority()
+    seed = 798230 + {None: 0, "acquire": 10, "validate": 20, "finish": 30}[failure_stage]
     prepared = await _prepare_synthetic_report_case(
         private_asr_database,
-        seed=798230 + int(fail_before_commit) * 10,
+        seed=seed,
         deletion_authority=deletion_authority,
         clock=clock,
     )
     await _add_synthetic_report_source(
-        prepared, seed=798240 + int(fail_before_commit) * 10,
+        prepared, seed=seed + 10,
     )
     prepared.bindings = tuple(reversed(prepared.bindings))
     prepared.manifest_lineage.bindings = prepared.bindings
     report = await _commit_synthetic_report(
         prepared,
-        idempotency_key=f"composite-f2-fence-{fail_before_commit}",
+        idempotency_key=f"composite-f2-fence-{failure_stage}",
     )
 
-    class ExternalFenceFixture:
+    class ExternalContributorFixture:
         def __init__(self) -> None:
-            self.events: list[str] = []
-            self.source_order: tuple[UUID, ...] = ()
+            self.events: list[tuple[str, UUID]] = []
+            self.source_order: list[UUID] = []
 
-        async def acquire(self, request, authorization, *, context, transaction):
-            del authorization, context
-            self.events.append("acquire")
-            self.source_order = tuple(
-                binding.source_object_id for binding in request.source_bindings
-            )
-            return PrivateArtifactDeletionFenceOutcome(
+        async def acquire_contributor(
+            self, request, authorization, contributor, *, context, transaction
+        ):
+            del context, transaction
+            source_id = contributor.source_object_id
+            self.source_order.append(source_id)
+            self.events.append(("acquire", source_id))
+            if failure_stage == "acquire" and len(self.source_order) == 2:
+                raise RuntimeError("synthetic second-contributor acquisition denied")
+            lineage = next(source for source in request.expected_source_lineage if (
+                source.source_object_id == contributor.source_object_id
+                and source.source_revision_id == contributor.source_revision_id
+                and source.source_revision_digest == contributor.revision_digest
+            ))
+            return PrivateArtifactDeletionFenceContributorOutcome(
                 authority_kind="external_f2",
-                artifact_id=request.artifact_id,
-                workspace_id=request.workspace_id,
-                environment_id=request.environment_id,
                 request_digest=request.calculate_digest(),
-                authorization_reference=synthetic_uuid(798001),
-                source_lineage=request.expected_source_lineage,
-                acquired_at=clock.current,
+                authorization_reference=authorization.authorization_ref.reference_id,
+                source_binding_digest=contributor.calculate_digest(),
+                source_lineage=lineage,
+                permit_reference=synthetic_uuid(seed + len(self.source_order)),
+                permit_valid_until=request.valid_until,
             )
 
-        async def validate_before_commit(self, outcome, *, transaction):
-            del outcome, transaction
-            self.events.append("validate")
-            if fail_before_commit:
+        async def validate_contributor_before_commit(self, outcome, *, transaction):
+            del transaction
+            source_id = outcome.source_lineage.source_object_id
+            self.events.append(("validate", source_id))
+            if failure_stage == "validate" and source_id == self.source_order[1]:
                 raise RuntimeError("synthetic second-contributor permit is stale")
 
-        async def complete(self, outcome, *, transaction, committed):
-            del outcome, transaction
-            self.events.append("finish" if committed else "abort")
+        async def complete_contributor(self, outcome, *, transaction, committed):
+            del transaction
+            self.events.append(("finish" if committed else "abort", outcome.source_lineage.source_object_id))
+            if failure_stage == "finish" and committed:
+                raise RuntimeError("synthetic provider settlement is pending")
 
-    fence = ExternalFenceFixture()
+    contributor = ExternalContributorFixture()
+
+    class Resolver:
+        def resolve(self, source, *, context):
+            del source, context
+            return contributor
+
+    fence = CompositePrivateArtifactDeletionFence(
+        resolver=Resolver(), clock=lambda: clock.current,
+    )
     deletion_store = _storage_for_transaction_probe(
         prepared,
         uow_factory=prepared.persistence.uow_factory,
@@ -1190,12 +1214,12 @@ async def test_postgresql_private_asr_composite_fence_completes_all_permits_with
             workspace_id=prepared.case.source.workspace_id,
             environment_id=prepared.case.source.environment_id,
         ),
-        service_principal_id=synthetic_uuid(798250 + int(fail_before_commit)),
+        service_principal_id=synthetic_uuid(seed + 20),
         purpose=PersistencePurpose("asr_model_evaluation"),
         operation=PersistenceOperation("private_asr_retention_expiration"),
-        trace_id=synthetic_uuid(798260 + int(fail_before_commit)),
+        trace_id=synthetic_uuid(seed + 30),
     )
-    if fail_before_commit:
+    if failure_stage in ("acquire", "validate"):
         with pytest.raises(PrivateASRStorageDenied):
             await deletion_store.expire(
                 report.report_ref,
@@ -1209,11 +1233,18 @@ async def test_postgresql_private_asr_composite_fence_completes_all_permits_with
             context=deletion_context,
         )
 
-    assert fence.source_order == tuple(sorted(fence.source_order, key=str))
-    assert fence.events == (
-        ["acquire", "validate", "abort"]
-        if fail_before_commit else ["acquire", "validate", "finish"]
-    )
+    expected_order = sorted(contributor.source_order, key=str)
+    assert contributor.source_order == expected_order
+    expected_events = [("acquire", source_id) for source_id in expected_order]
+    if failure_stage == "acquire":
+        expected_events += [("abort", expected_order[0])]
+    else:
+        expected_events += [("validate", source_id) for source_id in expected_order]
+        expected_events += [
+            ("abort" if failure_stage in ("validate",) else "finish", source_id)
+            for source_id in reversed(expected_order)
+        ]
+    assert contributor.events == expected_events
     async with prepared.runtime_sessions() as session, session.begin():
         await prepared.store._set_scope(session, deletion_context)
         row = (await session.execute(select(
@@ -1228,9 +1259,10 @@ async def test_postgresql_private_asr_composite_fence_completes_all_permits_with
             audit_events.c.target_id == report.report_ref.reference_id,
             audit_events.c.reason == "private_asr_artifact_expired",
         ))).scalar_one()
-    assert row.status == ("committed" if fail_before_commit else "tombstoned")
-    assert bool(row.payload) is fail_before_commit
-    assert deletion_audits == (0 if fail_before_commit else 1)
+    deletion_committed = failure_stage in (None, "finish")
+    assert row.status == ("committed" if not deletion_committed else "tombstoned")
+    assert bool(row.payload) is not deletion_committed
+    assert deletion_audits == (1 if deletion_committed else 0)
 
 
 
@@ -2426,6 +2458,7 @@ def _storage_for_transaction_probe(
             if deletion_authority is not None else prepared.deletion_authority
         ),
         deletion_fence=deletion_fence,
+        test_only_deletion_fence=deletion_fence is not None,
         uow_factory=uow_factory,
         aggregate_authority=getattr(prepared, "aggregate_authority", None),
         clock=clock or prepared.clock,

@@ -12,16 +12,23 @@ from spine.application.persistence.context import (
 )
 from spine.application.private_asr_corpus import (
     PrivateArtifactDeletionAuthorization,
+    PrivateArtifactDeletionFenceContributorOutcome,
+    PrivateArtifactDeletionFenceOutcome,
     PrivateArtifactDeletionRequestV2,
     PrivateArtifactDeletionSourceBinding,
     PrivateArtifactSourceLineage,
 )
 from spine.domain.evaluations.private_asr_corpus import PrivateReference
+from spine.domain.evaluations.private_asr_corpus import CorpusSplit
 from spine.domain.sources.retention import RetentionArtifactClass
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.private_asr.postgresql_storage import (
     PostgreSQLPrivateASRDeletionFence,
+    PostgreSQLPrivateASRStorage,
     PrivateASRStorageDenied,
+)
+from spine.infrastructure.private_asr.composite_deletion_fence import (
+    CompositePrivateArtifactDeletionFence,
 )
 
 
@@ -204,16 +211,117 @@ async def test_postgresql_deletion_fence_binds_exact_lineage_and_registers_expir
     )
 
     assert outcome.matches(request, authorization)
-    assert outcome.authority_kind == "postgresql_f1"
-    assert not outcome.model_copy(update={"source_lineage": ()}).matches(
+    assert outcome.contributors[0].authority_kind == "postgresql_f1"
+    assert not outcome.model_copy(update={"contributors": ()}).matches(
         request, authorization
     )
+    altered_source = outcome.contributors[0].source_lineage.model_copy(
+        update={
+            "record_id": UUID(int=9100),
+            "dataset_id": UUID(int=9101),
+            "split": CorpusSplit.DEVELOPMENT,
+        }
+    )
+    altered_contributor = outcome.contributors[0].model_copy(
+        update={"source_lineage": altered_source}
+    )
+    assert not outcome.model_copy(
+        update={"contributors": (altered_contributor,)}
+    ).matches(request, authorization)
     await fence.validate_before_commit(outcome, transaction=transaction)
     await fence.complete(outcome, transaction=transaction, committed=True)
     assert transaction.guard is not None
     assert transaction.guard() is True
     clock.now = request.valid_until
     assert transaction.guard() is False
+
+
+@pytest.mark.parametrize("permit_deadline", (NOW - timedelta(seconds=1), NOW + timedelta(minutes=6)))
+def test_composite_deletion_fence_rejects_f2_permit_outside_bound_window(
+    permit_deadline: datetime,
+) -> None:
+    request, authorization = _request_and_authorization()
+    source = request.expected_source_lineage[0]
+    contributor = PrivateArtifactDeletionFenceContributorOutcome(
+        authority_kind="external_f2",
+        request_digest=request.calculate_digest(),
+        authorization_reference=authorization.authorization_ref.reference_id,
+        source_binding_digest=request.source_bindings[0].calculate_digest(),
+        source_lineage=source,
+        permit_reference=UUID(int=9102),
+        permit_valid_until=permit_deadline,
+    )
+    outcome = PrivateArtifactDeletionFenceOutcome(
+        artifact_id=request.artifact_id,
+        workspace_id=request.workspace_id,
+        environment_id=request.environment_id,
+        request_digest=request.calculate_digest(),
+        authorization_reference=authorization.authorization_ref.reference_id,
+        contributors=(contributor,),
+        acquired_at=NOW,
+    )
+
+    assert not outcome.matches(request, authorization)
+
+
+def test_postgresql_storage_requires_test_only_custom_deletion_fence_wiring() -> None:
+    with pytest.raises(ValueError, match="test-only wiring"):
+        PostgreSQLPrivateASRStorage(
+            sessions=None,
+            contexts=None,
+            authority=None,
+            access_policies=None,
+            audit_receipts=None,
+            deletion_fence=object(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_composite_deletion_fence_abandon_forgets_unknown_commit_without_settlement() -> None:
+    request, authorization = _request_and_authorization()
+    settled: list[bool] = []
+
+    class Contributor:
+        async def acquire_contributor(self, request, authorization, binding, *, context, transaction):
+            del context, transaction
+            return PrivateArtifactDeletionFenceContributorOutcome(
+                authority_kind="external_f2",
+                request_digest=request.calculate_digest(),
+                authorization_reference=authorization.authorization_ref.reference_id,
+                source_binding_digest=binding.calculate_digest(),
+                source_lineage=request.expected_source_lineage[0],
+                permit_reference=UUID(int=9103),
+                permit_valid_until=request.valid_until,
+            )
+
+        async def validate_contributor_before_commit(self, outcome, *, transaction):
+            del outcome, transaction
+
+        async def complete_contributor(self, outcome, *, transaction, committed):
+            del outcome, transaction
+            settled.append(committed)
+
+    class Resolver:
+        def resolve(self, contributor, *, context):
+            del contributor, context
+            return adapter
+
+    class Transaction:
+        async def rollback(self):
+            return None
+
+    adapter = Contributor()
+    fence = CompositePrivateArtifactDeletionFence(
+        resolver=Resolver(), clock=lambda: NOW,
+    )
+    outcome = await fence.acquire(
+        request, authorization, context=CONTEXT, transaction=Transaction()
+    )
+    await fence.abandon(outcome)
+
+    with pytest.raises(PermissionError):
+        await fence.validate_before_commit(outcome, transaction=Transaction())
+    assert settled == []
 
 
 @pytest.mark.asyncio
