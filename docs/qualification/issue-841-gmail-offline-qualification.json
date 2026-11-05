@@ -73,6 +73,7 @@
     "tenant_mailbox_label_and_authority_denial_before_disclosure": [
       "tests/connectors/test_gmail.py::test_inactive_or_mismatched_connection_never_reaches_gmail",
       "tests/connectors/test_gmail.py::test_missing_or_wrong_exact_mail_scope_never_reaches_gmail",
+      "tests/connectors/test_gmail.py::test_raw_message_maps_invalid_provider_results_to_safe_outcomes",
       "tests/connectors/test_gmail.py::test_gmail_history_rejects_state_writer_for_another_mailbox_scope",
       "tests/application/test_gmail_message_state.py::test_wrong_workspace_cannot_record_message_state",
       "tests/application/test_gmail_initial_snapshot.py::test_stale_history_cursor_recovery_revocation_blocks_provider_effects"
