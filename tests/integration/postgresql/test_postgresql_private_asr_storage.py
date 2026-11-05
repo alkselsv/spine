@@ -3266,7 +3266,7 @@ async def test_postgresql_private_asr_composite_report_deletion_denies_active_ho
 
 
 @pytest.mark.parametrize("revoked_source_index", (0, 1))
-async def test_postgresql_private_asr_composite_report_deletion_denies_revoked_source(
+async def test_postgresql_private_asr_lifecycle_withdrawal_denies_composite_deletion_for_either_contributor(
     private_asr_database: _Database, revoked_source_index: int,
 ) -> None:
     deletion_authority = _SyntheticArtifactDeletionAuthority()
@@ -3275,6 +3275,7 @@ async def test_postgresql_private_asr_composite_report_deletion_denies_revoked_s
         private_asr_database,
         seed=seed,
         deletion_authority=deletion_authority,
+        lifecycle_source=True,
     )
     second_case, _, _ = await _add_synthetic_report_source(
         prepared, seed=seed + 100,
@@ -3286,18 +3287,32 @@ async def test_postgresql_private_asr_composite_report_deletion_denies_revoked_s
         prepared.case.revision.revision_id
         if revoked_source_index == 0 else second_case.revision.revision_id
     )
-    revocation_context = prepared.boundary.worker(
-        scope=EnvironmentScope(
-            workspace_id=prepared.case.source.workspace_id,
-            environment_id=prepared.case.source.environment_id,
-        ),
-        service_principal_id=synthetic_uuid(889799600 + revoked_source_index),
-        purpose=PersistencePurpose("asr_model_evaluation"),
-        operation=PersistenceOperation("private_asr_revocation"),
-        trace_id=synthetic_uuid(889799610 + revoked_source_index),
+    source_case = prepared.case if revoked_source_index == 0 else second_case
+    lifecycle_context = prepared.adapter.ingestion_context(
+        prepared.case.source.workspace_id,
+        prepared.case.source.environment_id,
+        "lifecycle_decision",
     )
-    await prepared.store.fence(
-        revision_id, reason="synthetic_source_withdrawal", context=revocation_context,
+    lifecycle_repository = PostgreSQLLifecycleAuthorityRepository(
+        uow_factory=prepared.persistence.uow_factory,
+        observation_authority=_AllowObservationAuthority(),
+        decision_authority=_AllowLifecycleDecision(),
+        decision_effects=_DecisionEffects(),
+    )
+    lifecycle_observation_record = lifecycle_observation(
+        source_case, 2_889_870_000 + revoked_source_index * 10,
+    )
+    lifecycle_decision_record = lifecycle_decision(
+        source_case,
+        lifecycle_observation_record,
+        lifecycle_context,
+        2_889_870_100 + revoked_source_index * 10,
+    )
+    await lifecycle_repository.record_observation(
+        lifecycle_observation_record, lifecycle_context,
+    )
+    await lifecycle_repository.record_decision(
+        lifecycle_decision_record, lifecycle_context,
     )
     deletion_context = prepared.boundary.worker(
         scope=EnvironmentScope(
@@ -3311,13 +3326,12 @@ async def test_postgresql_private_asr_composite_report_deletion_denies_revoked_s
     )
     prepared.store._clock = lambda: NOW + timedelta(minutes=31)
 
-    # Revocation tombstones dependent artifacts. Expiration is an idempotent
-    # no-op and must not ask for a now-stale deletion authorization.
-    await prepared.store.expire(
-        report.report_ref,
-        policy_ref=prepared.applicability_ref,
-        context=deletion_context,
-    )
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.expire(
+            report.report_ref,
+            policy_ref=prepared.applicability_ref,
+            context=deletion_context,
+        )
 
     assert deletion_authority.requests == []
     async with prepared.runtime_sessions() as session, session.begin():
@@ -3328,8 +3342,8 @@ async def test_postgresql_private_asr_composite_report_deletion_denies_revoked_s
         ).where(
             private_asr_artifacts.c.artifact_id == report.report_ref.reference_id,
         ))).one()
-    assert row.status == "tombstoned"
-    assert row.payload == b""
+    assert row.status == "committed"
+    assert row.payload
 
 
 @pytest.mark.asyncio
