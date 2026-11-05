@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -238,3 +239,109 @@ def test_provider_port_requires_utc_evaluation_and_versioned_provider_contract()
             CommitFenceOperationState.ACQUIRED,
             provider_contract_version="",
         )
+
+
+class DeterministicFencePort:
+    """Scripted port responses for contract conformance; not a provider proof."""
+
+    provider_contract_version = CONTRACT_VERSION
+
+    def __init__(self, *responses: CommitFenceOperationResult) -> None:
+        self._responses = deque(responses)
+
+    def _respond(
+        self,
+        operation: CommitFenceOperation,
+        binding: CommitFenceBinding,
+    ) -> CommitFenceOperationResult:
+        result = self._responses.popleft()
+        assert result.operation is operation
+        assert result.binding == binding
+        return result
+
+    async def acquire(self, binding: CommitFenceBinding) -> CommitFenceOperationResult:
+        return self._respond(CommitFenceOperation.ACQUIRE, binding)
+
+    async def renew(
+        self, permit: CommitFencePermit, *, evaluated_at: datetime
+    ) -> CommitFenceOperationResult:
+        del evaluated_at
+        result = self._respond(CommitFenceOperation.RENEW, permit.binding)
+        assert result.permit is not None
+        assert result.permit.permit_reference == permit.permit_reference
+        return result
+
+    async def validate_before_commit(
+        self, permit: CommitFencePermit, *, evaluated_at: datetime
+    ) -> CommitFenceOperationResult:
+        del evaluated_at
+        result = self._respond(CommitFenceOperation.PRE_COMMIT, permit.binding)
+        if result.permit is not None:
+            assert result.permit.permit_reference == permit.permit_reference
+        return result
+
+    async def finish(self, permit: CommitFencePermit) -> CommitFenceOperationResult:
+        result = self._respond(CommitFenceOperation.FINISH, permit.binding)
+        assert result.released_permit_reference == permit.permit_reference
+        return result
+
+    async def abort(self, permit: CommitFencePermit) -> CommitFenceOperationResult:
+        result = self._respond(CommitFenceOperation.ABORT, permit.binding)
+        assert result.released_permit_reference == permit.permit_reference
+        return result
+
+
+@pytest.mark.asyncio
+async def test_deterministic_port_conforms_for_acquire_renew_commit_and_release() -> None:
+    binding = _binding()
+    port = DeterministicFencePort(
+        _result(CommitFenceOperation.ACQUIRE, CommitFenceOperationState.ACQUIRED),
+        _result(CommitFenceOperation.RENEW, CommitFenceOperationState.RENEWED),
+        _result(CommitFenceOperation.PRE_COMMIT, CommitFenceOperationState.VALID),
+        _result(CommitFenceOperation.FINISH, CommitFenceOperationState.RELEASED),
+        _result(CommitFenceOperation.ACQUIRE, CommitFenceOperationState.ACQUIRED),
+        _result(CommitFenceOperation.ABORT, CommitFenceOperationState.RELEASED),
+    )
+
+    acquired = await port.acquire(binding)
+    assert acquired.permit is not None
+    renewed = await port.renew(acquired.permit, evaluated_at=NOW)
+    assert renewed.state is CommitFenceOperationState.RENEWED
+    assert renewed.permit is not None
+    checked = await port.validate_before_commit(renewed.permit, evaluated_at=NOW)
+    assert checked.permits_commit
+    finished = await port.finish(checked.permit)
+    assert finished.state is CommitFenceOperationState.RELEASED
+
+    reacquired = await port.acquire(binding)
+    assert reacquired.permit is not None
+    aborted = await port.abort(reacquired.permit)
+    assert aborted.state is CommitFenceOperationState.RELEASED
+
+
+@pytest.mark.asyncio
+async def test_deterministic_port_conformance_denies_expired_and_ambiguous_responses() -> None:
+    binding = _binding()
+    expired = _result(CommitFenceOperation.ACQUIRE, CommitFenceOperationState.EXPIRED)
+    ambiguous = _result(
+        CommitFenceOperation.PRE_COMMIT,
+        CommitFenceOperationState.AMBIGUOUS,
+        failure_reason=CommitFenceFailureReason.LOST_RESPONSE,
+    )
+    port = DeterministicFencePort(expired, ambiguous)
+
+    denied = await port.acquire(binding)
+    assert denied.state is CommitFenceOperationState.EXPIRED
+    assert not denied.permits_commit
+
+    permit = CommitFencePermit(
+        binding=binding,
+        provider_contract_version=CONTRACT_VERSION,
+        permit_reference=_id(20),
+        acquired_at=NOW,
+        valid_until=NOW + timedelta(minutes=1),
+    )
+    uncertain = await port.validate_before_commit(permit, evaluated_at=NOW)
+    assert uncertain.state is CommitFenceOperationState.AMBIGUOUS
+    assert uncertain.failure_reason is CommitFenceFailureReason.LOST_RESPONSE
+    assert not uncertain.permits_commit
