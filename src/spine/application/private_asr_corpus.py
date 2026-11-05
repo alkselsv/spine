@@ -408,6 +408,73 @@ class PrivateArtifactDeletionAuthorization(PrivateASRApplicationContract):
         return self
 
 
+class PrivateArtifactDeletionFenceOutcome(PrivateASRApplicationContract):
+    """One all-or-nothing fence acquisition for a complete source lineage."""
+
+    schema_version: Literal["private-asr-composite-deletion-fence:v1"] = (
+        "private-asr-composite-deletion-fence:v1"
+    )
+    authority_kind: Literal["postgresql_f1", "external_f2"]
+    artifact_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    authorization_reference: UUID
+    source_lineage: tuple[PrivateArtifactSourceLineage, ...] = Field(min_length=1)
+    acquired_at: datetime
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> "PrivateArtifactDeletionFenceOutcome":
+        if any(value.int == 0 for value in (
+            self.artifact_id,
+            self.workspace_id,
+            self.environment_id,
+            self.authorization_reference,
+        )):
+            raise ValueError("composite deletion fence identity must be complete")
+        if self.acquired_at.tzinfo is None or self.acquired_at.utcoffset() is None:
+            raise ValueError("composite deletion fence time must be timezone-aware")
+        identities = tuple(
+            (source.source_object_id, source.source_revision_id, source.source_revision_digest)
+            for source in self.source_lineage
+        )
+        if len(set(identities)) != len(identities):
+            raise ValueError("composite deletion fence lineage must be unique")
+        object.__setattr__(
+            self,
+            "source_lineage",
+            tuple(sorted(self.source_lineage, key=lambda source: (
+                str(source.source_object_id), str(source.source_revision_id),
+                source.source_revision_digest,
+            ))),
+        )
+        return self
+
+    def matches(
+        self,
+        request: PrivateArtifactDeletionRequestV2,
+        authorization: PrivateArtifactDeletionAuthorization,
+    ) -> bool:
+        return (
+            self.artifact_id == request.artifact_id
+            and self.workspace_id == request.workspace_id
+            and self.environment_id == request.environment_id
+            and self.request_digest == request.calculate_digest()
+            and self.request_digest == authorization.request_digest
+            and self.authorization_reference == authorization.authorization_ref.reference_id
+            and request.requested_at <= self.acquired_at < request.valid_until
+            and self.acquired_at < authorization.valid_until
+            and {
+                (item.source_object_id, item.source_revision_id, item.source_revision_digest)
+                for item in self.source_lineage
+            }
+            == {
+                (item.source_object_id, item.source_revision_id, item.source_revision_digest)
+                for item in request.expected_source_lineage
+            }
+        )
+
+
 class CompositeSourceRetentionState(PrivateASRApplicationContract):
     """Current, independently resolved policy facts for one source in an artifact."""
 
@@ -590,12 +657,12 @@ class PrivateArtifactDeletionAuthority(Protocol):
 class PrivateArtifactDeletionFencePort(Protocol):
     """Fence one exact deletion decision through the storage transaction.
 
-    The authority decision and the fence are separate concerns.  A fence
-    implementation must bind the exact request digest, complete source
-    lineage, scope, action and revocation epoch before returning.  It may use
-    PostgreSQL-owned locks (F1) or a separately qualified provider (F2); an
-    absent or unsupported implementation must deny rather than infer a fence
-    from the request fields.
+    The authority decision and the fence are separate concerns. Implementations
+    must acquire every contributor in canonical source identity order and bind
+    the complete source set to one outcome. F2 implementations unwind earlier
+    permits if a later contributor fails. The consumer calls `validate_before_commit`
+    while the transaction is open, then `complete` only after a known commit or
+    rollback. An absent or unsupported contributor denies the whole operation.
     """
 
     async def acquire(
@@ -605,6 +672,21 @@ class PrivateArtifactDeletionFencePort(Protocol):
         *,
         context: TrustedPersistenceContext,
         transaction: object,
+    ) -> PrivateArtifactDeletionFenceOutcome: ...
+
+    async def validate_before_commit(
+        self,
+        outcome: PrivateArtifactDeletionFenceOutcome,
+        *,
+        transaction: object,
+    ) -> None: ...
+
+    async def complete(
+        self,
+        outcome: PrivateArtifactDeletionFenceOutcome,
+        *,
+        transaction: object,
+        committed: bool,
     ) -> None: ...
 
 
@@ -1345,6 +1427,7 @@ __all__ = [
     "MetadataInventoryPort", "OriginalReferencePort", "PrivacyPolicyApprovalPort",
     "PrivateAggregatePublicationAuthorityPort", "PrivateArtifactDeletionRequest",
     "PrivateArtifactDeletionRequestV2", "PrivateArtifactDeletionSourceBinding",
+    "PrivateArtifactDeletionFenceOutcome",
     "PrivateArtifactDeletionAuthorization", "PrivateArtifactDeletionAuthority",
     "PrivateArtifactDeletionFencePort",
     "PrivacySanitizationError",

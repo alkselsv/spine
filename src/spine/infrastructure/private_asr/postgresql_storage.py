@@ -20,6 +20,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from spine.application.persistence.context import EnvironmentScope, TrustedContextVerifier, TrustedPersistenceContext
+from spine.application.persistence.errors import UnknownCommitOutcomeError
 from spine.application.persistence.retry import RetryEligibility, run_with_transaction_retry
 from spine.application.persistence.unit_of_work import UnitOfWorkFactory
 from spine.application.private_asr_corpus import (
@@ -29,6 +30,7 @@ from spine.application.private_asr_corpus import (
     PrivateArtifactDeletionAuthority,
     PrivateArtifactDeletionAuthorization,
     PrivateArtifactDeletionFencePort,
+    PrivateArtifactDeletionFenceOutcome,
     PrivateArtifactDeletionRequestV2,
     PrivateArtifactDeletionSourceBinding,
     PrivateArtifactSourceLineage,
@@ -207,7 +209,7 @@ class PostgreSQLPrivateASRDeletionFence(PrivateArtifactDeletionFencePort):
         *,
         context: TrustedPersistenceContext,
         transaction: object,
-    ) -> None:
+    ) -> PrivateArtifactDeletionFenceOutcome:
         now = self._clock()
         scope = context.scope
         execute = getattr(transaction, "execute_statement", None)
@@ -288,6 +290,34 @@ class PostgreSQLPrivateASRDeletionFence(PrivateArtifactDeletionFencePort):
         register_guard(
             lambda: self._clock() < min(request.valid_until, authorization.valid_until)
         )
+        return PrivateArtifactDeletionFenceOutcome(
+            authority_kind="postgresql_f1",
+            artifact_id=request.artifact_id,
+            workspace_id=request.workspace_id,
+            environment_id=request.environment_id,
+            request_digest=request.calculate_digest(),
+            authorization_reference=authorization.authorization_ref.reference_id,
+            source_lineage=request.expected_source_lineage,
+            acquired_at=now,
+        )
+
+    async def complete(
+        self,
+        outcome: PrivateArtifactDeletionFenceOutcome,
+        *,
+        transaction: object,
+        committed: bool,
+    ) -> None:
+        """F1 locks are released by the transaction's commit or rollback."""
+        del outcome, transaction, committed
+
+    async def validate_before_commit(
+        self,
+        outcome: PrivateArtifactDeletionFenceOutcome,
+        *,
+        transaction: object,
+    ) -> None:
+        del outcome, transaction
 
 
 def _retention_class_for_kind(kind: str) -> RetentionArtifactClass | None:
@@ -519,6 +549,60 @@ class PostgreSQLPrivateASRStorage:
         if trusted.operation.value != expected or trusted.service_principal_id is None:
             raise PrivateASRStorageDenied("Private ASR storage authorization denied.")
         return self._scope(trusted)
+
+    async def _acquire_deletion_fence(
+        self,
+        request: PrivateArtifactDeletionRequestV2,
+        authorization: PrivateArtifactDeletionAuthorization,
+        *,
+        context: TrustedPersistenceContext,
+        transaction: object,
+    ) -> PrivateArtifactDeletionFenceOutcome:
+        outcome = await self._deletion_fence.acquire(
+            request,
+            authorization,
+            context=context,
+            transaction=transaction,
+        )
+        if isinstance(outcome, PrivateArtifactDeletionFenceOutcome) and not (
+            outcome.matches(request, authorization)
+        ):
+            try:
+                await self._abort_deletion_fence(
+                    outcome,
+                    transaction=transaction,
+                )
+            except Exception:
+                raise PrivateASRStorageDenied(
+                    "Private ASR deletion authorization denied."
+                ) from None
+            raise PrivateASRStorageDenied(
+                "Private ASR deletion authorization denied."
+            )
+        if not isinstance(outcome, PrivateArtifactDeletionFenceOutcome):
+            await transaction.rollback()  # type: ignore[attr-defined]
+            raise PrivateASRStorageDenied(
+                "Private ASR deletion authorization denied."
+            )
+        return outcome
+
+    async def _abort_deletion_fence(
+        self,
+        outcome: PrivateArtifactDeletionFenceOutcome,
+        *,
+        transaction: object,
+    ) -> None:
+        try:
+            await transaction.rollback()  # type: ignore[attr-defined]
+            await self._deletion_fence.complete(
+                outcome,
+                transaction=transaction,
+                committed=False,
+            )
+        except Exception:
+            raise PrivateASRStorageDenied(
+                "Private ASR deletion authorization denied."
+            ) from None
 
     async def _check_admitted(
         self, admitted: AdmittedSourceRevision, context: TrustedPersistenceContext
@@ -2249,15 +2333,17 @@ class PostgreSQLPrivateASRStorage:
             if (not isinstance(authz, PrivateArtifactDeletionAuthorization)
                     or not _deletion_authorization_is_current(authz, request, checked_at=now)):
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
-            await self._deletion_fence.acquire(
+            writer = getattr(self._audit_receipts, "append_artifact_deletion", None)
+            if writer is None:
+                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+            fence_outcome = await self._acquire_deletion_fence(
                 request,
                 authz,
                 context=context,
                 transaction=transaction,
             )
-            writer = getattr(self._audit_receipts, "append_artifact_deletion", None)
-            if writer is None:
-                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+            commit_started = False
+            committed = False
             try:
                 await writer(transaction, request=request, authorization=authz, context=context)
                 await self._execute(transaction, update(private_asr_aggregate_exports).where(
@@ -2271,10 +2357,35 @@ class PostgreSQLPrivateASRStorage:
                     authz, request, checked_at=commit_time
                 ):
                     raise PrivateASRStorageDenied("Private ASR deletion authorization expired.")
+                await self._deletion_fence.validate_before_commit(
+                    fence_outcome,
+                    transaction=transaction,
+                )
+                commit_started = True
                 await transaction.commit()
+                committed = True
+                await self._deletion_fence.complete(
+                    fence_outcome,
+                    transaction=transaction,
+                    committed=True,
+                )
             except asyncio.CancelledError:
+                if not commit_started:
+                    await self._abort_deletion_fence(
+                        fence_outcome,
+                        transaction=transaction,
+                    )
                 raise
+            except UnknownCommitOutcomeError:
+                raise PrivateASRStorageDenied(
+                    "Private ASR deletion transaction outcome is unavailable."
+                ) from None
             except Exception:
+                if not committed:
+                    await self._abort_deletion_fence(
+                        fence_outcome,
+                        transaction=transaction,
+                    )
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.") from None
 
     async def _delete_authorized_artifact(
@@ -2630,15 +2741,17 @@ class PostgreSQLPrivateASRStorage:
                 _deletion_authorization_is_current(authz, request, checked_at=now)
             ):
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
-            await self._deletion_fence.acquire(
+            audit_writer = getattr(self._audit_receipts, "append_artifact_deletion", None)
+            if audit_writer is None:
+                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+            fence_outcome = await self._acquire_deletion_fence(
                 request,
                 authz,
                 context=context,
                 transaction=transaction,
             )
-            audit_writer = getattr(self._audit_receipts, "append_artifact_deletion", None)
-            if audit_writer is None:
-                raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+            commit_started = False
+            committed = False
             try:
                 await audit_writer(
                     transaction,
@@ -2659,10 +2772,35 @@ class PostgreSQLPrivateASRStorage:
                     raise PrivateASRStorageDenied(
                         "Private ASR deletion authorization expired."
                     )
+                await self._deletion_fence.validate_before_commit(
+                    fence_outcome,
+                    transaction=transaction,
+                )
+                commit_started = True
                 await transaction.commit()
+                committed = True
+                await self._deletion_fence.complete(
+                    fence_outcome,
+                    transaction=transaction,
+                    committed=True,
+                )
             except asyncio.CancelledError:
+                if not commit_started:
+                    await self._abort_deletion_fence(
+                        fence_outcome,
+                        transaction=transaction,
+                    )
                 raise
+            except UnknownCommitOutcomeError:
+                raise PrivateASRStorageDenied(
+                    "Private ASR deletion transaction outcome is unavailable."
+                ) from None
             except Exception:
+                if not committed:
+                    await self._abort_deletion_fence(
+                        fence_outcome,
+                        transaction=transaction,
+                    )
                 raise PrivateASRStorageDenied("Private ASR deletion transaction failed.") from None
 
     async def read_private_reference(self, reference: PrivateReference, *,

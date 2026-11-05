@@ -125,3 +125,27 @@ Owner/source mapping:
 | Policy approval and terms | Explicitly PostgreSQL-owned transaction-bound readers | Included in the composite state digest; missing or unqualified readers deny |
 | External approval or terms | Their named external provider | F2 is required; until qualified, deny |
 | Exceptions and legal holds | Current retention binding and terms provider | Exact references are bound; unresolved or active holds deny |
+
+## EF-8 composite private-ASR deletion consumer (#978)
+
+Deletion resolves every exact source revision and its current retention
+applicability in canonical source-object/revision order inside one PostgreSQL
+transaction. The whole-artifact authorization still covers the complete
+versioned source lineage. A deletion fence adapter returns one
+`PrivateArtifactDeletionFenceOutcome` bound to that exact request, authorization
+and lineage; the consumer rejects incomplete or mismatched outcomes before
+writing deletion audit or tombstone state.
+
+The consumer calls `validate_before_commit` after staging the single audit and
+tombstone, then calls `complete(committed=True)` only after a known commit. On a
+known pre-commit failure it rolls back before calling `complete(committed=False)`.
+If commit outcome is unknown, it does not finish or abort external permits; they
+remain unresolved for bounded expiry and reconciliation. F2 adapters must
+acquire each contributor in canonical source order and unwind all already
+acquired permits if a later acquisition fails. PostgreSQL F1 source locks are
+released by commit or rollback of the shared transaction.
+
+Only the existing qualified F1 sources are enabled in production. No F2
+provider is qualified for this consumer; external, missing or ambiguous
+contributors therefore deny the complete operation. Synthetic F2 fence-port
+tests exercise consumer lifecycle only and do not qualify a production provider.

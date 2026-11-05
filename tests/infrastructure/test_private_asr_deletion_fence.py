@@ -195,13 +195,21 @@ async def test_postgresql_deletion_fence_binds_exact_lineage_and_registers_expir
     clock = _Clock(NOW)
     transaction = _Transaction(request.source_bindings[0].revision_digest)
 
-    await PostgreSQLPrivateASRDeletionFence(clock).acquire(
+    fence = PostgreSQLPrivateASRDeletionFence(clock)
+    outcome = await fence.acquire(
         request,
         authorization,
         context=CONTEXT,
         transaction=transaction,
     )
 
+    assert outcome.matches(request, authorization)
+    assert outcome.authority_kind == "postgresql_f1"
+    assert not outcome.model_copy(update={"source_lineage": ()}).matches(
+        request, authorization
+    )
+    await fence.validate_before_commit(outcome, transaction=transaction)
+    await fence.complete(outcome, transaction=transaction, committed=True)
     assert transaction.guard is not None
     assert transaction.guard() is True
     clock.now = request.valid_until
