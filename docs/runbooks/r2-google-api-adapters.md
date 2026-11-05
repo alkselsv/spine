@@ -143,12 +143,17 @@ manifest and effective fingerprint. The runtime always A1-quotes each title
 missing, duplicate or count-mismatched titles fail closed before provider
 transport. During an authorized live run, the Sheets adapter first performs a
 metadata-only `spreadsheets.get` restricted to `spreadsheetId` and
-`sheets.properties(sheetId,title)`. The identity request is not filtered by the
-expected A1 title: the adapter selects the configured stable numeric sheet ID
-from the returned metadata and then compares its title with the approved title.
-The pair must match before any Drive-version or grid-data request; stale or
-swapped titles therefore stop with no sheet page completed and no provider
-identity in the report.
+`sheets.properties(sheetId,title,gridProperties(rowCount,columnCount))`. The
+identity request is not filtered by the expected A1 title: the adapter selects
+the configured stable numeric sheet ID from the returned metadata, compares its
+title with the approved title and validates positive grid dimensions. Each
+provider page is bounded to the intersection of the approved A1 range, configured
+page size and current provider grid; reaching the current physical row boundary
+completes the logical range without issuing a later out-of-grid request. A grid
+that cannot contain every configured profile column is rejected before the
+grid-data request. The identity and dimensions must validate before any
+Drive-version or grid-data request; stale or swapped titles therefore stop with
+no sheet page completed and no provider identity in the report.
 
 Phase 1 requests only `drive.readonly` and `spreadsheets.readonly`. The consent
 command reads the exact mode-0600 Web client JSON named by

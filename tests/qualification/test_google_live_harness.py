@@ -707,7 +707,16 @@ def _sheet_identity_response(
         json_body={
             "spreadsheetId": spreadsheet_id,
             "sheets": [
-                {"properties": {"sheetId": sheet_id, "title": title}},
+                {
+                    "properties": {
+                        "sheetId": sheet_id,
+                        "title": title,
+                        "gridProperties": {
+                            "rowCount": 5000,
+                            "columnCount": 26,
+                        },
+                    }
+                },
             ],
         },
     )
@@ -1990,14 +1999,25 @@ def _phase1_file_metadata(
     )
 
 
-def _phase1_sheet_identity(*sheets: tuple[int, str]) -> GoogleApiResponse:
+def _phase1_sheet_identity(
+    *sheets: tuple[int, str, int, int],
+) -> GoogleApiResponse:
     return GoogleApiResponse(
         status_code=200,
         json_body={
             "spreadsheetId": "synthetic-register",
             "sheets": [
-                {"properties": {"sheetId": sheet_id, "title": title}}
-                for sheet_id, title in sheets
+                {
+                    "properties": {
+                        "sheetId": sheet_id,
+                        "title": title,
+                        "gridProperties": {
+                            "rowCount": row_count,
+                            "columnCount": column_count,
+                        },
+                    }
+                }
+                for sheet_id, title, row_count, column_count in sheets
             ],
         },
     )
@@ -2264,7 +2284,10 @@ async def test_phase1_offline_replay_completes_every_approved_read_operation() -
                 "changes": [],
             },
         ),
-        _phase1_sheet_identity((101, "records"), (202, "archive")),
+        _phase1_sheet_identity(
+            (101, "records", 5000, 5),
+            (202, "archive", 1000, 5),
+        ),
         GoogleApiResponse(
             status_code=200,
             json_body={"id": "synthetic-register", "version": "21"},
@@ -2278,7 +2301,10 @@ async def test_phase1_offline_replay_completes_every_approved_read_operation() -
             status_code=200,
             json_body={"id": "synthetic-register", "version": "21"},
         ),
-        _phase1_sheet_identity((101, "records"), (202, "archive")),
+        _phase1_sheet_identity(
+            (101, "records", 5000, 5),
+            (202, "archive", 1000, 5),
+        ),
         GoogleApiResponse(
             status_code=200,
             json_body={"id": "synthetic-register", "version": "21"},
@@ -2435,11 +2461,17 @@ async def test_phase1_offline_replay_completes_every_approved_read_operation() -
     assert [request.query for request in identity_requests] == [
         {
             "includeGridData": "false",
-            "fields": "spreadsheetId,sheets(properties(sheetId,title))",
+            "fields": (
+                "spreadsheetId,sheets(properties(sheetId,title,"
+                "gridProperties(rowCount,columnCount)))"
+            ),
         },
         {
             "includeGridData": "false",
-            "fields": "spreadsheetId,sheets(properties(sheetId,title))",
+            "fields": (
+                "spreadsheetId,sheets(properties(sheetId,title,"
+                "gridProperties(rowCount,columnCount)))"
+            ),
         },
     ]
     version_requests = tuple(transport.requests[index] for index in (12, 14, 16, 18))
@@ -2463,7 +2495,7 @@ async def test_phase1_offline_replay_completes_every_approved_read_operation() -
         },
         {
             "includeGridData": "true",
-            "ranges": "'archive'!A2:E5000",
+            "ranges": "'archive'!A2:E1000",
             "fields": sheets_fields,
         },
     ]
