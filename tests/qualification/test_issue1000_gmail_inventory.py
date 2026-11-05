@@ -65,6 +65,9 @@ def test_inventory_evidence_paths_exist_in_checkout() -> None:
         "src/spine/infrastructure/diagnostics/sinks.py",
         "src/spine/api/diagnostics.py",
         "tests/domain/sources/test_canonical_tombstone_v3.py",
+        "src/spine/infrastructure/commit_fence_composition.py",
+        "docs/architecture/commit-fence-production-composition.md",
+        "tests/infrastructure/test_commit_fence_composition.py",
         "tests/infrastructure/persistence/test_postgresql_fenced_unit_of_work.py",
     ):
         assert (ROOT / path).exists(), path
