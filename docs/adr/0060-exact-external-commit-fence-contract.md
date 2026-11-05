@@ -81,3 +81,15 @@ replacement that obtains its owner lock first is observed as stale, while a
 consumer that holds the lock commits before the replacement can proceed.
 Synthetic PostgreSQL races qualify only these local lock orderings; they do not
 qualify an external authority or production use.
+
+## Production composition (#980)
+
+Production source selection is default-deny and is defined in
+`docs/architecture/commit-fence-production-composition.md`. Only the three F1
+owners above may be configured, and every consuming composition must name its
+exact purpose/action uses and deployment scope. No F2 evidence currently exists,
+so the v1 production composition exposes no external-provider registration
+input; #983 must add a versioned, evidence-issued successor before any named F2
+adapter can be selected. Synthetic fixtures are accepted only by an exact-binding
+test composition and cannot be registered in production. This adds no authority
+registry, grant, RLS change or `BYPASSRLS` capability.
