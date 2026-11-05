@@ -34,7 +34,7 @@ from spine.application.retention import (
 )
 from spine.application.private_asr_corpus import (
     AdmittedSourceRevision, PrivateArtifactDeletionAuthorization,
-    PrivateArtifactDeletionRequest, PrivateReportSourceBinding,
+    PrivateArtifactDeletionRequest, PrivateReportReceipt, PrivateReportSourceBinding,
     SanitizedReportBuilder,
 )
 from spine.application.private_asr_corpus import AggregateMeasurement
@@ -475,6 +475,7 @@ async def test_postgresql_private_asr_legacy_single_source_retention_row_reads_a
     assert set(legacy_jsonb[0]) == {"source_revision_id", "disposition"}
     assert postgres_facts["role"] == RUNTIME_ROLE
     assert postgres_facts["bypass_rls"] is False
+    assert postgres_facts["version"].startswith("17.6")
     assert canonical_source == prepared.case.source.source_object_id
     assert persisted_lineage.source_object_id == canonical_source
     assert persisted_lineage.source_revision_id == canonical_revision.revision_id
@@ -489,18 +490,33 @@ async def test_postgresql_private_asr_legacy_single_source_retention_row_reads_a
 
     # Workspace scoping remains enforced for the legacy row on the supported
     # read path, even when the caller knows the artifact UUID.
+    foreign_case = await prepare_case(prepared.adapter, 95595000)
     foreign_workspace = prepared.boundary.worker(
         scope=EnvironmentScope(
-            workspace_id=synthetic_uuid(798041),
-            environment_id=synthetic_uuid(798042),
+            workspace_id=foreign_case.source.workspace_id,
+            environment_id=foreign_case.source.environment_id,
         ),
-        service_principal_id=synthetic_uuid(798043),
+        service_principal_id=synthetic_uuid(95595001),
         purpose=PersistencePurpose("asr_model_evaluation"),
         operation=PersistenceOperation("run_private_asr_evaluation"),
-        trace_id=synthetic_uuid(798044),
+        trace_id=synthetic_uuid(95595002),
     )
     with pytest.raises(PrivateASRStorageDenied):
         await prepared.store.read_private_reference(stored.report_ref, context=foreign_workspace)
+    foreign_cleanup_context = prepared.boundary.worker(
+        scope=foreign_workspace.scope,
+        service_principal_id=synthetic_uuid(95595003),
+        purpose=PersistencePurpose("asr_model_evaluation"),
+        operation=PersistenceOperation("private_asr_retention_expiration"),
+        trace_id=synthetic_uuid(95595004),
+    )
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.expire(
+            stored.report_ref,
+            policy_ref=prepared.applicability_ref,
+            context=foreign_cleanup_context,
+        )
+    assert deletion_authority.requests == []
 
     async with prepared.runtime_sessions() as session, session.begin():
         await prepared.store._set_scope(session, prepared.context)
@@ -550,6 +566,140 @@ async def test_postgresql_private_asr_legacy_single_source_retention_row_reads_a
     assert after_expiration.status == "tombstoned"
     assert after_expiration.payload == b""
     assert after_expiration.retention_disposition == legacy_jsonb
+
+
+async def _seed_private_asr_report_fixture_row(
+    private_asr_database: _Database,
+    prepared: SimpleNamespace,
+    stored: PrivateReportReceipt,
+    *,
+    retention_disposition: list[dict[str, object]],
+    seed: int,
+) -> PrivateReference:
+    """Seed a staging row plus the schema's valid commit transition for corrupt-history cases."""
+    sessions = async_sessionmaker(
+        private_asr_database.migration, expire_on_commit=False, autoflush=False,
+    )
+    artifact_id = synthetic_uuid(seed)
+    report_id = synthetic_uuid(seed + 1)
+    async with sessions() as session, session.begin():
+        original = (await session.execute(select(private_asr_artifacts).where(
+            private_asr_artifacts.c.workspace_id == prepared.case.source.workspace_id,
+            private_asr_artifacts.c.environment_id == prepared.case.source.environment_id,
+            private_asr_artifacts.c.artifact_id == stored.report_ref.reference_id,
+        ))).mappings().one()
+        source_links = (await session.execute(select(private_asr_report_sources).where(
+            private_asr_report_sources.c.workspace_id == prepared.case.source.workspace_id,
+            private_asr_report_sources.c.environment_id == prepared.case.source.environment_id,
+            private_asr_report_sources.c.report_id == prepared.report_id,
+        ))).mappings().all()
+        values = dict(original)
+        values.update(
+            artifact_id=artifact_id,
+            report_id=report_id,
+            idempotency_key=f"legacy-fixture-{seed}",
+            status="staging",
+            retention_disposition=retention_disposition,
+            tombstoned_at=None,
+        )
+        await session.execute(insert(private_asr_artifacts).values(**values))
+        for link in source_links:
+            link_values = dict(link)
+            link_values["report_id"] = report_id
+            await session.execute(insert(private_asr_report_sources).values(**link_values))
+        await session.execute(update(private_asr_artifacts).where(
+            private_asr_artifacts.c.workspace_id == prepared.case.source.workspace_id,
+            private_asr_artifacts.c.environment_id == prepared.case.source.environment_id,
+            private_asr_artifacts.c.artifact_id == artifact_id,
+        ).values(status="committed"))
+    return PrivateReference(
+        reference_id=artifact_id,
+        reference_kind="private_asr_report",
+    )
+
+
+@pytest.mark.parametrize(
+    ("malformation", "seed"),
+    (("incomplete", 95595500), ("substituted", 95595510), ("mixed_version", 95595520)),
+)
+async def test_postgresql_private_asr_legacy_retention_jsonb_malformed_lineage_is_denied(
+    private_asr_database: _Database,
+    malformation: str,
+    seed: int,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database, seed=seed,
+    )
+    if malformation == "mixed_version":
+        await _add_synthetic_report_source(prepared, seed=95595530)
+    stored = await _commit_synthetic_report(
+        prepared, idempotency_key=f"legacy-malformed-{malformation}",
+    )
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        current = (await session.execute(select(
+            private_asr_artifacts.c.retention_disposition,
+        ).where(
+            private_asr_artifacts.c.artifact_id == stored.report_ref.reference_id,
+        ))).scalar_one()
+
+    if malformation == "incomplete":
+        malformed = [{
+            "source_revision_id": str(prepared.case.revision.revision_id),
+        }]
+    elif malformation == "substituted":
+        malformed = [{
+            "source_revision_id": str(synthetic_uuid(95595541)),
+            "disposition": current[0]["disposition"],
+        }]
+    else:
+        first = current[0]
+        historical_entry = {
+            "source_revision_id": first["source_revision_id"],
+            "disposition": first["disposition"],
+        }
+        malformed = [historical_entry, current[1]]
+
+    seeded = await _seed_private_asr_report_fixture_row(
+        private_asr_database,
+        prepared,
+        stored,
+        retention_disposition=malformed,
+        seed=seed + 50,
+    )
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.read_private_reference(seeded, context=prepared.context)
+
+    cleanup_context = prepared.boundary.worker(
+        scope=EnvironmentScope(
+            workspace_id=prepared.case.source.workspace_id,
+            environment_id=prepared.case.source.environment_id,
+        ),
+        service_principal_id=synthetic_uuid(seed + 80),
+        purpose=PersistencePurpose("asr_model_evaluation"),
+        operation=PersistenceOperation("private_asr_retention_expiration"),
+        trace_id=synthetic_uuid(seed + 81),
+    )
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.expire(
+            seeded,
+            policy_ref=prepared.applicability_ref,
+            context=cleanup_context,
+        )
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, cleanup_context)
+        row = (await session.execute(select(
+            private_asr_artifacts.c.status,
+            private_asr_artifacts.c.payload,
+            private_asr_artifacts.c.retention_disposition,
+        ).where(
+            private_asr_artifacts.c.workspace_id == prepared.case.source.workspace_id,
+            private_asr_artifacts.c.environment_id == prepared.case.source.environment_id,
+            private_asr_artifacts.c.artifact_id == seeded.reference_id,
+        ))).one()
+    assert row.status == "committed"
+    assert row.payload == prepared.report.model_dump_json().encode()
+    assert row.retention_disposition == malformed
 
 
 @pytest.mark.asyncio
@@ -610,6 +760,117 @@ async def test_postgresql_private_asr_legacy_single_source_row_denies_stale_curr
     assert row.status == "committed"
     assert row.payload == prepared.report.model_dump_json().encode()
     assert row.retention_disposition == legacy_jsonb
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_legacy_single_source_row_denies_stale_current_access_policy(
+    private_asr_database: _Database,
+) -> None:
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database, seed=95595600,
+    )
+    stored = await _commit_synthetic_report(
+        prepared, idempotency_key="legacy-stale-access-policy-report",
+    )
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        legacy_jsonb = (await session.execute(select(
+            private_asr_artifacts.c.retention_disposition,
+        ).where(
+            private_asr_artifacts.c.artifact_id == stored.report_ref.reference_id,
+        ))).scalar_one()
+    assert set(legacy_jsonb[0]) == {"source_revision_id", "disposition"}
+
+    class _StaleCurrentAccessPolicy:
+        async def current_for(self, source, *, context):
+            current = await prepared.policies.current_for(source, context=context)
+            return current.model_copy(update={
+                "access_policy_version_id": synthetic_uuid(95595601),
+            })
+
+    prepared.store._access_policies = _StaleCurrentAccessPolicy()
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.read_private_reference(stored.report_ref, context=prepared.context)
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, prepared.context)
+        row = (await session.execute(select(
+            private_asr_artifacts.c.status,
+            private_asr_artifacts.c.payload,
+            private_asr_artifacts.c.retention_disposition,
+        ).where(
+            private_asr_artifacts.c.artifact_id == stored.report_ref.reference_id,
+        ))).one()
+    assert row.status == "committed"
+    assert row.payload == prepared.report.model_dump_json().encode()
+    assert row.retention_disposition == legacy_jsonb
+
+
+@pytest.mark.asyncio
+async def test_postgresql_private_asr_legacy_single_source_row_denies_current_lifecycle_withdrawal(
+    private_asr_database: _Database,
+) -> None:
+    clock = _ControlledClock(NOW)
+    deletion_authority = _SyntheticArtifactDeletionAuthority()
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database,
+        seed=95595700,
+        deletion_authority=deletion_authority,
+        clock=clock,
+        lifecycle_source=True,
+    )
+    stored = await _commit_synthetic_report(
+        prepared, idempotency_key="legacy-lifecycle-withdrawal-report",
+    )
+    lifecycle_context = prepared.adapter.ingestion_context(
+        prepared.case.source.workspace_id,
+        prepared.case.source.environment_id,
+        "lifecycle_decision",
+    )
+    lifecycle_repository = PostgreSQLLifecycleAuthorityRepository(
+        uow_factory=prepared.persistence.uow_factory,
+        observation_authority=_AllowObservationAuthority(),
+        decision_authority=_AllowLifecycleDecision(),
+        decision_effects=_DecisionEffects(),
+    )
+    observation = lifecycle_observation(prepared.case, 95595710)
+    decision = lifecycle_decision(
+        prepared.case, observation, lifecycle_context, 95595720,
+    )
+    await lifecycle_repository.record_observation(observation, lifecycle_context)
+    await lifecycle_repository.record_decision(decision, lifecycle_context)
+
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.read_private_reference(stored.report_ref, context=prepared.context)
+    clock.current = NOW + timedelta(minutes=31)
+    deletion_context = prepared.boundary.worker(
+        scope=EnvironmentScope(
+            workspace_id=prepared.case.source.workspace_id,
+            environment_id=prepared.case.source.environment_id,
+        ),
+        service_principal_id=synthetic_uuid(95595730),
+        purpose=PersistencePurpose("asr_model_evaluation"),
+        operation=PersistenceOperation("private_asr_retention_expiration"),
+        trace_id=synthetic_uuid(95595731),
+    )
+    with pytest.raises(PrivateASRStorageDenied):
+        await prepared.store.expire(
+            stored.report_ref,
+            policy_ref=prepared.applicability_ref,
+            context=deletion_context,
+        )
+    assert deletion_authority.requests == []
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, deletion_context)
+        row = (await session.execute(select(
+            private_asr_artifacts.c.status,
+            private_asr_artifacts.c.payload,
+            private_asr_artifacts.c.retention_disposition,
+        ).where(
+            private_asr_artifacts.c.artifact_id == stored.report_ref.reference_id,
+        ))).one()
+    assert row.status == "committed"
+    assert row.payload == prepared.report.model_dump_json().encode()
+    assert set(row.retention_disposition[0]) == {"source_revision_id", "disposition"}
 
 
 @pytest.mark.asyncio
