@@ -1,0 +1,125 @@
+{
+  "schema_version": "issue-853-yandex-mail-end-to-end-evidence:v1",
+  "issue": 853,
+  "offline_result": "PASS",
+  "live_yandex_mail_semantics": "NOT_VERIFIED",
+  "fixture_manifest_version": "spine-yandex-mail-qualification-fixtures-v1",
+  "fixture_policy": "Synthetic protocol transcripts and messages only; no Yandex credentials, network calls, mailbox addresses, folder names, raw messages or server response lines.",
+  "adapter_contract_versions": [
+    "yandex-mail-imap-security:v1",
+    "yandex-mail-folder-discovery-profile:v1",
+    "yandex-mail-folder-generation-observation:v1",
+    "yandex-mail-uid-enumeration-page:v1",
+    "yandex-mail-raw-message-fetch-result:v1",
+    "yandex-mail-initial-snapshot-command:v1",
+    "yandex-mail-incremental-checkpoint:v1",
+    "yandex-mail-uidvalidity-reset-profile:v1",
+    "yandex-mail-reconciliation-command:v1",
+    "provider-imap-revision-evidence:v1"
+  ],
+  "qualification_profiles": {
+    "folder_discovery": {
+      "version": "yandex-mail-folder-discovery-profile:v1",
+      "max_folders": 500,
+      "max_response_bytes": 1048576
+    },
+    "initial_snapshot_fixture": {
+      "version": "yandex-mail-initial-snapshot-command:v1",
+      "uid_page_size": 2,
+      "uid_page_response_bytes": 4096,
+      "max_uid_pages_per_folder": 4,
+      "max_message_bytes": 8192
+    },
+    "uidvalidity_reset_fixture": {
+      "version": "yandex-mail-uidvalidity-reset-profile:v1",
+      "uid_page_size": 10,
+      "uid_page_response_bytes": 4096,
+      "max_uid_pages_per_folder": 2,
+      "max_message_bytes": 4096
+    }
+  },
+  "criteria": {
+    "tls_xoauth2_composition": {
+      "status": "PASS",
+      "evidence": [
+        "tests/connectors/test_yandex_mail.py::test_yandex_mail_composition_uses_tls_verified_xoauth2_and_read_only_scope"
+      ]
+    },
+    "approved_folder_discovery_and_uid_identity": {
+      "status": "PASS",
+      "evidence": [
+        "tests/connectors/test_yandex_mail.py::test_yandex_folder_discovery_decodes_nested_unicode_and_returns_only_approved_refs",
+        "tests/connectors/test_yandex_mail_uid_enumeration.py::test_uid_page_reports_exact_coverage_and_explicit_continuation",
+        "tests/qualification/test_issue848_imap_canonical_observation.py::test_copied_message_with_same_message_id_and_digest_remains_distinct"
+      ]
+    },
+    "bounded_raw_fetch_and_canonical_ingestion": {
+      "status": "PASS",
+      "evidence": [
+        "tests/connectors/test_yandex_mail_message_fetch.py::test_qualified_body_peek_fetch_retains_exact_bounded_content_evidence",
+        "tests/qualification/test_issue848_imap_canonical_observation.py::test_qualified_imap_message_reaches_canonical_acceptance_and_replays"
+      ]
+    },
+    "multi_folder_snapshot_and_replay": {
+      "status": "PASS",
+      "evidence": [
+        "tests/application/test_yandex_mail_snapshot.py::test_multi_folder_snapshot_including_empty_folder_publishes_one_terminal_checkpoint",
+        "tests/application/test_yandex_mail_snapshot.py::test_crash_at_durable_boundary_replays_to_one_terminal_checkpoint",
+        "tests/connectors/test_yandex_mail_snapshot.py::test_worker_composition_executes_bounded_snapshot_operation"
+      ]
+    },
+    "incremental_polling_and_crash_replay": {
+      "status": "PASS",
+      "evidence": [
+        "tests/connectors/test_yandex_mail_incremental.py::test_new_uid_gap_commits_exact_effects_before_covered_successor",
+        "tests/connectors/test_yandex_mail_incremental.py::test_effect_crash_holds_checkpoint_and_reconnect_replays_same_page",
+        "tests/connectors/test_yandex_mail_incremental.py::test_crash_after_durable_effect_before_receipt_replays_without_advancing"
+      ]
+    },
+    "uidvalidity_reset_and_generation_fencing": {
+      "status": "PASS",
+      "evidence": [
+        "tests/application/test_yandex_mail_uidvalidity_reset.py::test_changed_uidvalidity_fences_old_attempt_and_starts_one_new_generation",
+        "tests/application/test_yandex_mail_uidvalidity_reset.py::test_reset_before_stale_page_rejects_effect_and_cursor",
+        "tests/qualification/test_issue848_imap_canonical_observation.py::test_uidvalidity_reset_cannot_merge_reused_uid_by_message_id_or_digest"
+      ]
+    },
+    "moves_absence_and_lifecycle_replay": {
+      "status": "PASS",
+      "evidence": [
+        "tests/application/test_yandex_mail_reconciliation.py::test_move_like_scan_keeps_absence_and_similarity_as_separate_evidence",
+        "tests/application/test_yandex_mail_reconciliation.py::test_unusable_coverage_records_distinct_outcome_without_absence",
+        "tests/application/test_yandex_mail_reconciliation.py::test_crash_after_durable_save_replays_the_same_receipts",
+        "tests/application/test_yandex_mail_reconciliation.py::test_uidvalidity_change_cannot_produce_authoritative_absence"
+      ]
+    },
+    "tenant_authority_and_partial_coverage_fail_closed": {
+      "status": "PASS",
+      "evidence": [
+        "tests/connectors/test_yandex_mail.py::test_wrong_mailbox_or_folder_is_denied_before_imap",
+        "tests/connectors/test_yandex_mail.py::test_revoked_oauth_authority_is_denied_before_imap",
+        "tests/connectors/test_yandex_mail_incremental.py::test_denied_scope_and_other_workspace_do_not_reach_provider",
+        "tests/application/test_yandex_mail_snapshot.py::test_partial_folder_discovery_keeps_attempt_incomplete_without_effects",
+        "tests/application/test_yandex_mail_reconciliation.py::test_stale_generation_blocks_lifecycle_evidence",
+        "tests/qualification/test_issue848_imap_canonical_observation.py::test_wrong_tenant_or_generation_is_denied_before_provider_read"
+      ]
+    },
+    "safe_diagnostics_and_provider_neutral_regressions": {
+      "status": "PASS",
+      "evidence": [
+        "tests/connectors/test_yandex_mail.py::test_imap_failures_and_credential_repr_do_not_disclose_secrets",
+        "tests/qualification/test_issue848_imap_canonical_observation.py::test_protected_wrong_scope_output_is_rejected_without_disclosure",
+        "tests/connectors/test_yandex_disk.py::test_capabilities_do_not_emulate_stable_identity_or_incremental_changes",
+        "tests/qualification/test_issue677_cross_provider_offline.py::test_provider_binary_runs_through_real_adapter_and_admission",
+        "tests/qualification/test_issue677_cross_provider_offline.py::test_provider_replay_has_one_canonical_outbox_effect"
+      ]
+    },
+    "scripted_end_to_end_admission_sync_canonical_and_diagnostics": {
+      "status": "PASS",
+      "evidence": [
+        "tests/qualification/test_issue853_yandex_mail_end_to_end.py::test_issue853_scripted_path_runs_admission_sync_ingestion_and_safe_diagnostics"
+      ]
+    }
+  },
+  "unverified_prerequisite": "Live Yandex Mail semantics require separate authorization, approved credentials and an explicitly scoped live qualification. Offline scripted PASS is not live provider evidence."
+}
