@@ -53,6 +53,7 @@ from spine.domain.sources import (
     PolicyProposal,
     PrincipalKind,
     SourceObject,
+    SourceRevision,
     SourceRevisionReceiptAssociation,
     content_revision,
 )
@@ -408,6 +409,7 @@ async def prepare_case(
     *,
     scope: tuple[UUID, UUID] | None = None,
     source_object: SourceObject | None = None,
+    source_revision: SourceRevision | None = None,
     create_scope: bool = True,
     provenance_event: str = "event-1",
     accepted_generation: int = 1,
@@ -431,7 +433,15 @@ async def prepare_case(
         or source_object.environment_id != environment_id
     ):
         raise ValueError("canonical source must belong to the requested scope")
-    source_revision = revision(source_object, synthetic_uuid(number + 2))
+    source_revision = source_revision or revision(
+        source_object, synthetic_uuid(number + 2)
+    )
+    if (
+        source_revision.source_object_id != source_object.source_object_id
+        or source_revision.workspace_id != workspace_id
+        or source_revision.environment_id != environment_id
+    ):
+        raise ValueError("canonical revision must belong to the requested source")
     if original_content is not None:
         digest = sha256(original_content).hexdigest()
         original_reference = source_revision.original_reference

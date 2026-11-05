@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import base64
 import binascii
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from datetime import datetime, timezone
 from enum import Enum
 from hashlib import sha256
 from typing import Generic, Literal, Protocol, TypeVar, cast
@@ -36,6 +37,7 @@ from spine.connectors.gmail_history import (
     GmailHistoryReader,
     GmailHistoryResult,
 )
+from spine.connectors.gmail_message_state import GmailMessageStateWriter
 
 
 class GmailReadRequest(DefinitionModel):
@@ -557,8 +559,16 @@ class _AdmittedGmailHistoryPageSource:
 
 
 class _GmailHistoryProviderReader:
-    def __init__(self, client: GmailReadClient[Mapping[str, object]]) -> None:
+    def __init__(
+        self,
+        client: GmailReadClient[Mapping[str, object]],
+        *,
+        state_writer: GmailMessageStateWriter,
+        clock: Callable[[], datetime],
+    ) -> None:
         self._mailbox_reader = GmailMailboxReader(client)
+        self._state_writer = state_writer
+        self._clock = clock
 
     async def read(
         self,
@@ -567,12 +577,13 @@ class _GmailHistoryProviderReader:
     ) -> GmailHistoryResult:
         if not isinstance(command, GmailHistoryReadCommand):
             raise MailboxReadDeniedError()
+        self._state_writer.require_scope(command.scope)
         source = _AdmittedGmailHistoryPageSource(
             reader=self._mailbox_reader,
             connection=connection,
             command=command,
         )
-        return await GmailHistoryReader(
+        result = await GmailHistoryReader(
             source,
             scope=command.scope,
             max_pages=command.max_pages,
@@ -580,6 +591,8 @@ class _GmailHistoryProviderReader:
             start_history_id=command.start_history_id,
             max_results=command.max_results,
         )
+        await self._state_writer.record_history(result, received_at=self._clock())
+        return result
 
 
 def compose_gmail_mailbox_reader(
@@ -610,13 +623,19 @@ def compose_gmail_history_reader(
     scopes: MailboxScopeRepository,
     connections: ProviderConnectionRepository,
     client: GmailReadClient[Mapping[str, object]],
+    state_writer: GmailMessageStateWriter,
+    clock: Callable[[], datetime] | None = None,
 ) -> MailboxReadAdmission[GmailHistoryResult]:
-    """Compose bounded history paging behind exact mailbox read admission."""
+    """Compose admitted paging with durable state evidence before returning."""
 
     return MailboxReadAdmission(
         scopes=scopes,
         connections=connections,
-        provider=_GmailHistoryProviderReader(client),
+        provider=_GmailHistoryProviderReader(
+            client,
+            state_writer=state_writer,
+            clock=clock or (lambda: datetime.now(timezone.utc)),
+        ),
     )
 
 

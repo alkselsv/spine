@@ -75,6 +75,18 @@ an observation alone does not change current eligibility or authorize deletion.
 Content change is assessed against the qualified provider message identity and
 immutable original evidence, not sender-supplied headers or mutable state.
 
+Spine-owned Gmail state uses a tenant-scoped PostgreSQL ledger. Label and
+relationship observations are append-only and bind the qualified Gmail message
+key to the exact current raw-MIME Source Revision at first acceptance. A mutable
+per-label head is only a derived ordering aid: the immutable observations remain
+authoritative, and duplicate or older history delivery cannot move the head
+backward. Replaying already accepted evidence remains valid after a later content
+revision, because its original revision lineage is retained. Provider `threadId`
+evidence and header-inferred `References`/`In-Reply-To` evidence use distinct,
+non-upgradeable authority kinds. This ledger cannot create a Source Revision or
+content projection intent; raw-byte changes continue through canonical source
+ingestion and its transactional outbox boundary.
+
 Store exact raw MIME as an immutable original, associated with its verified receipt
 before canonical acceptance and not retrievable until canonical acceptance and
 its transactional outbox intent commit. Parsing and sanitization produce

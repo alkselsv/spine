@@ -18,8 +18,15 @@ from spine.application.connections.email_read import (
     MailboxReadAdmission,
     MailboxReadCommand,
 )
+from spine.application.connector_ingestion import (
+    ConnectorIngestionCommand,
+    ConnectorIngestionOrchestrator,
+    ConnectorIngestionResult,
+)
+from spine.application.gmail_message_state import GmailMessageEvidenceBinding
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.connectors.gmail import GmailRawMessageResult, GmailRawMessageStatus
+from spine.connectors.gmail_message_state import GmailMessageStateWriter
 from spine.connectors.observations import ConnectorCoverage
 from spine.connectors.observations_v2 import (
     EmailObservationEvidence,
@@ -122,6 +129,59 @@ class GmailCanonicalObservationReader:
             raise GmailObservationMappingError(
                 GmailObservationFailureCode.NOT_ELIGIBLE
             ) from None
+
+
+@dataclass(frozen=True, slots=True)
+class GmailCanonicalIngestion:
+    """Persist raw Gmail content, then bind its relationship evidence exactly."""
+
+    orchestrator: ConnectorIngestionOrchestrator
+    state_writer: GmailMessageStateWriter
+    clock: Callable[[], datetime]
+
+    async def ingest(
+        self, command: ConnectorIngestionCommand
+    ) -> ConnectorIngestionResult:
+        result = await self.orchestrator.ingest(command)
+        await self._record_relationships(result)
+        return result
+
+    async def ingest_observation(
+        self,
+        command: ConnectorIngestionCommand,
+        observation: NormalizedExternalObservationV2,
+    ) -> ConnectorIngestionResult:
+        result = await self.orchestrator.ingest_observation(command, observation)
+        await self._record_relationships(result)
+        return result
+
+    async def _record_relationships(self, result: ConnectorIngestionResult) -> None:
+        evidence = result.revision.revision_metadata.email_revision
+        if not isinstance(result.observation, NormalizedExternalObservationV2):
+            raise GmailObservationMappingError(
+                GmailObservationFailureCode.MALFORMED_EVIDENCE
+            )
+        provider_key = result.observation.external_identity.provider_key
+        if evidence is None or not isinstance(provider_key, ProviderEmailMessageKey):
+            raise GmailObservationMappingError(
+                GmailObservationFailureCode.MALFORMED_EVIDENCE
+            )
+        binding = GmailMessageEvidenceBinding(
+            workspace_id=result.source.workspace_id,
+            environment_id=result.source.environment_id,
+            source_object_id=result.source.source_object_id,
+            source_revision_id=result.revision.revision_id,
+            message_key=GmailMessageKey(
+                connection_id=provider_key.connection_id,
+                mailbox_binding_id=provider_key.mailbox_binding_id,
+                message_id=provider_key.provider_object_id,
+            ),
+        )
+        await self.state_writer.record_relationships(
+            binding,
+            evidence,
+            received_at=self.clock(),
+        )
 
 
 def gmail_raw_message_observation(
@@ -284,6 +344,7 @@ def _header_date(values: tuple[str, ...]) -> datetime | None:
 
 
 __all__ = [
+    "GmailCanonicalIngestion",
     "GmailCanonicalObservationReader",
     "GmailObservationFailureCode",
     "GmailObservationMappingError",

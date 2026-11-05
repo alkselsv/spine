@@ -573,6 +573,50 @@ source_revision_provenance = Table(
     Column("bitrix24_disk_membership", JSONB(none_as_null=True)),
 )
 
+gmail_message_label_observations = Table(
+    "gmail_message_label_observations", metadata,
+    Column("observation_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("history_id", Numeric(32, 0), nullable=False),
+    Column("event_identity", Text, nullable=False),
+    Column("label_id", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("received_at", DateTime(timezone=True), nullable=False),
+)
+
+gmail_message_label_heads = Table(
+    "gmail_message_label_heads", metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("label_id", Text, nullable=False),
+    Column("observation_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("history_id", Numeric(32, 0), nullable=False),
+    Column("event_identity", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "source_object_id", "label_id",
+        name="pk_gmail_message_label_heads",
+    ),
+)
+
+gmail_message_relationship_evidence = Table(
+    "gmail_message_relationship_evidence", metadata,
+    Column("evidence_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("authority", Text, nullable=False),
+    Column("record", JSONB, nullable=False),
+    Column("received_at", DateTime(timezone=True), nullable=False),
+)
+
 register_link_claims = Table(
     "register_link_claims", metadata,
     Column("claim_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
@@ -2831,6 +2875,9 @@ __all__ = [
     "source_objects",
     "source_revisions",
     "source_revision_provenance",
+    "gmail_message_label_observations",
+    "gmail_message_label_heads",
+    "gmail_message_relationship_evidence",
     "register_link_claims",
     "register_association_acceptances",
     "bitrix24_crm_material_claims",
