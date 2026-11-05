@@ -92,6 +92,12 @@ class FakeStoreHarness:
         self.receipts: dict[tuple[FakeRef, FakeRef, FakeRef, FakeRef], FakeStoreResult] = {}
         self.calls: list[tuple[FakeRef, FakeRef, FakeRef, FakeRef]] = []
 
+    def set_store_available(self, *, store_ref: FakeRef) -> None:
+        validated_store_ref = _fake_ref(store_ref)
+        if validated_store_ref not in self.store_refs:
+            raise ValueError("only declared fake stores can change availability")
+        self.unavailable = self.unavailable - {validated_store_ref}
+
     def delete_synthetic(
         self,
         *,
@@ -130,8 +136,8 @@ class FakeRestoreHarness:
         self.deletion_restriction_applied = False
 
     def replay_current_restrictions(self, *, succeeded: bool) -> None:
-        self.restrictions_replayed = succeeded
-        if succeeded:
+        self.restrictions_replayed = succeeded is True
+        if succeeded is True:
             self.deletion_restriction_applied = True
             self.quarantined = False
 
@@ -322,7 +328,7 @@ def test_fake_store_retry_after_outage_reuses_one_logical_effect() -> None:
 
     assert store.delete_synthetic(**command) is FakeStoreResult.UNAVAILABLE
     assert store.records
-    store.unavailable = frozenset()
+    store.set_store_available(store_ref="fake-store-a")
     assert store.delete_synthetic(**command) is FakeStoreResult.DELETED_SYNTHETIC
     assert store.delete_synthetic(**command) is FakeStoreResult.DUPLICATE
     assert len(store.calls) == 1
@@ -349,7 +355,8 @@ def test_fake_store_denies_other_workspace_without_leaking_record_state() -> Non
     assert len(store.records) == 1
 
 
-def test_fake_store_denies_missing_or_stale_or_revoked_authority() -> None:
+@pytest.mark.parametrize("authority", [False, None, "true"])
+def test_fake_store_denies_missing_or_stale_or_revoked_authority(authority: object) -> None:
     store = FakeStoreHarness(
         workspace_ref="fake-workspace-a",
         store_refs=("fake-store-a",),
@@ -361,7 +368,7 @@ def test_fake_store_denies_missing_or_stale_or_revoked_authority() -> None:
         workspace_ref="fake-workspace-a",
         store_ref="fake-store-a",
         artifact_ref="fake-artifact-a",
-        current_test_authority=False,
+        current_test_authority=authority,
     )
 
     assert outcome is FakeStoreResult.DENIED
@@ -438,6 +445,8 @@ def test_fake_restore_remains_quarantined_until_restriction_replay_succeeds() ->
     assert not restored.can_read_or_publish(record_ref="fake-restored-artifact-a")
     restored.replay_current_restrictions(succeeded=False)
     assert not restored.can_read_or_publish(record_ref="fake-restored-artifact-a")
+    restored.replay_current_restrictions(succeeded="true")
+    assert restored.quarantined
     restored.replay_current_restrictions(succeeded=True)
     assert not restored.quarantined
     assert restored.deletion_restriction_applied
