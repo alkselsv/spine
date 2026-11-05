@@ -138,9 +138,55 @@ successor publication pinned to the exact artifact/profile. Rebuild or validatio
 failure leaves the last active publication authoritative. Operational rollback is
 another successor using the previously qualified processing and locator versions;
 published evidence is never mutated in place. Synthetic golden vectors and
-`qa.email_citation_resolution:v1` are the deterministic regression gate for exact
-resolution and fail-closed rejection. Attachment citations require a separate
-successor locator and are not encoded by `em1`.
+`qa.email_citation_resolution:v2` are the deterministic regression gate for exact
+resolution and fail-closed rejection.
+
+## Attachment citation locator
+
+`email-attachment-locator:v1` is the additive stable locator for a supported
+parsed range whose original bytes came from one exact message MIME part. Its
+`StableLocator.kind` is `custom`; its canonical value starts with `ea1` and pins
+the parent Source Object/Revision, processed message artifact, MIME part, a digest
+of the complete parent artifact/profile/part identity, attachment artifact and
+digest, processing receipt and digest, parsed artifact, and child stable locator.
+The child citation evidence independently pins the attachment SourceRevision,
+revision digest and immutable-original digest.
+
+Citation Inspector derives two exact disclosure dependencies from this locator:
+the parent message revision first and the child attachment revision second. Both
+must be present in the persisted Context Bundle and freshly pass AccessPolicy,
+lifecycle, currentness, processing and retention checks. Only then may resolution
+load immutable records and verify the chain `message artifact/MIME part →
+attachment original → processing receipt → child SourceRevision → parsed artifact
+range`. A wrong part, parent, digest, receipt, child revision, tenant or stale
+artifact returns the same content-free unavailable result.
+
+During authorized retrieval, an `ea1` child is publishable only when its parent
+revision is also present in the authorized retrieval scope. The Context Broker
+persists a content-free parent dependency reference and its policy generation in
+the same bundle; a missing or unauthorized parent makes bundle creation
+unavailable. A child ingestion command marked `email.attachment.process` may not
+downgrade to an ordinary parsed locator when the attachment-lineage receipt is
+missing or incomplete.
+
+Several immutable authority-version receipts may legitimately reference the same
+downstream child processing effect. Projection accepts them only when their
+parent, attachment, child revision and parsed-artifact lineage is identical, then
+pins the latest receipt by `(completed_at, processing_receipt_id)`. Conflicting
+lineage is unavailable; authority-version history is never overwritten.
+
+This format is emitted only by a successor projection after its parent and child
+references have passed validation. Existing `em1` locators are not reinterpreted.
+A rebuild failure leaves the last active publication authoritative; rollback is a
+new successor using the last qualified locator/processing versions. The v2
+synthetic citation evaluation gate covers both `em1` and `ea1` vectors. The
+attachment set is pinned at ten cases: one exact-lineage success plus nine
+content-free failures for wrong parent, MIME part, artifact digest, processing
+digest, stale child, cross-workspace access, stale parsed artifact, revoked
+parent and revoked child. The initial v2 qualification result is 10/10 passing;
+v1 message vectors remain
+unchanged, so the attachment-contract delta is additive rather than a baseline
+replacement.
 
 ## Checkpoints and no-gap publication
 

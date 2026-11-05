@@ -44,6 +44,7 @@ from spine.domain.artifacts import (
     OoxmlTextLocator,
     PageTextLocator,
     PhysicalLineLocator,
+    ParsedDocument,
     XlsxCellLocator,
 )
 from spine.domain.ingestion import ProcessingReceipt
@@ -86,6 +87,19 @@ class CanonicalProjectionLocatorUnitOfWork(Protocol):
     ) -> None: ...
 
 
+class ParsedArtifactStableLocatorProjector(Protocol):
+    async def project(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        child_processing_receipt_id: UUID,
+        attachment_required: bool,
+        parsed_artifact: ParsedDocument,
+        child_locator: StableLocator,
+    ) -> tuple[str, StableLocator] | None: ...
+
+
 class ParsedArtifactCanonicalProjectionLocatorResolver:
     """Resolve stable locator evidence from the committed parsed artifact."""
 
@@ -97,10 +111,13 @@ class ParsedArtifactCanonicalProjectionLocatorResolver:
         ],
         context_factory: Callable[[ProjectionCommand], TrustedPersistenceContext],
         parsed_artifacts: ParsedArtifactRepository,
+        attachment_locator_projector: ParsedArtifactStableLocatorProjector
+        | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._context_factory = context_factory
         self._parsed_artifacts = parsed_artifacts
+        self._attachment_locator_projector = attachment_locator_projector
 
     async def resolve(
         self, request: CanonicalProjectionEvidenceRequest
@@ -161,6 +178,25 @@ class ParsedArtifactCanonicalProjectionLocatorResolver:
                 raise ProjectionMappingError("canonical parsed artifact is invalid")
             for segment in artifact.segments:
                 stable = stable_locator_from_parsed_locator(segment.locator)
+                locator_contract_version = receipt.locator_contract_version
+                if self._attachment_locator_projector is not None:
+                    try:
+                        projected = await self._attachment_locator_projector.project(
+                            workspace_id=request.command.workspace_id,
+                            environment_id=request.command.environment_id,
+                            child_processing_receipt_id=receipt.processing_receipt_id,
+                            attachment_required=(
+                                receipt.command_identity == "email.attachment.process"
+                            ),
+                            parsed_artifact=artifact,
+                            child_locator=stable,
+                        )
+                    except ValueError as error:
+                        raise ProjectionMappingError(
+                            "attachment citation lineage is unavailable"
+                        ) from error
+                    if projected is not None:
+                        locator_contract_version, stable = projected
                 locators.append(
                     CanonicalProjectionLocator(
                         source_object_id=source.source_object_id,
@@ -168,10 +204,10 @@ class ParsedArtifactCanonicalProjectionLocatorResolver:
                         revision_digest=source.revision_digest,
                         processing_receipt_id=receipt.processing_receipt_id,
                         segment_id=f"segment-{segment.segment_id.hex}",
-                        locator_schema_version=receipt.locator_contract_version,
+                        locator_schema_version=locator_contract_version,
                         locator=stable,
                         locator_digest=canonical_projection_locator_digest(
-                            locator_contract_version=receipt.locator_contract_version,
+                            locator_contract_version=locator_contract_version,
                             locator=stable,
                         ),
                     )

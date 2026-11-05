@@ -131,6 +131,22 @@ class EmailAttachmentBatchProcessingResult:
 
 
 class EmailAttachmentProcessingRepository(Protocol):
+    async def resolve_by_child_processing_receipt_id(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        child_processing_receipt_id: UUID,
+    ) -> EmailAttachmentProcessingReceipt | None: ...
+
+    async def resolve_by_id(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        processing_receipt_id: UUID,
+    ) -> EmailAttachmentProcessingReceipt | None: ...
+
     async def resolve(
         self,
         *,

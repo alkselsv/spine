@@ -345,6 +345,44 @@ async def test_valid_adapter_result_maps_to_issue7_receipt_and_source_reference(
 
 
 @pytest.mark.asyncio
+async def test_attachment_successor_locator_maps_without_rewriting_child_command() -> None:
+    command = _command()
+    stable = StableLocator(kind="custom", value="ea1|synthetic-lineage")
+    digest = _digest("attachment-locator", stable.model_dump(mode="json"))
+    context = _context(command)
+    attachment_locator = context.locators[0].model_copy(
+        update={
+            "locator_schema_version": "email-attachment-locator:v1",
+            "locator": stable,
+            "locator_digest": digest,
+        }
+    )
+    context = context.model_copy(update={"locators": (attachment_locator,)})
+    reference = _adapter_receipt(command).source_references[0].model_copy(
+        update={
+            "locator_schema_version": "email-attachment-locator:v1",
+            "locator": stable,
+            "locator_digest": digest,
+        }
+    )
+    bridge = ProjectionResultMappingBridge(
+        DeterministicCanonicalProjectionGateway((context,)),
+        id_source=iter((UUID(int=30),)).__next__,
+    )
+
+    mapped = await bridge.map(
+        command, _adapter_receipt(command, reference=reference)
+    )
+
+    assert mapped.handoff.source_references[0].locator_schema_version == (
+        "email-attachment-locator:v1"
+    )
+    assert mapped.handoff.source_references[0].locator_reference == (
+        "custom:ea1|synthetic-lineage"
+    )
+
+
+@pytest.mark.asyncio
 async def test_same_identity_and_digest_replays_same_mapping() -> None:
     command = _command()
     gateway = DeterministicCanonicalProjectionGateway((_context(command),))

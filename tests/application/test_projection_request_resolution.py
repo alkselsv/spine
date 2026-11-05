@@ -36,6 +36,7 @@ from spine.domain.sources import (
     RevisionKind,
 )
 from spine.ingestion.parsers import parse_document
+from spine.memory.contracts import StableLocator
 from tests.domain.artifacts.test_parsed_documents import revision
 
 from tests.application.test_projection_result_mapping import (
@@ -655,6 +656,79 @@ async def test_parsed_artifact_locator_resolver_returns_digest_bound_evidence() 
     assert locators[0].source_revision_id == REVISION
     assert locators[0].locator.kind == "character_range"
     assert len(locators[0].locator_digest) == 64
+
+
+@pytest.mark.asyncio
+async def test_parsed_locator_resolver_emits_attachment_successor_contract() -> None:
+    source = revision(b"hello")
+    document = parse_document(source, b"hello")
+    command = _command().model_copy(
+        update={
+            "source_revisions": (
+                _command().source_revisions[0].model_copy(
+                    update={
+                        "revision_digest": source.revision_digest,
+                        "locator_contract_version": document.locator_contract_version,
+                    }
+                ),
+            )
+        }
+    )
+    receipt = ProcessingReceipt(
+        processing_receipt_id=command.source_revisions[0].processing_receipt_id,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        ingestion_run_source_id=ITEM,
+        binding_id=BINDING,
+        source_object_id=SOURCE,
+        source_revision_id=REVISION,
+        processor_kind="document-ingestion",
+        parser_name=document.parser_name,
+        parser_version=document.parser_version,
+        parser_config_reference=document.parser_config_reference,
+        locator_contract_version=document.locator_contract_version,
+        original_sha256=source.original_sha256,
+        output_kind="parsed-document",
+        output_reference=document.artifact_id,
+        output_digest=document.artifact_digest,
+        coverage=ProcessingCoverage.COMPLETE,
+        command_identity="email.attachment.process",
+        command_digest="e" * 64,
+        completed_at=NOW,
+    )
+
+    class Projector:
+        async def project(self, **values: object):
+            assert values["attachment_required"] is True
+            return (
+                "email-attachment-locator:v1",
+                StableLocator(kind="custom", value="ea1|synthetic-lineage"),
+            )
+
+    mapping = _context(command)
+    resolver = ParsedArtifactCanonicalProjectionLocatorResolver(
+        uow_factory=lambda context: _LocatorUow(receipt),
+        context_factory=lambda value: object(),  # type: ignore[arg-type]
+        parsed_artifacts=_ParsedArtifacts(document),  # type: ignore[arg-type]
+        attachment_locator_projector=Projector(),  # type: ignore[arg-type]
+    )
+
+    locators = await resolver.resolve(
+        CanonicalProjectionEvidenceRequest(
+            command=command,
+            run=mapping.run,
+            partition=mapping.partition,
+            projection_config=mapping.projection_config,
+            ontology=object(),  # type: ignore[arg-type]
+            canonical_boundary=mapping.canonical_boundary,
+            boundary_members=mapping.boundary_members,
+        )
+    )
+
+    assert locators[0].locator_schema_version == "email-attachment-locator:v1"
+    assert locators[0].locator == StableLocator(
+        kind="custom", value="ea1|synthetic-lineage"
+    )
 
 
 @pytest.mark.asyncio

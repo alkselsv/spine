@@ -20,7 +20,7 @@ from spine.application.persistence.unit_of_work_activity import (
     track_unit_of_work_activity,
 )
 from spine.memory.cognee.retrieval.adapter import CogneeDataMetadata
-from spine.memory.contracts import ProjectionResult, ProjectionSourceRevision
+from spine.memory.contracts import ProjectionResult, ProjectionSourceRevision, StableLocator
 from tests.application.test_projection_result_mapping import (
     ENVIRONMENT,
     NOW,
@@ -106,6 +106,30 @@ class _UnitOfWork:
 
     async def __aexit__(self, *args: object) -> None:
         return None
+
+
+class _AttachmentIngestionRepository(_IngestionRepository):
+    async def resolve_processing_receipt_by_id(
+        self, receipt_id: UUID
+    ) -> ProcessingReceipt:
+        receipt = await super().resolve_processing_receipt_by_id(receipt_id)
+        return receipt.model_copy(update={"command_identity": "email.attachment.process"})
+
+
+class _AttachmentUnitOfWork(_UnitOfWork):
+    ingestion = _AttachmentIngestionRepository()
+
+
+class _AttachmentLocatorProjector:
+    def __init__(self) -> None:
+        self.attachment_required = False
+
+    async def project(self, **values: Any):
+        self.attachment_required = values["attachment_required"]
+        return (
+            "email-attachment-locator:v1",
+            StableLocator(kind="custom", value="ea1|synthetic-lineage"),
+        )
 
 
 def _document() -> ParsedDocument:
@@ -239,6 +263,35 @@ async def test_receipt_builder_uses_observed_cognee_data_and_canonical_segments(
     assert reference.segment_id == f"segment-{document.segments[0].segment_id.hex}"
     assert reference.locator.kind == "character_range"
     assert reference.security_domain_reference == "security-domain:1"
+
+
+@pytest.mark.asyncio
+async def test_receipt_builder_emits_projected_attachment_locator() -> None:
+    document = _document()
+    command = _command_for_document(document)
+    repository = InMemoryParsedArtifactRepository()
+    await repository.persist(
+        ParsedArtifactCommand.create(document=document, command_identity="parsed:1")
+    )
+    projector = _AttachmentLocatorProjector()
+    builder = CogneeProjectionReceiptBuilder(
+        physical_reader=_PhysicalReader((_chunk_row(command),)),
+        parsed_artifacts=repository,
+        uow_factory=lambda _context: _AttachmentUnitOfWork(),
+        context_factory=lambda _command: object(),
+        clock=lambda: NOW,
+        adapter_version="1.5.4",
+        attachment_locator_projector=projector,
+    )
+
+    receipt = await builder.build(command, _successful_result())
+
+    reference = receipt.source_references[0]
+    assert projector.attachment_required is True
+    assert reference.locator_schema_version == "email-attachment-locator:v1"
+    assert reference.locator == StableLocator(
+        kind="custom", value="ea1|synthetic-lineage"
+    )
 
 
 @pytest.mark.asyncio

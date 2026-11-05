@@ -103,6 +103,46 @@ class EmailAttachmentArtifact(DefinitionModel):
         return self
 
 
+class EmailAttachmentCitationLocator(DefinitionModel):
+    """Bounded pointer through a parent MIME part to one parsed child range."""
+
+    schema_version: Literal["email-attachment-locator:v1"] = (
+        "email-attachment-locator:v1"
+    )
+    parent_source_object_id: UUID
+    parent_source_revision_id: UUID
+    parent_message_artifact_id: UUID
+    parent_mime_part_path: str = Field(pattern=r"^1(?:\.[1-9][0-9]*)*$")
+    parent_locator_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    attachment_artifact_id: UUID
+    attachment_artifact_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    processing_receipt_id: UUID
+    processing_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    parsed_artifact_id: UUID
+    child_locator_kind: str = Field(
+        min_length=1, max_length=32, pattern=r"^[a-z][a-z0-9_]*$"
+    )
+    child_locator_value: str = Field(
+        min_length=1, max_length=160, pattern=r"^[^|\r\n]+$"
+    )
+
+    @model_validator(mode="after")
+    def validate_identities(self) -> "EmailAttachmentCitationLocator":
+        if any(
+            value.int == 0
+            for value in (
+                self.parent_source_object_id,
+                self.parent_source_revision_id,
+                self.parent_message_artifact_id,
+                self.attachment_artifact_id,
+                self.processing_receipt_id,
+                self.parsed_artifact_id,
+            )
+        ):
+            raise ValueError("email attachment locator identities must be non-zero")
+        return self
+
+
 class EmailAttachmentProcessingDisposition(str, Enum):
     """Safe, content-free outcome for one independently processed MIME part."""
 
@@ -234,6 +274,61 @@ def email_attachment_id(
     )
 
 
+def encode_email_attachment_locator(locator: EmailAttachmentCitationLocator) -> str:
+    """Encode the exact lineage without placing filenames or content in the locator."""
+
+    reference = "|".join(
+        (
+            "ea1",
+            locator.parent_source_object_id.hex,
+            locator.parent_source_revision_id.hex,
+            locator.parent_message_artifact_id.hex,
+            locator.parent_mime_part_path,
+            locator.parent_locator_digest,
+            locator.attachment_artifact_id.hex,
+            locator.attachment_artifact_digest,
+            locator.processing_receipt_id.hex,
+            locator.processing_receipt_digest,
+            locator.parsed_artifact_id.hex,
+            locator.child_locator_kind,
+            locator.child_locator_value,
+        )
+    )
+    if len(reference) > 512:
+        raise ValueError("email attachment locator exceeds the stable locator limit")
+    return reference
+
+
+def decode_email_attachment_locator(
+    reference: str,
+) -> EmailAttachmentCitationLocator | None:
+    """Decode only the canonical v1 form; malformed references fail closed."""
+
+    try:
+        fields = reference.split("|")
+        if len(fields) != 13 or fields[0] != "ea1":
+            return None
+        locator = EmailAttachmentCitationLocator(
+            parent_source_object_id=UUID(hex=fields[1]),
+            parent_source_revision_id=UUID(hex=fields[2]),
+            parent_message_artifact_id=UUID(hex=fields[3]),
+            parent_mime_part_path=fields[4],
+            parent_locator_digest=fields[5],
+            attachment_artifact_id=UUID(hex=fields[6]),
+            attachment_artifact_digest=fields[7],
+            processing_receipt_id=UUID(hex=fields[8]),
+            processing_receipt_digest=fields[9],
+            parsed_artifact_id=UUID(hex=fields[10]),
+            child_locator_kind=fields[11],
+            child_locator_value=fields[12],
+        )
+        return (
+            locator if encode_email_attachment_locator(locator) == reference else None
+        )
+    except (TypeError, ValueError):
+        return None
+
+
 def email_attachment_artifact_digest(artifact: EmailAttachmentArtifact) -> str:
     payload = artifact.model_dump(mode="json", exclude={"artifact_sha256"})
     encoded = json.dumps(
@@ -264,3 +359,18 @@ def email_attachment_processing_effect_digest(
         payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+__all__ = [
+    "EmailAttachmentArtifact",
+    "EmailAttachmentCitationLocator",
+    "EmailAttachmentProcessingDisposition",
+    "EmailAttachmentProcessingReceipt",
+    "EmailAttachmentWriteReceipt",
+    "decode_email_attachment_locator",
+    "email_attachment_artifact_digest",
+    "email_attachment_id",
+    "email_attachment_processing_effect_digest",
+    "email_attachment_processing_receipt_digest",
+    "encode_email_attachment_locator",
+]

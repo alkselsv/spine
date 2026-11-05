@@ -14,6 +14,7 @@ from spine.application.authorized_context_broker import (
     InMemoryContextBundleStore,
     SavedContextBundleAccess,
     _references_by_evidence_id,
+    _attachment_parent_dependencies,
     context_bundle_id_for_request,
 )
 from spine.application.qa_observation.context_capture import (
@@ -82,6 +83,103 @@ ENVIRONMENT = UUID(int=2)
 NOW = datetime(2026, 10, 15, 12, tzinfo=timezone.utc)
 BITRIX24_SOURCE_OBJECT_ID = UUID(int=666)
 BITRIX24_SOURCE_REVISION_ID = UUID(int=667)
+
+
+def test_attachment_parent_dependency_requires_authorized_parent_scope() -> None:
+    from spine.domain.artifacts.email_attachment import (
+        EmailAttachmentCitationLocator,
+        encode_email_attachment_locator,
+    )
+    from spine.domain.sources import RevisionKind, RevisionMetadata, content_revision
+    from spine.domain.sources.original_reference import ObjectReference
+    from tests.memory.test_physical_read_plan import _config, _context, _publication
+
+    child_source = UUID(int=850)
+    child_revision = UUID(int=851)
+    parent_source = UUID(int=852)
+    parent_revision = UUID(int=853)
+    physical_context, _ = _context(source=child_source, revision=child_revision)
+    scope = physical_context.authorized_scope
+    parent_constraint = scope.source_constraints[0].model_copy(
+        update={
+            "source_object_id": parent_source,
+            "source_revision_id": parent_revision,
+        }
+    )
+    authorized_scope = scope.model_copy(
+        update={
+            "source_constraints": (*scope.source_constraints, parent_constraint)
+        }
+    )
+    revision = content_revision(
+        revision_id=parent_revision,
+        source_object_id=parent_source,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        kind=RevisionKind.CONTENT,
+        revision_schema_version="source-revision:v1",
+        revision_metadata_schema="revision-metadata:r1-document-v1",
+        revision_metadata=RevisionMetadata(embedded_title="Synthetic parent"),
+        original_reference=ObjectReference(
+            schema_version=1,
+            object_id=UUID(int=854),
+            storage_generation=UUID(int=855),
+            digest_algorithm="sha256",
+            digest_hex="a" * 64,
+            byte_length=1,
+        ),
+        original_sha256="a" * 64,
+        byte_length=1,
+        media_type="message/rfc822",
+        observed_at=NOW,
+    )
+    locator = EmailAttachmentCitationLocator(
+        parent_source_object_id=parent_source,
+        parent_source_revision_id=parent_revision,
+        parent_message_artifact_id=UUID(int=856),
+        parent_mime_part_path="1.2",
+        parent_locator_digest="b" * 64,
+        attachment_artifact_id=UUID(int=857),
+        attachment_artifact_digest="c" * 64,
+        processing_receipt_id=UUID(int=858),
+        processing_receipt_digest="d" * 64,
+        parsed_artifact_id=UUID(int=859),
+        child_locator_kind="character_range",
+        child_locator_value="line:1:0-4",
+    )
+    encoded = encode_email_attachment_locator(locator)
+    item = EvidenceReference(
+        evidence_id="attachment-child",
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        source_object_id=child_source,
+        source_revision_id=child_revision,
+        revision_digest="e" * 64,
+        processing_receipt_id=UUID(int=860),
+        locator_contract_version="email-attachment-locator:v1",
+        locator=StableLocator(kind="custom", value=encoded),
+        evidence_digest="f" * 64,
+    )
+    pin = PublicationPin.from_publication(_publication(_config()))
+
+    dependencies = _attachment_parent_dependencies(
+        evidence_items=(item,),
+        scope=authorized_scope,
+        source_revisions=(revision,),
+        publication_pin=pin,
+    )
+
+    assert len(dependencies) == 1
+    assert dependencies[0].source_object_id == parent_source
+    assert dependencies[0].source_revision_id == parent_revision
+    assert dependencies[0].revision_digest == revision.revision_digest
+    with pytest.raises(ValueError, match="parent dependency is unauthorized"):
+        _attachment_parent_dependencies(
+            evidence_items=(item,),
+            scope=scope,
+            source_revisions=(revision,),
+            publication_pin=pin,
+        )
 
 
 def request(**overrides: object) -> AuthorizedContextRequest:

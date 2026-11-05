@@ -218,7 +218,12 @@ digests. Citation Inspector resolves that locator only from the immutable artifa
 after fresh AccessPolicy, lifecycle and retention revalidation; malformed,
 tombstoned, revoked, cross-tenant or digest-mismatched references, plus superseded
 references in ordinary current inspection, return the same content-free unavailable
-outcome. Attachment locators remain a separate successor contract.
+outcome. `email-attachment-locator:v1` is a separate successor contract that
+requires exact parent-message and child-attachment dependencies in the persisted
+Context Bundle, revalidates both before resolution, and then verifies the immutable
+message-part → attachment-original → processing-receipt → parsed-range chain.
+Wrong parent/part/digest, stale lineage and cross-tenant references disclose no
+attachment text or bytes.
 Gmail label observations and provider/header relationship evidence are stored in
 a tenant-scoped append-only ledger bound to the exact current raw-MIME revision;
 only the derived per-label head is mutable, and state writes cannot emit content

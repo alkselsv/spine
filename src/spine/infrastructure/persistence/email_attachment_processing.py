@@ -59,6 +59,40 @@ class InMemoryEmailAttachmentProcessingRepository:
                 )
             )
 
+    async def resolve_by_id(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        processing_receipt_id: UUID,
+    ) -> EmailAttachmentProcessingReceipt | None:
+        async with self._lock:
+            matches = tuple(
+                receipt
+                for (workspace, environment, *_), receipt in self._records.items()
+                if workspace == workspace_id
+                and environment == environment_id
+                and receipt.processing_receipt_id == processing_receipt_id
+            )
+            return matches[0] if len(matches) == 1 else None
+
+    async def resolve_by_child_processing_receipt_id(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        child_processing_receipt_id: UUID,
+    ) -> EmailAttachmentProcessingReceipt | None:
+        async with self._lock:
+            matches = tuple(
+                receipt
+                for (workspace, environment, *_), receipt in self._records.items()
+                if workspace == workspace_id
+                and environment == environment_id
+                and receipt.child_processing_receipt_id == child_processing_receipt_id
+            )
+            return _select_child_processing_receipt(matches)
+
     async def persist(
         self, receipt: EmailAttachmentProcessingReceipt
     ) -> EmailAttachmentProcessingPersistenceResult:
@@ -136,6 +170,74 @@ class PostgreSQLEmailAttachmentProcessingRepository:
             ):
                 raise EmailAttachmentProcessingConflict()
             return receipt
+
+    async def resolve_by_id(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        processing_receipt_id: UUID,
+    ) -> EmailAttachmentProcessingReceipt | None:
+        async with self._session_factory() as session:
+            await self._bind_tenant_scope(session, workspace_id, environment_id)
+            row = (
+                await session.execute(
+                    select(email_attachment_processing_receipts.c.record).where(
+                        email_attachment_processing_receipts.c.workspace_id
+                        == workspace_id,
+                        email_attachment_processing_receipts.c.environment_id
+                        == environment_id,
+                        email_attachment_processing_receipts.c.processing_receipt_id
+                        == processing_receipt_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            receipt = EmailAttachmentProcessingReceipt.model_validate_json(
+                json.dumps(row)
+            )
+            if (
+                receipt.workspace_id != workspace_id
+                or receipt.environment_id != environment_id
+                or receipt.processing_receipt_id != processing_receipt_id
+            ):
+                raise EmailAttachmentProcessingConflict()
+            return receipt
+
+    async def resolve_by_child_processing_receipt_id(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        child_processing_receipt_id: UUID,
+    ) -> EmailAttachmentProcessingReceipt | None:
+        async with self._session_factory() as session:
+            await self._bind_tenant_scope(session, workspace_id, environment_id)
+            rows = (
+                await session.execute(
+                    select(email_attachment_processing_receipts.c.record).where(
+                        email_attachment_processing_receipts.c.workspace_id
+                        == workspace_id,
+                        email_attachment_processing_receipts.c.environment_id
+                        == environment_id,
+                        email_attachment_processing_receipts.c.child_processing_receipt_id
+                        == child_processing_receipt_id,
+                    )
+                )
+            ).scalars().all()
+            receipts = tuple(
+                EmailAttachmentProcessingReceipt.model_validate_json(json.dumps(row))
+                for row in rows
+            )
+            if any(
+                receipt.workspace_id != workspace_id
+                or receipt.environment_id != environment_id
+                or receipt.child_processing_receipt_id != child_processing_receipt_id
+                for receipt in receipts
+            ):
+                raise EmailAttachmentProcessingConflict()
+            return _select_child_processing_receipt(receipts)
 
     async def persist(
         self, receipt: EmailAttachmentProcessingReceipt
@@ -240,6 +342,40 @@ class PostgreSQLEmailAttachmentProcessingRepository:
                 "trace_id": str(context.trace_id),
             },
         )
+
+
+def _select_child_processing_receipt(
+    receipts: tuple[EmailAttachmentProcessingReceipt, ...],
+) -> EmailAttachmentProcessingReceipt | None:
+    if not receipts:
+        return None
+    lineage_keys = {
+        (
+            receipt.parent_source_object_id,
+            receipt.parent_source_revision_id,
+            receipt.parent_source_revision_digest,
+            receipt.parent_canonical_acceptance_id,
+            receipt.attachment_artifact_id,
+            receipt.attachment_artifact_digest,
+            receipt.mime_part_path,
+            receipt.attachment_content_sha256,
+            receipt.child_source_object_id,
+            receipt.child_source_revision_id,
+            receipt.child_processing_receipt_id,
+            receipt.parsed_artifact_id,
+            receipt.parsed_artifact_digest,
+        )
+        for receipt in receipts
+    }
+    if len(lineage_keys) != 1:
+        raise EmailAttachmentProcessingConflict()
+    return max(
+        receipts,
+        key=lambda receipt: (
+            receipt.completed_at,
+            receipt.processing_receipt_id.hex,
+        ),
+    )
 
 
 __all__ = [

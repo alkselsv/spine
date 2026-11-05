@@ -46,6 +46,7 @@ from spine.application.retrieval_gates import (
     RetrievalGateRequest,
     RetrievalGateService,
 )
+from spine.application.projection_locator import canonical_projection_locator_digest
 from spine.application.persistence.errors import ContextBundleConflictError
 from spine.application.processing_disposition import CurrentProcessingDispositionAuthority
 from spine.domain.context_bundles import (
@@ -73,14 +74,17 @@ from spine.domain.projections import (
 )
 from spine.domain.sources import CanonicalBoundary as DomainCanonicalBoundary
 from spine.domain.sources import SourceRevision
+from spine.domain.artifacts.email_attachment import decode_email_attachment_locator
 from spine.memory.contracts import (
     ContextOutcome,
     ContextReasonCode,
     ContextRequest,
     ContextResponse,
+    EvidenceReference as ProjectionEvidenceReference,
     ProjectionOutcome,
     ProjectionRetrievalResult,
     PublicationPin,
+    StableLocator,
 )
 from spine.memory.read_plan import (
     PhysicalReadContext,
@@ -1008,6 +1012,12 @@ class AuthorizedContextBrokerApplicationService:
             persisted_reference(item)
             for item in gate.evidence_references
         )
+        evidence += _attachment_parent_dependencies(
+            evidence_items=gate.evidence_references,
+            scope=scope,
+            source_revisions=source_revisions,
+            publication_pin=pin,
+        )
         outcome = ContextBundleOutcome(gate.outcome.value)
         state = (
             ContextBundleState.PARTIAL
@@ -1155,6 +1165,90 @@ def _references_by_evidence_id(
         for reference in references
         if reference.projected_kind in {"chunk", "entity", "relation"}
     }
+
+
+def _attachment_parent_dependencies(
+    *,
+    evidence_items: tuple[ProjectionEvidenceReference, ...],
+    scope: AuthorizedRetrievalScope,
+    source_revisions: tuple[SourceRevision, ...],
+    publication_pin: PublicationPin,
+) -> tuple[ContextBundleEvidenceReference, ...]:
+    """Persist authorized parent revisions required by attachment locators."""
+
+    revisions = {
+        (revision.source_object_id, revision.revision_id): revision
+        for revision in source_revisions
+    }
+    authorized = {
+        (constraint.source_object_id, constraint.source_revision_id)
+        for constraint in scope.source_constraints
+    }
+    dependencies: list[ContextBundleEvidenceReference] = []
+    seen: set[tuple[UUID, UUID]] = set()
+    for item in evidence_items:
+        if item.locator_contract_version != "email-attachment-locator:v1":
+            continue
+        locator = decode_email_attachment_locator(item.locator.value)
+        if locator is None:
+            raise ValueError("attachment dependency locator is invalid")
+        identity = (
+            locator.parent_source_object_id,
+            locator.parent_source_revision_id,
+        )
+        revision = revisions.get(identity)
+        if (
+            identity not in authorized
+            or revision is None
+            or revision.original_sha256 is None
+            or revision.revision_digest is None
+        ):
+            raise ValueError("attachment parent dependency is unauthorized")
+        if identity in seen:
+            continue
+        seen.add(identity)
+        stable = StableLocator(kind="custom", value=item.locator.value)
+        locator_digest = canonical_projection_locator_digest(
+            locator_contract_version=item.locator_contract_version,
+            locator=stable,
+        )
+        evidence_id = (
+            "attachment-parent-"
+            + sha256(item.evidence_id.encode("utf-8")).hexdigest()[:24]
+        )
+        dependency_digest = sha256(
+            json.dumps(
+                {
+                    "schema": "attachment-parent-dependency:v1",
+                    "source_object_id": str(identity[0]),
+                    "source_revision_id": str(identity[1]),
+                    "revision_digest": revision.revision_digest,
+                    "locator_digest": locator_digest,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("ascii")
+        ).hexdigest()
+        dependencies.append(
+            ContextBundleEvidenceReference(
+                schema_version="context-evidence-reference:v1",
+                evidence_id=evidence_id,
+                workspace_id=scope.workspace_id,
+                environment_id=scope.environment_id,
+                projection_snapshot_id=(
+                    publication_pin.projection_snapshot.projection_snapshot_id
+                ),
+                activation_generation=publication_pin.activation_generation,
+                source_object_id=identity[0],
+                source_revision_id=identity[1],
+                revision_digest=revision.revision_digest,
+                locator_contract_version=item.locator_contract_version,
+                locator=EvidenceLocator(kind="custom", value=item.locator.value),
+                evidence_digest=dependency_digest,
+                status=ContextBundleEvidenceStatus.VALID,
+            )
+        )
+    return tuple(dependencies)
 
 
 def request_command_digest(request: AuthorizedContextRequest) -> str:

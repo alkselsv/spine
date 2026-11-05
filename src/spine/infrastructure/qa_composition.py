@@ -43,7 +43,10 @@ from spine.application.citation_inspector import (
     CitationInspectorRequester,
     ProtectedCitationInspector,
 )
-from spine.application.email_citations import EmailMessageCitationExcerptResolver
+from spine.application.email_citations import (
+    EmailAttachmentCitationExcerptResolver,
+    EmailMessageCitationExcerptResolver,
+)
 from spine.application.persistence.context import EnvironmentScope, TrustedPersistenceContext
 from spine.domain.capabilities import (
     AnswerDisclosureRecord,
@@ -72,6 +75,12 @@ from spine.infrastructure.persistence.parsed_artifacts import (
 )
 from spine.infrastructure.persistence.email_artifacts import (
     PostgreSQLEmailArtifactRepository,
+)
+from spine.infrastructure.persistence.email_attachments import (
+    PostgreSQLEmailAttachmentRepository,
+)
+from spine.infrastructure.persistence.email_attachment_processing import (
+    PostgreSQLEmailAttachmentProcessingRepository,
 )
 
 
@@ -600,6 +609,28 @@ class PostgreSQLCitationInspectorService:
                 ),
                 excerpt_resolver=CitationExcerptResolverChain(
                     resolvers=(
+                        EmailAttachmentCitationExcerptResolver(
+                            messages=PostgreSQLEmailArtifactRepository(
+                                self.session_factory,  # type: ignore[arg-type]
+                                context_factory=citation_context_factory,
+                                context_verifier=self.context_verifier,  # type: ignore[arg-type]
+                            ),
+                            attachments=PostgreSQLEmailAttachmentRepository(
+                                self.session_factory,  # type: ignore[arg-type]
+                                context_factory=citation_context_factory,
+                                context_verifier=self.context_verifier,  # type: ignore[arg-type]
+                            ),
+                            processing=PostgreSQLEmailAttachmentProcessingRepository(
+                                self.session_factory,  # type: ignore[arg-type]
+                                context_factory=citation_context_factory,
+                                context_verifier=self.context_verifier,  # type: ignore[arg-type]
+                            ),
+                            parsed_artifacts=PostgreSQLParsedArtifactRepository(
+                                self.session_factory,  # type: ignore[arg-type]
+                                context_factory=citation_context_factory,
+                                context_verifier=self.context_verifier,  # type: ignore[arg-type]
+                            ),
+                        ),
                         EmailMessageCitationExcerptResolver(
                             PostgreSQLEmailArtifactRepository(
                                 self.session_factory,  # type: ignore[arg-type]

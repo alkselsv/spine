@@ -1471,6 +1471,21 @@ async def test_postgresql_email_attachment_replay_is_tenant_scoped_and_immutable
             attachment_artifact_id=artifact.artifact_id, processor_profile=PROCESSOR_PROFILE,
             authority_digest="e" * 64,
         ) is None
+        assert await processing_repository.resolve_by_id(
+            workspace_id=artifact.workspace_id,
+            environment_id=artifact.environment_id,
+            processing_receipt_id=processing_receipt.processing_receipt_id,
+        ) == processing_receipt
+        assert await processing_repository.resolve_by_id(
+            workspace_id=synthetic_uuid(85611),
+            environment_id=synthetic_uuid(85612),
+            processing_receipt_id=processing_receipt.processing_receipt_id,
+        ) is None
+        assert await processing_repository.resolve_by_child_processing_receipt_id(
+            workspace_id=artifact.workspace_id,
+            environment_id=artifact.environment_id,
+            child_processing_receipt_id=synthetic_uuid(85615),
+        ) is None
         conflicting_provisional = processing_receipt.model_copy(update={
             "disposition": EmailAttachmentProcessingDisposition.DANGEROUS,
             "receipt_sha256": "0" * 64,
