@@ -1340,6 +1340,9 @@ async def _assert_canonical_lifecycle_separation(
     database: PostgreSQLContractDatabase,
 ) -> None:
     from spine.memory.cognee_memory import configure_environment
+    from spine.infrastructure.source_usage_guard import (
+        TransactionCurrentSourceUsageAuthority,
+    )
 
     intent, document = await _canonical_projection_request(adapter)
     request = ProjectionRequestEnvelope(
@@ -1355,6 +1358,9 @@ async def _assert_canonical_lifecycle_separation(
             value.workspace_id,
             value.environment_id,
             "projection_request",
+        ),
+        source_usage_authority_factory=lambda uow: TransactionCurrentSourceUsageAuthority(
+            uow
         ),
     )
     configure_environment()

@@ -17,6 +17,9 @@ from spine.application.projection_result_persistence import (
     ParsedArtifactCanonicalProjectionLocatorResolver,
 )
 from spine.application.projection_result_mapping import ProjectionMappingError
+from spine.application.testing.source_usage import (
+    DeterministicCurrentSourceUsageAuthority,
+)
 from spine.domain.ingestion import (
     IngestionItemState,
     IngestionRunSource,
@@ -61,6 +64,7 @@ INGESTION_RUN = UUID(int=12)
 BINDING = UUID(int=13)
 PROCESSING_RECEIPT = UUID(int=14)
 ARTIFACT = UUID(int=15)
+_DEFAULT_AUTHORITY = object()
 
 
 class _Uow:
@@ -458,10 +462,16 @@ def _request(
     )
 
 
-def _resolver(uow: _Uow) -> PersistenceCanonicalProjectionRequestResolver:
+def _resolver(
+    uow: _Uow, source_usage_authority: object = _DEFAULT_AUTHORITY
+) -> PersistenceCanonicalProjectionRequestResolver:
+    if source_usage_authority is _DEFAULT_AUTHORITY:
+        source_usage_authority = DeterministicCurrentSourceUsageAuthority()
     return PersistenceCanonicalProjectionRequestResolver(
         uow_factory=lambda context: uow,
         context_factory=lambda request: object(),  # type: ignore[arg-type]
+        source_usage_authority_factory=lambda _uow: source_usage_authority,  # type: ignore[return-value]
+        clock=lambda: NOW,
     )
 
 
@@ -477,6 +487,12 @@ async def test_production_resolver_returns_detached_canonical_command_context() 
     assert resolved.source_revisions[0].source_revision_id == REVISION
     assert resolved.command_identity == "partition-project-1"
     assert resolved.physical_namespace.state.value == "shadow"
+
+
+@pytest.mark.asyncio
+async def test_production_resolver_fails_closed_without_current_source_usage_authority() -> None:
+    with pytest.raises(ProjectionMappingError):
+        await _resolver(_Uow(), None).resolve(_request())
 
 
 @pytest.mark.asyncio
@@ -566,8 +582,9 @@ async def test_production_resolver_projects_every_current_source_in_workspace_bo
         }
     )
 
+    authority = DeterministicCurrentSourceUsageAuthority()
     resolved = await _resolver(
-        _Uow(additional_boundary_member=additional)
+        _Uow(additional_boundary_member=additional), authority
     ).resolve(_request())
 
     assert {item.source_object_id for item in resolved.source_revisions} == {
@@ -577,6 +594,14 @@ async def test_production_resolver_projects_every_current_source_in_workspace_bo
     assert {item.source_revision_id for item in resolved.source_revisions} == {
         REVISION,
         additional.source_revision_id,
+    }
+    assert len(authority.requests) == 1
+    assert {
+        (item.source_object_id, item.source_revision_id)
+        for item in authority.requests[0].dependencies
+    } == {
+        (SOURCE, REVISION),
+        (additional.source_object_id, additional.source_revision_id),
     }
 
 

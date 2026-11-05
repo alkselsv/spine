@@ -43,6 +43,7 @@ from spine.application.projection_result_persistence import (
     ParsedArtifactCanonicalProjectionLocatorResolver,
     build_projection_result_persistence,
 )
+from spine.application.source_usage_guard import CurrentSourceUsageAuthority
 from spine.application.projection_recovery_execution import (
     MappingProjectionRecoveryResultRecorder,
     PersistenceCanonicalProjectionRecoveryResolver,
@@ -235,6 +236,7 @@ def build_postgresql_cognee_projection_delivery_binding(
     receipt_builder: AdapterProjectionReceiptBuilder | None = None,
     result_bridge: ProjectionResultRecorder | None = None,
     qualification_guard: ProjectionPublicationQualificationGuard | None = None,
+    source_usage_authority: CurrentSourceUsageAuthority | None = None,
 ) -> OutboxConsumerBinding:
     """Compose ordinary and recovery delivery with the owned PostgreSQL/Cognee adapters."""
 
@@ -281,6 +283,7 @@ def build_postgresql_cognee_projection_delivery_binding(
         reference_id_source=reference_id_source,
         completion=completion,
         result_bridge=results,
+        source_usage_authority=source_usage_authority,
     )
     recorder = recovery_result_recorder or MappingProjectionRecoveryResultRecorder(
         receipt_builder=receipts,
@@ -437,6 +440,7 @@ def build_production_projection_request_consumer(
     result_bridge: ProjectionResultRecorder | None = None,
     attachment_locator_projector: EmailAttachmentProjectionLocatorProjector
     | None = None,
+    source_usage_authority: CurrentSourceUsageAuthority | None = None,
 ) -> ProjectionRequestConsumer:
     """Compose the canonical resolver, physical adapter and result bridge.
 
@@ -445,9 +449,18 @@ def build_production_projection_request_consumer(
     dispatcher.
     """
 
+    from spine.infrastructure.source_usage_guard import (
+        TransactionCurrentSourceUsageAuthority,
+    )
+
     canonical_resolver = PersistenceCanonicalProjectionRequestResolver(
         uow_factory=uow_factory,
         context_factory=request_context_factory,
+        source_usage_authority_factory=(
+            (lambda _uow: source_usage_authority)
+            if source_usage_authority is not None
+            else (lambda uow: TransactionCurrentSourceUsageAuthority(uow))
+        ),
     )
     locator_resolver = ParsedArtifactCanonicalProjectionLocatorResolver(
         uow_factory=uow_factory,

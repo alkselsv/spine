@@ -61,6 +61,11 @@ from spine.application.persistence.unit_of_work import UnitOfWorkFactory
 from spine.application.processing_disposition import (
     CanonicalCurrentProcessingDispositionAuthority,
 )
+from spine.application.source_lifecycle import (
+    GovernedReappearanceAuthorization,
+    GovernedReappearanceAuthorizationReader,
+    GovernedReappearanceAuthority,
+)
 from spine.application.storage import OriginalUploadOutcome
 from spine.application.diagnostics import AuditEventRegistry
 from spine.domain.audit import (
@@ -322,6 +327,8 @@ class ConnectorIngestionOrchestrator:
     read_operation: PersistenceOperation
     admission_reference_type: str
     lifecycle_reader: CurrentLifecycleEligibilityReader | None = None
+    reappearance_authorizations: GovernedReappearanceAuthorizationReader | None = None
+    reappearance_authority: GovernedReappearanceAuthority | None = None
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
     service_name: str = "connector-ingestion"
 
@@ -402,6 +409,7 @@ class ConnectorIngestionOrchestrator:
         async with self.uow_factory(canonical_context) as uow:
             current = await uow.canonical.resolve_current(source.source_object_id)
             reappearance_predecessor = None
+            reappearance_authorization = None
             if (
                 is_lifecycle_source
                 and current is not None
@@ -416,17 +424,42 @@ class ConnectorIngestionOrchestrator:
                 current_revision = await uow.sources.resolve_revision(
                     current.current_revision_id
                 )
-                if (
-                    current_revision is not None
-                    and current_revision.reappearance_after_tombstone_revision_id is not None
-                    and _as_reappearance(
-                        revision,
-                        current_revision.reappearance_after_tombstone_revision_id,
-                    ).revision_id == current_revision.revision_id
-                ):
-                    reappearance_predecessor = (
-                        current_revision.reappearance_after_tombstone_revision_id
+                stored_tombstone_id = (
+                    None
+                    if current_revision is None
+                    else current_revision.reappearance_after_tombstone_revision_id
+                )
+                exact_reappearance_replay = bool(
+                    stored_tombstone_id is not None
+                    and _as_reappearance(revision, stored_tombstone_id).revision_id
+                    == current.current_revision_id
+                )
+                if exact_reappearance_replay:
+                    reappearance_authorization = (
+                        await self._resolve_reappearance_authorization(source)
                     )
+                    if (
+                        reappearance_authorization is None
+                        or reappearance_authorization.tombstone_revision_id
+                        != stored_tombstone_id
+                        or reappearance_authorization.content_revision_id
+                        != current.current_revision_id
+                    ):
+                        raise ValueError(
+                            "Connector reappearance authority is unavailable or stale."
+                        )
+                    replay_revision = _as_reappearance(
+                        revision,
+                        reappearance_authorization.tombstone_revision_id,
+                    )
+                    if (
+                        replay_revision.revision_id == current.current_revision_id
+                        and replay_revision.revision_id
+                        == reappearance_authorization.content_revision_id
+                    ):
+                        reappearance_predecessor = (
+                            reappearance_authorization.tombstone_revision_id
+                        )
             await uow.rollback()
         if (
             reappearance_predecessor is not None
@@ -489,6 +522,21 @@ class ConnectorIngestionOrchestrator:
             canonical_command, "lifecycle_query", None
         ) != command.lifecycle_query:
             raise ValueError("Canonical acceptance lifecycle binding is invalid.")
+        if reappearance_predecessor is not None:
+            reappearance_authorization = (
+                reappearance_authorization
+                or await self._resolve_reappearance_authorization(source)
+            )
+            if not _reappearance_authorization_matches(
+                reappearance_authorization,
+                source=source,
+                revision=revision,
+                admission_id=admission.decision_id,
+                access_policy_version_id=command.access_policy_version_id,
+            ):
+                raise ValueError(
+                    "Connector reappearance authority is unavailable or stale."
+                )
         canonical_result: CanonicalAcceptanceResult | None
         async with self.uow_factory(canonical_context) as uow:
             current = await uow.canonical.resolve_current(source.source_object_id)
@@ -498,6 +546,31 @@ class ConnectorIngestionOrchestrator:
                 and command.expected_current_revision_id != current.current_revision_id
             ):
                 raise OptimisticConflictError("The expected source head is stale.")
+            if reappearance_authorization is not None:
+                authority = self.reappearance_authority
+                try:
+                    authorized = (
+                        current is not None
+                        and authority is not None
+                        and await authority.is_current(
+                            reappearance_authorization,
+                            canonical=uow.canonical,
+                            current=current,
+                        )
+                    )
+                except Exception:
+                    authorized = False
+                if not authorized:
+                    raise ValueError(
+                        "Connector reappearance authority is unavailable or stale."
+                    )
+            elif (
+                current is not None
+                and current.current_revision_kind is RevisionKind.TOMBSTONE
+            ):
+                raise ValueError(
+                    "Connector reappearance authority is unavailable or stale."
+                )
             if current is not None and current.current_revision_id == revision.revision_id:
                 canonical_result = None
                 await uow.rollback()
@@ -554,6 +627,21 @@ class ConnectorIngestionOrchestrator:
             command.lifecycle_query,
             context,
         )
+
+    async def _resolve_reappearance_authorization(
+        self, source: SourceObject
+    ) -> GovernedReappearanceAuthorization | None:
+        reader = self.reappearance_authorizations
+        if reader is None:
+            return None
+        try:
+            return await reader.resolve_current(
+                workspace_id=source.workspace_id,
+                environment_id=source.environment_id,
+                source_object_id=source.source_object_id,
+            )
+        except Exception:
+            return None
 
     async def _ensure_run(
         self,
@@ -1475,6 +1563,30 @@ def _source_object_id(
         external_namespace,
         external_generation,
         external_object_id,
+    )
+
+
+def _reappearance_authorization_matches(
+    authorization: GovernedReappearanceAuthorization | None,
+    *,
+    source: SourceObject,
+    revision: SourceRevision,
+    admission_id: UUID,
+    access_policy_version_id: UUID,
+) -> bool:
+    return bool(
+        authorization is not None
+        and authorization.workspace_id == source.workspace_id
+        and authorization.environment_id == source.environment_id
+        and authorization.source_object_id == source.source_object_id
+        and authorization.tombstone_revision_id
+        == revision.reappearance_after_tombstone_revision_id
+        and authorization.content_revision_id == revision.revision_id
+        and authorization.fresh_admission_decision_id == admission_id
+        and authorization.fresh_access_policy_version_id
+        == access_policy_version_id
+        and authorization.pre_tombstone_access_policy_version_id
+        != access_policy_version_id
     )
 
 

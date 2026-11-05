@@ -40,6 +40,9 @@ class PersistenceAdapter:
     prepare_legacy_tombstone_selector: Callable[
         [Any, TrustedPersistenceContext, UUID], Awaitable[None]
     ] | None = field(default=None, kw_only=True)
+    prepare_current_source_authority: Callable[[Any, Any], Awaitable[None]] | None = field(
+        default=None, kw_only=True
+    )
 
 
 @dataclass(frozen=True)

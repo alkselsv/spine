@@ -23,8 +23,15 @@ from spine.application.content_authorization import (
     ContentAuthorizationDecisionService,
     TrustedAuthorizationContext,
 )
-from spine.application.processing_disposition import CurrentProcessingDispositionAuthority
 from spine.application.context_profiles import EffectiveContextRetrievalPolicy
+from spine.application.source_usage_guard import (
+    CurrentSourceUsageAuthority,
+    CurrentSourceUsageGuard,
+    SourceUsageArtifact,
+    SourceUsageDependency,
+    SourceUsageKind,
+    SourceUsageRequest,
+)
 from spine.domain.common import ValidatedDefinitionModel
 from spine.domain.context_profiles import (
     CompletenessRequirement,
@@ -41,6 +48,7 @@ from spine.domain.projections import (
     ProjectionSnapshotState,
     PublishedActivePublication,
 )
+from spine.domain.sources import RetentionArtifactClass, disclosure_hold_dependency_id
 
 
 def _require_id(value: UUID, field_name: str) -> UUID:
@@ -200,17 +208,6 @@ class ProviderScopeSafetyPolicy(Protocol):
     async def can_express(self, scope: AuthorizedRetrievalScope) -> bool: ...
 
 
-class RetrievalDisclosureConstraint(Protocol):
-    """Additional deny-only lifecycle/hold authority for a candidate member."""
-
-    async def allows(
-        self,
-        context: TrustedAuthorizationContext,
-        member: ProjectionSnapshotMember,
-        evaluated_at: datetime,
-    ) -> bool: ...
-
-
 class AuthorizedRetrievalScopeResolver:
     """Resolve an authorized subset without leaking filtered source state."""
 
@@ -219,8 +216,7 @@ class AuthorizedRetrievalScopeResolver:
         *,
         authorization: ContentAuthorizationDecisionService,
         snapshot_members: SnapshotMemberRepository,
-        disclosure_constraint: RetrievalDisclosureConstraint,
-        processing_authority: CurrentProcessingDispositionAuthority,
+        source_usage_authority: CurrentSourceUsageAuthority | None,
         provider_scope_safety: ProviderScopeSafetyPolicy | None = None,
         expected_purpose: str = "answer_question",
         expected_operation: str = "retrieve_context",
@@ -229,8 +225,7 @@ class AuthorizedRetrievalScopeResolver:
         self._authorization = authorization
         self._snapshot_members = snapshot_members
         self._provider_scope_safety = provider_scope_safety
-        self._disclosure_constraint = disclosure_constraint
-        self._processing_authority = processing_authority
+        self._source_usage_guard = CurrentSourceUsageGuard(source_usage_authority)
         self._expected_purpose = expected_purpose
         self._expected_operation = expected_operation
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -296,33 +291,42 @@ class AuthorizedRetrievalScopeResolver:
                 AuthorizedRetrievalScopeReason.NO_AUTHORIZED_SOURCES,
             )
 
+        source_usage = await self._source_usage_guard.evaluate(
+            SourceUsageRequest(
+                workspace_id=context.workspace_id,
+                environment_id=context.environment_id,
+                usage=SourceUsageKind.RETRIEVAL,
+                artifact=SourceUsageArtifact(
+                    artifact_class=RetentionArtifactClass.PROJECTION,
+                    artifact_id=publication.projection_snapshot.projection_snapshot_id,
+                    artifact_version=publication.activation_generation,
+                    artifact_digest=publication.projection_snapshot.manifest_digest,
+                ),
+                dependencies=tuple(
+                    SourceUsageDependency(
+                        source_object_id=member.source_object_id,
+                        source_revision_id=member.source_revision_id,
+                        dependency_id=disclosure_hold_dependency_id(
+                            context.workspace_id,
+                            context.environment_id,
+                            member.source_object_id,
+                            member.source_revision_id,
+                        ),
+                        artifact_member_id=member.projection_snapshot_member_id,
+                    )
+                    for member in included
+                ),
+                evaluated_at=self._now(),
+            )
+        )
+        if not source_usage.allowed:
+            return self._reject(
+                AuthorizedRetrievalScopeOutcome.UNAVAILABLE,
+                AuthorizedRetrievalScopeReason.SOURCE_UNAVAILABLE,
+            )
+
         constraints: list[AuthorizedSourceConstraint] = []
         for member in included:
-            try:
-                processing = await self._processing_authority.resolve(
-                    workspace_id=context.workspace_id,
-                    environment_id=context.environment_id,
-                    source_object_id=member.source_object_id,
-                    source_revision_id=member.source_revision_id,
-                )
-            except Exception:
-                processing = None
-            if processing is None or not processing.eligible:
-                return self._reject(
-                    AuthorizedRetrievalScopeOutcome.UNAVAILABLE,
-                    AuthorizedRetrievalScopeReason.SOURCE_UNAVAILABLE,
-                )
-            try:
-                disclosure_allowed = await self._disclosure_constraint.allows(
-                    context, member, self._now()
-                )
-            except Exception:
-                disclosure_allowed = False
-            if not disclosure_allowed:
-                return self._reject(
-                    AuthorizedRetrievalScopeOutcome.UNAVAILABLE,
-                    AuthorizedRetrievalScopeReason.SOURCE_UNAVAILABLE,
-                )
             decision = await self._decide(context, member.source_object_id)
             if decision is None:
                 return self._reject(

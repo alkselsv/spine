@@ -38,6 +38,13 @@ from spine.application.disclosure_revalidation import (
 from spine.application.processing_disposition import (
     CanonicalCurrentProcessingDispositionAuthority,
 )
+from spine.application.source_usage_guard import (
+    CurrentSourceUsageGuard,
+    SourceUsageArtifact,
+    SourceUsageDependency,
+    SourceUsageKind,
+    SourceUsageRequest,
+)
 from spine.application.citation_inspector import (
     CitationExcerptResolverChain,
     CitationInspectorRequester,
@@ -65,9 +72,12 @@ from spine.domain.disclosure import (
 from spine.domain.feedback import FeedbackOutcome, FeedbackTargetKind
 from spine.domain.projections import PublishedActivePublication
 from spine.domain.qa_sessions import QAMessage, QASession
-from spine.domain.sources import RevisionKind
+from spine.domain.sources import RetentionArtifactClass, RevisionKind
 from spine.infrastructure.disclosure_constraints import (
     resolve_final_disclosure_constraints,
+)
+from spine.infrastructure.source_usage_guard import (
+    TransactionCurrentSourceUsageAuthority,
 )
 from spine.infrastructure.persistence.parsed_artifacts import (
     ParsedArtifactCitationExcerptResolver,
@@ -139,6 +149,30 @@ class _CurrentSessionDisclosureState:
         artifact_id = request.message_id or request.attempt_id or request.run_id
         if artifact_id is None:
             raise RuntimeError("disclosure artifact identity is unavailable")
+        source_usage = await CurrentSourceUsageGuard(
+            TransactionCurrentSourceUsageAuthority(self.uow)
+        ).evaluate(
+            SourceUsageRequest(
+                workspace_id=request.workspace_id,
+                environment_id=request.environment_id,
+                usage=SourceUsageKind.FINAL_DISCLOSURE,
+                artifact=SourceUsageArtifact(
+                    artifact_class=RetentionArtifactClass.CACHED_ANSWER,
+                    artifact_id=artifact_id,
+                    artifact_version=1,
+                    artifact_digest=request.command_digest,
+                ),
+                dependencies=tuple(
+                    SourceUsageDependency(
+                        source_object_id=dependency.source_object_id,
+                        source_revision_id=dependency.source_revision_id,
+                        dependency_id=dependency.dependency_id,
+                    )
+                    for dependency in dependencies
+                ),
+                evaluated_at=datetime.now(timezone.utc),
+            )
+        )
         observations = []
         requester_authorized = True
         for dependency in dependencies:
@@ -229,11 +263,13 @@ class _CurrentSessionDisclosureState:
                         head is not None
                         and head.current_revision_kind is not RevisionKind.CONTENT
                     ),
-                    retention_eligible=bool(
+                    retention_eligible=source_usage.allowed and bool(
                         head is not None
                         and head.current_revision_kind is RevisionKind.CONTENT
                     ),
-                    lifecycle_disclosure_eligible=lifecycle_eligible,
+                    lifecycle_disclosure_eligible=(
+                        source_usage.allowed and lifecycle_eligible
+                    ),
                     active_disclosure_hold=active_hold,
                 )
             )

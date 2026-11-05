@@ -6468,7 +6468,11 @@ async def test_postgresql_private_asr_retention_cas_waits_for_report_commit(
     lock_requested = asyncio.Event()
 
     def observe_retention_cas(conn, cursor, statement, parameters, execution_context, executemany):
-        if "current_retention_applicabilities" in statement.lower():
+        normalized = statement.lower()
+        if (
+            "pg_advisory_xact_lock" in normalized
+            or "current_retention_applicabilities" in normalized
+        ):
             lock_requested.set()
 
     event.listen(

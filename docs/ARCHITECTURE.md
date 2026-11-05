@@ -283,6 +283,20 @@ tombstone. Reader разрешает оригинал или производн�
 физическое удаление. Миграция и rollback описаны в
 [`runbooks/retention-applicability.md`](runbooks/retention-applicability.md).
 
+Projection request/build/activation, authorized retrieval, cache reuse, citation
+validation и final disclosure используют один content-free
+`CurrentSourceUsageGuard`. Запрос guard-а содержит immutable artifact identity и
+полную exact `SourceObject`/`SourceRevision` lineage. Положительный результат
+требует совпадающие current head и canonical acceptance, допустимый processing
+disposition, текущие lifecycle и retention authority и отсутствие применимого
+`DisclosureHold`; отсутствие любого reader-а или частичный результат запрещает
+весь mixed artifact. PostgreSQL activation выполняет эту проверку в той же
+tenant transaction до CAS active pointer. Cache purge остаётся дополнительной
+операцией и никогда не заменяет current database check. Reappearance отдельно
+требует текущую governed authority, fresh admission/AccessPolicy и доказательство
+identity continuity к exact current tombstone; прежний AccessPolicy не
+переносится и old-current fallback запрещён.
+
 Private ASR deletion requests preserve the immutable
 `private-asr-artifact-deletion-request:v1` wire form and digest. The additive v2
 contract carries the complete artifact source lineage and one identity-keyed

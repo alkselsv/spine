@@ -11,6 +11,7 @@ import pytest
 
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.ingestion import (
+    ExistingRevisionBindingCommand,
     IngestionBindingCommand,
     IngestionRunCommand,
     ProcessingReceiptCommand as IngestionProcessingReceiptCommand,
@@ -108,9 +109,12 @@ from tests.contracts.persistence.test_canonical_acceptance_contract import (
     prepare_case,
 )
 from tests.contracts.persistence.test_source_observation_contract import (
+    connector_source,
     provenance,
+    revision,
     tombstone,
 )
+from tests.contracts.persistence.ids import synthetic_uuid
 
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
@@ -191,10 +195,22 @@ async def _prepare_projection_publication(
     include_shared_segment_graph_reference: bool = False,
     projection_kind: str = "qa",
 ) -> _PreparedProjectionPublication:
-    case = await prepare_case(persistence_adapter, seed)
+    scope = synthetic_uuid(seed), synthetic_uuid(seed + 1)
+    source_object = connector_source(*scope, generation="v1")
+    case = await prepare_case(
+        persistence_adapter,
+        seed,
+        scope=scope,
+        source_object=source_object,
+        source_revision=revision(source_object, synthetic_uuid(seed + 2)),
+    )
     async with persistence_adapter.uow_factory(case.context) as uow:
         await uow.canonical.accept(case.command)
         await uow.commit()
+    if persistence_adapter.prepare_current_source_authority is not None:
+        await persistence_adapter.prepare_current_source_authority(
+            case.source, case.revision
+        )
     boundary_context = persistence_adapter.ingestion_context(
         case.source.workspace_id, case.source.environment_id, "canonical_boundary_capture"
     )
@@ -919,7 +935,8 @@ async def _accept_additional_canonical_source(
     source = case.source.model_copy(
         update={
             "source_object_id": UUID(int=seed),
-            "upload_identity": f"projection-mixed-format-{seed}",
+            "connection_id": UUID(int=seed + 11),
+            "external_object_id": f"projection-mixed-format-{seed}",
         }
     )
     original_reference = case.revision.original_reference
@@ -1042,6 +1059,8 @@ async def _accept_additional_canonical_source(
     async with persistence_adapter.uow_factory(canonical_context) as uow:
         await uow.canonical.accept(acceptance)
         await uow.commit()
+    if persistence_adapter.prepare_current_source_authority is not None:
+        await persistence_adapter.prepare_current_source_authority(source, revision)
     return source, revision, provenance
 
 
@@ -1125,9 +1144,6 @@ async def _record_projection_processing_receipts(
             command_digest=str(index + 2) * 64,
             created_at=NOW,
         )
-        binding_context = persistence_adapter.ingestion_context(
-            workspace_id, environment_id, "ingestion_binding"
-        )
         binding_provenance = provenance.model_copy(
             update={
                 "provenance_id": UUID(int=58310 + index),
@@ -1150,12 +1166,20 @@ async def _record_projection_processing_receipts(
             ),
             receipt_association=association,
         )
+        source_context = persistence_adapter.source_context(
+            workspace_id, environment_id
+        )
+        async with persistence_adapter.uow_factory(source_context) as uow:
+            await uow.sources.record_observation(observation)
+            await uow.commit()
+        binding_context = persistence_adapter.ingestion_context(
+            workspace_id, environment_id, "ingestion_existing_binding"
+        )
         async with persistence_adapter.uow_factory(binding_context) as uow:
-            await uow.ingestion.bind_source(
-                IngestionBindingCommand.create(
+            await uow.ingestion.bind_existing_revision(
+                ExistingRevisionBindingCommand.create(
                     item=item,
                     binding=binding,
-                    observation=observation,
                     idempotency_key=IdempotencyKey(
                         f"projection-mixed-binding-{index}"
                     ),

@@ -87,8 +87,12 @@ from spine.application.persistence.errors import (
     UnknownCommitOutcomeError,
 )
 from spine.application.persistence.errors import RevisionDigestMismatchError
-from spine.application.processing_disposition import (
-    CanonicalCurrentProcessingDispositionAuthority,
+from spine.application.source_usage_guard import (
+    CurrentSourceUsageGuard,
+    SourceUsageArtifact,
+    SourceUsageDependency,
+    SourceUsageKind,
+    SourceUsageRequest,
 )
 from spine.application.persistence.repositories import (
     SourceObservationCommand,
@@ -216,6 +220,7 @@ from spine.domain.sources import (
     LifecycleDecision,
     TrustedContentVerificationEvidence,
     SourceSecurityDomainBinding,
+    disclosure_hold_dependency_id,
 )
 from spine.domain.sources.canonicalization import assert_revision_digest
 from spine.domain.sources.errors import RevisionDigestMismatchError as DomainRevisionDigestMismatchError
@@ -6119,23 +6124,7 @@ class _PostgreSQLProjectionSnapshotMixin:
             await self._uow._fail(ConstraintConflictError("Projection snapshot is not finalized."))
         if snapshot.projection_kind != command.projection_kind:
             await self._uow._fail(ConstraintConflictError("Projection activation kind is invalid."))
-        for member in await self.list_snapshot_members(snapshot.projection_snapshot_id):
-            if member.disposition is not ProjectionSnapshotMemberDisposition.INCLUDED:
-                continue
-            processing = await CanonicalCurrentProcessingDispositionAuthority(
-                self._uow.canonical
-            ).resolve(
-                workspace_id=member.workspace_id,
-                environment_id=member.environment_id,
-                source_object_id=member.source_object_id,
-                source_revision_id=member.source_revision_id,
-            )
-            if not processing.eligible:
-                await self._uow._fail(
-                    ConstraintConflictError(
-                        "Projection snapshot contains an ineligible source member."
-                    )
-                )
+        members = await self.list_snapshot_members(snapshot.projection_snapshot_id)
         boundary_row = (
             await self._uow._execute(
                 select(_CANONICAL_BOUNDARIES).where(
@@ -6175,6 +6164,75 @@ class _PostgreSQLProjectionSnapshotMixin:
             await self._uow._fail(ConstraintConflictError("Rollback requires a rollback projection run."))
         if command.activation_kind is ProjectionActivationKind.PUBLISH and run_row["operation"] == "rollback":
             await self._uow._fail(ConstraintConflictError("Publish cannot use a rollback projection run."))
+        included = tuple(
+            member
+            for member in members
+            if member.disposition is ProjectionSnapshotMemberDisposition.INCLUDED
+        )
+        tombstoned = tuple(
+            member
+            for member in members
+            if member.disposition is ProjectionSnapshotMemberDisposition.TOMBSTONED
+        )
+        if not included and (not members or len(tombstoned) != len(members)):
+            await self._uow._fail(
+                ConstraintConflictError("Projection snapshot has no eligible source members.")
+            )
+        for member in tombstoned:
+            current = await self._uow.canonical.resolve_current(member.source_object_id)
+            if (
+                current is None
+                or current.workspace_id != scope.workspace_id
+                or current.environment_id != scope.environment_id
+                or current.current_revision_id != member.source_revision_id
+                or current.current_revision_kind is not RevisionKind.TOMBSTONE
+            ):
+                await self._uow._fail(
+                    ConstraintConflictError(
+                        "Projection tombstone member is no longer current."
+                    )
+                )
+        from spine.infrastructure.source_usage_guard import (
+            TransactionCurrentSourceUsageAuthority,
+        )
+
+        if included:
+            source_usage = await CurrentSourceUsageGuard(
+                TransactionCurrentSourceUsageAuthority(self._uow)
+            ).evaluate(
+                SourceUsageRequest(
+                    workspace_id=scope.workspace_id,
+                    environment_id=scope.environment_id,
+                    usage=SourceUsageKind.PROJECTION_ACTIVATION,
+                    artifact=SourceUsageArtifact(
+                        artifact_class=RetentionArtifactClass.PROJECTION,
+                        artifact_id=snapshot.projection_snapshot_id,
+                        artifact_version=boundary.accepted_through_generation,
+                        artifact_digest=snapshot.manifest_digest,
+                    ),
+                    dependencies=tuple(
+                        SourceUsageDependency(
+                            source_object_id=member.source_object_id,
+                            source_revision_id=member.source_revision_id,
+                            dependency_id=disclosure_hold_dependency_id(
+                                scope.workspace_id,
+                                scope.environment_id,
+                                member.source_object_id,
+                                member.source_revision_id,
+                            ),
+                            artifact_member_id=member.projection_snapshot_member_id,
+                        )
+                        for member in included
+                    ),
+                    evaluated_at=datetime.now(timezone.utc),
+                )
+            )
+            if not source_usage.allowed:
+                await self._uow._fail(
+                    ConstraintConflictError(
+                        "Projection snapshot contains an ineligible source member."
+                    )
+                )
         if pointer is None:
             if any(
                 value is not None
