@@ -25,6 +25,7 @@ from spine.application.commit_fence_provider_port import (
 
 
 _PROVIDER_CONTRACT_VERSION = "synthetic-test-authority:v1"
+_AuthorityKey = tuple[UUID, UUID, UUID, str, str, UUID]
 
 
 class ManualCommitFenceClock:
@@ -96,11 +97,9 @@ class SyntheticCommitFenceAuthority(ExternalCommitFencePort):
         self.barriers = barriers or SyntheticCommitFenceBarriers()
         self._condition = asyncio.Condition()
         self._permits: dict[UUID, CommitFencePermit] = {}
-        self._revocation_floor: dict[tuple[UUID, UUID, UUID, str, str, UUID], int] = {}
-        self._revocation_pending: set[tuple[UUID, UUID, UUID, str, str, UUID]] = set()
-        self._revocation_requested: dict[
-            tuple[UUID, UUID, UUID, str, str, UUID], asyncio.Event
-        ] = {}
+        self._revocation_floor: dict[_AuthorityKey, int] = {}
+        self._revocation_pending: set[_AuthorityKey] = set()
+        self._revocation_requested: dict[_AuthorityKey, asyncio.Event] = {}
         self._ambiguous_releases: set[UUID] = set()
         self._next_reference = 1
 
@@ -324,7 +323,7 @@ class SyntheticCommitFenceAuthority(ExternalCommitFencePort):
 
 def _authority_key(
     binding: CommitFenceBinding,
-) -> tuple[UUID, UUID, UUID, str, str, UUID]:
+) -> _AuthorityKey:
     return (
         binding.issuer_id,
         binding.workspace_id,

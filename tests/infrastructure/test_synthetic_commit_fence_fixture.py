@@ -199,6 +199,23 @@ async def test_cancelled_work_can_release_through_abort() -> None:
 
 
 @pytest.mark.asyncio
+async def test_failed_work_can_release_through_abort() -> None:
+    authority = SyntheticCommitFenceAuthority(clock=ManualCommitFenceClock(NOW))
+    acquired = await authority.acquire(_binding())
+    assert acquired.permit is not None
+    release_results = []
+
+    with pytest.raises(RuntimeError, match="synthetic work failure"):
+        try:
+            raise RuntimeError("synthetic work failure")
+        finally:
+            release_results.append(await authority.abort(acquired.permit))
+
+    assert release_results[0].state is CommitFenceOperationState.RELEASED
+    assert release_results[0].operation is CommitFenceOperation.ABORT
+
+
+@pytest.mark.asyncio
 async def test_ambiguous_release_stays_indeterminate_and_revocation_waits_for_expiry() -> None:
     clock = ManualCommitFenceClock(NOW)
     authority = SyntheticCommitFenceAuthority(clock=clock, permit_ttl=timedelta(seconds=5))
