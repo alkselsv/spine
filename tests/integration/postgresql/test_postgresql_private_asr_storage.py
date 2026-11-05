@@ -3526,6 +3526,161 @@ async def test_postgresql_private_asr_composite_report_deletion_binds_every_curr
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("revoked_source_index", (0, 1))
+@pytest.mark.parametrize("reverse_source_order", (False, True))
+async def test_postgresql_private_asr_composite_deletion_serializes_each_source_revocation(
+    private_asr_database: _Database,
+    revoked_source_index: int,
+    reverse_source_order: bool,
+) -> None:
+    clock = _ControlledClock(NOW)
+    underlying_authority = _SyntheticArtifactDeletionAuthority()
+    prepared = await _prepare_synthetic_report_case(
+        private_asr_database,
+        seed=889799700 + revoked_source_index * 20 + int(reverse_source_order) * 40,
+        deletion_authority=underlying_authority,
+        clock=clock,
+    )
+    second_case, _, _ = await _add_synthetic_report_source(
+        prepared, seed=889799800 + revoked_source_index * 20 + int(reverse_source_order) * 40,
+    )
+    if reverse_source_order:
+        prepared.bindings = tuple(reversed(prepared.bindings))
+        prepared.manifest_lineage.bindings = prepared.bindings
+    report = await _commit_synthetic_report(
+        prepared,
+        idempotency_key=(
+            f"composite-revocation-race-{revoked_source_index}-{reverse_source_order}"
+        ),
+    )
+    source_cases = (prepared.case, second_case)
+    revoked_case = source_cases[revoked_source_index]
+    deletion_context = prepared.boundary.worker(
+        scope=EnvironmentScope(
+            workspace_id=prepared.case.source.workspace_id,
+            environment_id=prepared.case.source.environment_id,
+        ),
+        service_principal_id=synthetic_uuid(889799900 + revoked_source_index),
+        purpose=PersistencePurpose("asr_model_evaluation"),
+        operation=PersistenceOperation("private_asr_retention_expiration"),
+        trace_id=synthetic_uuid(889799910 + revoked_source_index),
+    )
+    revocation_context = prepared.boundary.worker(
+        scope=EnvironmentScope(
+            workspace_id=prepared.case.source.workspace_id,
+            environment_id=prepared.case.source.environment_id,
+        ),
+        service_principal_id=synthetic_uuid(889799920 + revoked_source_index),
+        purpose=PersistencePurpose("asr_model_evaluation"),
+        operation=PersistenceOperation("private_asr_revocation"),
+        trace_id=synthetic_uuid(889799930 + revoked_source_index),
+    )
+    authorization_entered, release_authorization = asyncio.Event(), asyncio.Event()
+
+    class BlockingDeletionAuthority:
+        async def authorize_deletion(self, request, *, context, transaction):
+            authorization_entered.set()
+            await release_authorization.wait()
+            return await underlying_authority.authorize_deletion(
+                request, context=context, transaction=transaction,
+            )
+
+    deletion_clock = lambda: clock.current
+    deletion_resolver = PostgreSQLPrivateASRRetentionResolver(
+        approvals=prepared.resolver._approvals,
+        terms=prepared.resolver._terms,
+        test_only_allow_synthetic_sources=True,
+        clock=deletion_clock,
+    )
+    deletion_store = _storage_for_transaction_probe(
+        prepared,
+        uow_factory=prepared.store._uow_factory,
+        deletion_authority=BlockingDeletionAuthority(),
+        retention_resolver=deletion_resolver,
+        clock=deletion_clock,
+    )
+    clock.current = NOW + timedelta(minutes=31)
+    deletion = asyncio.create_task(deletion_store.expire(
+        report.report_ref,
+        policy_ref=prepared.applicability_ref,
+        context=deletion_context,
+    ))
+    revocation_lock_requested = asyncio.Event()
+
+    def observe_revocation_lock(conn, cursor, statement, parameters, execution_context, executemany):
+        lowered = statement.lower()
+        if "canonical_generation_counters" in lowered and "for update" in lowered:
+            revocation_lock_requested.set()
+
+    revocation = None
+    await asyncio.wait_for(authorization_entered.wait(), timeout=10)
+    event.listen(
+        private_asr_database.runtime.sync_engine,
+        "before_cursor_execute",
+        observe_revocation_lock,
+    )
+    try:
+        revocation = asyncio.create_task(prepared.store.fence(
+            revoked_case.revision.revision_id,
+            reason="synthetic_composite_withdrawal",
+            context=revocation_context,
+        ))
+        await asyncio.wait_for(revocation_lock_requested.wait(), timeout=10)
+        assert not revocation.done()
+        release_authorization.set()
+        await deletion
+        await revocation
+    finally:
+        release_authorization.set()
+        event.remove(
+            private_asr_database.runtime.sync_engine,
+            "before_cursor_execute",
+            observe_revocation_lock,
+        )
+        for task in (deletion, revocation):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (deletion, revocation) if task is not None),
+            return_exceptions=True,
+        )
+
+    async with prepared.runtime_sessions() as session, session.begin():
+        await prepared.store._set_scope(session, revocation_context)
+        report_state = (await session.execute(select(
+            private_asr_artifacts.c.status,
+            private_asr_artifacts.c.payload,
+        ).where(
+            private_asr_artifacts.c.artifact_id == report.report_ref.reference_id,
+        ))).one()
+        originals = (await session.execute(select(
+            private_asr_artifacts.c.source_revision_id,
+            private_asr_artifacts.c.status,
+            private_asr_artifacts.c.payload,
+        ).where(
+            private_asr_artifacts.c.kind == "original",
+            private_asr_artifacts.c.source_revision_id.in_(
+                tuple(case.revision.revision_id for case in source_cases),
+            ),
+        ))).all()
+        deletion_audits = (await session.execute(select(func.count()).select_from(
+            audit_events,
+        ).where(
+            audit_events.c.target_id == report.report_ref.reference_id,
+            audit_events.c.reason == "private_asr_artifact_expired",
+        ))).scalar_one()
+    assert report_state.status == "tombstoned"
+    assert report_state.payload == b""
+    assert len(underlying_authority.requests) == 1
+    assert len(originals) == 2
+    assert all(
+        row.status == ("tombstoned" if row.source_revision_id == revoked_case.revision.revision_id else "committed")
+        for row in originals
+    )
+    assert deletion_audits == 1
+
+
+@pytest.mark.asyncio
 async def test_postgresql_private_asr_composite_deletion_audit_failure_rolls_back_and_retries_once(
     private_asr_database: _Database,
 ) -> None:

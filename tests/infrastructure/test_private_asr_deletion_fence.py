@@ -71,13 +71,14 @@ class _Transaction:
     def __init__(self, revision_digest: str) -> None:
         self.revision_digest = revision_digest
         self.statements: list[object] = []
+        self.parameters: list[object | None] = []
         self.guard = None
 
     async def execute_statement(
         self, statement: object, parameters: object | None = None
     ) -> _Result:
-        del parameters
         self.statements.append(statement)
+        self.parameters.append(parameters)
         return _Result(self.revision_digest)
 
     def register_commit_guard(self, guard) -> None:
@@ -150,6 +151,44 @@ def _request_and_authorization() -> tuple[
     return request, authorization
 
 
+def _two_source_request(
+    *, reversed_sources: bool,
+) -> tuple[PrivateArtifactDeletionRequestV2, PrivateArtifactDeletionAuthorization]:
+    request, _ = _request_and_authorization()
+    first_binding = request.source_bindings[0]
+    second_binding = first_binding.model_copy(update={
+        "source_object_id": UUID(int=5),
+        "source_revision_id": UUID(int=6),
+    })
+    first_lineage = request.expected_source_lineage[0]
+    second_lineage = first_lineage.model_copy(update={
+        "source_object_id": UUID(int=5),
+        "source_revision_id": UUID(int=6),
+    })
+    bindings = (first_binding, second_binding)
+    lineage = (first_lineage, second_lineage)
+    if reversed_sources:
+        bindings = tuple(reversed(bindings))
+        lineage = tuple(reversed(lineage))
+    composite = PrivateArtifactDeletionRequestV2.model_validate({
+        **request.model_dump(),
+        "source_bindings": bindings,
+        "expected_source_lineage": lineage,
+    })
+    authorization = PrivateArtifactDeletionAuthorization(
+        request_digest=composite.calculate_digest(),
+        authorization_ref=PrivateReference(
+            reference_id=UUID(int=32),
+            reference_kind="private_asr_deletion_authorization",
+        ),
+        authority_version=composite.authority_version,
+        revocation_epoch=1,
+        valid_until=composite.valid_until,
+        authorized=True,
+    )
+    return composite, authorization
+
+
 @pytest.mark.asyncio
 async def test_postgresql_deletion_fence_binds_exact_lineage_and_registers_expiry_guard() -> None:
     request, authorization = _request_and_authorization()
@@ -217,3 +256,26 @@ async def test_postgresql_deletion_fence_denies_zero_revocation_epoch() -> None:
         )
 
     assert transaction.statements == []
+
+
+@pytest.mark.asyncio
+async def test_postgresql_deletion_fence_acquires_source_locks_in_canonical_order() -> None:
+    request, authorization = _two_source_request(reversed_sources=True)
+    transaction = _Transaction(request.source_bindings[0].revision_digest)
+
+    await PostgreSQLPrivateASRDeletionFence(lambda: NOW).acquire(
+        request,
+        authorization,
+        context=CONTEXT,
+        transaction=transaction,
+    )
+
+    acquired_keys = [
+        parameters["key"]
+        for parameters in transaction.parameters
+        if isinstance(parameters, dict) and "key" in parameters
+    ]
+    assert acquired_keys == [
+        f"{WORKSPACE_ID}:{ENVIRONMENT_ID}:{UUID(int=3)}",
+        f"{WORKSPACE_ID}:{ENVIRONMENT_ID}:{UUID(int=5)}",
+    ]

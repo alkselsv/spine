@@ -85,6 +85,23 @@ def _deletion_authorization_is_current(
     )
 
 
+def _ordered_deletion_source_paths(
+    request: PrivateArtifactDeletionRequestV2,
+) -> tuple[tuple[UUID, UUID, str], ...]:
+    """Return unique source revision paths in the shared lock order."""
+    paths = {
+        (
+            binding.source_object_id,
+            binding.source_revision_id,
+            binding.revision_digest,
+        )
+        for binding in request.source_bindings
+    }
+    return tuple(
+        sorted(paths, key=lambda item: (str(item[0]), str(item[1]), item[2]))
+    )
+
+
 _RETENTION_CLASS_BY_KIND = {
     "staging": RetentionArtifactClass.PRIVATE_ASR_STAGING,
     "original": RetentionArtifactClass.PRIVATE_ASR_SOURCE_ORIGINAL,
@@ -217,20 +234,9 @@ class PostgreSQLPrivateASRDeletionFence(PrivateArtifactDeletionFencePort):
                 "Private ASR deletion authorization denied."
             )
 
-        source_paths = tuple(
-            sorted(
-                {
-                    (
-                        binding.source_object_id,
-                        binding.source_revision_id,
-                        binding.revision_digest,
-                    )
-                    for binding in request.source_bindings
-                },
-                key=lambda item: (str(item[0]), str(item[1]), item[2]),
-            )
-        )
-        for source_object_id, revision_id, revision_digest in source_paths:
+        for source_object_id, revision_id, revision_digest in (
+            _ordered_deletion_source_paths(request)
+        ):
             await lock_source_lifecycle_shared(
                 execute,
                 workspace_id=request.workspace_id,
