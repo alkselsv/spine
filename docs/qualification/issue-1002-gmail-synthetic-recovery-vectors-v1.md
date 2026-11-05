@@ -46,8 +46,10 @@ selects exact transitions, identifiers and safe codes without weakening the
 
 `FakeStoreHarness` has a fixed synthetic workspace, a declared set of fake
 stores and fake artifacts, optional store outages, a stable operation identity,
-and recorded effects. It can demonstrate duplicate replay, tenant mismatch,
-outage and uncovered-store behavior. It has no content bytes, real source
+and recorded effects. Runtime checks accept only a closed vocabulary of fixture
+IDs; tenant and current-test-authority checks run before duplicate-result
+replay. It can demonstrate duplicate replay, tenant mismatch, outage and
+uncovered-store behavior. It has no content bytes, real source
 selectors, provider interface, credentials, retention terms, or production
 composition. `SyntheticAuditEntry` rejects extra fields including body, address,
 provider ID, attachment name and digest.

@@ -4,14 +4,28 @@ from dataclasses import dataclass
 from enum import Enum
 
 import pytest
-from pydantic import BaseModel, ConfigDict, StringConstraints, ValidationError
-from typing import Annotated, Literal
+from pydantic import BaseModel, ConfigDict, ValidationError
+from typing import Literal
 
 
-FakeRef = Annotated[
-    str,
-    StringConstraints(pattern=r"^fake-[a-z0-9][a-z0-9-]{0,48}$", min_length=6, max_length=54),
-]
+class FakeRef(str, Enum):
+    """Closed fixture vocabulary so arbitrary IDs cannot enter fake stores."""
+
+    WORKSPACE_A = "fake-workspace-a"
+    WORKSPACE_B = "fake-workspace-b"
+    STORE = "fake-store"
+    STORE_A = "fake-store-a"
+    STORE_B = "fake-store-b"
+    STORE_UNCOVERED = "fake-store-uncovered"
+    ARTIFACT_A = "fake-artifact-a"
+    ARTIFACT_B = "fake-artifact-b"
+    OPERATION_A = "fake-operation-a"
+    OPERATION_B = "fake-operation-b"
+    RESTORED_ARTIFACT_A = "fake-restored-artifact-a"
+
+
+def _fake_ref(value: str | FakeRef) -> FakeRef:
+    return FakeRef(value)
 
 
 class VectorStatus(str, Enum):
@@ -66,13 +80,14 @@ class FakeStoreHarness:
         artifact_refs: tuple[FakeRef, ...],
         unavailable: frozenset[FakeRef] = frozenset(),
     ) -> None:
-        self.workspace_ref = workspace_ref
-        self.store_refs = frozenset(store_refs)
-        self.unavailable = unavailable
+        self.workspace_ref = _fake_ref(workspace_ref)
+        self.store_refs = frozenset(_fake_ref(store_ref) for store_ref in store_refs)
+        self.unavailable = frozenset(_fake_ref(store_ref) for store_ref in unavailable)
+        validated_artifacts = tuple(_fake_ref(artifact_ref) for artifact_ref in artifact_refs)
         self.records = {
-            (workspace_ref, store_ref, artifact_ref)
-            for store_ref in store_refs
-            for artifact_ref in artifact_refs
+            (self.workspace_ref, store_ref, artifact_ref)
+            for store_ref in self.store_refs
+            for artifact_ref in validated_artifacts
         }
         self.receipts: dict[tuple[FakeRef, FakeRef, FakeRef, FakeRef], FakeStoreResult] = {}
         self.calls: list[tuple[FakeRef, FakeRef, FakeRef, FakeRef]] = []
@@ -86,11 +101,15 @@ class FakeStoreHarness:
         artifact_ref: FakeRef,
         current_test_authority: bool,
     ) -> FakeStoreResult:
+        operation_key = _fake_ref(operation_key)
+        workspace_ref = _fake_ref(workspace_ref)
+        store_ref = _fake_ref(store_ref)
+        artifact_ref = _fake_ref(artifact_ref)
+        if current_test_authority is not True or workspace_ref != self.workspace_ref:
+            return FakeStoreResult.DENIED
         identity = (operation_key, workspace_ref, store_ref, artifact_ref)
         if identity in self.receipts:
             return FakeStoreResult.DUPLICATE
-        if not current_test_authority or workspace_ref != self.workspace_ref:
-            return FakeStoreResult.DENIED
         if store_ref not in self.store_refs:
             return FakeStoreResult.UNCOVERED
         if store_ref in self.unavailable:
@@ -105,7 +124,7 @@ class FakeRestoreHarness:
     """Quarantine fake for a synthetic restored record; no restore I/O occurs."""
 
     def __init__(self, *, record_ref: FakeRef) -> None:
-        self.record_ref = record_ref
+        self.record_ref = _fake_ref(record_ref)
         self.quarantined = True
         self.restrictions_replayed = False
         self.deletion_restriction_applied = False
@@ -117,6 +136,7 @@ class FakeRestoreHarness:
             self.quarantined = False
 
     def can_read_or_publish(self, *, record_ref: FakeRef) -> bool:
+        record_ref = _fake_ref(record_ref)
         return (
             record_ref == self.record_ref
             and not self.quarantined
@@ -136,6 +156,29 @@ class SyntheticAuditEntry(BaseModel):
         "UNCOVERED",
         "AUDIT_FIELD_REJECTED",
     ]
+
+
+def test_fake_harness_rejects_unregistered_identifiers() -> None:
+    with pytest.raises(ValueError):
+        FakeStoreHarness(
+            workspace_ref="fake-provider-message-id",
+            store_refs=("fake-store-a",),
+            artifact_refs=("fake-artifact-a",),
+        )
+
+    store = FakeStoreHarness(
+        workspace_ref="fake-workspace-a",
+        store_refs=("fake-store-a",),
+        artifact_refs=("fake-artifact-a",),
+    )
+    with pytest.raises(ValueError):
+        store.delete_synthetic(
+            operation_key="fake-operation-a",
+            workspace_ref="fake-workspace-a",
+            store_ref="real-provider-store-id",
+            artifact_ref="fake-artifact-a",
+            current_test_authority=True,
+        )
 
 
 def test_recovery_vector_catalog_covers_required_failure_modes() -> None:
@@ -211,6 +254,26 @@ def test_fake_store_duplicate_command_has_one_synthetic_effect() -> None:
     assert replay is FakeStoreResult.DUPLICATE
     assert len(store.calls) == 1
     assert not store.records
+
+
+def test_fake_store_requires_authority_before_duplicate_result() -> None:
+    store = FakeStoreHarness(
+        workspace_ref="fake-workspace-a",
+        store_refs=("fake-store-a",),
+        artifact_refs=("fake-artifact-a",),
+    )
+    command = {
+        "operation_key": "fake-operation-a",
+        "workspace_ref": "fake-workspace-a",
+        "store_ref": "fake-store-a",
+        "artifact_ref": "fake-artifact-a",
+    }
+    first = store.delete_synthetic(**command, current_test_authority=True)
+    denied_replay = store.delete_synthetic(**command, current_test_authority=False)
+
+    assert first is FakeStoreResult.DELETED_SYNTHETIC
+    assert denied_replay is FakeStoreResult.DENIED
+    assert len(store.calls) == 1
 
 
 def test_fake_store_partial_failure_preserves_unavailable_store_record() -> None:
