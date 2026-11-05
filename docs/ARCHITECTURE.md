@@ -2643,6 +2643,9 @@ detectors без специальных обходов в platform core.
   email identity, content-versus-state semantics, MIME/attachment lineage and
   generation-bound no-gap checkpoint publication; offline-only, with live and
   production gates remaining separate.
+- [ADR-060](adr/0060-exact-external-commit-fence-contract.md): exact, versioned
+  external commit-fence bindings and outcomes; defining the contract enables no
+  provider or authority.
 - ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.
