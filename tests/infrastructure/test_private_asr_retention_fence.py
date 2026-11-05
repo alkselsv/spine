@@ -85,13 +85,13 @@ def test_retention_resolver_requires_explicit_owner_or_synthetic_test_source() -
     approvals = Source()
     terms = Source()
     resolver = PostgreSQLPrivateASRRetentionResolver(approvals=approvals, terms=terms)
-    assert resolver._sources_are_fenceable() is False
+    assert resolver.supports_f1_commit_fence() is False
 
     approvals.retention_fence_source = "postgresql"
     terms.retention_fence_source = "postgresql"
-    assert resolver._sources_are_fenceable() is True
+    assert resolver.supports_f1_commit_fence() is True
 
     synthetic = PostgreSQLPrivateASRRetentionResolver(
         approvals=Source(), terms=Source(), test_only_allow_synthetic_sources=True
     )
-    assert synthetic._sources_are_fenceable() is True
+    assert synthetic.supports_f1_commit_fence() is True

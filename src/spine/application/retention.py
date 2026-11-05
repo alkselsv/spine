@@ -255,9 +255,11 @@ class ApprovedRetentionTerms(DefinitionModel):
 
 
 class RetentionCommitApprovalVerifier(Protocol):
-    """Verify current applicability/policy approvals using the commit transaction."""
+    """Verify current approvals in the commit transaction.
 
-    retention_fence_source: Literal["postgresql"]
+    An F1 implementation keeps mutable current-owner locks until commit; a
+    source unable to provide that guarantee needs a qualified F2 fence.
+    """
 
     async def verify_current(
         self,
@@ -268,9 +270,11 @@ class RetentionCommitApprovalVerifier(Protocol):
 
 
 class ApprovedRetentionTermsProvider(Protocol):
-    """Resolve approved policy terms; never derive terms from applicability IDs."""
+    """Resolve approved terms in the commit transaction, never from applicability IDs.
 
-    retention_fence_source: Literal["postgresql"]
+    An F1 implementation keeps mutable terms-owner locks until commit; a source
+    unable to provide that guarantee needs a qualified F2 fence.
+    """
 
     async def resolve(
         self,

@@ -158,7 +158,7 @@ class PostgreSQLPrivateASRRetentionResolver:
         if (
             self._approvals is None
             or self._terms is None
-            or not self._sources_are_fenceable()
+            or not self.supports_f1_commit_fence()
             or not isinstance(scope, EnvironmentScope)
             or context.purpose.value != "asr_model_evaluation"
             or (scope.workspace_id, scope.environment_id)
@@ -319,8 +319,8 @@ class PostgreSQLPrivateASRRetentionResolver:
             expires_at=expires_at,
         )
 
-    def _sources_are_fenceable(self) -> bool:
-        """Require explicit PostgreSQL ownership for approval and terms reads.
+    def supports_f1_commit_fence(self) -> bool:
+        """Report whether trusted approval and terms sources support F1.
 
         Synthetic test authorities are an opt-in test seam. An external or
         unidentified source needs a provider-specific F2 adapter; until one is
