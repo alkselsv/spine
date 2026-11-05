@@ -25,7 +25,7 @@ from spine.application.persistence.context import (
     TrustedPersistenceContext,
 )
 from spine.application.persistence.errors import (
-    InvalidPersistenceContextError, TransactionDeadlockError,
+    TransactionDeadlockError,
 )
 from spine.application.persistence.canonical import CanonicalAcceptanceCommand
 from spine.application.persistence.idempotency import IdempotencyKey
@@ -1979,6 +1979,17 @@ async def _commit_synthetic_report(prepared, *, idempotency_key, callback=None):
 
 async def _allow_commit() -> None:
     return None
+
+
+def _statement_selects_private_asr_payload(statement: str) -> bool:
+    normalized = statement.lower().replace('"', "").strip()
+    if not normalized.startswith("select ") or " from " not in normalized:
+        return False
+    projection = normalized.split(" from ", 1)[0]
+    return (
+        "private_asr_artifacts.payload" in projection
+        or "private_asr_aggregate_exports.payload" in projection
+    )
 
 
 async def _prepare_sanitized_aggregate(prepared, authority):
@@ -4033,8 +4044,28 @@ async def test_postgresql_private_asr_deletion_scope_and_identity_denials_preser
     environment_id = prepared.case.source.environment_id
     if denial_case == "wrong_workspace":
         workspace_id = synthetic_uuid(seed + 40)
+        environment_id = synthetic_uuid(seed + 41)
+        async with private_asr_database.migration.begin() as connection:
+            await connection.execute(insert(workspaces).values(
+                id=workspace_id,
+                slug=f"private-asr-denial-{seed}",
+                display_name="Synthetic deletion denial workspace",
+            ))
+            await connection.execute(insert(environments).values(
+                id=environment_id,
+                workspace_id=workspace_id,
+                kind="development",
+                display_name="Synthetic deletion denial environment",
+            ))
     elif denial_case == "wrong_environment":
         environment_id = synthetic_uuid(seed + 41)
+        async with private_asr_database.migration.begin() as connection:
+            await connection.execute(insert(environments).values(
+                id=environment_id,
+                workspace_id=workspace_id,
+                kind="development",
+                display_name="Synthetic alternate deletion denial environment",
+            ))
     operation = "private_asr_cleanup" if denial_case == "wrong_action" else "private_asr_retention_expiration"
     denied_context = prepared.boundary.worker(
         scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id),
@@ -4055,12 +4086,7 @@ async def test_postgresql_private_asr_deletion_scope_and_identity_denials_preser
 
     event.listen(private_asr_database.runtime.sync_engine, "before_cursor_execute", capture_statement)
     try:
-        expected_errors = (
-            (InvalidPersistenceContextError,)
-            if denial_case in {"wrong_workspace", "wrong_environment"}
-            else (PrivateASRStorageDenied,)
-        )
-        with pytest.raises(expected_errors) as denial:
+        with pytest.raises(PrivateASRStorageDenied) as denial:
             if denial_case == "wrong_action":
                 await prepared.store.delete_private_reference(
                     report.report_ref, context=denied_context,
@@ -4075,16 +4101,11 @@ async def test_postgresql_private_asr_deletion_scope_and_identity_denials_preser
         event.remove(private_asr_database.runtime.sync_engine, "before_cursor_execute", capture_statement)
 
     expected_message = {
-        "wrong_workspace": "Persistence context is invalid.",
-        "wrong_environment": "Persistence context is invalid.",
         "wrong_action": "Private ASR cleanup authorization denied.",
     }.get(denial_case, "Private ASR deletion authorization denied.")
     assert str(denial.value) == expected_message
     assert authority.requests == []
-    assert not any(
-        "select spine.private_asr_artifacts.payload" in statement
-        for statement in statements
-    )
+    assert not any(_statement_selects_private_asr_payload(statement) for statement in statements)
     async with prepared.runtime_sessions() as session, session.begin():
         await prepared.store._set_scope(session, prepared.context)
         row = (await session.execute(select(
@@ -4152,10 +4173,7 @@ async def test_postgresql_private_asr_invalid_deletion_grant_denies_without_payl
 
     assert str(denial.value) == "Private ASR deletion authorization denied."
     assert len(authority.requests) == 1
-    assert not any(
-        "select spine.private_asr_artifacts.payload" in statement
-        for statement in statements
-    )
+    assert not any(_statement_selects_private_asr_payload(statement) for statement in statements)
     async with prepared.runtime_sessions() as session, session.begin():
         await prepared.store._set_scope(session, prepared.context)
         row = (await session.execute(select(
@@ -4234,10 +4252,7 @@ async def test_postgresql_private_asr_changed_current_retention_denies_deletion_
 
     assert str(denial.value) == "Private ASR deletion authorization denied."
     assert authority.requests == []
-    assert not any(
-        "select spine.private_asr_artifacts.payload" in statement
-        for statement in statements
-    )
+    assert not any(_statement_selects_private_asr_payload(statement) for statement in statements)
     async with prepared.runtime_sessions() as session, session.begin():
         await prepared.store._set_scope(session, prepared.context)
         row = (await session.execute(select(
