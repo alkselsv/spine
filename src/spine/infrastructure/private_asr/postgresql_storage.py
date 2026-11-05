@@ -28,6 +28,7 @@ from spine.application.private_asr_corpus import (
     AdmissionAuthorityPort,
     PrivateArtifactDeletionAuthority,
     PrivateArtifactDeletionAuthorization,
+    PrivateArtifactDeletionFencePort,
     PrivateArtifactDeletionRequestV2,
     PrivateArtifactDeletionSourceBinding,
     PrivateArtifactSourceLineage,
@@ -163,6 +164,124 @@ Index(
 
 class PrivateASRStorageDenied(Exception):
     """Generic denial that never includes private source metadata."""
+
+
+class PostgreSQLPrivateASRDeletionFence(PrivateArtifactDeletionFencePort):
+    """F1 fence for one exact private-artifact deletion transaction.
+
+    The deletion path has already resolved and locked the canonical source,
+    retention and access-policy owners before calling the deletion authority.
+    This seam repeats the immutable-lineage and source-revocation checks at the
+    authority boundary, keeps the source serialization locks until commit, and
+    registers the bounded validity check on the same PostgreSQL UoW.
+
+    It deliberately does not turn a v1 deletion grant into an external F2
+    permit. External authorities must be supplied through a separate qualified
+    ``PrivateArtifactDeletionFencePort`` implementation.
+    """
+
+    def __init__(self, clock: Callable[[], datetime]) -> None:
+        self._clock = clock
+
+    async def acquire(
+        self,
+        request: PrivateArtifactDeletionRequestV2,
+        authorization: PrivateArtifactDeletionAuthorization,
+        *,
+        context: TrustedPersistenceContext,
+        transaction: object,
+    ) -> None:
+        now = self._clock()
+        scope = context.scope
+        execute = getattr(transaction, "execute_statement", None)
+        register_guard = getattr(transaction, "register_commit_guard", None)
+        if not callable(execute) or not callable(register_guard):
+            raise PrivateASRStorageDenied(
+                "Private ASR deletion authorization denied."
+            )
+        if (
+            now.tzinfo is None
+            or now.utcoffset() is None
+            or not isinstance(scope, EnvironmentScope)
+            or (scope.workspace_id, scope.environment_id)
+            != (request.workspace_id, request.environment_id)
+            or not authorization.authorized
+            or authorization.request_digest != request.calculate_digest()
+            or authorization.authority_version != request.authority_version
+            or authorization.revocation_epoch < 1
+            or authorization.valid_until > request.valid_until
+            or not request.requested_at <= now < request.valid_until
+            or not request.requested_at <= now < authorization.valid_until
+        ):
+            raise PrivateASRStorageDenied(
+                "Private ASR deletion authorization denied."
+            )
+
+        source_paths = tuple(
+            sorted(
+                {
+                    (
+                        binding.source_object_id,
+                        binding.source_revision_id,
+                        binding.revision_digest,
+                    )
+                    for binding in request.source_bindings
+                },
+                key=lambda item: (str(item[0]), str(item[1]), item[2]),
+            )
+        )
+        for source_object_id, revision_id, revision_digest in source_paths:
+            await lock_source_lifecycle_shared(
+                execute,
+                workspace_id=request.workspace_id,
+                environment_id=request.environment_id,
+                source_object_id=source_object_id,
+            )
+            await lock_admission_revision(
+                execute,
+                workspace_id=request.workspace_id,
+                environment_id=request.environment_id,
+                source_object_id=source_object_id,
+                revision_id=revision_id,
+            )
+            revision = await execute(
+                select(source_revisions.c.revision_digest).where(
+                    source_revisions.c.workspace_id == request.workspace_id,
+                    source_revisions.c.environment_id == request.environment_id,
+                    source_revisions.c.source_object_id == source_object_id,
+                    source_revisions.c.revision_id == revision_id,
+                )
+            )
+            if revision.scalar_one_or_none() != revision_digest:
+                raise PrivateASRStorageDenied(
+                    "Private ASR deletion authorization denied."
+                )
+            fence = (
+                await execute(
+                    select(
+                        private_asr_source_fences.c.revoked,
+                        private_asr_source_fences.c.epoch,
+                    )
+                    .where(
+                        private_asr_source_fences.c.workspace_id
+                        == request.workspace_id,
+                        private_asr_source_fences.c.environment_id
+                        == request.environment_id,
+                        private_asr_source_fences.c.source_revision_id == revision_id,
+                    )
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            if fence is not None and (
+                fence["revoked"] or fence["epoch"] != authorization.revocation_epoch
+            ):
+                raise PrivateASRStorageDenied(
+                    "Private ASR deletion authorization denied."
+                )
+
+        register_guard(
+            lambda: self._clock() < min(request.valid_until, authorization.valid_until)
+        )
 
 
 def _retention_class_for_kind(kind: str) -> RetentionArtifactClass | None:
@@ -326,6 +445,7 @@ class PostgreSQLPrivateASRStorage:
         retention_resolver: PostgreSQLPrivateASRRetentionResolver | None = None,
         manifest_lineage: PrivateASRManifestLineageVerifier | None = None,
         deletion_authority: PrivateArtifactDeletionAuthority | None = None,
+        deletion_fence: PrivateArtifactDeletionFencePort | None = None,
         aggregate_authority: PrivateAggregatePublicationAuthorityPort | None = None,
         uow_factory: UnitOfWorkFactory | None = None,
         clock: Callable[[], datetime] | None = None,
@@ -342,9 +462,12 @@ class PostgreSQLPrivateASRStorage:
         self._retention_resolver = retention_resolver
         self._manifest_lineage = manifest_lineage
         self._deletion_authority = deletion_authority
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._deletion_fence = deletion_fence or PostgreSQLPrivateASRDeletionFence(
+            self._clock
+        )
         self._aggregate_authority = aggregate_authority
         self._uow_factory = uow_factory
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory
         self._max_payload_bytes = max_payload_bytes
 
@@ -2120,6 +2243,12 @@ class PostgreSQLPrivateASRStorage:
             if (not isinstance(authz, PrivateArtifactDeletionAuthorization)
                     or not _deletion_authorization_is_current(authz, request, checked_at=now)):
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+            await self._deletion_fence.acquire(
+                request,
+                authz,
+                context=context,
+                transaction=transaction,
+            )
             writer = getattr(self._audit_receipts, "append_artifact_deletion", None)
             if writer is None:
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
@@ -2495,6 +2624,12 @@ class PostgreSQLPrivateASRStorage:
                 _deletion_authorization_is_current(authz, request, checked_at=now)
             ):
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")
+            await self._deletion_fence.acquire(
+                request,
+                authz,
+                context=context,
+                transaction=transaction,
+            )
             audit_writer = getattr(self._audit_receipts, "append_artifact_deletion", None)
             if audit_writer is None:
                 raise PrivateASRStorageDenied("Private ASR deletion authorization denied.")

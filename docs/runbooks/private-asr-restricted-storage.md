@@ -187,14 +187,17 @@ Retention expiration now has a synthetic authorized PostgreSQL path. It
 re-resolves current applicability and approved terms inside the deletion UoW,
 verifies exact persisted source/revision lineage and scope, checks the derived
 deadline, obtains an action-specific deletion grant bound to the artifact-state
-digest, appends minimal audit evidence, and tombstones/clears primary payload
-visibility in the same transaction. Staging cleanup is restricted to exact
-staging artifacts and also requires deletion authority. Missing authority, a
-future deadline, wrong artifact type, mismatched profile, forged reference or
-audit failure leaves the artifact unchanged. These fixture authorities are
-test-only; production wiring remains denied until #812 exists. Clearing a
-PostgreSQL payload and writing a tombstone do not prove physical erasure from
-WAL, replicas or backups.
+digest, acquires the deletion-fence seam, appends minimal audit evidence, and
+tombstones/clears primary payload visibility in the same transaction. The
+PostgreSQL F1 fence rechecks exact source lineage and source-revocation state
+and registers the grant validity check immediately before commit. Staging
+cleanup is restricted to exact staging artifacts and also requires deletion
+authority. Missing authority, a future deadline, wrong artifact type,
+mismatched profile, forged reference, expired fence or audit failure leaves the
+artifact unchanged. These fixture authorities remain test-only; external
+deletion authorities require a separately qualified F2 fence and production
+composition. Clearing a PostgreSQL payload and writing a tombstone do not
+prove physical erasure from WAL, replicas or backups.
 
 Private reads acquire canonical source/retention/AccessPolicy fences before
 share-locking exact original/report artifact rows through payload selection.

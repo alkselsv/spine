@@ -587,6 +587,27 @@ class PrivateArtifactDeletionAuthority(Protocol):
     ) -> PrivateArtifactDeletionAuthorization: ...
 
 
+class PrivateArtifactDeletionFencePort(Protocol):
+    """Fence one exact deletion decision through the storage transaction.
+
+    The authority decision and the fence are separate concerns.  A fence
+    implementation must bind the exact request digest, complete source
+    lineage, scope, action and revocation epoch before returning.  It may use
+    PostgreSQL-owned locks (F1) or a separately qualified provider (F2); an
+    absent or unsupported implementation must deny rather than infer a fence
+    from the request fields.
+    """
+
+    async def acquire(
+        self,
+        request: PrivateArtifactDeletionRequestV2,
+        authorization: PrivateArtifactDeletionAuthorization,
+        *,
+        context: TrustedPersistenceContext,
+        transaction: object,
+    ) -> None: ...
+
+
 class ScopedPrivateArtifactDeletionAuditPort(Protocol):
     """Append content-free deletion evidence in the artifact transaction."""
 
@@ -1325,6 +1346,7 @@ __all__ = [
     "PrivateAggregatePublicationAuthorityPort", "PrivateArtifactDeletionRequest",
     "PrivateArtifactDeletionRequestV2", "PrivateArtifactDeletionSourceBinding",
     "PrivateArtifactDeletionAuthorization", "PrivateArtifactDeletionAuthority",
+    "PrivateArtifactDeletionFencePort",
     "PrivacySanitizationError",
     "PrivateAnnotationStoragePort", "PrivateReportReceipt", "PrivateReportSourceBinding", "PrivateReportStoragePort",
     "PurposeAdmissionRequest", "RetentionExpirationPort", "RevocationFencePort",
