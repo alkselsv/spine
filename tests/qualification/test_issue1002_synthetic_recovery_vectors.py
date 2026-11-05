@@ -157,6 +157,39 @@ def test_recovery_vector_catalog_covers_required_failure_modes() -> None:
     assert all(item.reads_denied and item.publication_denied and item.checkpoints_denied for item in VECTORS)
 
 
+def test_recovery_vector_catalog_pins_state_events_and_safe_codes() -> None:
+    expected = {
+        "partial_delete": ("CLEANUP_PENDING", ("store_a_verified", "store_b_failed"), "CLEANUP_INCOMPLETE", "STORE_FAILED"),
+        "store_outage": ("CLEANUP_PENDING", ("store_unavailable",), "CLEANUP_INCOMPLETE", "STORE_UNAVAILABLE"),
+        "missing_authority": ("PROPOSED", ("authority_missing",), "BLOCKED", "AUTHORITY_MISSING"),
+        "stale_authority": ("PROPOSED", ("authority_stale",), "BLOCKED", "AUTHORITY_STALE"),
+        "revoked_authority": ("PROPOSED", ("authority_revoked",), "BLOCKED", "AUTHORITY_REVOKED"),
+        "cross_workspace": ("FENCED_TEST_ONLY", ("workspace_mismatch",), "BLOCKED", "DENIED"),
+        "duplicate_retry": (
+            "CLEANUP_INCOMPLETE",
+            ("retry_same_operation_key", "replay_same_command"),
+            "VERIFIED_SYNTHETIC",
+            "VERIFIED_SYNTHETIC",
+        ),
+        "cancellation": ("CLEANUP_PENDING", ("cancel", "late_store_result"), "CANCELLED", "CANCELLED"),
+        "unknown_commit": ("CLEANUP_PENDING", ("commit_ack_lost", "no_receipt"), "UNKNOWN", "COMMIT_UNKNOWN"),
+        "restore_quarantine_replay": (
+            "VERIFIED_SYNTHETIC",
+            ("restore_requested", "restriction_replay_pending", "restriction_replay_verified"),
+            "VERIFIED_SYNTHETIC",
+            "VERIFIED_SYNTHETIC",
+        ),
+        "audit_log_redaction": ("CLEANUP_PENDING", ("emit_forbidden_field",), "CLEANUP_INCOMPLETE", "AUDIT_FIELD_REJECTED"),
+        "missing_uncovered_store": ("CLEANUP_PENDING", ("uncovered_store_detected",), "CLEANUP_INCOMPLETE", "STORE_UNCOVERED"),
+    }
+
+    assert {
+        item.case_id: (item.initial_state, item.events, item.expected_state, item.safe_code)
+        for item in VECTORS
+    } == expected
+    assert all(item.qualification is VectorStatus.NOT_RUN for item in VECTORS)
+
+
 def test_fake_store_duplicate_command_has_one_synthetic_effect() -> None:
     store = FakeStoreHarness(
         workspace_ref="fake-workspace-a",
@@ -207,6 +240,30 @@ def test_fake_store_partial_failure_preserves_unavailable_store_record() -> None
     assert ("fake-workspace-a", "fake-store-a", "fake-artifact-a") not in store.records
     assert ("fake-workspace-a", "fake-store-b", "fake-artifact-a") in store.records
     assert len(store.calls) == 1
+
+
+def test_fake_store_retry_after_outage_reuses_one_logical_effect() -> None:
+    store = FakeStoreHarness(
+        workspace_ref="fake-workspace-a",
+        store_refs=("fake-store-a",),
+        artifact_refs=("fake-artifact-a",),
+        unavailable=frozenset({"fake-store-a"}),
+    )
+    command = {
+        "operation_key": "fake-operation-a",
+        "workspace_ref": "fake-workspace-a",
+        "store_ref": "fake-store-a",
+        "artifact_ref": "fake-artifact-a",
+        "current_test_authority": True,
+    }
+
+    assert store.delete_synthetic(**command) is FakeStoreResult.UNAVAILABLE
+    assert store.records
+    store.unavailable = frozenset()
+    assert store.delete_synthetic(**command) is FakeStoreResult.DELETED_SYNTHETIC
+    assert store.delete_synthetic(**command) is FakeStoreResult.DUPLICATE
+    assert len(store.calls) == 1
+    assert not store.records
 
 
 def test_fake_store_denies_other_workspace_without_leaking_record_state() -> None:

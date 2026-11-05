@@ -36,9 +36,11 @@ qualification status in `tests/qualification/test_issue1002_synthetic_recovery_v
 The #1001 mapping is intentionally unqualified. Its current contract uses
 `FAILED`/`UNKNOWN` store outcomes rather than a distinct outage result and does
 not define an uncovered-store event; the cross-workspace, audit-redaction and
-restore-read checks also need application/adapter boundaries. Keep those cases
-`NOT_RUN` until the follow-up integration task selects exact transitions and
-safe codes without weakening the #1001 fence invariants.
+restore-read checks also need application/adapter boundaries. The harness uses
+its own invented fake-reference vocabulary, while #1001 accepts only its closed
+fixture enum. Keep those mappings `NOT_RUN` until the follow-up integration task
+selects exact transitions, identifiers and safe codes without weakening the
+#1001 fence invariants.
 
 ## Fake-store boundary
 
