@@ -298,8 +298,6 @@ class PostgreSQLCommitFence:
                 and str(row["current_applicability_id"]) == binding.approval_version
                 and hashlib.sha256(_canonical_json(record)).hexdigest()
                 == binding.approval_digest
-                and hashlib.sha256(_canonical_json(record)).hexdigest()
-                == binding.state_digest
                 and row["generation"] == binding.generation
                 and row["generation"] == binding.revocation_epoch
             )

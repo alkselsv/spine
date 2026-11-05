@@ -101,11 +101,20 @@ class SyntheticCommitFenceAuthority(ExternalCommitFencePort):
         self._revocation_pending: set[_AuthorityKey] = set()
         self._revocation_requested: dict[_AuthorityKey, asyncio.Event] = {}
         self._ambiguous_releases: set[UUID] = set()
+        self._unavailable_operations: set[CommitFenceOperation] = set()
         self._next_reference = 1
 
     async def acquire(self, binding: CommitFenceBinding) -> CommitFenceOperationResult:
         await self.barriers.before_acquire.wait()
         now = self._clock()
+        if CommitFenceOperation.ACQUIRE in self._unavailable_operations:
+            return _result(
+                binding,
+                CommitFenceOperation.ACQUIRE,
+                CommitFenceOperationState.INDETERMINATE,
+                now,
+                failure_reason=CommitFenceFailureReason.PROVIDER_UNAVAILABLE,
+            )
         async with self._condition:
             self._expire_due_locked(now)
             key = _authority_key(binding)
@@ -297,6 +306,9 @@ class SyntheticCommitFenceAuthority(ExternalCommitFencePort):
 
     def make_release_ambiguous(self, permit: CommitFencePermit) -> None:
         self._ambiguous_releases.add(permit.permit_reference)
+
+    def make_operation_unavailable(self, operation: CommitFenceOperation) -> None:
+        self._unavailable_operations.add(operation)
 
     def _live_permit_locked(
         self, requested: CommitFencePermit, now: datetime
