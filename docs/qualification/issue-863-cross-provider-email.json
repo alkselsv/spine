@@ -4,6 +4,7 @@
   "offline_result": "PASS",
   "live_provider_semantics": "NOT_VERIFIED",
   "fixture_manifest_version": "spine-cross-provider-email-fixtures:v1",
+  "fixture_manifest_path": "docs/qualification/issue-863-email-fixture-manifest.json",
   "fixture_policy": {
     "synthetic_only": true,
     "network_access": false,
@@ -101,6 +102,33 @@
     "provider_neutral_v2": "PASS",
     "domain_boundary": "PASS",
     "generated_api": "PASS"
+  },
+  "gate_results": {
+    "focused_email_and_postgresql_matrix": {
+      "status": "PASS",
+      "result": "497 passed",
+      "command": "Run command in docs/runbooks/r2-cross-provider-email-qualification.md"
+    },
+    "generated_api_contract": {
+      "status": "PASS",
+      "result": "exit 0",
+      "command": "corepack pnpm web:api:check"
+    },
+    "compileall": {
+      "status": "PASS",
+      "result": "exit 0",
+      "command": "uv run python -m compileall -q src tests"
+    },
+    "full_repository_pytest": {
+      "status": "NOT_VERIFIED",
+      "result": "7087 passed, 7 skipped, 6 failed because ffprobe is missing",
+      "missing_prerequisite": "ffprobe",
+      "command": "uv run pytest -q"
+    },
+    "pull_request_ci": {
+      "status": "NOT_VERIFIED",
+      "result": "pending pull request"
+    }
   },
   "privacy": {
     "tokens_recorded": false,

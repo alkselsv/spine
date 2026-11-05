@@ -1,0 +1,50 @@
+{
+  "schema_version": "issue-863-email-fixture-manifest:v1",
+  "fixture_manifest_version": "spine-cross-provider-email-fixtures:v1",
+  "synthetic_only": true,
+  "provider_credentials": false,
+  "network_access": false,
+  "fixture_descriptors": [
+    {
+      "fixture_id": "equivalent_gmail_yandex_mime:v1",
+      "providers": ["gmail", "yandex_mail"],
+      "media_type": "message/rfc822",
+      "attachment_count": 1,
+      "source_test": "tests/qualification/test_issue863_cross_provider_email_qualification.py::test_equivalent_synthetic_messages_share_canonical_contracts_with_provider_specific_identity"
+    },
+    {
+      "fixture_id": "gmail_metadata_only_change:v1",
+      "providers": ["gmail"],
+      "content_revision_change": false,
+      "source_test": "tests/qualification/test_issue840_gmail_message_state.py::test_metadata_only_state_and_relationships_preserve_raw_revision"
+    },
+    {
+      "fixture_id": "gmail_history_reset_and_replay:v1",
+      "providers": ["gmail"],
+      "source_test": "tests/application/test_gmail_history_cursor_recovery.py::test_history_404_preserves_checkpoint_and_requires_reconciliation"
+    },
+    {
+      "fixture_id": "yandex_uidvalidity_reset_and_replay:v1",
+      "providers": ["yandex_mail"],
+      "source_test": "tests/application/test_yandex_mail_uidvalidity_reset.py::test_changed_uidvalidity_fences_old_attempt_and_starts_one_new_generation"
+    },
+    {
+      "fixture_id": "partial_crash_retry_and_revocation:v1",
+      "providers": ["gmail", "yandex_mail"],
+      "source_test": "tests/connectors/test_yandex_mail_incremental.py::test_partial_batch_and_provider_outage_hold_until_safe_reconnect"
+    },
+    {
+      "fixture_id": "malformed_oversized_and_cross_tenant:v1",
+      "providers": ["gmail", "yandex_mail"],
+      "source_test": "tests/qualification/test_issue848_imap_canonical_observation.py::test_wrong_tenant_or_generation_is_denied_before_provider_read"
+    }
+  ],
+  "privacy": {
+    "payloads_embedded": false,
+    "addresses_recorded": false,
+    "subjects_recorded": false,
+    "folder_names_recorded": false,
+    "filenames_recorded": false,
+    "credentials_recorded": false
+  }
+}

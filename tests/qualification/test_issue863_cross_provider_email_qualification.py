@@ -18,7 +18,15 @@ from spine.connectors.yandex_mail_message import (
 )
 from spine.connectors.yandex_mail_observation import yandex_mail_raw_message_observation
 from spine.domain.connections.email_scope import EmailProviderOperation, MailboxReadScope
+from spine.domain.artifacts.email_html import EmailHtmlSanitizerProfile
+from spine.domain.artifacts.email_message import (
+    EmailMessageArtifact,
+    email_message_artifact_digest,
+)
 from spine.ingestion.email_mime import MimeParser, MimeParserProfile
+from spine.ingestion.email_html import EmailHtmlSanitizer
+from spine.application.citation_inspector import CitationInspectorRequester
+from spine.application.email_citations import build_email_message_citation_locator
 from tests.qualification.canonical_ingestion_harness import (
     build_canonical_ingestion_harness,
     ingestion_command,
@@ -29,10 +37,13 @@ from tests.qualification.provider_adapter_harness import (
     WORKSPACE_ID,
     stable_id,
 )
+from tests.application.test_citation_inspector import CurrentState, SUBJECT, context
+from tests.application.test_email_message_citations import _inspector_fixture
 
 
 ROOT = Path(__file__).resolve().parents[2]
 REPORT_PATH = ROOT / "docs/qualification/issue-863-cross-provider-email.json"
+FIXTURE_MANIFEST_PATH = ROOT / "docs/qualification/issue-863-email-fixture-manifest.json"
 RUNBOOK_PATH = ROOT / "docs/runbooks/r2-cross-provider-email-qualification.md"
 
 SCENARIO_EVIDENCE: dict[str, tuple[str, ...]] = {
@@ -243,6 +254,88 @@ async def test_equivalent_synthetic_messages_share_canonical_contracts_with_prov
     assert harness.uploader.objects[yandex_result.revision.original_reference.object_id] == raw_mime
     assert harness.projection_intent_count == 2
 
+    parser = MimeParser(
+        MimeParserProfile(
+            max_total_bytes=4096,
+            max_header_bytes=1024,
+            max_parts=8,
+            max_depth=4,
+            max_decoded_bytes=4096,
+            max_parse_seconds=1.0,
+        )
+    )
+    mime = parser.parse(raw_mime)
+    sanitizer = EmailHtmlSanitizer(
+        EmailHtmlSanitizerProfile(
+            max_total_input_bytes=4096,
+            max_total_output_bytes=4096,
+            max_parts=8,
+            max_depth=4,
+        )
+    )
+
+    def body_part(part):
+        if (
+            part.media_type == "text/plain"
+            and part.content_disposition != "attachment"
+            and part.text
+        ):
+            return part
+        return next(
+            (match for child in part.children if (match := body_part(child)) is not None),
+            None,
+        )
+
+    selected_part = body_part(mime.root)
+    assert selected_part is not None
+    assert selected_part.text is not None
+    excerpts: list[str] = []
+    for provider, result in (("gmail", gmail_result), ("yandex", yandex_result)):
+        provisional_artifact = EmailMessageArtifact.model_construct(
+            artifact_id=stable_id(f"issue863-{provider}-message-artifact"),
+            workspace_id=result.source.workspace_id,
+            environment_id=result.source.environment_id,
+            source_object_id=result.source.source_object_id,
+            source_revision_id=result.revision.revision_id,
+            canonical_acceptance_id=result.canonical_acceptance.acceptance.canonical_acceptance_id,
+            source_revision_digest=result.revision.revision_digest,
+            raw_sha256=digest,
+            raw_byte_length=len(raw_mime),
+            parser_profile=parser.profile.reference,
+            sanitizer_profile=sanitizer.reference,
+            mime=mime,
+            sanitized_html=sanitizer.sanitize_all(mime),
+            selected_representation="plain_text",
+            selected_text=selected_part.text,
+            artifact_sha256="0" * 64,
+        )
+        artifact = EmailMessageArtifact.model_validate(
+            provisional_artifact.model_copy(
+                update={"artifact_sha256": email_message_artifact_digest(provisional_artifact)}
+            ).model_dump()
+        )
+        locator = build_email_message_citation_locator(
+            artifact,
+            part_path=selected_part.part_path,
+            representation="plain_text",
+            start_codepoint=0,
+            end_codepoint=len(selected_part.text),
+        )
+        inspector, citation = _inspector_fixture(
+            artifact,
+            locator,
+            state=CurrentState(),
+        )
+        inspected = await inspector.inspect(
+            context=context(),
+            requester=CitationInspectorRequester(SUBJECT),
+            citation_id=citation.citation_id,
+        )
+        assert inspected.evidence is not None
+        excerpts.append(inspected.evidence.excerpt)
+
+    assert excerpts == [selected_part.text, selected_part.text]
+
 
 def test_issue863_matrix_covers_required_cross_provider_scenarios() -> None:
     report = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
@@ -265,8 +358,27 @@ def test_issue863_matrix_covers_required_cross_provider_scenarios() -> None:
 def test_issue863_report_pins_synthetic_inputs_and_safe_diagnostics() -> None:
     report_text = REPORT_PATH.read_text(encoding="utf-8")
     report = json.loads(report_text)
+    manifest_text = FIXTURE_MANIFEST_PATH.read_text(encoding="utf-8")
+    manifest = json.loads(manifest_text)
 
     assert report["fixture_manifest_version"] == "spine-cross-provider-email-fixtures:v1"
+    assert report["fixture_manifest_path"] == str(FIXTURE_MANIFEST_PATH.relative_to(ROOT))
+    assert manifest["fixture_manifest_version"] == report["fixture_manifest_version"]
+    assert manifest["schema_version"] == "issue-863-email-fixture-manifest:v1"
+    assert manifest["synthetic_only"] is True
+    assert manifest["network_access"] is False
+    assert manifest["provider_credentials"] is False
+    for descriptor in manifest["fixture_descriptors"]:
+        path, test_name = descriptor["source_test"].split("::", 1)
+        assert test_name in _test_names(ROOT / path), descriptor["fixture_id"]
+    assert manifest["privacy"] == {
+        "payloads_embedded": False,
+        "addresses_recorded": False,
+        "subjects_recorded": False,
+        "folder_names_recorded": False,
+        "filenames_recorded": False,
+        "credentials_recorded": False,
+    }
     assert report["fixture_policy"] == {
         "synthetic_only": True,
         "network_access": False,
@@ -290,7 +402,22 @@ def test_issue863_report_pins_synthetic_inputs_and_safe_diagnostics() -> None:
         "domain_boundary": "PASS",
         "generated_api": "PASS",
     }
+    assert report["gate_results"]["focused_email_and_postgresql_matrix"] == {
+        "status": "PASS",
+        "result": "497 passed",
+        "command": "Run command in docs/runbooks/r2-cross-provider-email-qualification.md",
+    }
+    assert report["gate_results"]["generated_api_contract"]["status"] == "PASS"
+    assert report["gate_results"]["compileall"]["status"] == "PASS"
+    assert report["gate_results"]["full_repository_pytest"] == {
+        "status": "NOT_VERIFIED",
+        "result": "7087 passed, 7 skipped, 6 failed because ffprobe is missing",
+        "missing_prerequisite": "ffprobe",
+        "command": "uv run pytest -q",
+    }
+    assert report["gate_results"]["pull_request_ci"]["status"] == "NOT_VERIFIED"
     assert all(re.search(pattern, report_text) is None for pattern in FORBIDDEN_REPORT_PATTERNS)
+    assert all(re.search(pattern, manifest_text) is None for pattern in FORBIDDEN_REPORT_PATTERNS)
 
 
 def test_issue863_runbook_names_postgresql_and_compatibility_gates() -> None:
@@ -303,5 +430,6 @@ def test_issue863_runbook_names_postgresql_and_compatibility_gates() -> None:
     assert "tests/application/test_connector_ingestion.py" in command
     assert "tests/test_architecture_scaffold.py" in command
     assert "pnpm web:api:check" in runbook
+    assert "docs/qualification/issue-863-email-fixture-manifest.json" in runbook
     assert "no network or Gmail/Yandex credentials" in runbook
     assert "NOT_VERIFIED" in runbook

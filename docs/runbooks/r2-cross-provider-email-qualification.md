@@ -6,8 +6,9 @@ parsing, attachment lineage, citations, durable sync checkpoints and current
 authorization. Provider identities remain distinct while the shared
 `message/rfc822`, digest, parser profile and locator contracts converge.
 
-The report is `docs/qualification/issue-863-cross-provider-email.json`; its
-traceability gate is
+The report is `docs/qualification/issue-863-cross-provider-email.json`, and its
+synthetic fixture manifest is
+`docs/qualification/issue-863-email-fixture-manifest.json`. The traceability gate is
 `tests/qualification/test_issue863_cross_provider_email_qualification.py`.
 Fixtures are synthetic. The suites use no network or Gmail/Yandex credentials
 and do not access production data. PostgreSQL cases use the disposable
@@ -62,3 +63,9 @@ message content or provider error text. Keep `live_provider_semantics` at
 `NOT_VERIFIED` until separately authorized live Gmail and Yandex qualifications
 are completed. A missing PostgreSQL prerequisite or skipped required test is
 `NOT_VERIFIED`, not `PASS`.
+
+The checked-in report records each local gate outcome. The initial full local
+pytest attempt was `NOT_VERIFIED` (7087 passed, 7 skipped, 6 failed) because
+`ffprobe` was absent; the repository CI installs `ffmpeg` for the full R1
+regression gate. `pull_request_ci` remains `NOT_VERIFIED` until the PR workflow
+finishes.
