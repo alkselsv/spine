@@ -6,7 +6,7 @@ from spine.application.retention import ApprovedRetentionTerms, RetentionStartin
 from spine.domain.sources.retention import RetentionArtifactClass
 from spine.infrastructure.private_asr.retention import (
     PostgreSQLPrivateASRRetentionResolver,
-    _retention_state_digest,
+    retention_consumer_state_digest,
 )
 from tests.application.test_retention_applicability import _binding
 
@@ -45,32 +45,32 @@ def test_retention_commit_state_digest_binds_terms_holds_and_operation() -> None
         source_object_id=_uuid(71),
     )
     terms = _terms()
-    original = _retention_state_digest(
+    original = retention_consumer_state_digest(
         binding=applicability,
         terms=terms,
         artifact_class=RetentionArtifactClass.PRIVATE_ASR_DETAILED_REPORT,
         operation="run_private_asr_evaluation",
     )
 
-    assert original != _retention_state_digest(
+    assert original != retention_consumer_state_digest(
         binding=applicability,
         terms=terms.model_copy(update={"terms_digest": "4" * 64}),
         artifact_class=RetentionArtifactClass.PRIVATE_ASR_DETAILED_REPORT,
         operation="run_private_asr_evaluation",
     )
-    assert original != _retention_state_digest(
+    assert original != retention_consumer_state_digest(
         binding=applicability,
         terms=terms.model_copy(update={"active_legal_hold_references": (_uuid(63),)}),
         artifact_class=RetentionArtifactClass.PRIVATE_ASR_DETAILED_REPORT,
         operation="run_private_asr_evaluation",
     )
-    assert original != _retention_state_digest(
+    assert original != retention_consumer_state_digest(
         binding=applicability,
         terms=terms,
         artifact_class=RetentionArtifactClass.PRIVATE_ASR_ANNOTATION,
         operation="run_private_asr_evaluation",
     )
-    assert original != _retention_state_digest(
+    assert original != retention_consumer_state_digest(
         binding=applicability,
         terms=terms,
         artifact_class=RetentionArtifactClass.PRIVATE_ASR_DETAILED_REPORT,

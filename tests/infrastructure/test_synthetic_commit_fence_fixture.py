@@ -157,6 +157,18 @@ async def test_expired_permit_cannot_validate_commit_or_be_renewed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_provider_outage_does_not_acquire_a_synthetic_f2_permit() -> None:
+    authority = SyntheticCommitFenceAuthority(clock=ManualCommitFenceClock(NOW))
+    authority.make_operation_unavailable(CommitFenceOperation.ACQUIRE)
+
+    result = await authority.acquire(_binding())
+
+    assert result.state is CommitFenceOperationState.INDETERMINATE
+    assert result.failure_reason is CommitFenceFailureReason.PROVIDER_UNAVAILABLE
+    assert result.permit is None
+
+
+@pytest.mark.asyncio
 async def test_renewal_extends_permit_only_within_binding_expiry() -> None:
     clock = ManualCommitFenceClock(NOW)
     authority = SyntheticCommitFenceAuthority(clock=clock, permit_ttl=timedelta(seconds=10))

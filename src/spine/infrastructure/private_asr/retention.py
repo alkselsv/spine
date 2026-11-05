@@ -354,7 +354,7 @@ class PostgreSQLPrivateASRRetentionResolver:
         record_digest = hashlib.sha256(
             _canonical_json(_json_object(record))
         ).hexdigest()
-        state_digest = _retention_state_digest(
+        state_digest = retention_consumer_state_digest(
             binding=binding,
             terms=terms,
             artifact_class=artifact_class,
@@ -404,6 +404,8 @@ class PostgreSQLPrivateASRRetentionResolver:
             and getattr(transaction, "scope", None) is not None
             else _SessionFenceUnitOfWork(transaction, scope)
         )
+        if isinstance(adapter, _SessionFenceUnitOfWork):
+            await adapter.prepare()
         outcome = await PostgreSQLCommitFence(adapter, clock=self._clock).acquire(
             fence_binding,
             owner=PostgreSQLFenceOwner.RETENTION_APPLICABILITY,
@@ -419,6 +421,11 @@ class _SessionFenceUnitOfWork:
     def __init__(self, transaction: object, scope: EnvironmentScope) -> None:
         self._transaction = transaction
         self.scope = scope
+        self._sync_connection = None
+
+    async def prepare(self) -> None:
+        connection = await self._transaction.connection()  # type: ignore[attr-defined]
+        self._sync_connection = connection.sync_connection
 
     async def execute_statement(
         self, statement: object, parameters: object | None = None
@@ -429,23 +436,30 @@ class _SessionFenceUnitOfWork:
         return await self._transaction.execute(statement, parameters)  # type: ignore[attr-defined,no-any-return]
 
     def register_commit_guard(self, guard: Callable[[], bool]) -> None:
-        sync_session = getattr(self._transaction, "sync_session", None)
-        if sync_session is None:
+        sync_connection = self._sync_connection
+        if sync_connection is None:
             raise PrivateASRRetentionDenied()
 
-        def check_before_commit(session) -> None:
-            del session
+        def check_before_commit(connection) -> None:
+            del connection
             if not guard():
                 raise PrivateASRRetentionDenied()
 
-        def cleanup(session) -> None:
-            if event.contains(sync_session, "before_commit", check_before_commit):
-                event.remove(sync_session, "before_commit", check_before_commit)
-            del session
+        def cleanup_after_commit(connection) -> None:
+            if event.contains(sync_connection, "rollback", cleanup_after_rollback):
+                event.remove(sync_connection, "rollback", cleanup_after_rollback)
+            del connection
 
-        event.listen(sync_session, "before_commit", check_before_commit, once=True)
-        event.listen(sync_session, "after_commit", cleanup, once=True)
-        event.listen(sync_session, "after_rollback", cleanup, once=True)
+        def cleanup_after_rollback(connection) -> None:
+            if event.contains(sync_connection, "commit", check_before_commit):
+                event.remove(sync_connection, "commit", check_before_commit)
+            if event.contains(sync_connection, "commit", cleanup_after_commit):
+                event.remove(sync_connection, "commit", cleanup_after_commit)
+            del connection
+
+        event.listen(sync_connection, "commit", check_before_commit, once=True)
+        event.listen(sync_connection, "commit", cleanup_after_commit, once=True)
+        event.listen(sync_connection, "rollback", cleanup_after_rollback, once=True)
 
 
 def _canonical_json(value: object) -> bytes:
@@ -459,7 +473,7 @@ def _json_object(value: object) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _retention_state_digest(
+def retention_consumer_state_digest(
     *,
     binding: RetentionApplicability,
     terms: ApprovedRetentionTerms,
@@ -528,4 +542,5 @@ __all__ = [
     "PostgreSQLPrivateASRRetentionResolver",
     "PrivateASRRetentionDenied",
     "PrivateASRRetentionDisposition",
+    "retention_consumer_state_digest",
 ]
