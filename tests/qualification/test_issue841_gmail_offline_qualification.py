@@ -40,6 +40,7 @@ SCENARIO_TESTS: dict[str, tuple[str, ...]] = {
         "tests/application/test_google_sync_diagnostics.py::test_google_sync_diagnostic_snapshot_contains_only_allowlisted_operational_data",
     ),
     "tenant_mailbox_label_and_authority_denial_before_disclosure": (
+        "tests/application/connections/test_email_read_admission.py::test_excluded_or_unknown_label_is_denied_before_provider_call",
         "tests/connectors/test_gmail.py::test_inactive_or_mismatched_connection_never_reaches_gmail",
         "tests/connectors/test_gmail.py::test_missing_or_wrong_exact_mail_scope_never_reaches_gmail",
         "tests/connectors/test_gmail.py::test_raw_message_maps_invalid_provider_results_to_safe_outcomes",
@@ -51,6 +52,7 @@ SCENARIO_TESTS: dict[str, tuple[str, ...]] = {
         "tests/application/test_gmail_initial_snapshot.py::test_stale_generation_before_terminal_commit_requires_reconciliation",
         "tests/application/test_gmail_history_cursor_recovery.py::test_recovery_does_not_read_after_generation_change",
         "tests/connectors/test_gmail_incremental.py::test_stale_or_revoked_authority_holds_history_checkpoint",
+        "tests/connectors/test_gmail_incremental.py::test_result_for_different_admission_scope_holds_checkpoint",
     ),
     "google_drive_sheets_and_v1_v2_compatibility": (
         "tests/qualification/test_issue614_google_offline_qualification.py::test_issue614_traceability_matrix_covers_required_scenarios",

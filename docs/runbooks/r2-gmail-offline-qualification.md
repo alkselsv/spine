@@ -22,6 +22,7 @@ uv run pytest -q \
   tests/application/test_gmail_initial_snapshot.py \
   tests/application/test_gmail_history_cursor_recovery.py \
   tests/application/test_gmail_message_state.py \
+  tests/application/connections/test_email_read_admission.py \
   tests/connectors/test_gmail.py \
   tests/connectors/test_gmail_history.py \
   tests/connectors/test_gmail_incremental.py \
