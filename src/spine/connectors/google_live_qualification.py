@@ -15,7 +15,7 @@ from pathlib import Path
 import json
 import hashlib
 import time
-from typing import Literal, Protocol
+from typing import get_args, Literal, Protocol
 from uuid import UUID
 
 from pydantic import ConfigDict, Field, StrictBool, StrictStr, model_validator
@@ -47,7 +47,11 @@ from spine.connectors.google_api import (
     google_api_configuration_fingerprint,
 )
 from spine.connectors.google_drive import GoogleDriveAccessOutcomeError
-from spine.connectors.google_sheets import GoogleSheetsReadProfile
+from spine.connectors.google_sheets import (
+    GoogleSheetsIdentityContractError,
+    GoogleSheetsIdentityFailureCode,
+    GoogleSheetsReadProfile,
+)
 from spine.connectors.google_execution_envelope import (
     GoogleBoundedResponseTransport,
     GoogleExecutionApprovalVerifier,
@@ -247,7 +251,25 @@ GoogleLiveRetryDisposition = GoogleProviderRetryDisposition | Literal[
 ]
 
 
-class GoogleLiveQualificationReport(DefinitionModel):
+GoogleLiveFailureCodeV4 = Literal[
+    "authorization_revoked",
+    "provider_quota_exhausted",
+    "provider_policy_denied",
+    "provider_oauth_scope_insufficient",
+    "provider_file_not_downloadable",
+    "provider_file_permission_denied",
+    "provider_download_restricted",
+    "provider_not_found",
+    "provider_unavailable",
+    "provider_contract_rejected",
+    "harness_failure",
+    "resource_limit_exceeded",
+    "deadline_exceeded",
+    "cancelled",
+]
+
+
+class GoogleLiveQualificationReportV4(DefinitionModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     schema_version: Literal["google-live-qualification-report:v4"] = (
@@ -273,32 +295,14 @@ class GoogleLiveQualificationReport(DefinitionModel):
     failure_stage: GoogleLiveFailureStage | None
     failure_class: GoogleLiveFailureClass | None = None
     retry_disposition: GoogleLiveRetryDisposition | None = None
-    failure_code: (
-        Literal[
-            "authorization_revoked",
-            "provider_quota_exhausted",
-            "provider_policy_denied",
-            "provider_oauth_scope_insufficient",
-            "provider_file_not_downloadable",
-            "provider_file_permission_denied",
-            "provider_download_restricted",
-            "provider_not_found",
-            "provider_unavailable",
-            "provider_contract_rejected",
-            "harness_failure",
-            "resource_limit_exceeded",
-            "deadline_exceeded",
-            "cancelled",
-        ]
-        | None
-    ) = None
+    failure_code: GoogleLiveFailureCodeV4 | None = None
     credentials_recorded: Literal[False] = False
     provider_payloads_recorded: Literal[False] = False
     source_content_recorded: Literal[False] = False
     raw_errors_recorded: Literal[False] = False
 
     @model_validator(mode="after")
-    def validate_failure_stage(self) -> "GoogleLiveQualificationReport":
+    def validate_failure_stage(self) -> "GoogleLiveQualificationReportV4":
         evidence = (
             self.failure_stage,
             self.failure_class,
@@ -311,6 +315,31 @@ class GoogleLiveQualificationReport(DefinitionModel):
             raise ValueError("Google live report failure evidence contradicts status")
         if self.status == "failed" and not evidence_is_complete:
             raise ValueError("Google live report failure evidence contradicts status")
+        return self
+
+
+class GoogleLiveQualificationReport(GoogleLiveQualificationReportV4):
+    """Current disclosure-safe Google qualification report contract."""
+
+    schema_version: Literal["google-live-qualification-report:v5"] = (
+        "google-live-qualification-report:v5"
+    )
+    failure_code: GoogleLiveFailureCodeV4 | GoogleSheetsIdentityFailureCode | None = (
+        None
+    )
+
+    @model_validator(mode="after")
+    def validate_sheets_identity_failure_evidence(
+        self,
+    ) -> "GoogleLiveQualificationReport":
+        if self.failure_code in get_args(GoogleSheetsIdentityFailureCode) and (
+            self.failure_stage,
+            self.failure_class,
+            self.retry_disposition,
+        ) != ("sheets", "contract", "not_retryable"):
+            raise ValueError(
+                "Google Sheets identity failure evidence is inconsistent"
+            )
         return self
 
 
@@ -644,6 +673,15 @@ class GoogleLiveQualificationRunner:
             )
         except GoogleLiveQualificationRefused:
             raise
+        except GoogleSheetsIdentityContractError as error:
+            return self._report(
+                status="failed",
+                failure_code=error.failure_code,
+                failure_stage=self._provider_failure_stage(),
+                failure_class="contract",
+                retry_disposition="not_retryable",
+                counts=counts,
+            )
         except GoogleConnectionError:
             return self._report(
                 status="failed",
@@ -841,6 +879,7 @@ __all__ = [
     "GoogleLiveExecutionAuthorization",
     "GoogleLiveQualificationRefused",
     "GoogleLiveQualificationReport",
+    "GoogleLiveQualificationReportV4",
     "GoogleLiveQualificationRunner",
     "GoogleLiveProbeCounts",
     "GoogleSharedDriveApproval",

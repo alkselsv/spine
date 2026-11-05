@@ -165,7 +165,7 @@ SPINE_GOOGLE_LIVE_OPT_IN=1 \
   --report /approved/path/google-live-report.json
 ```
 
-The `google-live-qualification-report:v4` report separates completed logical
+The `google-live-qualification-report:v5` report separates completed logical
 operations from low-level transport attempts. It records bounded attempt counts
 for OAuth refresh, Drive and Sheets, plus a closed failure stage of
 `oauth_refresh`, `drive`, `sheets` or `harness`; a successful run has no failure
@@ -192,11 +192,19 @@ file permission and a revision download restriction. Unknown, missing or
 malformed provider reasons remain `provider_policy_denied`. The report never
 copies the provider message, resource ID or response body.
 
+Version 5 preserves every v4 field and adds disclosure-safe closed failure codes
+for the metadata-only Sheets identity check: invalid response shape, missing
+configured sheet, ambiguous multiple-sheet response, numeric sheet-ID mismatch
+and title mismatch. These codes never contain the configured or returned
+spreadsheet ID, numeric sheet ID, title, range, URL or provider payload. Other
+provider contract failures remain `provider_contract_rejected`.
+
 Migration note: v1 reports contain completed-operation counters only. Version 2
 adds transport attempts and `failure_stage`, but has no failure class, retry
 disposition or configured maximum. Consumers must never infer missing v2, v3 or v4
-evidence retrospectively; require the exact schema version before reading its
-fields.
+or v5 evidence retrospectively; require the exact schema version before reading
+its fields. Historical v4 reports remain valid v4 evidence and are never
+reinterpreted as v5 identity classifications.
 
 The report otherwise contains only provider/API/configuration versions,
 connection generations, status and a closed safe failure code. It never contains
