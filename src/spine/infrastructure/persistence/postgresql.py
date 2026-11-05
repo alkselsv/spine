@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from contextlib import AbstractContextManager, asynccontextmanager
 from enum import Enum, auto
 from types import TracebackType
@@ -76,6 +76,7 @@ from spine.application.persistence.errors import (
     ContextBundleMalformedError,
     ContextBundleNotFoundError,
     IdempotencyConflictError,
+    InvalidCommitFenceConfigurationError,
     InvalidPersistenceContextError,
     OptimisticConflictError,
     ObservationIntegrityConflictError,
@@ -396,6 +397,12 @@ _VALIDATE_CURRENT_PERSISTENCE_AUTHORITY = text(
     "AND (:service_principal_id = '' OR spine.resolve_current_service_authority("
     "nullif(:service_principal_id, '')::uuid, :workspace_id, :environment_id, "
     ":purpose, :operation) IS NOT NULL)"
+)
+
+_SET_LOCAL_TRANSACTION_TIMEOUT = text(
+    "SELECT pg_catalog.set_config("
+    "'transaction_timeout', :transaction_timeout, true"
+    ")"
 )
 
 
@@ -7317,6 +7324,7 @@ class PostgreSQLTenantUnitOfWork:
         ask_admission_clock: Callable[[], datetime],
         answer_question_attempt_id_factory: Callable[[], UUID],
         answer_question_attempt_clock: Callable[[], datetime],
+        transaction_timeout_milliseconds: int | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._source_context = source_context
@@ -7330,6 +7338,7 @@ class PostgreSQLTenantUnitOfWork:
         self._boundary_clock = boundary_clock
         self._answer_question_attempt_id_factory = answer_question_attempt_id_factory
         self._answer_question_attempt_clock = answer_question_attempt_clock
+        self._transaction_timeout_milliseconds = transaction_timeout_milliseconds
         self._scope: PersistenceScope | None = None
         self._operation: PersistenceOperation | None = None
         self._trace_id: UUID | None = None
@@ -7657,6 +7666,15 @@ class PostgreSQLTenantUnitOfWork:
                 )
             self._session = self._session_factory()
             await self._session.begin()
+            if self._transaction_timeout_milliseconds is not None:
+                await self._execute_during_entry(
+                    _SET_LOCAL_TRANSACTION_TIMEOUT,
+                    {
+                        "transaction_timeout": (
+                            f"{self._transaction_timeout_milliseconds}ms"
+                        )
+                    },
+                )
             await self._bind_context(snapshot)
             self._scope = snapshot.scope
             self._operation = PersistenceOperation(snapshot.operation.value)
@@ -7969,6 +7987,37 @@ class PostgreSQLTenantUnitOfWorkFactory:
     def __call__(
         self, context: TrustedPersistenceContext
     ) -> PostgreSQLTenantUnitOfWork:
+        return self._create(context, transaction_timeout_milliseconds=None)
+
+    def create_bounded(
+        self,
+        context: TrustedPersistenceContext,
+        *,
+        transaction_timeout: timedelta,
+    ) -> PostgreSQLTenantUnitOfWork:
+        """Create a UoW whose first server transaction setting is a hard bound."""
+
+        if (
+            not isinstance(transaction_timeout, timedelta)
+            or transaction_timeout <= timedelta(0)
+            or transaction_timeout.microseconds % 1000
+        ):
+            raise InvalidCommitFenceConfigurationError(
+                "Commit-fence timing configuration is invalid."
+            )
+        return self._create(
+            context,
+            transaction_timeout_milliseconds=(
+                transaction_timeout // timedelta(milliseconds=1)
+            ),
+        )
+
+    def _create(
+        self,
+        context: TrustedPersistenceContext,
+        *,
+        transaction_timeout_milliseconds: int | None,
+    ) -> PostgreSQLTenantUnitOfWork:
         if not isinstance(context, TrustedPersistenceContext):
             raise InvalidPersistenceContextError("Persistence context is invalid.")
         snapshot = self._context_verifier.verify(context)
@@ -7988,6 +8037,7 @@ class PostgreSQLTenantUnitOfWorkFactory:
             ask_admission_clock=self._ask_admission_clock,
             answer_question_attempt_id_factory=self._answer_question_attempt_id_factory,
             answer_question_attempt_clock=self._answer_question_attempt_clock,
+            transaction_timeout_milliseconds=transaction_timeout_milliseconds,
         )
 
 

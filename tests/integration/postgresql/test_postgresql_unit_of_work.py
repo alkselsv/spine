@@ -193,6 +193,7 @@ from spine.infrastructure.db.test_harness import TestDatabaseProvision
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.postgresql import (
     PostgreSQLPersistence,
+    PostgreSQLTenantUnitOfWorkFactory,
     PostgreSQLTransactionStage,
 )
 from spine.infrastructure.persistence.postgresql_commit_fence import (
@@ -2153,6 +2154,35 @@ async def test_postgresql_unit_of_work_tracks_activity_until_context_exit(
         assert unit_of_work_is_active() is True
 
     assert unit_of_work_is_active() is False
+
+
+async def test_postgresql_bounded_unit_of_work_is_terminated_by_database(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(3671)
+    workspace = Workspace(
+        id=workspace_id,
+        slug="bounded-uow-3671",
+        display_name="Bounded UoW rollback proof",
+    )
+    factory = postgresql_adapter.uow_factory
+    assert isinstance(factory, PostgreSQLTenantUnitOfWorkFactory)
+
+    with pytest.raises(PersistenceUnavailableError):
+        async with factory.create_bounded(
+            postgresql_adapter.workspace_context(workspace_id),
+            transaction_timeout=timedelta(milliseconds=50),
+        ) as uow:
+            await uow.workspaces.add(workspace)
+            configured = await uow.execute_statement(
+                text("SELECT current_setting('transaction_timeout')")
+            )
+            assert configured.scalar_one() == "50ms"
+            await uow.execute_statement(text("SELECT pg_sleep(1)"))
+
+    async with factory(postgresql_adapter.workspace_context(workspace_id)) as uow:
+        assert await uow.workspaces.resolve(workspace_id) is None
+        await uow.rollback()
 
 
 async def test_postgresql_source_revision_preserves_external_file_evidence(

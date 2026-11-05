@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from uuid import UUID
 
 import pytest
@@ -47,11 +48,13 @@ class ControlledSession:
         self.block_commit = False
         self.rolled_back = False
         self.closed = False
+        self.executed: list[tuple[object, object | None]] = []
 
     async def begin(self) -> None:
         return None
 
     async def execute(self, statement: object, parameters: object | None = None) -> object:
+        self.executed.append((statement, parameters))
         if (
             isinstance(statement, Insert)
             and statement.table.name == "workspaces"
@@ -99,6 +102,22 @@ def candidate() -> Workspace:
         slug="failure-cleanup",
         display_name="Failure Cleanup",
     )
+
+
+@pytest.mark.asyncio
+async def test_bounded_unit_of_work_sets_server_transaction_timeout_first() -> None:
+    session = ControlledSession()
+    adapter, context = persistence(session)
+
+    async with adapter.tenant_uow_factory.create_bounded(
+        context,  # type: ignore[arg-type]
+        transaction_timeout=timedelta(milliseconds=1750),
+    ) as uow:
+        await uow.rollback()
+
+    first_statement, first_parameters = session.executed[0]
+    assert "transaction_timeout" in str(first_statement)
+    assert first_parameters == {"transaction_timeout": "1750ms"}
 
 
 @pytest.mark.asyncio
