@@ -28,6 +28,7 @@ from spine.connectors.google_live_qualification import (
     GoogleLiveQualificationConfig,
     GoogleLiveQualificationRefused,
     GoogleLiveQualificationReport,
+    GoogleLiveQualificationReportV4,
     GoogleLiveQualificationProvider,
     GoogleLiveQualificationRunner,
     GoogleLiveProbeCounts,
@@ -195,6 +196,61 @@ def _valid_report() -> GoogleLiveQualificationReport:
         shared_drive_status="NOT_EXERCISED",
         failure_stage=None,
     )
+
+
+def test_v4_report_remains_readable_without_v5_identity_codes() -> None:
+    payload = _valid_report().model_dump(mode="json")
+    payload["schema_version"] = "google-live-qualification-report:v4"
+
+    report = GoogleLiveQualificationReportV4.model_validate(payload)
+
+    assert report.schema_version == "google-live-qualification-report:v4"
+    assert report.status == "passed"
+
+
+def test_v4_report_rejects_v5_identity_code() -> None:
+    payload = _valid_report().model_dump(mode="json")
+    payload.update(
+        {
+            "schema_version": "google-live-qualification-report:v4",
+            "status": "failed",
+            "failure_stage": "sheets",
+            "failure_class": "contract",
+            "retry_disposition": "not_retryable",
+            "failure_code": "provider_sheets_identity_missing",
+        }
+    )
+
+    with pytest.raises(ValueError):
+        GoogleLiveQualificationReportV4.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("failure_stage", "drive"),
+        ("failure_class", "policy"),
+        ("retry_disposition", "not_applicable"),
+    ),
+)
+def test_v5_identity_code_requires_consistent_sheets_contract_evidence(
+    field: str,
+    value: str,
+) -> None:
+    payload = _valid_report().model_dump(mode="json")
+    payload.update(
+        {
+            "status": "failed",
+            "failure_stage": "sheets",
+            "failure_class": "contract",
+            "retry_disposition": "not_retryable",
+            "failure_code": "provider_sheets_identity_missing",
+            field: value,
+        }
+    )
+
+    with pytest.raises(ValueError):
+        GoogleLiveQualificationReport.model_validate(payload)
 
 
 class RecordingAdmission:
@@ -607,7 +663,7 @@ def _sheet_identity_response(
 
 
 @pytest.mark.asyncio
-async def test_offline_composition_rejects_stale_sheet_title_before_grid_read() -> None:
+async def test_offline_composition_reports_numeric_tab_mismatch_safely() -> None:
     config = _config(opt_in=True)
     config = config.model_copy(
         update={
@@ -636,7 +692,8 @@ async def test_offline_composition_rejects_stale_sheet_title_before_grid_read() 
     ).run(environment_opt_in=True)
 
     assert report.status == "failed"
-    assert report.failure_code == "provider_contract_rejected"
+    assert report.schema_version == "google-live-qualification-report:v5"
+    assert report.failure_code == "provider_sheets_identity_id_mismatch"
     assert report.failure_stage == "sheets"
     assert report.sheets_request_attempts == 1
     assert report.drive_request_attempts == 0
@@ -1050,7 +1107,7 @@ async def test_offline_composition_records_oauth_transport_failure_attempt() -> 
 
     report = await runner.run(environment_opt_in=True)
 
-    assert report.schema_version == "google-live-qualification-report:v4"
+    assert report.schema_version == "google-live-qualification-report:v5"
     assert report.status == "failed"
     assert report.failure_code == "provider_unavailable"
     assert report.failure_stage == "oauth_refresh"
@@ -1111,7 +1168,7 @@ async def test_offline_composition_records_closed_drive_download_policy_reason()
     ).run(environment_opt_in=True)
     serialized = report.model_dump_json()
 
-    assert report.schema_version == "google-live-qualification-report:v4"
+    assert report.schema_version == "google-live-qualification-report:v5"
     assert report.failure_code == "provider_oauth_scope_insufficient"
     assert report.failure_stage == "drive"
     assert report.failure_class == "policy"
@@ -2083,7 +2140,7 @@ async def test_phase1_offline_replay_completes_every_approved_read_operation() -
         },
         sort_keys=True,
     )
-    assert report.schema_version == "google-live-qualification-report:v4"
+    assert report.schema_version == "google-live-qualification-report:v5"
     assert report.metadata_reads == 3
     assert report.downloads == 2
     assert report.exports == 2

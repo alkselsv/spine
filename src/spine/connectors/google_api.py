@@ -57,6 +57,7 @@ from spine.connectors.google_sheets import (
     GoogleSheetsCellData,
     GoogleSheetsConfiguredScopeError,
     GoogleSheetsDeveloperMetadata,
+    GoogleSheetsIdentityContractError,
     GoogleSheetsRangePage,
     GoogleSheetsReadProfile,
     GoogleSheetsRowData,
@@ -1019,40 +1020,74 @@ class GoogleApiService:
         scope = self._scope(connection, resource_scope_reference)
         self._require_spreadsheet(scope, spreadsheet_id)
         expected_title = _sheet_title_from_a1_range(provider_range)
-        payload = self._json_success(
-            await self._authorized_request(
-                connection,
-                provider_api="sheets",
-                method="GET",
-                url=(
-                    f"{self._endpoints.sheets_base_url.rstrip('/')}/spreadsheets/"
-                    f"{quote(spreadsheet_id, safe='')}"
-                ),
-                query={
-                    "includeGridData": "false",
-                    "ranges": provider_range,
-                    "fields": "spreadsheetId,sheets(properties(sheetId,title))",
-                },
-            )
+        response = await self._authorized_request(
+            connection,
+            provider_api="sheets",
+            method="GET",
+            url=(
+                f"{self._endpoints.sheets_base_url.rstrip('/')}/spreadsheets/"
+                f"{quote(spreadsheet_id, safe='')}"
+            ),
+            query={
+                "includeGridData": "false",
+                "ranges": provider_range,
+                "fields": "spreadsheetId,sheets(properties(sheetId,title))",
+            },
+            json_expected=False,
         )
+        try:
+            payload = self._json_success(response)
+        except GoogleProviderContractError:
+            raise GoogleSheetsIdentityContractError(
+                "provider_sheets_identity_invalid_response"
+            ) from None
+        if not isinstance(payload, Mapping):
+            raise GoogleSheetsIdentityContractError(
+                "provider_sheets_identity_invalid_response"
+            )
         sheets = payload.get("sheets")
-        if payload.get("spreadsheetId") != spreadsheet_id or not isinstance(
-            sheets, list
-        ):
+        returned_spreadsheet_id = payload.get("spreadsheetId")
+        if not isinstance(returned_spreadsheet_id, str):
+            raise GoogleSheetsIdentityContractError(
+                "provider_sheets_identity_invalid_response"
+            )
+        if returned_spreadsheet_id != spreadsheet_id:
             raise GoogleSheetsConfiguredScopeError(
                 "Sheets identity response is outside the configured spreadsheet."
             )
-        matches = [
-            item
-            for item in sheets
-            if isinstance(item, Mapping)
-            and isinstance(item.get("properties"), Mapping)
-            and item["properties"].get("sheetId") == sheet_id
-            and item["properties"].get("title") == expected_title
-        ]
-        if len(matches) != 1 or len(sheets) != 1:
-            raise GoogleSheetsConfiguredScopeError(
-                "Sheets identity response does not match the configured numeric sheet."
+        if not isinstance(sheets, list):
+            raise GoogleSheetsIdentityContractError(
+                "provider_sheets_identity_invalid_response"
+            )
+        if not sheets:
+            raise GoogleSheetsIdentityContractError("provider_sheets_identity_missing")
+        if len(sheets) > 1:
+            raise GoogleSheetsIdentityContractError(
+                "provider_sheets_identity_ambiguous"
+            )
+        sheet = sheets[0]
+        properties = sheet.get("properties") if isinstance(sheet, Mapping) else None
+        if not isinstance(properties, Mapping):
+            raise GoogleSheetsIdentityContractError(
+                "provider_sheets_identity_invalid_response"
+            )
+        returned_sheet_id = properties.get("sheetId")
+        returned_title = properties.get("title")
+        if (
+            not isinstance(returned_sheet_id, int)
+            or isinstance(returned_sheet_id, bool)
+            or not isinstance(returned_title, str)
+        ):
+            raise GoogleSheetsIdentityContractError(
+                "provider_sheets_identity_invalid_response"
+            )
+        if returned_sheet_id != sheet_id:
+            raise GoogleSheetsIdentityContractError(
+                "provider_sheets_identity_id_mismatch"
+            )
+        if returned_title != expected_title:
+            raise GoogleSheetsIdentityContractError(
+                "provider_sheets_identity_title_mismatch"
             )
 
     def _scope(

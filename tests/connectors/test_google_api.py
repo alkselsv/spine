@@ -32,6 +32,7 @@ from spine.connectors.google_drive import GoogleDriveAccessOutcomeError
 from spine.connectors.google_sheets import (
     GoogleSheetsColumn,
     GoogleSheetsConfiguredScopeError,
+    GoogleSheetsIdentityContractError,
     GoogleSheetsReadProfile,
 )
 from spine.domain.connections.google import (
@@ -1541,8 +1542,8 @@ async def test_sheets_range_page_rejects_mismatched_identity_before_grid_transpo
     )
 
     with pytest.raises(
-        GoogleSheetsConfiguredScopeError,
-        match="configured numeric sheet",
+        GoogleSheetsIdentityContractError,
+        match="identity response was rejected",
     ):
         await _service(
             RecordingCredentialResolver(),
@@ -1566,6 +1567,168 @@ async def test_sheets_range_page_rejects_mismatched_identity_before_grid_transpo
         "ranges": "'Estimate Register'!A2:D3",
         "fields": "spreadsheetId,sheets(properties(sheetId,title))",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sheets", "expected_code"),
+    (
+        pytest.param(
+            [{"properties": {"sheetId": 999, "title": "Estimate Register"}}],
+            "provider_sheets_identity_id_mismatch",
+            id="numeric-sheet-id-mismatch",
+        ),
+        pytest.param(
+            [{"properties": {"sheetId": 123, "title": "Renamed Register"}}],
+            "provider_sheets_identity_title_mismatch",
+            id="title-mismatch",
+        ),
+        pytest.param([], "provider_sheets_identity_missing", id="missing"),
+        pytest.param(
+            [
+                {"properties": {"sheetId": 123, "title": "Estimate Register"}},
+                {"properties": {"sheetId": 456, "title": "Other"}},
+            ],
+            "provider_sheets_identity_ambiguous",
+            id="ambiguous",
+        ),
+        pytest.param(
+            "invalid",
+            "provider_sheets_identity_invalid_response",
+            id="sheets-not-list",
+        ),
+        pytest.param(
+            [{}],
+            "provider_sheets_identity_invalid_response",
+            id="properties-missing",
+        ),
+        pytest.param(
+            [{"properties": "invalid"}],
+            "provider_sheets_identity_invalid_response",
+            id="properties-not-object",
+        ),
+        pytest.param(
+            [{"properties": {"sheetId": "123", "title": "Estimate Register"}}],
+            "provider_sheets_identity_invalid_response",
+            id="sheet-id-not-integer",
+        ),
+        pytest.param(
+            [{"properties": {"sheetId": 123, "title": 456}}],
+            "provider_sheets_identity_invalid_response",
+            id="title-not-string",
+        ),
+    ),
+)
+async def test_sheets_range_page_classifies_identity_failure_without_values(
+    sheets: object,
+    expected_code: str,
+) -> None:
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"spreadsheetId": "sheet-1", "sheets": sheets},
+            ),
+        ]
+    )
+
+    with pytest.raises(GoogleSheetsIdentityContractError) as captured:
+        await _service(
+            RecordingCredentialResolver(),
+            transport,
+            sheet_profiles=(_sheet_profile(),),
+            sheets_page_size=2,
+        ).get_spreadsheet_range_page(
+            _connection(),
+            RESOURCE_SCOPE,
+            "sheet-1",
+            123,
+            "'Estimate Register'!A2:D5",
+            None,
+        )
+
+    assert captured.value.failure_code == expected_code
+    assert str(captured.value) == "Google Sheets identity response was rejected."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "json_body",
+    (
+        pytest.param(None, id="missing-json"),
+        pytest.param([], id="top-level-array"),
+        pytest.param({"sheets": []}, id="missing-spreadsheet-id"),
+        pytest.param(
+            {"spreadsheetId": 123, "sheets": []},
+            id="non-string-spreadsheet-id",
+        ),
+    ),
+)
+async def test_sheets_range_page_classifies_invalid_identity_envelope(
+    json_body: object,
+) -> None:
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(status_code=200, json_body=json_body),  # type: ignore[arg-type]
+        ]
+    )
+
+    with pytest.raises(GoogleSheetsIdentityContractError) as captured:
+        await _service(
+            RecordingCredentialResolver(),
+            transport,
+            sheet_profiles=(_sheet_profile(),),
+            sheets_page_size=2,
+        ).get_spreadsheet_range_page(
+            _connection(),
+            RESOURCE_SCOPE,
+            "sheet-1",
+            123,
+            "'Estimate Register'!A2:D5",
+            None,
+        )
+
+    assert captured.value.failure_code == "provider_sheets_identity_invalid_response"
+    assert str(captured.value) == "Google Sheets identity response was rejected."
+
+
+@pytest.mark.asyncio
+async def test_sheets_range_page_preserves_identity_request_contract_failure() -> None:
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(status_code=400, json_body={"error": {}}),
+        ]
+    )
+
+    with pytest.raises(
+        GoogleProviderContractError,
+        match="Google provider request failed",
+    ):
+        await _service(
+            RecordingCredentialResolver(),
+            transport,
+            sheet_profiles=(_sheet_profile(),),
+            sheets_page_size=2,
+        ).get_spreadsheet_range_page(
+            _connection(),
+            RESOURCE_SCOPE,
+            "sheet-1",
+            123,
+            "'Estimate Register'!A2:D5",
+            None,
+        )
 
 
 @pytest.mark.asyncio

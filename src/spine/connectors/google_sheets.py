@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import re
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
 from pydantic import Field, StrictInt, StrictStr, model_validator
@@ -60,6 +60,23 @@ class GoogleSheetsUnsafeIdentityError(GoogleProviderContractError):
 
 class GoogleSheetsConfiguredScopeError(GoogleProviderContractError):
     """The provider response is outside the configured spreadsheet/sheet."""
+
+
+GoogleSheetsIdentityFailureCode = Literal[
+    "provider_sheets_identity_ambiguous",
+    "provider_sheets_identity_id_mismatch",
+    "provider_sheets_identity_invalid_response",
+    "provider_sheets_identity_missing",
+    "provider_sheets_identity_title_mismatch",
+]
+
+
+class GoogleSheetsIdentityContractError(GoogleSheetsConfiguredScopeError):
+    """A Sheets identity response failed a disclosure-safe closed check."""
+
+    def __init__(self, failure_code: GoogleSheetsIdentityFailureCode) -> None:
+        self.failure_code = failure_code
+        super().__init__("Google Sheets identity response was rejected.")
 
 
 class GoogleSheetsConcurrentModificationError(GoogleProviderContractError):
@@ -691,6 +708,8 @@ __all__ = [
     "GoogleSheetsColumn",
     "GoogleSheetsConfiguredScopeError",
     "GoogleSheetsConcurrentModificationError",
+    "GoogleSheetsIdentityContractError",
+    "GoogleSheetsIdentityFailureCode",
     "GoogleSheetsDeveloperMetadata",
     "GoogleSheetsObservation",
     "GoogleSheetsObservationReader",

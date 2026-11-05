@@ -63,7 +63,7 @@
     },
     "malformed_contract_response": {
       "status": "OFFLINE_VERIFIED",
-      "test_node": "tests/qualification/test_google_live_harness.py::test_offline_composition_rejects_stale_sheet_title_before_grid_read"
+      "test_node": "tests/qualification/test_google_live_harness.py::test_offline_composition_reports_numeric_tab_mismatch_safely"
     },
     "cancellation": {
       "status": "OFFLINE_VERIFIED",
