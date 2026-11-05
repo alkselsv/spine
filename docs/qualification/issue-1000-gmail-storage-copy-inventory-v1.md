@@ -6,9 +6,11 @@ store is exhaustive, or that cleanup works end to end. `#876` Option C NO-GO
 remains effective. No Gmail API, mailbox, credentials, retention duration,
 physical deletion, or compliance result is represented here.
 
-**Evidence baseline:** repository revision `e9cd2780b10d69d5eaaf766667d10e9930400451`;
+**Evidence baseline:** repository revision `cff686a2ae950b0034d1683ca074c3f769ab65c8`;
 artifact taxonomy from [issue #820](https://github.com/alkselsv/spine/issues/820).
-Every evidence statement below is scoped to code/docs/tests in that revision.
+Every evidence statement below was checked against that revision. The inventory
+remains a repository seam survey; it does not establish operational deployment
+ownership or exhaustive coverage.
 Absence of evidence is `NOT_VERIFIED`, not proof of absence.
 
 ## State boundaries
