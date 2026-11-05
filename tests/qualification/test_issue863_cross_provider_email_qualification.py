@@ -19,6 +19,14 @@ from spine.connectors.yandex_mail_message import (
 from spine.connectors.yandex_mail_observation import yandex_mail_raw_message_observation
 from spine.domain.connections.email_scope import EmailProviderOperation, MailboxReadScope
 from spine.domain.artifacts.email_html import EmailHtmlSanitizerProfile
+from spine.domain.artifacts.email_attachment import (
+    EmailAttachmentArtifact,
+    EmailAttachmentProcessingReceipt,
+    email_attachment_id,
+    email_attachment_artifact_digest,
+    email_attachment_processing_receipt_digest,
+    encode_email_attachment_locator,
+)
 from spine.domain.artifacts.email_message import (
     EmailMessageArtifact,
     email_message_artifact_digest,
@@ -26,7 +34,12 @@ from spine.domain.artifacts.email_message import (
 from spine.ingestion.email_mime import MimeParser, MimeParserProfile
 from spine.ingestion.email_html import EmailHtmlSanitizer
 from spine.application.citation_inspector import CitationInspectorRequester
-from spine.application.email_citations import build_email_message_citation_locator
+from spine.application.email_citations import (
+    EmailAttachmentCitationExcerptResolver,
+    build_email_attachment_citation_locator,
+    build_email_message_citation_locator,
+)
+from spine.application.projection_locator import canonical_projection_locator_digest
 from tests.qualification.canonical_ingestion_harness import (
     build_canonical_ingestion_harness,
     ingestion_command,
@@ -39,6 +52,15 @@ from tests.qualification.provider_adapter_harness import (
 )
 from tests.application.test_citation_inspector import CurrentState, SUBJECT, context
 from tests.application.test_email_message_citations import _inspector_fixture
+from tests.application.test_email_attachment_citations import (
+    RAW as ATTACHMENT_CITATION_RAW,
+    _ParsedReader,
+    _Reader,
+    _ReceiptReader,
+    _fixture as attachment_citation_fixture,
+)
+from spine.domain.context_bundles import EvidenceLocator
+from spine.memory.contracts import StableLocator
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -148,22 +170,17 @@ def _mailbox_scope(provider: str) -> MailboxReadScope:
 
 @pytest.mark.asyncio
 async def test_equivalent_synthetic_messages_share_canonical_contracts_with_provider_specific_identity() -> None:
-    raw_mime = (
-        b"From: sender@example.test\r\n"
-        b"To: recipient@example.test\r\n"
-        b"Subject: Synthetic qualification only\r\n"
-        b"MIME-Version: 1.0\r\n"
-        b"Content-Type: multipart/mixed; boundary=issue863-boundary\r\n\r\n"
-        b"--issue863-boundary\r\n"
-        b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
-        b"Synthetic body.\r\n"
-        b"--issue863-boundary\r\n"
-        b"Content-Type: application/octet-stream\r\n"
-        b"Content-Disposition: attachment; filename=synthetic.bin\r\n"
-        b"Content-Transfer-Encoding: base64\r\n\r\n"
-        b"AQIDBA==\r\n"
-        b"--issue863-boundary--\r\n"
-    )
+    (
+        _unused,
+        base_citation,
+        _base_locator,
+        base_parent,
+        base_attachment,
+        base_receipt,
+        parsed_attachment,
+        _base_bundle,
+    ) = attachment_citation_fixture()
+    raw_mime = ATTACHMENT_CITATION_RAW
     digest = hashlib.sha256(raw_mime).hexdigest()
     gmail_scope = _mailbox_scope("google")
     label = gmail_scope.allowed_label_references[0]
@@ -236,7 +253,7 @@ async def test_equivalent_synthetic_messages_share_canonical_contracts_with_prov
         )
     ).parse_with_attachments(raw_mime)
     assert len(parsed.attachments) == 1
-    assert parsed.attachments[0].content == b"\x01\x02\x03\x04"
+    assert parsed.attachments[0].content == b"Attachment evidence"
 
     harness = await build_canonical_ingestion_harness()
     gmail_result = await harness.orchestrator.ingest_observation(
@@ -335,6 +352,115 @@ async def test_equivalent_synthetic_messages_share_canonical_contracts_with_prov
         excerpts.append(inspected.evidence.excerpt)
 
     assert excerpts == [selected_part.text, selected_part.text]
+
+    attachment_excerpts: list[str] = []
+    for provider, result in (("gmail", gmail_result), ("yandex", yandex_result)):
+        acceptance = result.canonical_acceptance.acceptance
+        provisional_parent = base_parent.model_copy(
+            update={
+                "source_object_id": result.source.source_object_id,
+                "source_revision_id": result.revision.revision_id,
+                "source_revision_digest": result.revision.revision_digest,
+                "canonical_acceptance_id": acceptance.canonical_acceptance_id,
+                "artifact_sha256": "0" * 64,
+            }
+        )
+        parent = EmailMessageArtifact.model_validate(
+            provisional_parent.model_copy(
+                update={"artifact_sha256": email_message_artifact_digest(provisional_parent)}
+            ).model_dump()
+        )
+        provisional_attachment = base_attachment.model_copy(
+            update={
+                "artifact_id": email_attachment_id(
+                    workspace_id=parent.workspace_id,
+                    environment_id=parent.environment_id,
+                    source_revision_id=parent.source_revision_id,
+                    mime_part_path=base_attachment.mime_part_path,
+                    extraction_profile=base_attachment.extraction_profile,
+                ),
+                "source_object_id": parent.source_object_id,
+                "source_revision_id": parent.source_revision_id,
+                "source_revision_digest": parent.source_revision_digest,
+                "canonical_acceptance_id": parent.canonical_acceptance_id,
+                "artifact_sha256": "0" * 64,
+            }
+        )
+        attachment = EmailAttachmentArtifact.model_validate(
+            provisional_attachment.model_copy(
+                update={
+                    "artifact_sha256": email_attachment_artifact_digest(
+                        provisional_attachment
+                    )
+                }
+            ).model_dump()
+        )
+        provisional_receipt = base_receipt.model_copy(
+            update={
+                "processing_receipt_id": stable_id(f"issue863-{provider}-attachment-receipt"),
+                "parent_source_object_id": parent.source_object_id,
+                "parent_source_revision_id": parent.source_revision_id,
+                "parent_source_revision_digest": parent.source_revision_digest,
+                "parent_canonical_acceptance_id": parent.canonical_acceptance_id,
+                "attachment_artifact_id": attachment.artifact_id,
+                "attachment_artifact_digest": attachment.artifact_sha256,
+                "receipt_sha256": "0" * 64,
+            }
+        )
+        receipt = EmailAttachmentProcessingReceipt.model_validate(
+            provisional_receipt.model_copy(
+                update={
+                    "receipt_sha256": email_attachment_processing_receipt_digest(
+                        provisional_receipt
+                    )
+                }
+            ).model_dump()
+        )
+        attachment_locator = build_email_attachment_citation_locator(
+            parent=parent,
+            attachment=attachment,
+            receipt=receipt,
+            parsed_artifact=parsed_attachment,
+            child_locator=StableLocator(kind="character_range", value="line:1:0-19"),
+        )
+        attachment_reference = encode_email_attachment_locator(attachment_locator)
+        stable_attachment_locator = StableLocator(
+            kind="custom", value=attachment_reference
+        )
+        evidence_reference = base_citation.evidence_reference.model_copy(
+            update={
+                "processing_receipt_id": receipt.processing_receipt_id,
+                "locator_contract_version": attachment_locator.schema_version,
+                "locator": EvidenceLocator(
+                    kind="custom", value=attachment_reference
+                ),
+                "locator_digest": canonical_projection_locator_digest(
+                    locator_contract_version=attachment_locator.schema_version,
+                    locator=stable_attachment_locator,
+                ),
+            }
+        )
+        provider_citation = base_citation.model_copy(
+            update={"evidence_reference": evidence_reference}
+        )
+        resolver = EmailAttachmentCitationExcerptResolver(
+            messages=_Reader(parent, "artifact_id"),
+            attachments=_Reader(attachment, "artifact_id"),
+            processing=_ReceiptReader(receipt),
+            parsed_artifacts=_ParsedReader(parsed_attachment),
+        )
+        resolved = await resolver.resolve(provider_citation, historical=False)
+        assert resolved is not None
+        assert resolver.dependency_source_identities(provider_citation) == (
+            (result.source.source_object_id, result.revision.revision_id),
+            (
+                parsed_attachment.source_object_id,
+                parsed_attachment.source_revision_id,
+            ),
+        )
+        attachment_excerpts.append(resolved.excerpt)
+
+    assert attachment_excerpts == ["Attachment evidence", "Attachment evidence"]
 
 
 def test_issue863_matrix_covers_required_cross_provider_scenarios() -> None:
