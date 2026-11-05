@@ -11,17 +11,18 @@ from datetime import datetime, timezone
 from enum import Enum
 import hashlib
 import json
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from sqlalchemy import and_, select
+from sqlalchemy.engine import Result
 
 from spine.application.commit_fence import (
     CommitFenceBinding,
     CommitFenceOutcome,
     CommitFenceOutcomeKind,
 )
-from spine.application.persistence.context import EnvironmentScope
+from spine.application.persistence.context import EnvironmentScope, PersistenceScope
 from spine.infrastructure.persistence.postgresql_mappings import (
     access_policy_versions,
     current_access_policies,
@@ -44,6 +45,17 @@ class PostgreSQLFenceOwner(str, Enum):
     RETENTION_APPLICABILITY = "retention_applicability"
 
 
+class PostgreSQLFenceUnitOfWork(Protocol):
+    @property
+    def scope(self) -> PersistenceScope: ...
+
+    async def execute_statement(
+        self, statement: object, parameters: object | None = None
+    ) -> Result[Any]: ...
+
+    def register_commit_guard(self, guard: Callable[[], bool]) -> None: ...
+
+
 def postgresql_f1_issuer_id(owner: PostgreSQLFenceOwner) -> UUID:
     """Stable code identity for a canonical PG owner, not an approval registry."""
 
@@ -55,7 +67,7 @@ class PostgreSQLCommitFence:
 
     def __init__(
         self,
-        uow: Any,
+        uow: PostgreSQLFenceUnitOfWork,
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
@@ -180,27 +192,11 @@ class PostgreSQLCommitFence:
             return result.mappings().one_or_none()
 
         if owner is PostgreSQLFenceOwner.ACCESS_POLICY:
-            result = await self._uow.execute_statement(
+            pointer_result = await self._uow.execute_statement(
                 select(
                     current_access_policies.c.access_policy_version_id,
                     current_access_policies.c.policy_generation,
                     current_access_policies.c.cas_version,
-                    access_policy_versions.c.document_hash,
-                )
-                .select_from(
-                    current_access_policies.join(
-                        access_policy_versions,
-                        and_(
-                            access_policy_versions.c.workspace_id
-                            == current_access_policies.c.workspace_id,
-                            access_policy_versions.c.environment_id
-                            == current_access_policies.c.environment_id,
-                            access_policy_versions.c.source_object_id
-                            == current_access_policies.c.source_object_id,
-                            access_policy_versions.c.access_policy_version_id
-                            == current_access_policies.c.access_policy_version_id,
-                        ),
-                    )
                 )
                 .where(
                     current_access_policies.c.workspace_id == binding.workspace_id,
@@ -209,33 +205,28 @@ class PostgreSQLCommitFence:
                 )
                 .with_for_update(of=current_access_policies)
             )
-            return result.mappings().one_or_none()
+            pointer = pointer_result.mappings().one_or_none()
+            if pointer is None:
+                return None
+            version_result = await self._uow.execute_statement(
+                select(access_policy_versions.c.document_hash).where(
+                    access_policy_versions.c.workspace_id == binding.workspace_id,
+                    access_policy_versions.c.environment_id == binding.environment_id,
+                    access_policy_versions.c.source_object_id == binding.subject_id,
+                    access_policy_versions.c.access_policy_version_id
+                    == pointer["access_policy_version_id"],
+                )
+            )
+            document_hash = version_result.scalar_one_or_none()
+            if document_hash is None:
+                return None
+            return {**pointer, "document_hash": document_hash}
 
         if owner is PostgreSQLFenceOwner.RETENTION_APPLICABILITY:
-            result = await self._uow.execute_statement(
+            pointer_result = await self._uow.execute_statement(
                 select(
                     current_retention_applicabilities.c.current_applicability_id,
                     current_retention_applicabilities.c.generation,
-                    retention_applicabilities.c.record,
-                )
-                .select_from(
-                    current_retention_applicabilities.join(
-                        retention_applicabilities,
-                        and_(
-                            retention_applicabilities.c.workspace_id
-                            == current_retention_applicabilities.c.workspace_id,
-                            retention_applicabilities.c.environment_id
-                            == current_retention_applicabilities.c.environment_id,
-                            retention_applicabilities.c.target_kind
-                            == current_retention_applicabilities.c.target_kind,
-                            retention_applicabilities.c.target_reference
-                            == current_retention_applicabilities.c.target_reference,
-                            retention_applicabilities.c.applicability_id
-                            == current_retention_applicabilities.c.current_applicability_id,
-                            retention_applicabilities.c.generation
-                            == current_retention_applicabilities.c.generation,
-                        ),
-                    )
                 )
                 .where(
                     current_retention_applicabilities.c.workspace_id
@@ -248,7 +239,24 @@ class PostgreSQLCommitFence:
                 )
                 .with_for_update(of=current_retention_applicabilities)
             )
-            return result.mappings().one_or_none()
+            pointer = pointer_result.mappings().one_or_none()
+            if pointer is None:
+                return None
+            record_result = await self._uow.execute_statement(
+                select(retention_applicabilities.c.record).where(
+                    retention_applicabilities.c.workspace_id == binding.workspace_id,
+                    retention_applicabilities.c.environment_id == binding.environment_id,
+                    retention_applicabilities.c.target_kind == "exact_source",
+                    retention_applicabilities.c.target_reference == binding.subject_id,
+                    retention_applicabilities.c.applicability_id
+                    == pointer["current_applicability_id"],
+                    retention_applicabilities.c.generation == pointer["generation"],
+                )
+            )
+            record = record_result.scalar_one_or_none()
+            if record is None:
+                return None
+            return {**pointer, "record": record}
         return None
 
     @staticmethod

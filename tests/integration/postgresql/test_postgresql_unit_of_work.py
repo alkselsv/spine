@@ -11919,6 +11919,8 @@ async def test_selector_migration_rollback_preserves_existing_v1_acceptance(
 async def test_postgresql_access_policy_fence_orders_replacement_and_commit(
     postgresql_adapter: PersistenceAdapter,
 ) -> None:
+    from sqlalchemy import select
+
     from spine.application.commit_fence import (
         CommitFenceBinding,
         CommitFenceOutcomeKind,
@@ -11926,6 +11928,12 @@ async def test_postgresql_access_policy_fence_orders_replacement_and_commit(
     )
     from spine.application.persistence.errors import CommitFenceInvalidatedError
     from spine.application.private_asr_corpus import PrivateArtifactSourceLineage
+    from spine.infrastructure.persistence.postgresql_mappings import (
+        current_access_policies,
+    )
+    from tests.integration.postgresql.conftest import (
+        wait_for_postgresql_lock_wait,
+    )
 
     assert postgresql_adapter.source_context is not None
     workspace_id, environment_id = synthetic_uuid(97200), synthetic_uuid(97201)
@@ -12148,6 +12156,106 @@ async def test_postgresql_access_policy_fence_orders_replacement_and_commit(
             "outbox_event_id": successor_outbox_id,
         }
     )
+    third_policy = AccessPolicyVersion(
+        access_policy_version_id=synthetic_uuid(97220),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        source_object_id=source.source_object_id,
+        version=3,
+        predecessor_policy_version_id=successor_policy.access_policy_version_id,
+        document_schema_version="access-policy.v1",
+        document_hash="d" * 64,
+        origin_kind=PolicyOriginKind.APPROVED_PROPOSAL,
+        origin_reference=issuer_id,
+        origin_version=1,
+        origin_hash="b" * 64,
+        created_by_canonical_human_id=actor_id,
+        created_at=datetime(2026, 11, 5, tzinfo=timezone.utc),
+    )
+    third_policy = third_policy.model_copy(
+        update={"document_hash": access_policy_document_hash(third_policy)}
+    )
+    third_proposal = PolicyProposal(
+        policy_proposal_id=synthetic_uuid(97221),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        source_object_id=source.source_object_id,
+        proposal_version=2,
+        proposed_policy_version_id=third_policy.access_policy_version_id,
+        proposed_policy_hash=third_policy.document_hash,
+        requester_canonical_human_id=actor_id,
+        expected_policy_version_id=successor_policy.access_policy_version_id,
+        expected_policy_generation=2,
+        benefit_classification=PolicyBenefitClassification.REVOCATION,
+        benefit_schema_version="policy-benefit.v1",
+        membership_generation=1,
+        authority_generation=1,
+        service_authority_generation=1,
+        submitted_at=datetime(2026, 11, 5, tzinfo=timezone.utc),
+    )
+    third_activation_id = synthetic_uuid(97222)
+    third_audit_id, third_outbox_id = synthetic_uuid(97223), synthetic_uuid(97224)
+    third_audit = audit_events.build_event(
+        audit_event_id=third_audit_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_type="command.outcome",
+        schema_version=1,
+        payload=CommandAuditPayload(command_type="access_policy.activate"),
+        origin=policy_context.origin,
+        acting_subject_id=policy_context.acting_subject_id,
+        service_principal_id=policy_context.service_principal_id,
+        trace_id=policy_context.trace_id,
+        occurred_at=datetime(2026, 11, 5, tzinfo=timezone.utc),
+        outcome=AuditOutcome.ACCEPTED,
+        reason="policy_activated",
+    )
+    third_outbox = postgresql_adapter.outbox_events.build_intent(
+        event_id=third_outbox_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_type="workspace.created",
+        schema_version=1,
+        payload=WorkspaceCreatedPayload(
+            workspace=OpaqueObjectReference(
+                object_type="policy_activation",
+                object_id=third_activation_id,
+                schema_version=1,
+            ),
+            lifecycle_state="activated",
+        ),
+        trace_id=policy_context.trace_id,
+    )
+    third_command = AccessPolicyActivationCommand(
+        policy=third_policy,
+        requester_canonical_human_id=actor_id,
+        activator_canonical_human_id=actor_id,
+        expected_policy_version_id=successor_policy.access_policy_version_id,
+        expected_policy_generation=2,
+        expected_cas_version=2,
+        activation_id=third_activation_id,
+        idempotency_key=IdempotencyKey("issue-972-policy-third"),
+        audit_event_id=third_audit_id,
+        outbox_event_id=third_outbox_id,
+        activated_at=datetime(2026, 11, 5, tzinfo=timezone.utc),
+        audit_event=third_audit,
+        outbox_intent=third_outbox,
+        proposal=third_proposal,
+    )
+    third_draft = PolicyActivationDraft(
+        values={
+            **successor_draft.values,
+            "policy_activation_id": third_activation_id,
+            "predecessor_policy_version_id": successor_policy.access_policy_version_id,
+            "new_policy_version_id": third_policy.access_policy_version_id,
+            "policy_generation": 3,
+            "policy_proposal_id": third_proposal.policy_proposal_id,
+            "policy_proposal_version": third_proposal.proposal_version,
+            "policy_proposal_hash": third_proposal.proposed_policy_hash,
+            "audit_event_id": third_audit_id,
+            "outbox_event_id": third_outbox_id,
+        }
+    )
 
     lineage = (PrivateArtifactSourceLineage(
         source_object_id=source.source_object_id,
@@ -12156,17 +12264,20 @@ async def test_postgresql_access_policy_fence_orders_replacement_and_commit(
     ),)
     now = datetime(2026, 11, 5, 12, tzinfo=timezone.utc)
 
-    def binding(generation: int) -> CommitFenceBinding:
+    def binding(
+        generation: int, fence_policy: AccessPolicyVersion | None = None
+    ) -> CommitFenceBinding:
+        exact_policy = fence_policy or policy
         return CommitFenceBinding(
             issuer_id=postgresql_f1_issuer_id(PostgreSQLFenceOwner.ACCESS_POLICY),
-            approval_version=str(policy.access_policy_version_id),
-            approval_digest=policy.document_hash,
+            approval_version=str(exact_policy.access_policy_version_id),
+            approval_digest=exact_policy.document_hash,
             workspace_id=workspace_id,
             environment_id=environment_id,
             purpose="test.commit",
             action="publish",
             subject_id=source.source_object_id,
-            state_digest=policy.document_hash,
+            state_digest=exact_policy.document_hash,
             source_lineage=lineage,
             lineage_digest=canonical_commit_fence_lineage_digest(
                 workspace_id=workspace_id,
@@ -12194,9 +12305,12 @@ async def test_postgresql_access_policy_fence_orders_replacement_and_commit(
             await consumer_uow.commit()
 
     replacement_started = asyncio.Event()
+    replacement_backend_pids: list[int] = []
 
     async def replace_policy(expected_generation: int) -> None:
         async with postgresql_adapter.uow_factory(policy_context) as uow:
+            pid_result = await uow.execute_statement(text("SELECT pg_backend_pid()"))
+            replacement_backend_pids.append(pid_result.scalar_one())
             replacement_started.set()
             assert expected_generation == 1
             await uow.access_policies.activate(successor_command, successor_draft)
@@ -12213,8 +12327,12 @@ async def test_postgresql_access_policy_fence_orders_replacement_and_commit(
         assert acquired.outcome is CommitFenceOutcomeKind.ACQUIRED
         replacement = asyncio.create_task(replace_policy(1))
         await replacement_started.wait()
-        await asyncio.sleep(0.05)
-        assert not replacement.done()
+        assert await wait_for_postgresql_lock_wait(
+            postgresql_adapter,
+            policy_context,
+            replacement_backend_pids[0],
+            replacement,
+        )
         await consumer_uow.commit()
     await replacement
 
@@ -12226,3 +12344,76 @@ async def test_postgresql_access_policy_fence_orders_replacement_and_commit(
         )
         assert stale.outcome is CommitFenceOutcomeKind.STALE
         await consumer_uow.rollback()
+
+    replacement_lock_acquired = asyncio.Event()
+    release_replacement = asyncio.Event()
+    replacement_first_pid: list[int] = []
+
+    async def replace_before_consumer() -> None:
+        async with postgresql_adapter.uow_factory(policy_context) as uow:
+            pid_result = await uow.execute_statement(text("SELECT pg_backend_pid()"))
+            replacement_first_pid.append(pid_result.scalar_one())
+            await uow.execute_statement(
+                select(current_access_policies)
+                .where(
+                    current_access_policies.c.workspace_id == workspace_id,
+                    current_access_policies.c.environment_id == environment_id,
+                    current_access_policies.c.source_object_id
+                    == source.source_object_id,
+                )
+                .with_for_update()
+            )
+            replacement_lock_acquired.set()
+            await release_replacement.wait()
+            await uow.access_policies.activate(third_command, third_draft)
+            await uow.commit()
+
+    consumer_first_pid: list[int] = []
+    consumer_started = asyncio.Event()
+
+    async def resolve_during_replacement():
+        async with postgresql_adapter.uow_factory(policy_context) as consumer_uow:
+            pid_result = await consumer_uow.execute_statement(
+                text("SELECT pg_backend_pid()")
+            )
+            consumer_first_pid.append(pid_result.scalar_one())
+            consumer_started.set()
+            return await PostgreSQLCommitFence(
+                consumer_uow, clock=lambda: now
+            ).acquire(
+                binding(2, successor_policy),
+                owner=PostgreSQLFenceOwner.ACCESS_POLICY,
+                now=now,
+            )
+
+    replacement_first = asyncio.create_task(replace_before_consumer())
+    consumer_waiting: asyncio.Task | None = None
+    try:
+        await asyncio.wait_for(replacement_lock_acquired.wait(), timeout=10)
+        consumer_waiting = asyncio.create_task(resolve_during_replacement())
+        await consumer_started.wait()
+        assert await wait_for_postgresql_lock_wait(
+            postgresql_adapter,
+            policy_context,
+            consumer_first_pid[0],
+            consumer_waiting,
+        )
+    finally:
+        release_replacement.set()
+        await replacement_first
+        if consumer_waiting is not None:
+            await asyncio.gather(consumer_waiting, return_exceptions=True)
+    async with postgresql_adapter.uow_factory(policy_context) as verify_uow:
+        current_after_replacement = await verify_uow.access_policies.resolve_current(
+            source.source_object_id
+        )
+        await verify_uow.rollback()
+    assert current_after_replacement is not None
+    assert current_after_replacement.policy_generation == 3
+    assert (
+        current_after_replacement.access_policy_version_id
+        == third_policy.access_policy_version_id
+    )
+    assert consumer_waiting is not None
+    after_replacement = await consumer_waiting
+    assert after_replacement.outcome is CommitFenceOutcomeKind.STALE

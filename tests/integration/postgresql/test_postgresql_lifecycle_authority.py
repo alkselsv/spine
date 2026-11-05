@@ -56,6 +56,7 @@ from tests.integration.postgresql.test_postgresql_unit_of_work import (
     prepare_canonical_case,
     synthetic_uuid,
 )
+from tests.integration.postgresql.conftest import wait_for_postgresql_lock_wait
 from tests.contracts.persistence.test_canonical_acceptance_contract import (
     _audit as canonical_audit,
     _canonical_outbox,
@@ -83,10 +84,14 @@ class _LockAttemptObservedUnitOfWork:
         unit_of_work,
         lock_attempted: asyncio.Event,
         backend_pids: list[int],
+        lock_acquired: asyncio.Event | None = None,
+        release_lock: asyncio.Event | None = None,
     ) -> None:
         self._unit_of_work = unit_of_work
         self._lock_attempted = lock_attempted
         self._backend_pids = backend_pids
+        self._lock_acquired = lock_acquired
+        self._release_lock = release_lock
 
     async def _execute(self, statement: object, parameters: object | None = None):
         if "pg_advisory_xact_lock" in str(statement):
@@ -95,7 +100,13 @@ class _LockAttemptObservedUnitOfWork:
             )
             self._backend_pids.append(pid_result.scalar_one())
             self._lock_attempted.set()
-        return await self._unit_of_work._execute(statement, parameters)
+        result = await self._unit_of_work._execute(statement, parameters)
+        if "pg_advisory_xact_lock(" in str(statement):
+            if self._lock_acquired is not None:
+                self._lock_acquired.set()
+            if self._release_lock is not None:
+                await self._release_lock.wait()
+        return result
 
     def __getattr__(self, name: str):
         return getattr(self._unit_of_work, name)
@@ -105,53 +116,17 @@ def _observe_lock_attempt(
     uow_factory,
     lock_attempted: asyncio.Event,
     backend_pids: list[int],
+    lock_acquired: asyncio.Event | None = None,
+    release_lock: asyncio.Event | None = None,
 ):
     @asynccontextmanager
     async def observed_uow_factory(context):
         async with uow_factory(context) as uow:
             yield _LockAttemptObservedUnitOfWork(
-                uow, lock_attempted, backend_pids
+                uow, lock_attempted, backend_pids, lock_acquired, release_lock
             )
 
     return observed_uow_factory
-
-
-async def _wait_for_postgresql_lock_wait(
-    adapter: PersistenceAdapter,
-    context,
-    backend_pid: int,
-    operation: asyncio.Task[object],
-) -> bool:
-    last_observation: list[tuple[bool | None, str | None] | None] = []
-
-    async def observe_blocker() -> bool:
-        while not operation.done():
-            async with adapter.uow_factory(context) as uow:
-                result = await uow.execute_statement(
-                    text(
-                        "SELECT cardinality(pg_blocking_pids(:pid)) > 0, "
-                        "wait_event_type FROM pg_stat_activity WHERE pid = :pid"
-                    ),
-                    {"pid": backend_pid},
-                )
-                row = result.one_or_none()
-                observation = (
-                    (row[0], row[1]) if row is not None else None
-                )
-                last_observation.append(observation)
-                await uow.rollback()
-            if observation is not None and observation[0]:
-                return True
-            await asyncio.sleep(0)
-        return False
-
-    try:
-        return await asyncio.wait_for(observe_blocker(), timeout=10)
-    except asyncio.TimeoutError as error:
-        raise AssertionError(
-            "PostgreSQL backend did not report a blocking lock; "
-            f"last observation: {last_observation[-1:]!r}"
-        ) from error
 
 
 class _AllowAuthority:
@@ -626,7 +601,7 @@ async def test_postgresql_lifecycle_fence_orders_replacement_and_commit(
             observed_repository.record_decision(replacement_decision, context)
         )
         await asyncio.wait_for(lock_attempted.wait(), timeout=10)
-        assert await _wait_for_postgresql_lock_wait(
+        assert await wait_for_postgresql_lock_wait(
             postgresql_adapter, context, backend_pids[0], replacement_task
         )
         await consumer_uow.commit()
@@ -642,6 +617,97 @@ async def test_postgresql_lifecycle_fence_orders_replacement_and_commit(
         )
         assert stale.outcome is CommitFenceOutcomeKind.STALE
         await consumer_uow.rollback()
+
+    replacement_digest = hashlib.sha256(
+        json.dumps(
+            replacement_decision.model_dump(mode="json"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    generation_two_binding = binding.model_copy(
+        update={
+            "approval_version": str(replacement_decision.decision_id),
+            "approval_digest": replacement_digest,
+            "state_digest": replacement_digest,
+            "generation": 2,
+            "revocation_epoch": 2,
+            "operation_id": _lifecycle_id(974060),
+            "idempotency_key": "issue-974-lifecycle-fence-next",
+        }
+    )
+    third_observation = _observation(case, 974070).model_copy(
+        update={
+            "kind": LifecycleObservationKind.MOVE_WITHIN_SCOPE,
+            "reason_code": LifecycleReasonCode.MOVE_WITHIN_SCOPE,
+        }
+    )
+    third_decision = _decision(case, third_observation, context, 974080).model_copy(
+        update={
+            "effect": LifecycleDecisionEffect.ELIGIBLE,
+            "status": LifecycleEligibilityStatus.ELIGIBLE,
+            "expected_current_decision_id": replacement_decision.decision_id,
+            "expected_current_generation": 2,
+            "generation": 3,
+        }
+    )
+    await repository.record_observation(third_observation, context)
+    replacement_lock_acquired = asyncio.Event()
+    release_replacement = asyncio.Event()
+    replacement_pid: list[int] = []
+    first_lock_attempt = asyncio.Event()
+    lock_first_repository = PostgreSQLLifecycleAuthorityRepository(
+        uow_factory=_observe_lock_attempt(
+            postgresql_adapter.uow_factory,
+            first_lock_attempt,
+            replacement_pid,
+            replacement_lock_acquired,
+            release_replacement,
+        ),
+        observation_authority=_AllowObservationAuthority(),
+        decision_authority=_AllowAuthority(),
+        decision_effects=_DecisionEffects(),
+    )
+    consumer_started = asyncio.Event()
+    consumer_pid: list[int] = []
+
+    async def acquire_after_replacement_lock():
+        async with postgresql_adapter.uow_factory(context) as consumer_uow:
+            pid_result = await consumer_uow.execute_statement(
+                text("SELECT pg_backend_pid()")
+            )
+            consumer_pid.append(pid_result.scalar_one())
+            consumer_started.set()
+            return await PostgreSQLCommitFence(
+                consumer_uow, clock=lambda: now
+            ).acquire(
+                generation_two_binding,
+                owner=PostgreSQLFenceOwner.SOURCE_LIFECYCLE,
+                now=now,
+            )
+
+    replacement_first = asyncio.create_task(
+        lock_first_repository.record_decision(third_decision, context)
+    )
+    consumer_after_replacement: asyncio.Task | None = None
+    try:
+        await asyncio.wait_for(replacement_lock_acquired.wait(), timeout=10)
+        consumer_after_replacement = asyncio.create_task(
+            acquire_after_replacement_lock()
+        )
+        await consumer_started.wait()
+        assert await wait_for_postgresql_lock_wait(
+            postgresql_adapter, context, consumer_pid[0], consumer_after_replacement
+        )
+    finally:
+        release_replacement.set()
+        await replacement_first
+        if consumer_after_replacement is not None:
+            await asyncio.gather(consumer_after_replacement, return_exceptions=True)
+    assert consumer_after_replacement is not None
+    after_replacement = await consumer_after_replacement
+    assert after_replacement.outcome is CommitFenceOutcomeKind.STALE
 
 
 @pytest.mark.asyncio(loop_scope="session")
