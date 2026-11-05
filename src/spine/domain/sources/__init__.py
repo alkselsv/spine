@@ -23,6 +23,11 @@ from .access_policy import (
     SourceSecurityDomainBinding,
 )
 from .canonical import CanonicalAcceptance, CanonicalOrdering, CurrentSourceHead
+from .canonical_tombstone_selector import (
+    CanonicalTombstoneSelectorHead,
+    CanonicalTombstoneWriterMode,
+    TrustedCanonicalTombstoneVersionSelector,
+)
 from .gmail import (
     GMAIL_EXTERNAL_GENERATION,
     GMAIL_EXTERNAL_NAMESPACE,
@@ -228,7 +233,10 @@ __all__ = [
     "CanonicalBoundary",
     "CanonicalBoundaryMember",
     "CanonicalOrdering",
+    "CanonicalTombstoneWriterMode",
+    "CanonicalTombstoneSelectorHead",
     "CurrentSourceHead",
+    "TrustedCanonicalTombstoneVersionSelector",
     "canonical_boundary_manifest_digest",
     "AccessPermission",
     "AccessPolicyVersion",

@@ -64,10 +64,11 @@ class CanonicalAcceptance(DefinitionModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    canonical_acceptance_schema_version: Literal[1, 2] = 1
+    canonical_acceptance_schema_version: Literal[1, 2, 3] = 1
     canonical_acceptance_id: UUID
     source_object_id: UUID
     source_revision_id: UUID
+    revision_kind: RevisionKind | None = None
     workspace_id: UUID
     environment_id: UUID
     predecessor_revision_id: UUID | None = None
@@ -79,6 +80,11 @@ class CanonicalAcceptance(DefinitionModel):
     admission_decision_id: UUID | None = None
     access_policy_version_id: UUID | None = None
     processing_admission_id: UUID | None = None
+    tombstone_authorization_id: UUID | None = None
+    tombstone_authorization_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    transition_id: UUID | None = None
     provenance_id: UUID
     idempotency_receipt_id: UUID
     audit_event_id: UUID
@@ -112,7 +118,32 @@ class CanonicalAcceptance(DefinitionModel):
             raise ValueError("trusted acceptance requires ordering evidence")
         if self.ordering is CanonicalOrdering.EXPECTED_CURRENT and self.ordering_scheme is not None:
             raise ValueError("expected-current acceptance cannot carry trusted ordering")
-        if self.canonical_acceptance_schema_version == 2:
+        tombstone_link = (
+            self.tombstone_authorization_id,
+            self.tombstone_authorization_digest,
+            self.transition_id,
+        )
+        if self.canonical_acceptance_schema_version == 3:
+            if any(value is None for value in tombstone_link):
+                raise ValueError(
+                    "canonical acceptance version 3 requires an exact tombstone authorization"
+                )
+            if self.tombstone_authorization_id.int == 0 or self.transition_id.int == 0:
+                raise ValueError("canonical acceptance version 3 identifiers must be non-zero")
+            if (
+                self.revision_kind is not RevisionKind.TOMBSTONE
+                or self.admission_decision_id is not None
+                or self.access_policy_version_id is not None
+                or self.processing_admission_id is not None
+            ):
+                raise ValueError("canonical acceptance version 3 is tombstone-only")
+            if self.predecessor_revision_id is None or self.predecessor_acceptance_id is None:
+                raise ValueError("canonical acceptance version 3 requires the full predecessor head")
+        elif any(value is not None for value in tombstone_link):
+            raise ValueError("only version 3 can carry a tombstone authorization")
+        elif self.revision_kind is not None:
+            raise ValueError("historical canonical acceptance versions cannot change shape")
+        elif self.canonical_acceptance_schema_version == 2:
             if self.processing_admission_id is None:
                 raise ValueError("canonical acceptance version 2 requires a processing admission")
             if self.processing_admission_id.int == 0:

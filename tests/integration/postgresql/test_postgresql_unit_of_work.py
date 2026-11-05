@@ -211,6 +211,10 @@ from spine.domain.sources.crm_relationship_v2 import (
     CrmRelationshipMappingProfile,
     CrmRelationshipNaturalIdentity,
 )
+from spine.domain.sources.canonical_tombstone_selector import (
+    CanonicalTombstoneWriterMode,
+    TrustedCanonicalTombstoneVersionSelector,
+)
 from spine.infrastructure.persistence.parsed_artifacts import (
     PostgreSQLParsedArtifactRepository,
 )
@@ -752,6 +756,113 @@ async def postgresql_adapter(
         async with transaction_gate.hold():
             yield
 
+    async def prepare_legacy_tombstone_selector(
+        source, context: TrustedPersistenceContext, audit_event_id: UUID
+    ) -> None:
+        del context
+        recorded_at = datetime.now(timezone.utc)
+        selector = TrustedCanonicalTombstoneVersionSelector(
+            selector_id=uuid5(NAMESPACE_URL, f"legacy-selector:{source.source_object_id}"),
+            selector_series_id=uuid5(
+                NAMESPACE_URL, f"legacy-selector-series:{source.source_object_id}"
+            ),
+            selector_version=1,
+            workspace_id=source.workspace_id,
+            environment_id=source.environment_id,
+            source_object_id=source.source_object_id,
+            source_contract_id="test.legacy-source",
+            source_contract_version="v1",
+            provider_kind=source.external_namespace or "upload",
+            connection_id=source.connection_id or source.source_object_id,
+            resource_scope_reference=uuid5(
+                NAMESPACE_URL, f"legacy-selector-scope:{source.source_object_id}"
+            ),
+            mode=CanonicalTombstoneWriterMode.LEGACY_V1_ALLOWED,
+            approval_reference=uuid5(
+                NAMESPACE_URL, f"legacy-selector-approval:{source.source_object_id}"
+            ),
+            audit_reference=audit_event_id,
+            idempotency_identity=f"legacy-selector:{source.source_object_id}",
+            valid_from=recorded_at - timedelta(days=1),
+            valid_until=recorded_at + timedelta(days=365),
+            created_at=recorded_at,
+        )
+        migration_engine = create_async_engine(
+            postgresql_contract_database.migration_url.get_secret_value(),
+            hide_parameters=True,
+        )
+        try:
+            async with migration_engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                        "set_config('spine.environment_id', :environment_id, true), "
+                        "set_config('spine.acting_subject_id', :actor_id, true), "
+                        "set_config('spine.purpose', 'canonical_tombstone_selector', true), "
+                        "set_config('spine.operation', "
+                        "'canonical_tombstone_selector.publish', true)"
+                    ),
+                    {
+                        "workspace_id": str(selector.workspace_id),
+                        "environment_id": str(selector.environment_id),
+                        "actor_id": str(
+                            uuid5(
+                                NAMESPACE_URL,
+                                f"legacy-selector-actor:{source.source_object_id}",
+                            )
+                        ),
+                    },
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.trusted_canonical_tombstone_selector_versions ("
+                        "selector_id, selector_series_id, selector_version, workspace_id, "
+                        "environment_id, source_object_id, source_contract_id, source_contract_version, "
+                        "provider_kind, connection_id, resource_scope_reference, mode, "
+                        "approval_reference, predecessor_selector_id, audit_reference, "
+                        "idempotency_identity, valid_from, valid_until, record, created_at) "
+                        "VALUES (:selector_id, :series_id, 1, :workspace_id, :environment_id, :source_object_id, "
+                        ":contract_id, 'v1', :provider_kind, :connection_id, :scope_id, "
+                        "'legacy_v1_allowed', :approval_id, NULL, :audit_id, :identity, "
+                        ":valid_from, :valid_until, CAST(:record AS jsonb), :created_at)"
+                    ),
+                    {
+                        "selector_id": selector.selector_id,
+                        "series_id": selector.selector_series_id,
+                        "workspace_id": selector.workspace_id,
+                        "environment_id": selector.environment_id,
+                        "source_object_id": selector.source_object_id,
+                        "contract_id": selector.source_contract_id,
+                        "provider_kind": selector.provider_kind,
+                        "connection_id": selector.connection_id,
+                        "scope_id": selector.resource_scope_reference,
+                        "approval_id": selector.approval_reference,
+                        "audit_id": selector.audit_reference,
+                        "identity": selector.idempotency_identity,
+                        "valid_from": selector.valid_from,
+                        "valid_until": selector.valid_until,
+                        "record": selector.model_dump_json(),
+                        "created_at": selector.created_at,
+                    },
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.current_trusted_canonical_tombstone_selectors ("
+                        "workspace_id, environment_id, selector_series_id, "
+                        "current_selector_id, cas_version, updated_at) VALUES ("
+                        ":workspace_id, :environment_id, :series_id, :selector_id, 1, :updated_at)"
+                    ),
+                    {
+                        "workspace_id": selector.workspace_id,
+                        "environment_id": selector.environment_id,
+                        "series_id": selector.selector_series_id,
+                        "selector_id": selector.selector_id,
+                        "updated_at": recorded_at,
+                    },
+                )
+        finally:
+            await migration_engine.dispose()
+
     try:
         yield PersistenceAdapter(
             uow_factory=persistence.uow_factory,
@@ -764,6 +875,7 @@ async def postgresql_adapter(
             ingestion_context=ingestion_context,
             governance_context=governance_context,
             interactive_environment_context=interactive_environment_context,
+            prepare_legacy_tombstone_selector=prepare_legacy_tombstone_selector,
         )
     finally:
         await engine.dispose()
@@ -2247,6 +2359,10 @@ async def _postgresql_gmail_message_state_scenario(
     async with postgresql_adapter.uow_factory(case.context) as uow:
         await uow.canonical.accept(case.command)
         await uow.commit()
+    assert postgresql_adapter.prepare_legacy_tombstone_selector is not None
+    await postgresql_adapter.prepare_legacy_tombstone_selector(
+        case.source, case.context, case.command.audit_event_id
+    )
 
     def context_factory(operation, trace_id):
         del operation, trace_id
@@ -4614,6 +4730,10 @@ async def test_postgresql_document_tombstone_preserves_history_and_canonical_eff
         initial = await uow.canonical.accept(case.command)
         await uow.commit()
     assert initial.acceptance is not None
+    assert postgresql_adapter.prepare_legacy_tombstone_selector is not None
+    await postgresql_adapter.prepare_legacy_tombstone_selector(
+        case.source, case.context, case.command.audit_event_id
+    )
 
     command = TombstoneDocumentCommand(
         workspace_id=case.source.workspace_id,

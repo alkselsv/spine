@@ -5,6 +5,7 @@ from types import SimpleNamespace, TracebackType
 import pytest
 
 from spine.application.canonical_acceptance import CanonicalAcceptanceCoordinator
+from spine.domain.sources import RevisionKind
 from spine.application.persistence.errors import (
     CanonicalEligibilityError,
     TransactionDeadlockError,
@@ -72,6 +73,18 @@ class ProcessingAuthority:
 
     async def revalidate(self, admission: object, transaction: object) -> None:
         assert admission is not None
+        self.transactions.append(transaction)
+        if self.failure is not None:
+            raise self.failure
+
+
+class TombstoneAuthority:
+    def __init__(self, failure: Exception | None = None) -> None:
+        self.failure = failure
+        self.transactions: list[object] = []
+
+    async def revalidate(self, command: object, transaction: object) -> None:
+        assert command is not None
         self.transactions.append(transaction)
         if self.failure is not None:
             raise self.failure
@@ -223,3 +236,125 @@ async def test_v2_unavailable_mode_authority_fails_closed_in_uow() -> None:
     assert repository.attempts == 0
     assert len(authority.transactions) == 1
     assert audit.reasons == ["canonical_evidence_ineligible"]
+
+
+@pytest.mark.asyncio
+async def test_v3_tombstone_authority_is_revalidated_inside_every_retry_uow() -> None:
+    expected = object()
+    repository = Repository([TransactionSerializationError("retry")], expected)
+    authority = TombstoneAuthority()
+    uows: list[UnitOfWork] = []
+
+    def factory(context: object) -> UnitOfWork:
+        del context
+        uow = UnitOfWork(repository)
+        uows.append(uow)
+        return uow
+
+    coordinator = CanonicalAcceptanceCoordinator(
+        uow_factory=factory,
+        context_factory=lambda command: object(),
+        failed_attempt_audit=FailedAudit(),
+        tombstone_authority=authority,  # type: ignore[arg-type]
+    )
+
+    result = await coordinator.accept(  # type: ignore[arg-type]
+        SimpleNamespace(processing_admission=None, tombstone_authorization=object())
+    )
+
+    assert result is expected
+    assert authority.transactions == uows[1:]
+
+
+@pytest.mark.asyncio
+async def test_v3_missing_tombstone_authority_fails_closed_before_persistence() -> None:
+    repository = Repository([], object())
+    audit = FailedAudit()
+    coordinator = CanonicalAcceptanceCoordinator(
+        uow_factory=lambda context: UnitOfWork(repository),
+        context_factory=lambda command: object(),
+        failed_attempt_audit=audit,
+    )
+
+    with pytest.raises(CanonicalEligibilityError):
+        await coordinator.accept(  # type: ignore[arg-type]
+            SimpleNamespace(processing_admission=None, tombstone_authorization=object())
+        )
+
+    assert repository.attempts == 1
+    assert audit.reasons == ["canonical_evidence_ineligible"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_tombstone_is_selected_inside_every_retry_uow() -> None:
+    expected = object()
+    repository = Repository([TransactionSerializationError("retry")], expected)
+    authority = TombstoneAuthority()
+    uows: list[UnitOfWork] = []
+
+    def factory(context: object) -> UnitOfWork:
+        del context
+        uow = UnitOfWork(repository)
+        uows.append(uow)
+        return uow
+
+    coordinator = CanonicalAcceptanceCoordinator(
+        uow_factory=factory,
+        context_factory=lambda command: object(),
+        failed_attempt_audit=FailedAudit(),
+        tombstone_authority=authority,  # type: ignore[arg-type]
+    )
+    command = SimpleNamespace(
+        processing_admission=None,
+        tombstone_authorization=None,
+        revision=SimpleNamespace(kind=RevisionKind.TOMBSTONE),
+    )
+
+    result = await coordinator.accept(command)  # type: ignore[arg-type]
+
+    assert result is expected
+    assert authority.transactions == uows[1:]
+
+
+@pytest.mark.asyncio
+async def test_legacy_tombstone_without_selector_authority_fails_closed() -> None:
+    repository = Repository([], object())
+    audit = FailedAudit()
+    coordinator = CanonicalAcceptanceCoordinator(
+        uow_factory=lambda context: UnitOfWork(repository),
+        context_factory=lambda command: object(),
+        failed_attempt_audit=audit,
+    )
+    command = SimpleNamespace(
+        processing_admission=None,
+        tombstone_authorization=None,
+        revision=SimpleNamespace(kind=RevisionKind.TOMBSTONE),
+    )
+
+    with pytest.raises(CanonicalEligibilityError):
+        await coordinator.accept(command)  # type: ignore[arg-type]
+
+    assert repository.attempts == 1
+    assert audit.reasons == ["canonical_evidence_ineligible"]
+
+
+@pytest.mark.asyncio
+async def test_tombstone_replay_returns_stable_result_without_current_revalidation() -> None:
+    expected = SimpleNamespace(replay=True)
+    repository = Repository([], expected)
+    authority = TombstoneAuthority(
+        CanonicalEligibilityError("Current authority was revoked.")
+    )
+    coordinator = CanonicalAcceptanceCoordinator(
+        uow_factory=lambda context: UnitOfWork(repository),
+        context_factory=lambda command: object(),
+        failed_attempt_audit=FailedAudit(),
+        tombstone_authority=authority,  # type: ignore[arg-type]
+    )
+
+    result = await coordinator.accept(  # type: ignore[arg-type]
+        SimpleNamespace(processing_admission=None, tombstone_authorization=object())
+    )
+
+    assert result is expected
+    assert authority.transactions == []

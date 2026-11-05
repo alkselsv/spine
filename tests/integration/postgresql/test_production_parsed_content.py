@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from uuid import UUID
+from datetime import datetime, timedelta, timezone
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import httpx
 import pytest
@@ -33,6 +33,130 @@ class ProductionParsedContentScenario:
     expected: dict[str, object]
     object_audits: tuple[dict[str, object], ...]
     content: bytes
+
+
+async def _publish_upload_legacy_selector(
+    database: PostgreSQLContractDatabase,
+    *,
+    workspace_id: UUID,
+    environment_id: UUID,
+    source_object_id: UUID,
+) -> None:
+    from spine.domain.sources.canonical_tombstone_selector import (
+        CanonicalTombstoneWriterMode,
+        TrustedCanonicalTombstoneVersionSelector,
+    )
+
+    now = datetime.now(timezone.utc)
+    selector = TrustedCanonicalTombstoneVersionSelector(
+        selector_id=uuid5(NAMESPACE_URL, f"legacy-selector:{source_object_id}"),
+        selector_series_id=uuid5(
+            NAMESPACE_URL, f"legacy-selector-series:{source_object_id}"
+        ),
+        selector_version=1,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        source_object_id=source_object_id,
+        source_contract_id="test.upload",
+        source_contract_version="v1",
+        provider_kind="upload",
+        connection_id=source_object_id,
+        resource_scope_reference=uuid5(
+            NAMESPACE_URL, f"legacy-selector-scope:{source_object_id}"
+        ),
+        mode=CanonicalTombstoneWriterMode.LEGACY_V1_ALLOWED,
+        approval_reference=uuid5(
+            NAMESPACE_URL, f"legacy-selector-approval:{source_object_id}"
+        ),
+        audit_reference=UUID(int=1),
+        idempotency_identity=f"legacy-selector:{source_object_id}",
+        valid_from=now - timedelta(days=1),
+        valid_until=now + timedelta(days=365),
+        created_at=now,
+    )
+    engine = create_async_engine(
+        database.migration_url.get_secret_value(), hide_parameters=True
+    )
+    try:
+        async with engine.begin() as connection:
+            audit_id = (
+                await connection.execute(
+                    text(
+                        "SELECT audit_event_id FROM spine.canonical_acceptances "
+                        "WHERE workspace_id = :workspace_id "
+                        "AND environment_id = :environment_id "
+                        "AND source_object_id = :source_object_id "
+                        "ORDER BY accepted_generation LIMIT 1"
+                    ),
+                    {
+                        "workspace_id": workspace_id,
+                        "environment_id": environment_id,
+                        "source_object_id": source_object_id,
+                    },
+                )
+            ).scalar_one()
+            selector = selector.model_copy(update={"audit_reference": audit_id})
+            await connection.execute(
+                text(
+                    "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                    "set_config('spine.environment_id', :environment_id, true), "
+                    "set_config('spine.acting_subject_id', :actor_id, true), "
+                    "set_config('spine.purpose', 'canonical_tombstone_selector', true), "
+                    "set_config('spine.operation', "
+                    "'canonical_tombstone_selector.publish', true)"
+                ),
+                {
+                    "workspace_id": str(workspace_id),
+                    "environment_id": str(environment_id),
+                    "actor_id": str(uuid5(NAMESPACE_URL, f"selector-actor:{source_object_id}")),
+                },
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.trusted_canonical_tombstone_selector_versions ("
+                    "selector_id, selector_series_id, selector_version, workspace_id, "
+                    "environment_id, source_object_id, source_contract_id, source_contract_version, "
+                    "provider_kind, connection_id, resource_scope_reference, mode, "
+                    "approval_reference, predecessor_selector_id, audit_reference, "
+                    "idempotency_identity, valid_from, valid_until, record, created_at) "
+                    "VALUES (:selector_id, :series_id, 1, :workspace_id, :environment_id, :source_object_id, "
+                    "'test.upload', 'v1', 'upload', :source_object_id, :scope_id, "
+                    "'legacy_v1_allowed', :approval_id, NULL, :audit_id, :identity, "
+                    ":valid_from, :valid_until, CAST(:record AS jsonb), :created_at)"
+                ),
+                {
+                    "selector_id": selector.selector_id,
+                    "series_id": selector.selector_series_id,
+                    "workspace_id": workspace_id,
+                    "environment_id": environment_id,
+                    "source_object_id": source_object_id,
+                    "scope_id": selector.resource_scope_reference,
+                    "approval_id": selector.approval_reference,
+                    "audit_id": audit_id,
+                    "identity": selector.idempotency_identity,
+                    "valid_from": selector.valid_from,
+                    "valid_until": selector.valid_until,
+                    "record": selector.model_dump_json(),
+                    "created_at": now,
+                },
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.current_trusted_canonical_tombstone_selectors "
+                    "(workspace_id, environment_id, selector_series_id, "
+                    "current_selector_id, cas_version, updated_at) VALUES "
+                    "(:workspace_id, :environment_id, :series_id, :selector_id, 1, :updated_at)"
+                ),
+                {
+                    "workspace_id": workspace_id,
+                    "environment_id": environment_id,
+                    "series_id": selector.selector_series_id,
+                    "selector_id": selector.selector_id,
+                    "updated_at": now,
+                },
+            )
+    finally:
+        await engine.dispose()
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="session")
@@ -166,6 +290,12 @@ async def production_parsed_content_scenario(
             uploaded = upload.json()
             assert uploaded["status"] == "succeeded"
             assert uploaded["processing_receipt_id"] is not None
+            await _publish_upload_legacy_selector(
+                postgresql_contract_database,
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                source_object_id=UUID(uploaded["source_object_id"]),
+            )
             path = (
                 "/api/v1/knowledge/documents/"
                 f"{uploaded['source_object_id']}/revisions/"

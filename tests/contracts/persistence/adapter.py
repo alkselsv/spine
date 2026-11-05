@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import AsyncContextManager, Awaitable
+from typing import AsyncContextManager, Awaitable, Any
 from uuid import UUID
 
 from spine.application.diagnostics.audit import AuditEvent, AuditEventRegistry
@@ -36,6 +36,9 @@ class PersistenceAdapter:
     ] | None = field(default=None, kw_only=True)
     interactive_environment_context: Callable[
         [UUID, UUID, PersistenceOperation, UUID], TrustedPersistenceContext
+    ] | None = field(default=None, kw_only=True)
+    prepare_legacy_tombstone_selector: Callable[
+        [Any, TrustedPersistenceContext, UUID], Awaitable[None]
     ] | None = field(default=None, kw_only=True)
 
 

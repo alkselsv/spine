@@ -5,8 +5,7 @@ from __future__ import annotations
 from types import TracebackType
 from typing import Callable, Protocol
 
-from spine.domain.sources import SourceProcessingAdmission
-
+from spine.domain.sources import RevisionKind, SourceProcessingAdmission
 from spine.application.persistence.canonical import (
     CanonicalAcceptanceCommand,
     CanonicalAcceptanceRepository,
@@ -56,6 +55,16 @@ class CurrentProcessingAdmissionAuthority(Protocol):
     ) -> None: ...
 
 
+class CurrentTombstoneAuthorizationAuthority(Protocol):
+    """Select and revalidate the permitted tombstone writer in the UoW."""
+
+    async def revalidate(
+        self,
+        command: CanonicalAcceptanceCommand,
+        transaction: CanonicalAcceptanceUnitOfWork,
+    ) -> None: ...
+
+
 class CanonicalAcceptanceCoordinator:
     """Run one acceptance in a single UoW and audit failed CAS separately."""
 
@@ -70,6 +79,7 @@ class CanonicalAcceptanceCoordinator:
         failed_attempt_audit: CanonicalAcceptanceFailedAttemptAudit,
         maximum_transaction_attempts: int = 3,
         processing_authority: CurrentProcessingAdmissionAuthority | None = None,
+        tombstone_authority: CurrentTombstoneAuthorizationAuthority | None = None,
     ) -> None:
         if uow_factory is None or context_factory is None or failed_attempt_audit is None:
             raise TypeError(
@@ -82,6 +92,7 @@ class CanonicalAcceptanceCoordinator:
             raise ValueError("maximum_transaction_attempts must be positive")
         self._maximum_transaction_attempts = maximum_transaction_attempts
         self._processing_authority = processing_authority
+        self._tombstone_authority = tombstone_authority
 
     async def accept(
         self, command: CanonicalAcceptanceCommand
@@ -105,6 +116,18 @@ class CanonicalAcceptanceCoordinator:
                             processing_admission, uow
                         )
                     result = await uow.canonical.accept(command)
+                    tombstone_authorization = getattr(command, "tombstone_authorization", None)
+                    revision = getattr(command, "revision", None)
+                    is_tombstone = (
+                        getattr(revision, "kind", None) is RevisionKind.TOMBSTONE
+                        or tombstone_authorization is not None
+                    )
+                    if is_tombstone and not getattr(result, "replay", False):
+                        if self._tombstone_authority is None:
+                            raise CanonicalEligibilityError(
+                                "Current tombstone authority is unavailable."
+                            )
+                        await self._tombstone_authority.revalidate(command, uow)
                     await uow.commit()
                     return result
             except (
@@ -158,6 +181,7 @@ def build_canonical_acceptance_coordinator(
     failed_attempt_audit: CanonicalAcceptanceFailedAttemptAudit,
     maximum_transaction_attempts: int = 3,
     processing_authority: CurrentProcessingAdmissionAuthority | None = None,
+    tombstone_authority: CurrentTombstoneAuthorizationAuthority | None = None,
 ) -> CanonicalAcceptanceCoordinator:
     """Build the only application entry point for canonical acceptance.
 
@@ -172,6 +196,7 @@ def build_canonical_acceptance_coordinator(
         failed_attempt_audit=failed_attempt_audit,
         maximum_transaction_attempts=maximum_transaction_attempts,
         processing_authority=processing_authority,
+        tombstone_authority=tombstone_authority,
     )
 
 
@@ -181,5 +206,6 @@ __all__ = [
     "CanonicalAcceptanceFailedAttemptAudit",
     "CanonicalAcceptanceUnitOfWork",
     "CurrentProcessingAdmissionAuthority",
+    "CurrentTombstoneAuthorizationAuthority",
     "build_canonical_acceptance_coordinator",
 ]

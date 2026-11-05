@@ -7,6 +7,7 @@ from collections.abc import Callable
 from spine.application.canonical_acceptance import (
     CanonicalAcceptanceCoordinator,
     CurrentProcessingAdmissionAuthority,
+    CurrentTombstoneAuthorizationAuthority,
     build_canonical_acceptance_coordinator,
 )
 from spine.application.persistence.canonical import CanonicalAcceptanceCommand
@@ -25,6 +26,7 @@ def build_production_canonical_acceptance_coordinator(
         [CanonicalAcceptanceCommand], TrustedPersistenceContext
     ],
     processing_authority: CurrentProcessingAdmissionAuthority | None = None,
+    tombstone_authority: CurrentTombstoneAuthorizationAuthority | None = None,
 ) -> CanonicalAcceptanceCoordinator:
     """Return the fully audited canonical acceptance application entry point."""
 
@@ -38,6 +40,7 @@ def build_production_canonical_acceptance_coordinator(
         context_factory=context_factory,
         failed_attempt_audit=failed_attempt_audit,
         processing_authority=processing_authority,
+        tombstone_authority=tombstone_authority,
     )
 
 
