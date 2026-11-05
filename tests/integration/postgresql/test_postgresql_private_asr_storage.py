@@ -1797,6 +1797,8 @@ async def _prepare_synthetic_report_case(
     resolver = PostgreSQLPrivateASRRetentionResolver(
         approvals=_SyntheticRetentionApproval(),
         terms=terms_authority,
+        test_only_allow_synthetic_sources=True,
+        clock=clock,
     )
     store = PostgreSQLPrivateASRStorage(
         sessions=runtime_sessions,
@@ -2144,6 +2146,8 @@ async def _run_private_asr_recovery_worker(
             terms_authority.terms_digest = spec["terms_digest"]
         resolver = PostgreSQLPrivateASRRetentionResolver(
             approvals=_SyntheticRetentionApproval(), terms=terms_authority,
+            test_only_allow_synthetic_sources=True,
+            clock=lambda: NOW,
         )
         store = PostgreSQLPrivateASRStorage(
             sessions=sessions,
@@ -6455,7 +6459,11 @@ async def test_postgresql_private_asr_retention_cas_waits_for_report_commit(
     publication = asyncio.create_task(_commit_synthetic_report(
         prepared, idempotency_key="retention-cas-race", callback=held_authorization,
     ))
-    await asyncio.wait_for(callback_entered.wait(), timeout=10)
+    try:
+        await asyncio.wait_for(callback_entered.wait(), timeout=10)
+    except TimeoutError:
+        await publication
+        raise
     replacement = prepared.applicability.model_copy(update={
         "applicability_id": synthetic_uuid(799641),
         "expected_current_applicability_id": prepared.applicability.applicability_id,

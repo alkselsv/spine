@@ -93,3 +93,35 @@ input; #983 must add a versioned, evidence-issued successor before any named F2
 adapter can be selected. Synthetic fixtures are accepted only by an exact-binding
 test composition and cannot be registered in production. This adds no authority
 registry, grant, RLS change or `BYPASSRLS` capability.
+
+## EF-5 retention consumer (#977)
+
+The private-ASR retention consumer resolves approval and terms in the same
+transaction that holds the exact-source current-applicability pointer
+`FOR UPDATE` lock. Before that transaction commits, it also acquires the F1
+retention owner fence against the same pointer and registers a synchronous
+expiry guard on the PostgreSQL connection's `commit` event. F1 approval and
+terms readers must lock each mutable current-owner pointer they rely on and
+keep those locks until commit.
+The fence binding's approval version/digest identify the current applicability
+record; its state digest binds policy/version/digest, applicability ID/generation,
+terms ID/version/digest, artifact class, resolved exceptions and holds, active
+holds, and operation. Source lineage is checked against the immutable
+PostgreSQL revision and remains protected by the lifecycle lock.
+
+F1 is accepted only when both approval and terms sources are explicitly marked
+as PostgreSQL-owned by trusted composition after their transaction-bound
+locking behavior is qualified. Test-only synthetic sources require an explicit
+test option and are not an application adapter. External or
+unidentified sources remain denied (F4) until a provider-specific F2 adapter is
+qualified; the deterministic F2 fixture and its revoke, expiry and outage tests
+prove local port behavior only. They are not production provider evidence.
+
+Owner/source mapping:
+
+| Decision | Canonical owner | Consumer behavior |
+|---|---|---|
+| Current applicability ID and generation | PostgreSQL retention pointer | F1 row lock held through commit |
+| Policy approval and terms | Explicitly PostgreSQL-owned transaction-bound readers | Included in the composite state digest; missing or unqualified readers deny |
+| External approval or terms | Their named external provider | F2 is required; until qualified, deny |
+| Exceptions and legal holds | Current retention binding and terms provider | Exact references are bound; unresolved or active holds deny |

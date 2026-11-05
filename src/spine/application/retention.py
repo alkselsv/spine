@@ -257,6 +257,8 @@ class ApprovedRetentionTerms(DefinitionModel):
 class RetentionCommitApprovalVerifier(Protocol):
     """Verify current applicability/policy approvals using the commit transaction."""
 
+    retention_fence_source: Literal["postgresql"]
+
     async def verify_current(
         self,
         applicability: RetentionApplicability,
@@ -267,6 +269,8 @@ class RetentionCommitApprovalVerifier(Protocol):
 
 class ApprovedRetentionTermsProvider(Protocol):
     """Resolve approved policy terms; never derive terms from applicability IDs."""
+
+    retention_fence_source: Literal["postgresql"]
 
     async def resolve(
         self,
