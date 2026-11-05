@@ -21,7 +21,10 @@ from spine.application.projection_result_mapping import (
     ProjectionMappingError,
 )
 from spine.application.persistence.unit_of_work_activity import unit_of_work_is_active
-from spine.application.projection_result_persistence import stable_locator_from_parsed_locator
+from spine.application.projection_result_persistence import (
+    ParsedArtifactStableLocatorProjector,
+    stable_locator_from_parsed_locator,
+)
 from spine.application.persistence.unit_of_work import UnitOfWork, UnitOfWorkFactory
 from spine.domain.artifacts import (
     OoxmlTextLocator,
@@ -77,6 +80,8 @@ class CogneeProjectionReceiptBuilder(AdapterProjectionReceiptBuilder):
         context_factory: Callable[[ProjectCommand], TrustedPersistenceContext],
         clock: Callable[[], datetime],
         adapter_version: str | None = None,
+        attachment_locator_projector: ParsedArtifactStableLocatorProjector
+        | None = None,
     ) -> None:
         self._physical_reader = physical_reader
         self._parsed_artifacts = parsed_artifacts
@@ -84,6 +89,7 @@ class CogneeProjectionReceiptBuilder(AdapterProjectionReceiptBuilder):
         self._context_factory = context_factory
         self._clock = clock
         self._adapter_version = adapter_version or physical_reader.version
+        self._attachment_locator_projector = attachment_locator_projector
 
     async def build(
         self, command: ProjectCommand, result: ProjectionResult
@@ -117,7 +123,9 @@ class CogneeProjectionReceiptBuilder(AdapterProjectionReceiptBuilder):
             (source.source_object_id, source.source_revision_id): source
             for source in command.source_revisions
         }
-        parsed, security_domain = await self._resolve_parsed_artifacts(command)
+        parsed, security_domain, processing_receipts = (
+            await self._resolve_parsed_artifacts(command)
+        )
         canonical_segments = {
             (source_key, f"segment-{segment.segment_id.hex}"): segment
             for source_key, document in parsed.items()
@@ -211,6 +219,28 @@ class CogneeProjectionReceiptBuilder(AdapterProjectionReceiptBuilder):
             seen_objects.add(object_key)
             emitted.append(AdapterProjectedObject(kind=projected_kind, object_id=projected_id))
             for segment_id, locator in locators:
+                locator_contract_version = source.locator_contract_version
+                if self._attachment_locator_projector is not None:
+                    try:
+                        projected_locator = (
+                            await self._attachment_locator_projector.project(
+                                workspace_id=command.workspace_id,
+                                environment_id=command.environment_id,
+                                child_processing_receipt_id=receipt_id,
+                                attachment_required=(
+                                    processing_receipts[source_key].command_identity
+                                    == "email.attachment.process"
+                                ),
+                                parsed_artifact=parsed[source_key],
+                                child_locator=locator,
+                            )
+                        )
+                    except ValueError as error:
+                        raise ProjectionMappingError(
+                            "attachment citation lineage is unavailable"
+                        ) from error
+                    if projected_locator is not None:
+                        locator_contract_version, locator = projected_locator
                 references.append(
                     AdapterSourceProjectionReference(
                         workspace_id=command.workspace_id,
@@ -221,10 +251,10 @@ class CogneeProjectionReceiptBuilder(AdapterProjectionReceiptBuilder):
                         revision_digest=source.revision_digest,
                         processing_receipt_id=receipt_id,
                         segment_id=segment_id,
-                        locator_schema_version=source.locator_contract_version,
+                        locator_schema_version=locator_contract_version,
                         locator=locator,
                         locator_digest=canonical_projection_locator_digest(
-                            locator_contract_version=source.locator_contract_version,
+                            locator_contract_version=locator_contract_version,
                             locator=locator,
                         ),
                         projected_kind=projected_kind,
@@ -250,7 +280,11 @@ class CogneeProjectionReceiptBuilder(AdapterProjectionReceiptBuilder):
 
     async def _resolve_parsed_artifacts(
         self, command: ProjectCommand
-    ) -> tuple[dict[tuple[UUID, UUID], ParsedDocument], ProjectionPartition]:
+    ) -> tuple[
+        dict[tuple[UUID, UUID], ParsedDocument],
+        ProjectionPartition,
+        dict[tuple[UUID, UUID], ProcessingReceipt],
+    ]:
         receipts: dict[UUID, ProcessingReceipt] = {}
         async with self._uow_factory(self._context_factory(command)) as uow:
             for source in command.source_revisions:
@@ -312,7 +346,13 @@ class CogneeProjectionReceiptBuilder(AdapterProjectionReceiptBuilder):
             ):
                 raise ProjectionMappingError("canonical parsed artifact is invalid")
             documents[(source.source_object_id, source.source_revision_id)] = document
-        return documents, partition
+        keyed_receipts = {
+            (source.source_object_id, source.source_revision_id): receipts[
+                source.source_revision_id
+            ]
+            for source in command.source_revisions
+        }
+        return documents, partition, keyed_receipts
 
     def _graph_locators(
         self,

@@ -1029,8 +1029,10 @@ class _CanonicalSourceIsolation:
 
 class _ContextReadModel(_BrokerScopedPort):
     async def load(self, *, publication: object, scope: object) -> ContextBrokerReadModel:
-        del scope
-        if not isinstance(publication, PublishedActivePublication):
+        if (
+            not isinstance(publication, PublishedActivePublication)
+            or not isinstance(scope, AuthorizedRetrievalScope)
+        ):
             raise RuntimeError("active publication is unavailable")
         run_id = publication.projection_snapshot.projection_run_id
         async with self._uow_factory(self.context()) as uow:  # type: ignore[operator]
@@ -1042,12 +1044,23 @@ class _ContextReadModel(_BrokerScopedPort):
             partitions = await uow.projections.list_partitions(run_id)
             receipts = await uow.projections.list_receipts(run_id)
             references = await uow.projections.list_source_references(run_id)
+            revision_identities = {
+                (reference.source_object_id, reference.source_revision_id)
+                for reference in references
+            }
+            revision_identities.update(
+                (constraint.source_object_id, constraint.source_revision_id)
+                for constraint in scope.source_constraints
+            )
             revisions_by_id = {}
-            for reference in references:
+            for source_object_id, source_revision_id in revision_identities:
                 revision = await uow.sources.resolve_revision(
-                    reference.source_revision_id
+                    source_revision_id
                 )
-                if revision is not None:
+                if (
+                    revision is not None
+                    and revision.source_object_id == source_object_id
+                ):
                     revisions_by_id[revision.revision_id] = revision
             boundary = await uow.canonical_boundaries.resolve(
                 publication.canonical_boundary_id

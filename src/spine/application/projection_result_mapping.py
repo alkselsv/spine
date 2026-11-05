@@ -492,7 +492,11 @@ class ProjectionResultMappingBridge:
                 locator is None
                 or source.revision_digest != locator.revision_digest
                 or source.processing_receipt_id != locator.processing_receipt_id
-                or source.locator_contract_version != locator.locator_schema_version
+                or locator.locator_schema_version
+                not in {
+                    source.locator_contract_version,
+                    "email-attachment-locator:v1",
+                }
             ):
                 raise ProjectionMappingError("SourceRevision context is missing or fabricated")
 

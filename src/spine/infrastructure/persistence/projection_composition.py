@@ -59,6 +59,9 @@ from spine.application.document_ingestion import (
     PROJECTION_REQUEST_EVENT_TYPE,
     PROJECTION_REQUEST_SCHEMA_VERSION,
 )
+from spine.application.email_citations import (
+    EmailAttachmentProjectionLocatorProjector,
+)
 from spine.memory.contracts import ContextProjection, ProjectionCommand
 from spine.memory.cognee.retrieval.adapter import (
     CogneePublicStructuredRetrievalSdk,
@@ -70,10 +73,44 @@ from spine.infrastructure.persistence.cognee_projection_receipt import (
 from spine.infrastructure.persistence.parsed_artifacts import (
     PostgreSQLParsedArtifactRepository,
 )
+from spine.infrastructure.persistence.email_artifacts import (
+    PostgreSQLEmailArtifactRepository,
+)
+from spine.infrastructure.persistence.email_attachments import (
+    PostgreSQLEmailAttachmentRepository,
+)
+from spine.infrastructure.persistence.email_attachment_processing import (
+    PostgreSQLEmailAttachmentProcessingRepository,
+)
 from spine.workers import OutboxConsumerBinding, OutboxWorker, create_outbox_worker
 
 
 PROJECTION_REQUEST_CONSUMER_NAME = "projection_request"
+
+
+def _attachment_locator_projector(
+    *,
+    session_factory: Callable[[], Any],
+    context_factory: Callable[[UUID, UUID], TrustedPersistenceContext],
+    context_verifier: TrustedContextVerifier,
+) -> EmailAttachmentProjectionLocatorProjector:
+    return EmailAttachmentProjectionLocatorProjector(
+        messages=PostgreSQLEmailArtifactRepository(
+            session_factory,
+            context_factory=context_factory,
+            context_verifier=context_verifier,
+        ),
+        attachments=PostgreSQLEmailAttachmentRepository(
+            session_factory,
+            context_factory=context_factory,
+            context_verifier=context_verifier,
+        ),
+        processing=PostgreSQLEmailAttachmentProcessingRepository(
+            session_factory,
+            context_factory=context_factory,
+            context_verifier=context_verifier,
+        ),
+    )
 
 
 def build_postgresql_cognee_projection_request_consumer(
@@ -103,12 +140,18 @@ def build_postgresql_cognee_projection_request_consumer(
         context_factory=parsed_artifact_context_factory,
         context_verifier=context_verifier,
     )
+    attachment_locator_projector = _attachment_locator_projector(
+        session_factory=session_factory,
+        context_factory=parsed_artifact_context_factory,
+        context_verifier=context_verifier,
+    )
     receipt_builder = CogneeProjectionReceiptBuilder(
         physical_reader=physical_reader or CogneePublicStructuredRetrievalSdk(),
         parsed_artifacts=parsed_artifacts,
         uow_factory=uow_factory,
         context_factory=projection_context_factory,
         clock=clock,
+        attachment_locator_projector=attachment_locator_projector,
     )
     return build_production_projection_request_consumer(
         uow_factory=uow_factory,
@@ -119,6 +162,7 @@ def build_postgresql_cognee_projection_request_consumer(
         receipt_builder=receipt_builder,
         reference_id_source=reference_id_source,
         completion=completion,
+        attachment_locator_projector=attachment_locator_projector,
     )
 
 
@@ -199,12 +243,22 @@ def build_postgresql_cognee_projection_delivery_binding(
         context_factory=parsed_artifact_context_factory,
         context_verifier=context_verifier,
     )
+    attachment_locator_projector = (
+        _attachment_locator_projector(
+            session_factory=session_factory,
+            context_factory=parsed_artifact_context_factory,
+            context_verifier=context_verifier,
+        )
+        if receipt_builder is None and result_bridge is None
+        else None
+    )
     receipts = receipt_builder or CogneeProjectionReceiptBuilder(
         physical_reader=physical_reader or CogneePublicStructuredRetrievalSdk(),
         parsed_artifacts=artifacts,
         uow_factory=uow_factory,
         context_factory=projection_context_factory,
         clock=clock,
+        attachment_locator_projector=attachment_locator_projector,
     )
     results = result_bridge or build_projection_result_persistence(
         uow_factory=uow_factory,
@@ -213,6 +267,7 @@ def build_postgresql_cognee_projection_delivery_binding(
             uow_factory=uow_factory,
             context_factory=projection_context_factory,
             parsed_artifacts=artifacts,
+            attachment_locator_projector=attachment_locator_projector,
         ),
         reference_id_source=reference_id_source,
     )
@@ -380,6 +435,8 @@ def build_production_projection_request_consumer(
     reference_id_source: Callable[[], UUID] = uuid4,
     completion: ProjectionRequestCompletion | None = None,
     result_bridge: ProjectionResultRecorder | None = None,
+    attachment_locator_projector: EmailAttachmentProjectionLocatorProjector
+    | None = None,
 ) -> ProjectionRequestConsumer:
     """Compose the canonical resolver, physical adapter and result bridge.
 
@@ -396,6 +453,7 @@ def build_production_projection_request_consumer(
         uow_factory=uow_factory,
         context_factory=projection_context_factory,
         parsed_artifacts=parsed_artifacts,
+        attachment_locator_projector=attachment_locator_projector,
     )
     results = result_bridge or build_projection_result_persistence(
         uow_factory=uow_factory,

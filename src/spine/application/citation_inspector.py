@@ -58,6 +58,14 @@ class CitationExcerptResolver(Protocol):
     ) -> CitationExcerpt | None: ...
 
 
+class CitationDependencyResolver(Protocol):
+    """Optionally declare all source revisions needed by one locator contract."""
+
+    def dependency_source_identities(
+        self, citation: Citation
+    ) -> tuple[tuple[UUID, UUID], ...] | None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class CitationExcerptResolverChain:
     """Resolve across disjoint versioned locator contracts."""
@@ -71,6 +79,18 @@ class CitationExcerptResolverChain:
             resolved = await resolver.resolve(citation, historical=historical)
             if resolved is not None:
                 return resolved
+        return None
+
+    def dependency_source_identities(
+        self, citation: Citation
+    ) -> tuple[tuple[UUID, UUID], ...] | None:
+        for resolver in self.resolvers:
+            method = getattr(resolver, "dependency_source_identities", None)
+            if method is None:
+                continue
+            identities = method(citation)
+            if identities is not None:
+                return identities
         return None
 
 
@@ -149,14 +169,24 @@ class ProtectedCitationInspector:
         if not _bundle_matches_citation(bundle, citation):
             return _unavailable()
         try:
+            identities = _dependency_source_identities(self.excerpt_resolver, citation)
             dependencies = DisclosureDependencySet(
-                dependencies=(
+                dependencies=tuple(
                     DisclosureDependency.from_context_bundle(
                         bundle,
-                        source_object_id=citation.source_object_id,
-                    ),
+                        source_object_id=source_object_id,
+                    )
+                    for source_object_id, _ in identities
                 )
             )
+            if (
+                tuple(
+                    (item.source_object_id, item.source_revision_id)
+                    for item in dependencies.dependencies
+                )
+                != identities
+            ):
+                return _unavailable()
         except Exception:
             return _unavailable()
 
@@ -281,6 +311,20 @@ def _excerpt_matches_citation(resolved: CitationExcerpt, citation: Citation) -> 
         return False
 
 
+def _dependency_source_identities(
+    resolver: CitationExcerptResolver, citation: Citation
+) -> tuple[tuple[UUID, UUID], ...]:
+    method = getattr(resolver, "dependency_source_identities", None)
+    if method is None:
+        return ((citation.source_object_id, citation.source_revision_id),)
+    identities = method(citation)
+    if identities is None:
+        return ((citation.source_object_id, citation.source_revision_id),)
+    if not identities or len(set(identities)) != len(identities):
+        raise ValueError("citation dependencies are invalid")
+    return identities
+
+
 def _unavailable() -> CitationInspectionResult:
     return CitationInspectionResult(
         status=CitationInspectionStatus.UNAVAILABLE,
@@ -299,6 +343,7 @@ def _scope(context: TrustedPersistenceContext) -> tuple[UUID, UUID]:
 
 __all__ = [
     "CitationDisclosureRevalidator",
+    "CitationDependencyResolver",
     "CitationExcerptResolver",
     "CitationExcerptResolverChain",
     "CitationInspectorRequester",
