@@ -165,7 +165,7 @@ SPINE_GOOGLE_LIVE_OPT_IN=1 \
   --report /approved/path/google-live-report.json
 ```
 
-The `google-live-qualification-report:v5` report separates completed logical
+The `google-live-qualification-report:v6` report separates completed logical
 operations from low-level transport attempts. It records bounded attempt counts
 for OAuth refresh, Drive and Sheets, plus a closed failure stage of
 `oauth_refresh`, `drive`, `sheets` or `harness`; a successful run has no failure
@@ -199,12 +199,21 @@ and title mismatch. These codes never contain the configured or returned
 spreadsheet ID, numeric sheet ID, title, range, URL or provider payload. Other
 provider contract failures remain `provider_contract_rejected`.
 
+Version 6 preserves every v5 field and closes the two remaining metadata
+identity outcomes. `provider_sheets_identity_request_rejected` records a
+request-level contract rejection from the bounded identity request, while
+`provider_sheets_identity_spreadsheet_mismatch` records a successful response
+whose spreadsheet identity differs from the approved target. Neither code
+contains the status, configured or returned identity, URL, range, response body
+or raw error. Contract failures outside the identity boundary remain
+`provider_contract_rejected`.
+
 Migration note: v1 reports contain completed-operation counters only. Version 2
 adds transport attempts and `failure_stage`, but has no failure class, retry
 disposition or configured maximum. Consumers must never infer missing v2, v3 or v4
-or v5 evidence retrospectively; require the exact schema version before reading
-its fields. Historical v4 reports remain valid v4 evidence and are never
-reinterpreted as v5 identity classifications.
+or v5 or v6 evidence retrospectively; require the exact schema version before
+reading its fields. Historical v4 and v5 reports remain valid evidence in their
+original schemas and are never reinterpreted as later identity classifications.
 
 The report otherwise contains only provider/API/configuration versions,
 connection generations, status and a closed safe failure code. It never contains
