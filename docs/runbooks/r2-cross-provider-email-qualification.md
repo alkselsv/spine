@@ -64,8 +64,7 @@ message content or provider error text. Keep `live_provider_semantics` at
 are completed. A missing PostgreSQL prerequisite or skipped required test is
 `NOT_VERIFIED`, not `PASS`.
 
-The checked-in report records each local gate outcome. The initial full local
-pytest attempt was `NOT_VERIFIED` (7087 passed, 7 skipped, 6 failed) because
-`ffprobe` was absent; the repository CI installs `ffmpeg` for the full R1
-regression gate. `pull_request_ci` remains `NOT_VERIFIED` until the PR workflow
-finishes.
+The checked-in report records local and CI gate outcomes separately. The local
+full pytest attempt was `NOT_VERIFIED` (7087 passed, 7 skipped, 6 failed) because
+`ffprobe` was absent. Pull request CI installs `ffmpeg`; its full repository and
+PostgreSQL gate passed, as did Python 3.10–3.14 and web checks.

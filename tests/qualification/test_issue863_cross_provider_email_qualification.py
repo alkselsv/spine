@@ -536,12 +536,34 @@ def test_issue863_report_pins_synthetic_inputs_and_safe_diagnostics() -> None:
     assert report["gate_results"]["generated_api_contract"]["status"] == "PASS"
     assert report["gate_results"]["compileall"]["status"] == "PASS"
     assert report["gate_results"]["full_repository_pytest"] == {
+        "status": "PASS",
+        "result": "passed in pull request CI",
+        "command": "uv run pytest -q",
+        "workflow": "test",
+        "run_id": "42069808997",
+        "verified_source_commit": "da6e6f40",
+    }
+    assert report["gate_results"]["local_full_repository_pytest"] == {
         "status": "NOT_VERIFIED",
         "result": "7087 passed, 7 skipped, 6 failed because ffprobe is missing",
         "missing_prerequisite": "ffprobe",
         "command": "uv run pytest -q",
     }
-    assert report["gate_results"]["pull_request_ci"]["status"] == "NOT_VERIFIED"
+    assert report["gate_results"]["pull_request_ci"] == {
+        "status": "PASS",
+        "result": "all checks passed",
+        "run_id": "42069808997",
+        "verified_source_commit": "da6e6f40",
+        "jobs": {
+            "python_compatibility_3_10": "PASS",
+            "python_compatibility_3_11": "PASS",
+            "python_compatibility_3_12": "PASS",
+            "python_compatibility_3_13": "PASS",
+            "python_compatibility_3_14": "PASS",
+            "web": "PASS",
+            "r1_regression_and_postgresql": "PASS",
+        },
+    }
     assert all(re.search(pattern, report_text) is None for pattern in FORBIDDEN_REPORT_PATTERNS)
     assert all(re.search(pattern, manifest_text) is None for pattern in FORBIDDEN_REPORT_PATTERNS)
 
