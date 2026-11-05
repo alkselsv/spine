@@ -1564,9 +1564,51 @@ async def test_sheets_range_page_rejects_mismatched_identity_before_grid_transpo
     assert identity_request.url.endswith("/spreadsheets/sheet-1")
     assert identity_request.query == {
         "includeGridData": "false",
-        "ranges": "'Estimate Register'!A2:D3",
         "fields": "spreadsheetId,sheets(properties(sheetId,title))",
     }
+
+
+@pytest.mark.asyncio
+async def test_sheets_range_page_selects_identity_by_stable_numeric_sheet_id() -> None:
+    identity_payload = _sheet_identity_payload()
+    identity_payload["sheets"].insert(
+        0,
+        {"properties": {"sheetId": 456, "title": "Other Register"}},
+    )
+    transport = RecordingTransport(
+        [
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"access_token": "token", "expires_in": 3600},
+            ),
+            GoogleApiResponse(status_code=200, json_body=identity_payload),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"id": "sheet-1", "version": "77"},
+            ),
+            GoogleApiResponse(status_code=200, json_body=_spreadsheet_payload()),
+            GoogleApiResponse(
+                status_code=200,
+                json_body={"id": "sheet-1", "version": "77"},
+            ),
+        ]
+    )
+
+    result = await _service(
+        RecordingCredentialResolver(),
+        transport,
+        sheet_profiles=(_sheet_profile(),),
+        sheets_page_size=2,
+    ).get_spreadsheet_range_page(
+        _connection(),
+        RESOURCE_SCOPE,
+        "sheet-1",
+        123,
+        "'Estimate Register'!A2:D5",
+        None,
+    )
+
+    assert result.sheet_id == 123
 
 
 @pytest.mark.asyncio
@@ -1587,7 +1629,7 @@ async def test_sheets_range_page_rejects_mismatched_identity_before_grid_transpo
         pytest.param(
             [
                 {"properties": {"sheetId": 123, "title": "Estimate Register"}},
-                {"properties": {"sheetId": 456, "title": "Other"}},
+                {"properties": {"sheetId": 123, "title": "Duplicate"}},
             ],
             "provider_sheets_identity_ambiguous",
             id="ambiguous",
