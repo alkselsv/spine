@@ -1132,7 +1132,7 @@ async def test_postgresql_private_asr_composite_fence_completes_all_permits_with
 ) -> None:
     clock = _ControlledClock(NOW)
     deletion_authority = _SyntheticArtifactDeletionAuthority()
-    seed = 798230 + {None: 0, "acquire": 10, "validate": 20, "finish": 30}[failure_stage]
+    seed = 978978230 + {None: 0, "acquire": 10, "validate": 20, "finish": 30}[failure_stage]
     prepared = await _prepare_synthetic_report_case(
         private_asr_database,
         seed=seed,
@@ -3856,12 +3856,12 @@ async def test_postgresql_private_asr_composite_deletion_observes_prior_source_r
     deletion_authority = _SyntheticArtifactDeletionAuthority()
     prepared = await _prepare_synthetic_report_case(
         private_asr_database,
-        seed=889800000 + revoked_source_index * 20 + int(reverse_source_order) * 40,
+        seed=978978000 + revoked_source_index * 20 + int(reverse_source_order) * 40,
         deletion_authority=deletion_authority,
         clock=clock,
     )
     second_case, _, _ = await _add_synthetic_report_source(
-        prepared, seed=889800100 + revoked_source_index * 20 + int(reverse_source_order) * 40,
+        prepared, seed=978978100 + revoked_source_index * 20 + int(reverse_source_order) * 40,
     )
     if reverse_source_order:
         prepared.bindings = tuple(reversed(prepared.bindings))
@@ -3879,20 +3879,20 @@ async def test_postgresql_private_asr_composite_deletion_observes_prior_source_r
             workspace_id=prepared.case.source.workspace_id,
             environment_id=prepared.case.source.environment_id,
         ),
-        service_principal_id=synthetic_uuid(889800200 + revoked_source_index),
+        service_principal_id=synthetic_uuid(978978200 + revoked_source_index),
         purpose=PersistencePurpose("asr_model_evaluation"),
         operation=PersistenceOperation("private_asr_revocation"),
-        trace_id=synthetic_uuid(889800210 + revoked_source_index),
+        trace_id=synthetic_uuid(978978210 + revoked_source_index),
     )
     deletion_context = prepared.boundary.worker(
         scope=EnvironmentScope(
             workspace_id=prepared.case.source.workspace_id,
             environment_id=prepared.case.source.environment_id,
         ),
-        service_principal_id=synthetic_uuid(889800220 + revoked_source_index),
+        service_principal_id=synthetic_uuid(978978220 + revoked_source_index),
         purpose=PersistencePurpose("asr_model_evaluation"),
         operation=PersistenceOperation("private_asr_retention_expiration"),
-        trace_id=synthetic_uuid(889800230 + revoked_source_index),
+        trace_id=synthetic_uuid(978978230 + revoked_source_index),
     )
 
     await prepared.store.fence(
@@ -3949,17 +3949,17 @@ async def test_postgresql_private_asr_composite_deletions_with_opposite_source_o
     deletion_authority = _SyntheticArtifactDeletionAuthority()
     prepared = await _prepare_synthetic_report_case(
         private_asr_database,
-        seed=889800300,
+        seed=978979300,
         deletion_authority=deletion_authority,
         clock=clock,
     )
-    second_case, _, _ = await _add_synthetic_report_source(prepared, seed=889800400)
+    second_case, _, _ = await _add_synthetic_report_source(prepared, seed=978979400)
     first_report = await _commit_synthetic_report(
         prepared, idempotency_key="opposite-order-first-report",
     )
 
     second_prepared = SimpleNamespace(**vars(prepared))
-    second_prepared.report_id = synthetic_uuid(889800500)
+    second_prepared.report_id = synthetic_uuid(978979500)
     second_prepared.report_receipt_ref = await prepared.audit_receipts.create_report_receipt(
         workspace_id=prepared.case.source.workspace_id,
         environment_id=prepared.case.source.environment_id,
@@ -3983,10 +3983,10 @@ async def test_postgresql_private_asr_composite_deletions_with_opposite_source_o
             workspace_id=prepared.case.source.workspace_id,
             environment_id=prepared.case.source.environment_id,
         ),
-        service_principal_id=synthetic_uuid(889800510),
+        service_principal_id=synthetic_uuid(978979510),
         purpose=PersistencePurpose("asr_model_evaluation"),
         operation=PersistenceOperation("private_asr_retention_expiration"),
-        trace_id=synthetic_uuid(889800511),
+        trace_id=synthetic_uuid(978979511),
     )
     await asyncio.wait_for(asyncio.gather(
         prepared.store.expire(
@@ -4046,11 +4046,11 @@ async def test_postgresql_private_asr_composite_deletion_audit_failure_rolls_bac
     deletion_authority = _SyntheticArtifactDeletionAuthority()
     prepared = await _prepare_synthetic_report_case(
         private_asr_database,
-        seed=889860000,
+        seed=978980000,
         deletion_authority=deletion_authority,
         clock=clock,
     )
-    second_case, _, _ = await _add_synthetic_report_source(prepared, seed=889860500)
+    second_case, _, _ = await _add_synthetic_report_source(prepared, seed=978980500)
     report = await _commit_synthetic_report(
         prepared, idempotency_key="composite-deletion-audit-retry",
     )
@@ -4078,10 +4078,10 @@ async def test_postgresql_private_asr_composite_deletion_audit_failure_rolls_bac
             workspace_id=prepared.case.source.workspace_id,
             environment_id=prepared.case.source.environment_id,
         ),
-        service_principal_id=synthetic_uuid(889860510),
+        service_principal_id=synthetic_uuid(978980510),
         purpose=PersistencePurpose("asr_model_evaluation"),
         operation=PersistenceOperation("private_asr_retention_expiration"),
-        trace_id=synthetic_uuid(889860511),
+        trace_id=synthetic_uuid(978980511),
     )
     payload_selects: list[str] = []
 
