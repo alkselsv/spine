@@ -35,14 +35,16 @@ arbitrary strings, including arbitrary values with a `fake-` prefix, are rejecte
 | UNKNOWN | explicit complete receipt with fresh current authority and a failure | CLEANUP_INCOMPLETE | Fence remains; retry same operation key only after current fake authority |
 | INCOMPLETE | RETRY with current synthetic test authority rechecked on this attempt | CLEANUP_PENDING | Same immutable operation key; retry count increments |
 | INCOMPLETE | RETRY with missing, stale or revoked authority | BLOCKED | Fence remains; safe authority code; no retry |
-| Any state | CANCEL | CANCELLED | Fence on; no restart transition |
+| Any non-UNKNOWN state | CANCEL | CANCELLED | Fence on; no restart transition |
+| UNKNOWN | CANCEL | UNKNOWN | Commit/result remains unresolved and fenced until explicit receipt reconciliation |
 | Any state | restore requested | State unchanged | Restore quarantine on; replay marked pending and any prior replay result cleared |
 | VERIFIED_SYNTHETIC with replay pending | successful synthetic restore replay | VERIFIED_SYNTHETIC | Restore quarantine may release in this model only after replay evidence |
 
 Invalid transitions preserve the state and return `INVALID_TRANSITION`.
 `BLOCKED` has no path back to cleanup on that operation. An unknown commit can
 only be resolved with an explicit receipt listing every required fake store;
-unknown/missing receipts remain `UNKNOWN`. Partial or uncovered stores cannot
+cancellation does not resolve it and unknown/missing receipts remain `UNKNOWN`.
+Partial or uncovered stores cannot
 produce synthetic verification. Duplicate verified store results are stable;
 replayed `START` after work has started is an unchanged no-op, including after
 verification. Each retry event carries a fresh authority result; missing,

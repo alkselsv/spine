@@ -377,6 +377,39 @@ def test_unknown_commit_reconciliation_needs_fresh_authority() -> None:
     assert rejected.fence_active
 
 
+def test_cancellation_does_not_resolve_unknown_commit() -> None:
+    unknown = transition_synthetic_cleanup(
+        _fenced_pending(),
+        _event(SyntheticEventKind.COMMIT_UNKNOWN),
+    )
+    cancelled = transition_synthetic_cleanup(
+        unknown,
+        _event(SyntheticEventKind.CANCEL),
+    )
+    reconciled = transition_synthetic_cleanup(
+        cancelled,
+        _event(
+            SyntheticEventKind.RECONCILE_RECEIPT,
+            authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
+            receipts=(
+                SyntheticStoreReceipt(
+                    store_ref="fake-store-a",
+                    status=SyntheticStoreStatus.VERIFIED,
+                ),
+                SyntheticStoreReceipt(
+                    store_ref="fake-store-b",
+                    status=SyntheticStoreStatus.VERIFIED,
+                ),
+            ),
+        ),
+    )
+
+    assert cancelled.state is SyntheticCleanupState.UNKNOWN
+    assert cancelled.fence_active
+    assert cancelled.safe_code == "INVALID_TRANSITION"
+    assert reconciled.state is SyntheticCleanupState.VERIFIED_SYNTHETIC
+
+
 def test_unknown_receipt_remains_unresolved_after_reconciliation() -> None:
     unknown = transition_synthetic_cleanup(
         _fenced_pending(),

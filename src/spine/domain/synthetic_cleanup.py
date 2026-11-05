@@ -183,6 +183,8 @@ def transition_synthetic_cleanup(
     """Apply one deterministic fake-only event; never invokes I/O or adapters."""
 
     if event.kind is SyntheticEventKind.CANCEL:
+        if job.state is SyntheticCleanupState.UNKNOWN:
+            return _invalid(job)
         return job.model_copy(
             update={
                 "state": SyntheticCleanupState.CANCELLED,
