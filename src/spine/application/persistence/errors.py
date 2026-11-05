@@ -44,6 +44,10 @@ class OptimisticConflictError(PersistenceError):
     """An expected predecessor or version no longer matches."""
 
 
+class CommitFenceInvalidatedError(PersistenceError):
+    """A transaction-bound commit fence expired before PostgreSQL commit."""
+
+
 class ConstraintConflictError(PersistenceError):
     """A known persistence invariant rejected the requested change."""
 
