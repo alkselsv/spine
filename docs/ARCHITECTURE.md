@@ -2476,6 +2476,12 @@ composition root.
   approval не переписывает уже activated object policies, а eligible template
   определяется server-side trusted source/configuration context.
 - Retention и право удаления распространяются на raw storage, Postgres, Cognee и observability backend.
+- Для будущего Gmail Option B disposition включает удаление source-specific
+  `SourceObject`/`SourceRevision` identity и message-resolving lineage; после
+  disposition допускается только несвязываемый content-free audit по allowlist.
+  Fence предшествует очистке и сохраняется до verification всех store boundaries.
+  Точные классы, сроки, backup/restore и offline-only пределы заданы ADR-061;
+  его принятие не меняет текущий Gmail NO-GO.
 - Prompt injection из документов считается недоверенным вводом: найденный текст никогда не меняет system policy или список tools.
 
 ## 18. Наблюдаемость и качество
@@ -2661,6 +2667,10 @@ detectors без специальных обходов в platform core.
   external commit-fence bindings and outcomes plus a purpose-scoped,
   default-deny [production composition](architecture/commit-fence-production-composition.md);
   defining or composing the contract enables no provider or authority.
+- [ADR-061](adr/0061-email-option-b-content-disposition-and-canonical-erasure.md):
+  approved internal policy for future Gmail Option B content disposition,
+  canonical lineage erasure, per-store fences and quarantined restore;
+  implementation qualification remains pending and live Gmail remains NO-GO.
 - ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.
