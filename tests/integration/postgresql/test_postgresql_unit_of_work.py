@@ -189,7 +189,10 @@ from spine.domain.sources.access_policy import (
 )
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.db.migrations import upgrade_database
-from spine.infrastructure.db.operator import bootstrap_database_roles
+from spine.infrastructure.db.operator import (
+    activate_postgresql_source_erasure_executor,
+    bootstrap_database_roles,
+)
 from spine.infrastructure.db.settings import (
     POSTGRESQL_SEARCH_PATH_OPTIONS,
     MigrationDatabaseSettings,
@@ -616,6 +619,7 @@ async def postgresql_contract_database(
         dispatcher_role=DISPATCHER_ROLE,
     )
     await asyncio.to_thread(upgrade_database, migration)
+    await activate_postgresql_source_erasure_executor(operator)
     # This module exercises the CRM v2 write API against a disposable database.
     # Production migrations intentionally leave the reader-first gate disabled.
     crm_engine = create_async_engine(migration_url.get_secret_value(), hide_parameters=True)

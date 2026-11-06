@@ -11,7 +11,10 @@ from spine.infrastructure.db.initial_workspace import (
     PostgreSQLInitialWorkspaceBootstrap,
 )
 from spine.infrastructure.db.migrations import upgrade_database
-from spine.infrastructure.db.operator import bootstrap_database_roles
+from spine.infrastructure.db.operator import (
+    activate_postgresql_source_erasure_executor,
+    bootstrap_database_roles,
+)
 from spine.infrastructure.db.settings import (
     MigrationDatabaseSettings,
     OperatorDatabaseSettings,
@@ -27,6 +30,9 @@ def operator_bootstrap_main() -> None:
 
 def migrate_main() -> None:
     upgrade_database(MigrationDatabaseSettings())
+    asyncio.run(
+        activate_postgresql_source_erasure_executor(OperatorDatabaseSettings())
+    )
 
 
 def initial_workspace_main() -> None:

@@ -399,14 +399,15 @@ async def test_postgresql_erasure_role_is_nonlogin_and_unavailable_to_runtime(
             migration_membership = (
                 await connection.execute(
                     text(
-                        "SELECT EXISTS (SELECT 1 FROM pg_auth_members m "
+                        "SELECT m.inherit_option, m.set_option, m.admin_option "
+                        "FROM pg_auth_members m "
                         "JOIN pg_roles r ON r.oid = m.roleid "
                         "JOIN pg_roles u ON u.oid = m.member "
                         "WHERE r.rolname = 'spine_erasure_executor' "
-                        "AND u.rolname = 'spine_migration')"
+                        "AND u.rolname = 'spine_migration'"
                     )
                 )
-            ).scalar_one()
+            ).one_or_none()
             runtime_membership = (
                 await connection.execute(
                     text(
@@ -418,10 +419,13 @@ async def test_postgresql_erasure_role_is_nonlogin_and_unavailable_to_runtime(
                     )
                 )
             ).scalar_one()
-            assert migration_membership is True
+            assert migration_membership is None
             assert runtime_membership is False
         with pytest.raises(DBAPIError):
             async with runtime_engine.begin() as connection:
+                await connection.execute(text("SET ROLE spine_erasure_executor"))
+        with pytest.raises(DBAPIError):
+            async with migration_engine.begin() as connection:
                 await connection.execute(text("SET ROLE spine_erasure_executor"))
         async with runtime_engine.connect() as connection:
             can_delete = (

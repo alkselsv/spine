@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from spine.infrastructure.db.operator import (
+    activate_postgresql_source_erasure_executor,
     OperatorBootstrapError,
     bootstrap_database_roles,
 )
@@ -92,7 +93,7 @@ async def test_operator_bootstrap_creates_missing_roles_and_database(
     assert "CREATE ROLE \"spine_runtime\" LOGIN" in rendered
     assert "CREATE ROLE \"spine_dispatcher\" LOGIN" in rendered
     assert "CREATE ROLE \"spine_erasure_executor\" NOLOGIN" in rendered
-    assert 'GRANT "spine_erasure_executor" TO "spine_migration"' in rendered
+    assert 'GRANT "spine_erasure_executor" TO "spine_migration"' not in rendered
     assert "CREATE DATABASE \"spine\" OWNER \"spine_migration\"" in rendered
     assert "migration-secret" not in rendered
     assert "runtime-secret" not in rendered
@@ -140,6 +141,7 @@ async def test_operator_bootstrap_revokes_existing_runtime_memberships(
     assert 'REVOKE "spine_migration" FROM "spine_runtime"' in rendered
     assert 'REVOKE "legacy_admin" FROM "spine_runtime"' in rendered
     assert 'REVOKE "legacy_admin" FROM "spine_dispatcher"' in rendered
+    assert 'REVOKE "spine_erasure_executor" FROM "spine_migration"' in rendered
     assert 'REVOKE "spine_erasure_executor" FROM "legacy_admin"' in rendered
 
 
@@ -159,3 +161,27 @@ async def test_operator_bootstrap_failure_redacts_credentials(
 
     assert str(error.value) == "database operator bootstrap failed"
     assert error.value.__cause__ is None
+
+
+@pytest.mark.asyncio
+async def test_operator_activates_only_fixed_erasure_entrypoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection([(False, False, False), (True,)])
+
+    @asynccontextmanager
+    async def connect(_url: str):  # type: ignore[no-untyped-def]
+        yield connection
+
+    monkeypatch.setattr("spine.infrastructure.db.operator._connect", connect)
+
+    assert await activate_postgresql_source_erasure_executor(settings()) is True
+
+    rendered = "\n".join(
+        statement.as_string(None) if hasattr(statement, "as_string") else str(statement)
+        for statement, _ in connection.statements
+    )
+    assert "spine.execute_source_disposition_erasure(uuid,uuid,uuid,integer)" in rendered
+    assert 'OWNER TO "spine_erasure_executor"' in rendered
+    assert 'TO "spine_runtime"' in rendered
+    assert "arbitrary" not in rendered

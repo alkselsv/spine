@@ -71,13 +71,6 @@ async def bootstrap_database_roles(settings: OperatorDatabaseSettings) -> None:
             await _revoke_erasure_role_members(
                 connection,
                 role=settings.erasure_role,
-                allowed_member=settings.migration_role,
-            )
-            await connection.execute(
-                sql.SQL("GRANT {} TO {}").format(
-                    sql.Identifier(settings.erasure_role),
-                    sql.Identifier(settings.migration_role),
-                )
             )
             await _revoke_role_memberships(connection, role=settings.runtime_role)
             await _revoke_role_memberships(
@@ -108,6 +101,62 @@ async def bootstrap_database_roles(settings: OperatorDatabaseSettings) -> None:
         raise
     except Exception:
         raise OperatorBootstrapError("database operator bootstrap failed") from None
+
+
+async def activate_postgresql_source_erasure_executor(
+    settings: OperatorDatabaseSettings,
+) -> bool:
+    """Transfer the fixed erasure entrypoint after migrations under operator authority.
+
+    The migration role is never a member of the executor role. The entrypoint is
+    created without PUBLIC/runtime execution, then this operator-only step gives
+    it the dedicated owner and grants runtime execution of that fixed signature.
+    """
+
+    function_signature = (
+        "spine.execute_source_disposition_erasure(uuid,uuid,uuid,integer)"
+    )
+    try:
+        async with _connect(settings.url.get_secret_value()) as connection:
+            role = await (
+                await connection.execute(
+                    "SELECT rolcanlogin, rolsuper, rolbypassrls "
+                    "FROM pg_roles WHERE rolname = %s",
+                    (settings.erasure_role,),
+                )
+            ).fetchone()
+            if role != (False, False, False):
+                raise OperatorBootstrapError("erasure executor role is unsafe")
+            exists = await (
+                await connection.execute(
+                    "SELECT to_regprocedure(%s) IS NOT NULL",
+                    (function_signature,),
+                )
+            ).fetchone()
+            if exists is None or exists[0] is not True:
+                return False
+            await connection.execute(
+                sql.SQL("REVOKE ALL ON FUNCTION {} FROM PUBLIC").format(
+                    sql.SQL(function_signature)
+                )
+            )
+            await connection.execute(
+                sql.SQL("ALTER FUNCTION {} OWNER TO {}").format(
+                    sql.SQL(function_signature),
+                    sql.Identifier(settings.erasure_role),
+                )
+            )
+            await connection.execute(
+                sql.SQL("GRANT EXECUTE ON FUNCTION {} TO {}").format(
+                    sql.SQL(function_signature),
+                    sql.Identifier(settings.runtime_role),
+                )
+            )
+            return True
+    except OperatorBootstrapError:
+        raise
+    except Exception:
+        raise OperatorBootstrapError("erasure executor activation failed") from None
 
 
 async def _ensure_role(
@@ -155,7 +204,6 @@ async def _revoke_erasure_role_members(
     connection: _Connection,
     *,
     role: str,
-    allowed_member: str,
 ) -> None:
     members = await (
         await connection.execute(
@@ -169,13 +217,12 @@ async def _revoke_erasure_role_members(
     for (member,) in members:
         if not isinstance(member, str):
             raise OperatorBootstrapError("erasure role membership is invalid")
-        if member != allowed_member:
-            await connection.execute(
-                sql.SQL("REVOKE {} FROM {}").format(
-                    sql.Identifier(role),
-                    sql.Identifier(member),
-                )
+        await connection.execute(
+            sql.SQL("REVOKE {} FROM {}").format(
+                sql.Identifier(role),
+                sql.Identifier(member),
             )
+        )
 
 
 async def _revoke_role_memberships(connection: _Connection, *, role: str) -> None:
