@@ -152,6 +152,11 @@ from .retention import (
     RetentionAuthorityKind,
     RetentionTargetKind,
 )
+from .email_retention import (
+    EMAIL_ARTIFACT_RETENTION_CLASS,
+    EmailArtifactClass,
+    retention_class_for_email_artifact,
+)
 from .errors import RevisionDigestMismatchError, SourceInvariantError
 from .canonicalization import (
     REVISION_PROFILE,
@@ -274,6 +279,9 @@ __all__ = [
     "RetentionArtifactClass",
     "RetentionAuthorityKind",
     "RetentionTargetKind",
+    "EMAIL_ARTIFACT_RETENTION_CLASS",
+    "EmailArtifactClass",
+    "retention_class_for_email_artifact",
     "TrustedContentFormat",
     "TrustedContentVerificationEvidence",
     "TrustedContentVerificationOutcome",

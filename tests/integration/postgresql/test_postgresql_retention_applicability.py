@@ -27,6 +27,7 @@ from spine.domain.sources.retention import (
     RetentionAuthorityKind,
     RetentionTargetKind,
 )
+from spine.domain.sources.email_retention import EMAIL_ARTIFACT_RETENTION_CLASS
 from spine.infrastructure.persistence.postgresql_mappings import (
     audit_events,
     current_retention_applicabilities,
@@ -293,13 +294,7 @@ async def test_postgresql_retention_binding_covers_each_email_derivative_class(
         case.source.environment_id,
         "retention_applicability",
     )
-    email_classes = (
-        RetentionArtifactClass.EMAIL_RAW_MIME,
-        RetentionArtifactClass.EMAIL_PARSED_BODY,
-        RetentionArtifactClass.EMAIL_ATTACHMENT_ORIGINAL,
-        RetentionArtifactClass.EMAIL_ATTACHMENT_ARTIFACT,
-        RetentionArtifactClass.EMAIL_PROJECTION,
-    )
+    email_classes = tuple(EMAIL_ARTIFACT_RETENTION_CLASS.values())
     applicability = _applicability(
         case,
         context,

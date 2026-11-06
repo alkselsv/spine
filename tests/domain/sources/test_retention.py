@@ -6,6 +6,10 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
+from spine.domain.sources.email_retention import (
+    EMAIL_ARTIFACT_RETENTION_CLASS,
+    EmailArtifactClass,
+)
 from spine.domain.sources.retention import (
     RetentionApplicability,
     RetentionArtifactClass,
@@ -102,6 +106,32 @@ def test_private_asr_artifact_classes_are_additive_taxonomy_only() -> None:
     assert RetentionApplicability.model_validate(
         applicability.model_dump(mode="json")
     ).artifact_classes == classes
+
+
+def test_issue_820_email_artifact_classes_map_one_to_one() -> None:
+    assert len(EmailArtifactClass) == 20
+    assert set(EMAIL_ARTIFACT_RETENTION_CLASS) == set(EmailArtifactClass)
+    mapped_classes = tuple(EMAIL_ARTIFACT_RETENTION_CLASS.values())
+    assert len(mapped_classes) == 20
+    assert len(set(mapped_classes)) == 20
+
+    legacy_aggregate_classes = {
+        RetentionArtifactClass.EMAIL_PARSED_BODY,
+        RetentionArtifactClass.EMAIL_ATTACHMENT_ARTIFACT,
+        RetentionArtifactClass.EMAIL_PROJECTION,
+    }
+    assert legacy_aggregate_classes.isdisjoint(mapped_classes)
+
+
+def test_issue_820_email_retention_classes_round_trip_without_collapsing() -> None:
+    mapped_classes = tuple(EMAIL_ARTIFACT_RETENTION_CLASS.values())
+    applicability = _applicability(artifact_classes=mapped_classes)
+
+    restored = RetentionApplicability.model_validate(
+        applicability.model_dump(mode="json")
+    )
+
+    assert restored.artifact_classes == mapped_classes
 
 
 @pytest.mark.parametrize(

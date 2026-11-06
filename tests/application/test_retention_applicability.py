@@ -32,6 +32,7 @@ from spine.domain.sources.retention import (
     RetentionAuthorityKind,
     RetentionTargetKind,
 )
+from spine.domain.sources.email_retention import EMAIL_ARTIFACT_RETENTION_CLASS
 from spine.domain.common import ContextOrigin
 
 
@@ -168,17 +169,59 @@ def _source(value: int, source_class: str = "document") -> RetentionSourceLineag
     )
 
 
-def _query() -> RetentionEligibilityQuery:
+def _query(
+    artifact_class: RetentionArtifactClass = RetentionArtifactClass.PARSED_CONTENT,
+) -> RetentionEligibilityQuery:
     return RetentionEligibilityQuery(
         artifact=RetentionArtifactRef(
             workspace_id=_uuid(1),
             environment_id=_uuid(2),
-            artifact_class=RetentionArtifactClass.PARSED_CONTENT,
+            artifact_class=artifact_class,
             artifact_id=_uuid(900),
             artifact_version=1,
             artifact_digest="f" * 64,
         )
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "artifact_class", tuple(EMAIL_ARTIFACT_RETENTION_CLASS.values())
+)
+async def test_missing_email_retention_binding_denies_each_issue_820_class(
+    artifact_class: RetentionArtifactClass,
+) -> None:
+    source = _source(10)
+    reader = _reader(_Candidates({}), source)
+
+    result = await reader.resolve(_query(artifact_class), _context())
+
+    assert result.status is RetentionEligibilityStatus.MISSING
+    assert result.eligible is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "artifact_class", tuple(EMAIL_ARTIFACT_RETENTION_CLASS.values())
+)
+async def test_expired_email_retention_binding_denies_each_issue_820_class(
+    artifact_class: RetentionArtifactClass,
+) -> None:
+    source = _source(10)
+    binding = _binding(
+        applicability_id=999,
+        source_object_id=source.source_object_id,
+        effective_until=NOW - timedelta(seconds=1),
+    ).model_copy(update={"artifact_classes": (artifact_class,)})
+    reader = _reader(
+        _Candidates({source.source_object_id: (binding,)}),
+        source,
+    )
+
+    result = await reader.resolve(_query(artifact_class), _context())
+
+    assert result.status is RetentionEligibilityStatus.EXPIRED
+    assert result.eligible is False
 
 
 def _reader(candidates: _Candidates, *sources: RetentionSourceLineage, authority=None):
