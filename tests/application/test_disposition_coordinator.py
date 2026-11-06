@@ -17,6 +17,7 @@ from spine.domain.sources.disposition import (
     DispositionOperation,
     DispositionStatus,
     DispositionStoreState,
+    StoreEffectPermitStatus,
     StoreDispositionStatus,
 )
 
@@ -149,6 +150,37 @@ class CurrentDispositionAdmission:
         assert operation.fence_active
         self.checks += 1
         return self.current
+
+    async def store_effect_permit(
+        self,
+        operation: DispositionOperation,
+        store_id: str,
+    ) -> "FakeStoreEffectPermit":
+        del operation, store_id
+        return FakeStoreEffectPermit(self.current)
+
+    async def rebind_authority(
+        self,
+        operation: DispositionOperation,
+        new_binding,
+    ) -> DispositionOperation | None:
+        del operation, new_binding
+        return None
+
+
+class FakeStoreEffectPermit:
+    def __init__(self, permitted: bool) -> None:
+        self.permitted = permitted
+
+    async def __aenter__(self) -> StoreEffectPermitStatus:
+        return (
+            StoreEffectPermitStatus.ALLOWED
+            if self.permitted
+            else StoreEffectPermitStatus.AUTHORITY_NOT_CURRENT
+        )
+
+    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        return None
 
 
 class FixedClock:
