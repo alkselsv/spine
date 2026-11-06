@@ -51,6 +51,50 @@ async def lock_source_lifecycle_exclusive(
     )
 
 
+def retention_source_class_key(
+    *, workspace_id: UUID, environment_id: UUID, source_class: str
+) -> str:
+    return f"retention-source-class:{workspace_id}:{environment_id}:{source_class}"
+
+
+async def lock_retention_source_class_shared(
+    execute: Execute,
+    *,
+    workspace_id: UUID,
+    environment_id: UUID,
+    source_class: str,
+) -> None:
+    await execute(
+        text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:key, 0))"),
+        {
+            "key": retention_source_class_key(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                source_class=source_class,
+            )
+        },
+    )
+
+
+async def lock_retention_source_class_exclusive(
+    execute: Execute,
+    *,
+    workspace_id: UUID,
+    environment_id: UUID,
+    source_class: str,
+) -> None:
+    await execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {
+            "key": retention_source_class_key(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                source_class=source_class,
+            )
+        },
+    )
+
+
 def admission_serialization_key(
     *, workspace_id: UUID, environment_id: UUID, source_object_id: UUID,
     revision_id: UUID,

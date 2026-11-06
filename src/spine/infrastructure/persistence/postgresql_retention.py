@@ -26,6 +26,10 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     source_objects,
     source_revisions,
 )
+from spine.infrastructure.persistence.postgresql_source_locks import (
+    lock_retention_source_class_exclusive,
+    lock_source_lifecycle_exclusive,
+)
 
 
 class PostgreSQLRetentionUnitOfWork(UnitOfWork, Protocol):
@@ -65,6 +69,22 @@ class PostgreSQLRetentionApplicabilityRepository:
             raise RetentionApplicabilityError()
         try:
             async with self._uow_factory(context) as uow:
+                if applicability.target_kind is RetentionTargetKind.EXACT_SOURCE:
+                    assert applicability.source_object_id is not None
+                    await lock_source_lifecycle_exclusive(
+                        uow.execute_statement,
+                        workspace_id=applicability.workspace_id,
+                        environment_id=applicability.environment_id,
+                        source_object_id=applicability.source_object_id,
+                    )
+                else:
+                    assert applicability.source_class is not None
+                    await lock_retention_source_class_exclusive(
+                        uow.execute_statement,
+                        workspace_id=applicability.workspace_id,
+                        environment_id=applicability.environment_id,
+                        source_class=applicability.source_class,
+                    )
                 existing_result = await uow.execute_statement(
                     select(retention_applicabilities).where(
                         retention_applicabilities.c.applicability_id

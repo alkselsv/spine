@@ -11,12 +11,15 @@ from spine.application.persistence.canonical import CanonicalAcceptanceCommand
 from spine.application.persistence.context import PersistenceOperation
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.source_lifecycle import (
+    CanonicalGovernedReappearanceAuthority,
+    GovernedReappearanceAuthorization,
     SourceLifecycleCommand,
     SourceLifecycleCoordinator,
     SourceLifecycleKind,
     SourceLifecycleValidationError,
 )
 from spine.domain.sources import (
+    CurrentSourceHead,
     IdentityMode,
     RevisionKind,
     RevisionMetadata,
@@ -189,10 +192,16 @@ class _Sources:
 
 
 class _Canonical:
-    def __init__(self, result=None, error: Exception | None = None):
+    def __init__(self, result=None, error: Exception | None = None, current=None):
         self.commands = []
         self.result = result or SimpleNamespace(advanced=True, replay=False)
         self.error = error
+        self.current = current
+
+    async def resolve_current(self, source_object_id: UUID):
+        if self.current is None or self.current.source_object_id != source_object_id:
+            return None
+        return self.current
 
     async def accept(self, command):
         replay = any(item.idempotency_key == command.idempotency_key for item in self.commands)
@@ -232,14 +241,59 @@ def _command(
     kind: SourceLifecycleKind,
     receipt_association=None,
 ):
+    canonical = _canonical(source, revision, provenance, key=f"canonical-{key}")
+    authorization = None
+    if kind is SourceLifecycleKind.REAPPEARANCE:
+        authorization = GovernedReappearanceAuthorization(
+            authorization_id=_id(f"reappearance-authorization:{key}"),
+            workspace_id=source.workspace_id,
+            environment_id=source.environment_id,
+            source_object_id=source.source_object_id,
+            tombstone_revision_id=revision.reappearance_after_tombstone_revision_id,
+            content_revision_id=revision.revision_id,
+            identity_continuity_evidence_id=_id(f"identity-evidence:{key}"),
+            identity_continuity_evidence_digest="e" * 64,
+            pre_tombstone_access_policy_version_id=_id(
+                f"pre-tombstone-policy:{key}"
+            ),
+            fresh_admission_decision_id=canonical.admission_decision_id,
+            fresh_access_policy_version_id=canonical.access_policy_version_id,
+            authority_generation=1,
+        )
     return SourceLifecycleCommand(
         kind=kind,
         source=source,
         revision=revision,
         provenance=provenance,
         observation_idempotency_key=IdempotencyKey(f"observation-{key}"),
-        canonical_acceptance=_canonical(source, revision, provenance, key=f"canonical-{key}"),
+        canonical_acceptance=canonical,
         receipt_association=receipt_association,
+        reappearance_authorization=authorization,
+    )
+
+
+class _ReappearanceAuthority:
+    def __init__(self, current: bool = True) -> None:
+        self.current = current
+        self.authorizations = []
+
+    async def is_current(self, authorization, *, canonical, current):
+        del canonical, current
+        self.authorizations.append(authorization)
+        return self.current
+
+
+def _current_tombstone(source: SourceObject, revision_id: UUID) -> CurrentSourceHead:
+    return CurrentSourceHead(
+        source_object_id=source.source_object_id,
+        workspace_id=source.workspace_id,
+        environment_id=source.environment_id,
+        current_revision_id=revision_id,
+        current_revision_kind=RevisionKind.TOMBSTONE,
+        acceptance_id=_id(f"tombstone-acceptance:{revision_id}"),
+        accepted_generation=1,
+        cas_version=1,
+        changed_at=NOW,
     )
 
 
@@ -362,11 +416,14 @@ async def test_reappearance_requires_existing_tombstone_and_fresh_canonical_evid
         {tombstone.revision_id: tombstone, revision.revision_id: revision},
         [],
     )
-    canonical = _Canonical()
+    canonical = _Canonical(current=_current_tombstone(source, tombstone.revision_id))
     uow = _Uow(sources, canonical)
+    authority = _ReappearanceAuthority()
 
     result = await SourceLifecycleCoordinator(
-        lambda _context: uow, lambda _command: _context()
+        lambda _context: uow,
+        lambda _command: _context(),
+        reappearance_authority=authority,
     ).apply(
         _command(
             source,
@@ -381,6 +438,231 @@ async def test_reappearance_requires_existing_tombstone_and_fresh_canonical_evid
     assert result.acceptance.advanced is True
     assert canonical.commands[0].admission_decision_id is not None
     assert canonical.commands[0].access_policy_version_id is not None
+    assert len(authority.authorizations) == 1
+
+
+@pytest.mark.asyncio
+async def test_reappearance_without_current_governed_authority_fails_closed():
+    source = _source()
+    tombstone = _tombstone(source)
+    revision = _content(source, tombstone.revision_id)
+    provenance = _provenance(source, revision.revision_id, "missing-authority")
+    sources = _Sources(
+        source,
+        {tombstone.revision_id: tombstone, revision.revision_id: revision},
+        [],
+    )
+    canonical = _Canonical(current=_current_tombstone(source, tombstone.revision_id))
+
+    with pytest.raises(SourceLifecycleValidationError, match="authority"):
+        await SourceLifecycleCoordinator(
+            lambda _context: _Uow(sources, canonical),
+            lambda _command: _context(),
+        ).apply(
+            _command(
+                source,
+                revision,
+                provenance,
+                key="missing-authority",
+                kind=SourceLifecycleKind.REAPPEARANCE,
+                receipt_association=_receipt(source, revision, provenance),
+            )
+        )
+
+    assert sources.recorded == []
+    assert canonical.commands == []
+
+
+@pytest.mark.asyncio
+async def test_canonical_reappearance_authority_binds_exact_tombstone_and_prior_policy():
+    source = _source()
+    tombstone = _tombstone(source)
+    revision = _content(source, tombstone.revision_id)
+    provenance = _provenance(source, revision.revision_id, "canonical-authority")
+    command = _command(
+        source,
+        revision,
+        provenance,
+        key="canonical-authority",
+        kind=SourceLifecycleKind.REAPPEARANCE,
+        receipt_association=_receipt(source, revision, provenance),
+    )
+    authorization = command.reappearance_authorization
+    assert authorization is not None
+    current = _current_tombstone(source, tombstone.revision_id)
+    predecessor_acceptance_id = _id("pre-tombstone-acceptance")
+    reads = {
+        current.acceptance_id: SimpleNamespace(
+            is_current=True,
+            current=current,
+            acceptance=SimpleNamespace(
+                source_revision_id=tombstone.revision_id,
+                predecessor_acceptance_id=predecessor_acceptance_id,
+            ),
+        ),
+        predecessor_acceptance_id: SimpleNamespace(
+            acceptance=SimpleNamespace(
+                workspace_id=source.workspace_id,
+                environment_id=source.environment_id,
+                source_object_id=source.source_object_id,
+                access_policy_version_id=(
+                    authorization.pre_tombstone_access_policy_version_id
+                ),
+            )
+        ),
+    }
+
+    class Canonical:
+        async def resolve_acceptance_read(self, acceptance_id):
+            return reads.get(acceptance_id)
+
+    class Authorizations:
+        current = authorization
+
+        async def resolve_current(self, **scope):
+            assert scope == {
+                "workspace_id": source.workspace_id,
+                "environment_id": source.environment_id,
+                "source_object_id": source.source_object_id,
+            }
+            return self.current
+
+    authorizations = Authorizations()
+    authority = CanonicalGovernedReappearanceAuthority(authorizations)
+    assert await authority.is_current(
+        authorization, canonical=Canonical(), current=current
+    )
+
+    content_acceptance_id = _id("reappearance-content-acceptance")
+    content_current = current.model_copy(
+        update={
+            "current_revision_id": authorization.content_revision_id,
+            "current_revision_kind": RevisionKind.CONTENT,
+            "acceptance_id": content_acceptance_id,
+        }
+    )
+    reads[content_acceptance_id] = SimpleNamespace(
+        is_current=True,
+        current=content_current,
+        acceptance=SimpleNamespace(
+            source_revision_id=authorization.content_revision_id,
+            admission_decision_id=authorization.fresh_admission_decision_id,
+            access_policy_version_id=authorization.fresh_access_policy_version_id,
+            predecessor_acceptance_id=current.acceptance_id,
+        ),
+    )
+    assert await authority.is_current(
+        authorization, canonical=Canonical(), current=content_current
+    )
+
+    reads[content_acceptance_id].acceptance.access_policy_version_id = (
+        authorization.pre_tombstone_access_policy_version_id
+    )
+    assert not await authority.is_current(
+        authorization, canonical=Canonical(), current=content_current
+    )
+    reads[content_acceptance_id].acceptance.access_policy_version_id = (
+        authorization.fresh_access_policy_version_id
+    )
+    reads[content_acceptance_id].acceptance.admission_decision_id = _id(
+        "unrelated-admission"
+    )
+    assert not await authority.is_current(
+        authorization, canonical=Canonical(), current=content_current
+    )
+    reads[content_acceptance_id].acceptance.admission_decision_id = (
+        authorization.fresh_admission_decision_id
+    )
+
+    reads[predecessor_acceptance_id].acceptance.access_policy_version_id = (
+        authorization.fresh_access_policy_version_id
+    )
+    assert not await authority.is_current(
+        authorization, canonical=Canonical(), current=current
+    )
+
+    reads[predecessor_acceptance_id].acceptance.access_policy_version_id = (
+        authorization.pre_tombstone_access_policy_version_id
+    )
+    authorizations.current = None
+    assert not await authority.is_current(
+        authorization, canonical=Canonical(), current=current
+    )
+
+
+@pytest.mark.asyncio
+async def test_reappearance_rejects_superseded_tombstone_before_recording() -> None:
+    source = _source()
+    tombstone = _tombstone(source)
+    newer_tombstone = _tombstone(source, _id("newer-tombstone"))
+    revision = _content(source, tombstone.revision_id)
+    provenance = _provenance(source, revision.revision_id, "stale-reappearance")
+    sources = _Sources(
+        source,
+        {
+            tombstone.revision_id: tombstone,
+            newer_tombstone.revision_id: newer_tombstone,
+            revision.revision_id: revision,
+        },
+        [],
+    )
+    canonical = _Canonical(
+        current=_current_tombstone(source, newer_tombstone.revision_id)
+    )
+    uow = _Uow(sources, canonical)
+
+    with pytest.raises(SourceLifecycleValidationError):
+        await SourceLifecycleCoordinator(
+            lambda _context: uow,
+            lambda _command: _context(),
+            reappearance_authority=_ReappearanceAuthority(),
+        ).apply(
+            _command(
+                source,
+                revision,
+                provenance,
+                key="stale-reappearance",
+                kind=SourceLifecycleKind.REAPPEARANCE,
+                receipt_association=_receipt(source, revision, provenance),
+            )
+        )
+
+    assert sources.recorded == []
+    assert canonical.commands == []
+
+
+def test_reappearance_cannot_transfer_a_pre_tombstone_access_policy() -> None:
+    source = _source()
+    tombstone = _tombstone(source)
+    revision = _content(source, tombstone.revision_id)
+    provenance = _provenance(source, revision.revision_id, "policy-transfer")
+    command = _command(
+        source,
+        revision,
+        provenance,
+        key="policy-transfer",
+        kind=SourceLifecycleKind.REAPPEARANCE,
+        receipt_association=_receipt(source, revision, provenance),
+    )
+    stale = command.reappearance_authorization.model_copy(
+        update={
+            "pre_tombstone_access_policy_version_id": (
+                command.canonical_acceptance.access_policy_version_id
+            )
+        }
+    )
+
+    with pytest.raises(SourceLifecycleValidationError):
+        SourceLifecycleCommand(
+            kind=command.kind,
+            source=command.source,
+            revision=command.revision,
+            provenance=command.provenance,
+            observation_idempotency_key=command.observation_idempotency_key,
+            canonical_acceptance=command.canonical_acceptance,
+            receipt_association=command.receipt_association,
+            reappearance_authorization=stale,
+        )
 
 
 @pytest.mark.asyncio

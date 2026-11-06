@@ -8,6 +8,7 @@ hands the adapter result to the approved Issue #208 mapping bridge.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime, timezone
 import logging
 from types import TracebackType
 from typing import Literal, Protocol
@@ -55,6 +56,14 @@ from spine.application.projection_result_mapping import (
     ProjectionMappingResult,
     ProjectionPreparationStatus,
 )
+from spine.application.source_usage_guard import (
+    CurrentSourceUsageAuthority,
+    CurrentSourceUsageGuard,
+    SourceUsageArtifact,
+    SourceUsageDependency,
+    SourceUsageKind,
+    SourceUsageRequest,
+)
 from spine.memory.contracts import (
     CanonicalBoundary,
     ContextProjection,
@@ -72,7 +81,11 @@ from spine.domain.projections import (
     ProjectionOperation as CanonicalProjectionOperation,
     ProjectionCandidateState,
 )
-from spine.domain.sources import RevisionKind
+from spine.domain.sources import (
+    RetentionArtifactClass,
+    RevisionKind,
+    disclosure_hold_dependency_id,
+)
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -183,11 +196,18 @@ class PersistenceCanonicalProjectionRequestResolver:
         context_factory: Callable[
             [ProjectionRequestEnvelope], TrustedPersistenceContext
         ],
+        source_usage_authority_factory: Callable[
+            [CanonicalProjectionRequestUnitOfWork],
+            CurrentSourceUsageAuthority | None,
+        ],
         namespace_router: ProjectionNamespaceRouter | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._context_factory = context_factory
+        self._source_usage_authority_factory = source_usage_authority_factory
         self._namespace_router = namespace_router or ProjectionNamespaceRouter()
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     async def resolve(
         self,
@@ -472,6 +492,37 @@ class PersistenceCanonicalProjectionRequestResolver:
                 )
             if not projection_sources:
                 self._reject()
+            source_usage = await CurrentSourceUsageGuard(
+                self._source_usage_authority_factory(uow)
+            ).evaluate(
+                SourceUsageRequest(
+                    workspace_id=run.workspace_id,
+                    environment_id=run.environment_id,
+                    usage=SourceUsageKind.PROJECTION_REQUEST,
+                    artifact=SourceUsageArtifact(
+                        artifact_class=RetentionArtifactClass.PROJECTION,
+                        artifact_id=run.projection_candidate_id,
+                        artifact_version=boundary.accepted_through_generation,
+                        artifact_digest=boundary.manifest_digest,
+                    ),
+                    dependencies=tuple(
+                        SourceUsageDependency(
+                            source_object_id=source.source_object_id,
+                            source_revision_id=source.source_revision_id,
+                            dependency_id=disclosure_hold_dependency_id(
+                                run.workspace_id,
+                                run.environment_id,
+                                source.source_object_id,
+                                source.source_revision_id,
+                            ),
+                        )
+                        for source in projection_sources
+                    ),
+                    evaluated_at=self._now(),
+                )
+            )
+            if not source_usage.allowed:
+                self._reject()
             return CanonicalProjectionRequestContext(
                 workspace_id=run.workspace_id,
                 environment_id=run.environment_id,
@@ -498,17 +549,43 @@ class PersistenceCanonicalProjectionRequestResolver:
         """Close the current-authority window immediately before adapter I/O."""
 
         async with self._uow_factory(self._context_factory(request)) as uow:
-            for source in command.source_revisions:
-                processing = await CanonicalCurrentProcessingDispositionAuthority(
-                    uow.canonical
-                ).resolve(
+            source_usage = await CurrentSourceUsageGuard(
+                self._source_usage_authority_factory(uow)
+            ).evaluate(
+                SourceUsageRequest(
                     workspace_id=command.workspace_id,
                     environment_id=command.environment_id,
-                    source_object_id=source.source_object_id,
-                    source_revision_id=source.source_revision_id,
+                    usage=SourceUsageKind.PROJECTION_BUILD,
+                    artifact=SourceUsageArtifact(
+                        artifact_class=RetentionArtifactClass.PROJECTION,
+                        artifact_id=command.projection_candidate.candidate_id,
+                        artifact_version=command.canonical_boundary.accepted_through_generation,
+                        artifact_digest=command.canonical_boundary.boundary_digest,
+                    ),
+                    dependencies=tuple(
+                        SourceUsageDependency(
+                            source_object_id=source.source_object_id,
+                            source_revision_id=source.source_revision_id,
+                            dependency_id=disclosure_hold_dependency_id(
+                                command.workspace_id,
+                                command.environment_id,
+                                source.source_object_id,
+                                source.source_revision_id,
+                            ),
+                        )
+                        for source in command.source_revisions
+                    ),
+                    evaluated_at=self._now(),
                 )
-                if not processing.eligible:
-                    self._reject()
+            )
+            if not source_usage.allowed:
+                self._reject()
+
+    def _now(self) -> datetime:
+        value = self._clock()
+        if value.tzinfo is None or value.utcoffset() is None:
+            self._reject()
+        return value
 
     @staticmethod
     def _reject() -> None:

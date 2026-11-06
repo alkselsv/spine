@@ -67,6 +67,15 @@ from spine.application.processing_disposition import (
     CanonicalCurrentProcessingDispositionAuthority,
     OrdinaryProcessingEligibilityReason,
 )
+from spine.application.source_usage_guard import (
+    CurrentSourceUsageDecision,
+    CurrentSourceUsageGuard,
+    SourceUsageArtifact,
+    SourceUsageDependency,
+    SourceUsageKind,
+    SourceUsageReason,
+    SourceUsageRequest,
+)
 from spine.application.production_qa_capability import (
     AnswerQuestionEvaluationLineage,
     AnswerQuestionValidationPlan,
@@ -139,7 +148,7 @@ from spine.domain.context_profiles import (
     PartialAnswerFallback,
 )
 from spine.domain.projections import PublishedActivePublication
-from spine.domain.sources import RevisionKind
+from spine.domain.sources import RetentionArtifactClass, RevisionKind
 from spine.domain.sources.disclosure_holds import disclosure_hold_dependency_id
 from spine.domain.context_bundles import (
     RevalidationCheckpointResult,
@@ -169,7 +178,9 @@ from spine.infrastructure.persistence.postgresql_authorization import (
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.disclosure_constraints import (
     resolve_final_disclosure_constraints,
-    retrieval_disclosure_allowed,
+)
+from spine.infrastructure.source_usage_guard import (
+    TransactionCurrentSourceUsageAuthority,
 )
 from spine.infrastructure.qa_agent_runtime import (
     ConfiguredGroundedConflictValidator,
@@ -1316,6 +1327,43 @@ class _CurrentBundleRevalidator(_ScopedPort):
         safe = True
         async with self._uow_factory(self.context()) as uow:  # type: ignore[operator]
             publication = await uow.projections.resolve_active_publication("qa")
+            lineage = {
+                (evidence.source_object_id, evidence.source_revision_id): evidence
+                for evidence in bundle.evidence_references
+            }
+            if lineage:
+                usage = await CurrentSourceUsageGuard(
+                    TransactionCurrentSourceUsageAuthority(uow)
+                ).evaluate(
+                    SourceUsageRequest(
+                        workspace_id=bundle.workspace_id,
+                        environment_id=bundle.environment_id,
+                        usage=SourceUsageKind.CACHE_REUSE,
+                        artifact=SourceUsageArtifact(
+                            artifact_class=RetentionArtifactClass.CACHED_ANSWER,
+                            artifact_id=bundle.bundle_id,
+                            artifact_version=bundle.bundle_version,
+                            artifact_digest=bundle.bundle_digest,
+                        ),
+                        dependencies=tuple(
+                            SourceUsageDependency(
+                                source_object_id=evidence.source_object_id,
+                                source_revision_id=evidence.source_revision_id,
+                                dependency_id=disclosure_hold_dependency_id(
+                                    bundle.workspace_id,
+                                    bundle.environment_id,
+                                    evidence.source_object_id,
+                                    evidence.source_revision_id,
+                                ),
+                            )
+                            for evidence in lineage.values()
+                        ),
+                        evaluated_at=datetime.now(timezone.utc),
+                    )
+                )
+                safe = usage.allowed
+            else:
+                safe = False
             for evidence in bundle.evidence_references:
                 head = await uow.canonical.resolve_current(evidence.source_object_id)
                 policy = await uow.access_policies.resolve_current(
@@ -1408,7 +1456,47 @@ class _CurrentCitationValidator(_ScopedPort):
                     source_object_id=source_reference.source_object_id,
                     source_revision_id=source_reference.source_revision_id,
                 )
+                citation_digest = hashlib.sha256(
+                    json.dumps(
+                        citation.model_dump(mode="json"),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+                usage = await CurrentSourceUsageGuard(
+                    TransactionCurrentSourceUsageAuthority(uow)
+                ).evaluate(
+                    SourceUsageRequest(
+                        workspace_id=scope.workspace_id,
+                        environment_id=scope.environment_id,
+                        usage=SourceUsageKind.CITATION,
+                        artifact=SourceUsageArtifact(
+                            artifact_class=RetentionArtifactClass.CITATION,
+                            artifact_id=citation.citation_id,
+                            artifact_version=1,
+                            artifact_digest=citation_digest,
+                        ),
+                        dependencies=(
+                            SourceUsageDependency(
+                                source_object_id=source_reference.source_object_id,
+                                source_revision_id=source_reference.source_revision_id,
+                                dependency_id=disclosure_hold_dependency_id(
+                                    scope.workspace_id,
+                                    scope.environment_id,
+                                    source_reference.source_object_id,
+                                    source_reference.source_revision_id,
+                                ),
+                            ),
+                        ),
+                        evaluated_at=datetime.now(timezone.utc),
+                    )
+                )
                 await uow.commit()
+            if not usage.allowed:
+                return RejectedCitation(
+                    reason_code=CitationValidationReasonCode.EVIDENCE_INVALIDATED,
+                    validation_reference=reference_id,
+                )
             processing_rejection = _processing_citation_rejection(
                 processing, reference_id
             )
@@ -2074,33 +2162,24 @@ class _ValidationPlans:
         )
 
 
-class _CurrentRetrievalDisclosureConstraint(_ScopedPort):
-    async def allows(self, context, member, evaluated_at: datetime) -> bool:
+class _CurrentRetrievalSourceUsageAuthority(_ScopedPort):
+    async def evaluate(
+        self, request: SourceUsageRequest
+    ) -> CurrentSourceUsageDecision:
         persistence = self.context()
         if (
-            context.workspace_id != persistence.scope.workspace_id
-            or context.environment_id != persistence.scope.environment_id
+            request.workspace_id != persistence.scope.workspace_id
+            or request.environment_id != persistence.scope.environment_id
         ):
-            return False
-        dependency_id = disclosure_hold_dependency_id(
-            context.workspace_id,
-            context.environment_id,
-            member.source_object_id,
-            member.source_revision_id,
-        )
-        async with self._uow_factory(persistence) as uow:  # type: ignore[operator]
-            allowed = await retrieval_disclosure_allowed(
-                uow,
-                workspace_id=context.workspace_id,
-                environment_id=context.environment_id,
-                source_object_id=member.source_object_id,
-                source_revision_id=member.source_revision_id,
-                dependency_id=dependency_id,
-                artifact_id=member.projection_snapshot_member_id,
-                evaluated_at=evaluated_at,
+            return CurrentSourceUsageDecision(
+                allowed=False,
+                reason=SourceUsageReason.AUTHORITY_UNAVAILABLE,
+                required_dependency_count=len(request.dependencies),
             )
+        async with self._uow_factory(persistence) as uow:  # type: ignore[operator]
+            result = await TransactionCurrentSourceUsageAuthority(uow).evaluate(request)
             await uow.commit()
-            return allowed
+            return result
 
 
 class _CurrentProcessingDispositionAuthority(_ScopedPort):
@@ -2150,6 +2229,30 @@ class _CurrentDisclosureStateProvider(_ScopedPort):
         observations = []
         async with self._uow_factory(self.context()) as uow:  # type: ignore[operator]
             publication = await uow.projections.resolve_active_publication("qa")
+            source_usage = await CurrentSourceUsageGuard(
+                TransactionCurrentSourceUsageAuthority(uow)
+            ).evaluate(
+                SourceUsageRequest(
+                    workspace_id=request.workspace_id,
+                    environment_id=request.environment_id,
+                    usage=SourceUsageKind.FINAL_DISCLOSURE,
+                    artifact=SourceUsageArtifact(
+                        artifact_class=RetentionArtifactClass.CACHED_ANSWER,
+                        artifact_id=artifact_id,
+                        artifact_version=1,
+                        artifact_digest=request.command_digest,
+                    ),
+                    dependencies=tuple(
+                        SourceUsageDependency(
+                            source_object_id=dependency.source_object_id,
+                            source_revision_id=dependency.source_revision_id,
+                            dependency_id=dependency.dependency_id,
+                        )
+                        for dependency in dependencies
+                    ),
+                    evaluated_at=datetime.now(timezone.utc),
+                )
+            )
             for dependency in dependencies:
                 head = await uow.canonical.resolve_current(dependency.source_object_id)
                 revision = (
@@ -2214,11 +2317,13 @@ class _CurrentDisclosureStateProvider(_ScopedPort):
                             head is not None
                             and head.current_revision_kind is not RevisionKind.CONTENT
                         ),
-                        retention_eligible=(
+                        retention_eligible=source_usage.allowed and (
                             head is not None
                             and head.current_revision_kind is RevisionKind.CONTENT
                         ),
-                        lifecycle_disclosure_eligible=lifecycle_eligible,
+                        lifecycle_disclosure_eligible=(
+                            source_usage.allowed and lifecycle_eligible
+                        ),
                         active_disclosure_hold=active_hold,
                     )
                 )
@@ -2587,11 +2692,10 @@ async def build_production_qa_capability_graph(
         authorization=broker_content_authorization,
         snapshot_members=snapshot_members,  # type: ignore[arg-type]
         provider_scope_safety=_CanonicalSourceIsolation(),
-        disclosure_constraint=_CurrentRetrievalDisclosureConstraint(
+        source_usage_authority=_CurrentRetrievalSourceUsageAuthority(
             **port_values,
-            operation="resolve_retrieval_disclosure_constraints",
+            operation="resolve_current_source_usage",
         ),
-        processing_authority=processing_authority,
     )
     profile_resolver = ServerApprovedContextProfileResolver(
         repository=_ProfileRepository(**port_values),

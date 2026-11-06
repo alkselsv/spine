@@ -50,6 +50,7 @@ from spine.application.persistence.context import (
 from spine.application.persistence.canonical import CanonicalAcceptanceCommand
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.source_lifecycle import (
+    GovernedReappearanceAuthorization,
     SourceLifecycleCommand,
     SourceLifecycleCoordinator,
     SourceLifecycleKind,
@@ -581,14 +582,74 @@ class _Uow:
         return self.trace_id
 
 
+class _ReappearanceAuthorizations:
+    def __init__(self, ingestion, admissions) -> None:
+        self.ingestion = ingestion
+        self.admissions = admissions
+        self.current = None
+
+    async def resolve_current(self, **scope):
+        if self.current is not None:
+            return self.current
+        observation = self.ingestion.observation
+        admission = self.admissions.decision
+        if (
+            observation is None
+            or admission is None
+            or observation.revision.reappearance_after_tombstone_revision_id is None
+        ):
+            return None
+        self.current = GovernedReappearanceAuthorization(
+            authorization_id=_id("connector-reappearance-authorization"),
+            workspace_id=scope["workspace_id"],
+            environment_id=scope["environment_id"],
+            source_object_id=scope["source_object_id"],
+            tombstone_revision_id=(
+                observation.revision.reappearance_after_tombstone_revision_id
+            ),
+            content_revision_id=observation.revision.revision_id,
+            identity_continuity_evidence_id=_id("connector-identity-continuity"),
+            identity_continuity_evidence_digest="e" * 64,
+            pre_tombstone_access_policy_version_id=_id("pre-tombstone-policy"),
+            fresh_admission_decision_id=admission.decision_id,
+            fresh_access_policy_version_id=POLICY,
+            authority_generation=1,
+        )
+        return self.current
+
+
+class _ReappearanceAuthority:
+    def __init__(self, authorizations) -> None:
+        self.authorizations = authorizations
+
+    async def is_current(self, authorization, *, canonical, current):
+        del canonical
+        return authorization == self.authorizations.current and (
+            (
+                current.current_revision_kind is RevisionKind.TOMBSTONE
+                and current.current_revision_id == authorization.tombstone_revision_id
+            )
+            or (
+                current.current_revision_kind is RevisionKind.CONTENT
+                and current.current_revision_id == authorization.content_revision_id
+            )
+        )
+
+
 def _orchestrator(
-    observation=None, *, reader=None, lifecycle_reader=None, opaque_current=False
+    observation=None,
+    *,
+    reader=None,
+    lifecycle_reader=None,
+    opaque_current=False,
+    governed_reappearance=True,
 ):
     reader = reader or _Reader(observation)
     uploader = _Uploader()
     ingestion = _Ingestion()
     admissions = _Admissions()
     uow = _Uow(ingestion, admissions, opaque=opaque_current)
+    authorizations = _ReappearanceAuthorizations(ingestion, admissions)
 
     def context_factory(operation: PersistenceOperation, trace_id: UUID):
         return SimpleNamespace(operation=operation, trace_id=trace_id, service_principal_id=_id("service"))
@@ -609,6 +670,14 @@ def _orchestrator(
             read_operation=PersistenceOperation("google_connection_read"),
             admission_reference_type="google_read_admission",
             lifecycle_reader=lifecycle_reader,
+            reappearance_authorizations=(
+                authorizations if governed_reappearance else None
+            ),
+            reappearance_authority=(
+                _ReappearanceAuthority(authorizations)
+                if governed_reappearance
+                else None
+            ),
             clock=lambda: NOW,
         ),
         reader,
@@ -1926,6 +1995,21 @@ async def test_google_drive_reappearance_records_tombstone_predecessor_before_ad
 
 
 @pytest.mark.asyncio
+async def test_connector_reappearance_without_governed_authority_fails_closed():
+    orchestrator, _, _, _, uow = _orchestrator(
+        _drive_observation(), governed_reappearance=False
+    )
+    predecessor = _id("drive-source-tombstone-without-authority")
+    uow.current_revision_id = predecessor
+    uow.current_revision_kind = RevisionKind.TOMBSTONE
+
+    with pytest.raises(ValueError, match="reappearance authority"):
+        await orchestrator.ingest(_command("drive-reappearance-without-authority"))
+
+    assert uow.accepted == 0
+
+
+@pytest.mark.asyncio
 async def test_google_sheets_reappearance_records_tombstone_predecessor_before_admission():
     orchestrator, _, _, _, uow = _orchestrator(_observation())
     predecessor = _id("sheets-source-tombstone")
@@ -1970,6 +2054,58 @@ async def test_google_drive_reappearance_replay_keeps_the_accepted_lineage():
     assert replay.revision.reappearance_after_tombstone_revision_id == predecessor
     assert replay.canonical_acceptance is None
     assert uow.accepted == 1
+
+
+@pytest.mark.asyncio
+async def test_google_drive_reappearance_replay_without_current_authority_denies():
+    orchestrator, _, _, _, uow = _orchestrator(_drive_observation())
+    predecessor = _id("drive-source-tombstone-replay-authority")
+    uow.current_revision_id = predecessor
+    uow.current_revision_kind = RevisionKind.TOMBSTONE
+
+    await orchestrator.ingest(_command("drive-reappearance-replay-authority"))
+    unavailable = replace(
+        orchestrator,
+        reappearance_authorizations=None,
+        reappearance_authority=None,
+    )
+
+    with pytest.raises(ValueError, match="reappearance authority"):
+        await unavailable.ingest(
+            _command("drive-reappearance-replay-authority")
+        )
+
+    assert uow.accepted == 1
+
+
+@pytest.mark.asyncio
+async def test_changed_content_after_reappearance_is_an_ordinary_replacement():
+    reappeared = _drive_observation(content=b"reappeared content")
+    changed = _drive_observation(content=b"changed content").model_copy(
+        update={"event_identity": "drive-changed-after-reappearance"}
+    )
+    orchestrator, _, _, _, uow = _orchestrator(
+        reader=_SequenceReader(reappeared, changed)
+    )
+    predecessor = _id("drive-source-tombstone-before-changed-content")
+    uow.current_revision_id = predecessor
+    uow.current_revision_kind = RevisionKind.TOMBSTONE
+
+    first = await orchestrator.ingest(_command("drive-reappeared-before-change"))
+    unavailable = replace(
+        orchestrator,
+        reappearance_authorizations=None,
+        reappearance_authority=None,
+    )
+    second = await unavailable.ingest(
+        _command("drive-content-changed-after-reappearance").model_copy(
+            update={"expected_current_revision_id": first.revision.revision_id}
+        )
+    )
+
+    assert second.revision.reappearance_after_tombstone_revision_id is None
+    assert second.revision.revision_id != first.revision.revision_id
+    assert uow.accepted == 2
 
 
 @pytest.mark.asyncio

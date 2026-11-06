@@ -15,6 +15,11 @@ from spine.application.evidence_lineage_verification import (
     RejectedEvidenceItem,
 )
 from spine.application.citation_validation import CitationValidationReasonCode
+from spine.application.source_usage_guard import (
+    CurrentSourceUsageDecision,
+    SourceUsageKind,
+    SourceUsageReason,
+)
 from spine.application.processing_disposition import (
     OrdinaryProcessingEligibility,
     OrdinaryProcessingEligibilityReason,
@@ -35,13 +40,18 @@ from spine.domain.context_profiles import (
 from spine.domain.projections import ProjectionFreshness, ProjectionHealth
 from spine.domain.sources import RevisionKind
 from spine.infrastructure.qa_worker_composition import (
+    _ACTIVE_REQUEST_SCOPE,
     _ACTIVE_AUTHORIZATION_CONTEXT,
     _ACTIVE_COMPLETENESS_INTENT,
     _ACTIVE_EVIDENCE_CONTENT,
     _ACTIVE_RETRIEVAL_SCOPE,
     _ActiveCompletenessIntent,
+    _ActiveRequestScope,
     _CanonicalEvidenceVerifier,
     _CurrentNoninteractiveAuthority,
+    _CurrentBundleRevalidator,
+    _CurrentCitationValidator,
+    _CurrentDisclosureStateProvider,
     _ParsedProjectionRetrieval,
     _ValidationPlans,
     _projection_reference_matches_evidence,
@@ -49,6 +59,7 @@ from spine.infrastructure.qa_worker_composition import (
     OneShotQualifiedContextBroker,
     TrustedQAAuthorizationContextRegistry,
 )
+from spine.domain.context_bundles import RevalidationDisposition
 from spine.memory.contracts import (
     ContextOutcome,
     ContextReasonCode,
@@ -59,6 +70,8 @@ from tests.application.test_production_qa_capability import (
     ExistingCitationValidation,
     ExistingSemanticValidation,
 )
+from tests.application.test_attempt_revalidation import request as revalidation_request
+from tests.application.test_disclosure_revalidation import request as disclosure_request
 from tests.domain.capabilities.test_answer_question_candidate import (
     candidate_input,
     candidate_output,
@@ -76,6 +89,41 @@ class _Rows:
         return self._rows
 
 
+class _ContextManager:
+    def __init__(self, value: object) -> None:
+        self.value = value
+
+    async def __aenter__(self) -> object:
+        return self.value
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+
+class _Boundary:
+    def worker(self, **_: object) -> object:
+        return object()
+
+
+def _denied_source_usage(monkeypatch, expected_usage: SourceUsageKind) -> None:
+    class DeniedGuard:
+        def __init__(self, _authority: object) -> None:
+            pass
+
+        async def evaluate(self, request: object) -> CurrentSourceUsageDecision:
+            assert request.usage is expected_usage
+            return CurrentSourceUsageDecision(
+                allowed=False,
+                reason=SourceUsageReason.DISCLOSURE_HELD,
+                required_dependency_count=len(request.dependencies),
+            )
+
+    monkeypatch.setattr(
+        "spine.infrastructure.qa_worker_composition.CurrentSourceUsageGuard",
+        DeniedGuard,
+    )
+
+
 def test_opaque_citation_is_evidence_invalidated_not_authorization_denied() -> None:
     rejection = _processing_citation_rejection(
         OrdinaryProcessingEligibility(
@@ -88,6 +136,239 @@ def test_opaque_citation_is_evidence_invalidated_not_authorization_denied() -> N
     assert rejection is not None
     assert rejection.reason_code is CitationValidationReasonCode.EVIDENCE_INVALIDATED
     assert rejection.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_current_citation_validator_rejects_when_source_usage_is_held(
+    monkeypatch,
+) -> None:
+    candidate = candidate_output()
+    bundle = candidate_input().context_bundle
+    citation = candidate.answer.citations[0]
+    _denied_source_usage(monkeypatch, SourceUsageKind.CITATION)
+
+    class Processing:
+        async def resolve(self, **_: object) -> SimpleNamespace:
+            return SimpleNamespace(eligible=True)
+
+    class UnitOfWork:
+        canonical = object()
+
+        def __init__(self) -> None:
+            self.context_bundles = SimpleNamespace(resolve=self.resolve_bundle)
+            self.projections = SimpleNamespace(
+                list_source_references=self.empty,
+                list_snapshot_members=self.empty,
+            )
+            self.sources = SimpleNamespace(resolve_revision=self.resolve_revision)
+
+        async def resolve_bundle(self, **_: object) -> object:
+            return bundle
+
+        async def empty(self, *_: object) -> tuple[object, ...]:
+            return ()
+
+        async def resolve_revision(self, *_: object) -> None:
+            return None
+
+        async def commit(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "spine.infrastructure.qa_worker_composition."
+        "CanonicalCurrentProcessingDispositionAuthority",
+        lambda _canonical: Processing(),
+    )
+    validator = _CurrentCitationValidator(
+        authorization=object(),
+        uow_factory=lambda _context: _ContextManager(UnitOfWork()),
+        boundary=_Boundary(),
+        service_principal_id=UUID(int=991),
+        operation="validate_citation",
+    )
+    token = _ACTIVE_REQUEST_SCOPE.set(
+        _ActiveRequestScope(
+            workspace_id=citation.workspace_id,
+            environment_id=citation.environment_id,
+            trace_id=UUID(int=992),
+        )
+    )
+    try:
+        result = await validator.validate(
+            citation=citation,
+            expected_context_bundle=candidate.context_bundle,
+            authorization_context=object(),
+        )
+    finally:
+        _ACTIVE_REQUEST_SCOPE.reset(token)
+
+    assert result.reason_code is CitationValidationReasonCode.EVIDENCE_INVALIDATED
+    assert result.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_current_bundle_revalidator_rejects_when_cache_usage_is_held(
+    monkeypatch,
+) -> None:
+    request = revalidation_request()
+    _denied_source_usage(monkeypatch, SourceUsageKind.CACHE_REUSE)
+
+    class UnitOfWork:
+        def __init__(self) -> None:
+            self.canonical = SimpleNamespace(resolve_current=self.resolve_current)
+            self.access_policies = SimpleNamespace(resolve_current=self.resolve_current)
+            self.projections = SimpleNamespace(
+                resolve_active_publication=self.resolve_publication
+            )
+
+        async def resolve_current(self, *_: object) -> None:
+            return None
+
+        async def resolve_publication(self, *_: object) -> None:
+            return None
+
+        async def commit(self) -> None:
+            return None
+
+    revalidator = _CurrentBundleRevalidator(
+        uow_factory=lambda _context: _ContextManager(UnitOfWork()),
+        boundary=_Boundary(),
+        service_principal_id=UUID(int=993),
+        operation="revalidate_cache",
+    )
+    token = _ACTIVE_REQUEST_SCOPE.set(
+        _ActiveRequestScope(
+            workspace_id=request.workspace_id,
+            environment_id=request.environment_id,
+            trace_id=UUID(int=994),
+        )
+    )
+    try:
+        result = await revalidator.revalidate(request)
+    finally:
+        _ACTIVE_REQUEST_SCOPE.reset(token)
+
+    assert result.disposition is RevalidationDisposition.REJECTED
+    assert result.bundle_reference is None
+    assert result.bundle_outcome is None
+
+
+@pytest.mark.asyncio
+async def test_current_disclosure_provider_marks_held_source_usage_ineligible(
+    monkeypatch,
+) -> None:
+    request = disclosure_request(message_id=UUID(int=995))
+    dependency = request.dependencies.dependencies[0]
+    _denied_source_usage(monkeypatch, SourceUsageKind.FINAL_DISCLOSURE)
+
+    class Authorization:
+        async def decide_human_disclosure(
+            self, _context: object, source_ids: tuple[UUID, ...]
+        ) -> SimpleNamespace:
+            return SimpleNamespace(
+                allowed=True,
+                policy_evidence=(
+                    SimpleNamespace(source_object_id=source_ids[0]),
+                ),
+                membership_generation=1,
+                authority_generation=1,
+            )
+
+    class Processing:
+        async def resolve(self, **_: object) -> SimpleNamespace:
+            return SimpleNamespace(
+                eligible=True,
+                reason=SimpleNamespace(value="eligible"),
+                canonical_acceptance_id=UUID(int=996),
+                processing_admission_id=UUID(int=997),
+                processing_mode="processor_required",
+            )
+
+    class UnitOfWork:
+        def __init__(self) -> None:
+            self.projections = SimpleNamespace(
+                resolve_active_publication=self.resolve_publication
+            )
+            self.canonical = SimpleNamespace(resolve_current=self.resolve_current)
+            self.sources = SimpleNamespace(resolve_revision=self.resolve_revision)
+            self.access_policies = SimpleNamespace(
+                resolve_current=self.resolve_policy
+            )
+
+        async def resolve_publication(self, *_: object) -> None:
+            return None
+
+        async def resolve_current(self, *_: object) -> SimpleNamespace:
+            return SimpleNamespace(
+                current_revision_id=dependency.source_revision_id,
+                current_revision_kind=RevisionKind.CONTENT,
+            )
+
+        async def resolve_revision(self, *_: object) -> SimpleNamespace:
+            return SimpleNamespace(
+                revision_id=dependency.source_revision_id,
+                revision_digest=dependency.source_revision_digest,
+            )
+
+        async def resolve_policy(self, *_: object) -> SimpleNamespace:
+            return SimpleNamespace(
+                access_policy_version_id=dependency.policy_version_id,
+                policy_generation=dependency.policy_generation,
+            )
+
+        async def commit(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "spine.infrastructure.qa_worker_composition."
+        "CanonicalCurrentProcessingDispositionAuthority",
+        lambda _canonical: Processing(),
+    )
+
+    async def constraints(*_: object, **__: object) -> tuple[bool, bool]:
+        return True, False
+
+    monkeypatch.setattr(
+        "spine.infrastructure.qa_worker_composition."
+        "resolve_final_disclosure_constraints",
+        constraints,
+    )
+    provider = _CurrentDisclosureStateProvider(
+        authorization=Authorization(),
+        uow_factory=lambda _context: _ContextManager(UnitOfWork()),
+        boundary=_Boundary(),
+        service_principal_id=UUID(int=998),
+        operation="revalidate_disclosure",
+    )
+    active = TrustedAuthorizationContext(
+        mode=AuthorizationContextMode.HUMAN_DISCLOSURE,
+        workspace_id=request.workspace_id,
+        environment_id=request.environment_id,
+        canonical_human_id=request.requester_id,
+        purpose="answer_question",
+        operation="disclose_answer",
+        membership_generation=1,
+        authority_generation=1,
+        authority_snapshot_reference=UUID(int=999),
+        trace_id=UUID(int=1000),
+        issued_at=datetime(2026, 11, 5, tzinfo=timezone.utc),
+    )
+    auth_token = _ACTIVE_AUTHORIZATION_CONTEXT.set(active)
+    scope_token = _ACTIVE_REQUEST_SCOPE.set(
+        _ActiveRequestScope(
+            workspace_id=request.workspace_id,
+            environment_id=request.environment_id,
+            trace_id=UUID(int=1000),
+        )
+    )
+    try:
+        result = await provider.resolve(request)
+    finally:
+        _ACTIVE_REQUEST_SCOPE.reset(scope_token)
+        _ACTIVE_AUTHORIZATION_CONTEXT.reset(auth_token)
+
+    assert result.dependencies[0].retention_eligible is False
+    assert result.dependencies[0].lifecycle_disclosure_eligible is False
 
 
 class _Transaction:

@@ -39,6 +39,10 @@ class OrdinaryProcessingEligibility(DefinitionModel):
     canonical_acceptance_id: UUID | None = None
     processing_admission_id: UUID | None = None
     processing_mode: ProcessingAdmissionMode | None = None
+    lifecycle_eligibility_reference: UUID | None = None
+    lifecycle_eligibility_generation: int | None = None
+    retention_applicability_reference: UUID | None = None
+    retention_applicability_generation: int | None = None
 
 
 class CanonicalProcessingDispositionReader(Protocol):
@@ -154,6 +158,18 @@ class CanonicalCurrentProcessingDispositionAuthority:
                 canonical_acceptance_id=acceptance.canonical_acceptance_id,
                 processing_admission_id=admission.processing_admission_id,
                 processing_mode=admission.mode,
+                lifecycle_eligibility_reference=getattr(
+                    admission, "lifecycle_eligibility_reference", None
+                ),
+                lifecycle_eligibility_generation=getattr(
+                    admission, "lifecycle_eligibility_generation", None
+                ),
+                retention_applicability_reference=getattr(
+                    admission, "retention_applicability_reference", None
+                ),
+                retention_applicability_generation=getattr(
+                    admission, "retention_applicability_generation", None
+                ),
             )
         if admission.mode is not ProcessingAdmissionMode.PROCESSOR_REQUIRED:
             return self._reject(
@@ -167,6 +183,10 @@ class CanonicalCurrentProcessingDispositionAuthority:
             canonical_acceptance_id=acceptance.canonical_acceptance_id,
             processing_admission_id=admission.processing_admission_id,
             processing_mode=admission.mode,
+            lifecycle_eligibility_reference=admission.lifecycle_eligibility_reference,
+            lifecycle_eligibility_generation=admission.lifecycle_eligibility_generation,
+            retention_applicability_reference=admission.retention_applicability_reference,
+            retention_applicability_generation=admission.retention_applicability_generation,
         )
 
     @staticmethod
@@ -176,6 +196,10 @@ class CanonicalCurrentProcessingDispositionAuthority:
         canonical_acceptance_id: UUID | None = None,
         processing_admission_id: UUID | None = None,
         processing_mode: ProcessingAdmissionMode | None = None,
+        lifecycle_eligibility_reference: UUID | None = None,
+        lifecycle_eligibility_generation: int | None = None,
+        retention_applicability_reference: UUID | None = None,
+        retention_applicability_generation: int | None = None,
     ) -> OrdinaryProcessingEligibility:
         return OrdinaryProcessingEligibility(
             eligible=False,
@@ -183,6 +207,10 @@ class CanonicalCurrentProcessingDispositionAuthority:
             canonical_acceptance_id=canonical_acceptance_id,
             processing_admission_id=processing_admission_id,
             processing_mode=processing_mode,
+            lifecycle_eligibility_reference=lifecycle_eligibility_reference,
+            lifecycle_eligibility_generation=lifecycle_eligibility_generation,
+            retention_applicability_reference=retention_applicability_reference,
+            retention_applicability_generation=retention_applicability_generation,
         )
 
 

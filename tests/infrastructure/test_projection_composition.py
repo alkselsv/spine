@@ -12,6 +12,9 @@ from spine.application.document_ingestion import (
 )
 from spine.application.outbox import OutboxConsumerSuccess
 from spine.application.projection_result_mapping import ProjectionPreparationStatus
+from spine.application.testing.source_usage import (
+    DeterministicCurrentSourceUsageAuthority,
+)
 from spine.application.persistence.outbox import (
     OpaqueObjectReference,
     OutboxEventRegistry,
@@ -274,6 +277,7 @@ async def test_postgresql_cognee_delivery_binding_completes_request_and_recovery
         parsed_artifacts=InMemoryParsedArtifactRepository(),
         receipt_builder=SyntheticReceiptBuilder(),
         result_bridge=results,
+        source_usage_authority=DeterministicCurrentSourceUsageAuthority(),
     )
     ordinary = _ordinary_production_intent()
     recovery = _recovery_production_intent(prepared)

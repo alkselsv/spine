@@ -69,6 +69,12 @@ from spine.domain.connections.email_scope import (
     EmailProviderOperation,
     MailboxReadScope,
 )
+from spine.domain.sources import (
+    RetentionApplicability,
+    RetentionArtifactClass,
+    RetentionAuthorityKind,
+    RetentionTargetKind,
+)
 from spine.application.google_drive_lifecycle import (
     DriveLifecycleDecisionState,
     DriveLifecycleSignal,
@@ -266,6 +272,7 @@ from tests.api.test_authorization import (
     authorized_app,
 )
 from tests.contracts.persistence.test_projection_contract import (
+    _prepare_projection_publication,
     test_projection_post_validation_fault_retains_seal_and_preserves_active as contract_projection_post_validation_fault,
     test_projection_pre_validation_fault_avoids_physical_read_and_preserves_active as contract_projection_pre_validation_fault,
     test_projection_successor_resolver_accepts_canonical_multi_format_boundary as contract_projection_successor_locator_contract,
@@ -864,6 +871,200 @@ async def postgresql_adapter(
         finally:
             await migration_engine.dispose()
 
+    async def prepare_current_source_authority(source, revision) -> None:
+        authority_time = revision.observed_at
+        decision_id = uuid5(NAMESPACE_URL, f"projection-lifecycle:{revision.revision_id}")
+        observation_id = uuid5(
+            NAMESPACE_URL, f"projection-lifecycle-observation:{revision.revision_id}"
+        )
+        applicability_id = uuid5(
+            NAMESPACE_URL, f"projection-retention:{revision.revision_id}"
+        )
+        binding = RetentionApplicability(
+            applicability_id=applicability_id,
+            workspace_id=source.workspace_id,
+            environment_id=source.environment_id,
+            target_kind=RetentionTargetKind.EXACT_SOURCE,
+            source_object_id=source.source_object_id,
+            artifact_classes=(RetentionArtifactClass.PROJECTION,),
+            retention_policy_id=uuid5(NAMESPACE_URL, "projection-retention-policy"),
+            retention_policy_version_id=uuid5(
+                NAMESPACE_URL, "projection-retention-policy:v1"
+            ),
+            retention_policy_digest="a" * 64,
+            applicability_evidence_reference=uuid5(
+                NAMESPACE_URL, f"projection-retention-evidence:{revision.revision_id}"
+            ),
+            applicability_evidence_digest="b" * 64,
+            approving_authority_reference=uuid5(
+                NAMESPACE_URL, "projection-retention-authority"
+            ),
+            approving_authority_version_id=uuid5(
+                NAMESPACE_URL, "projection-retention-authority:v1"
+            ),
+            approving_authority_digest="c" * 64,
+            approving_authority_kind=RetentionAuthorityKind.LEGAL_COMPLIANCE,
+            effective_from=authority_time - timedelta(days=1),
+            expected_current_applicability_id=None,
+            expected_current_generation=0,
+            generation=1,
+            actor_id=synthetic_uuid(953),
+            audit_event_id=uuid5(
+                NAMESPACE_URL, f"projection-retention-audit:{revision.revision_id}"
+            ),
+            outbox_event_id=uuid5(
+                NAMESPACE_URL, f"projection-retention-outbox:{revision.revision_id}"
+            ),
+            approved_at=authority_time,
+        )
+        migration_engine = create_async_engine(
+            postgresql_contract_database.migration_url.get_secret_value(),
+            hide_parameters=True,
+        )
+        try:
+            async with migration_engine.begin() as connection:
+                common = {
+                    "workspace_id": source.workspace_id,
+                    "environment_id": source.environment_id,
+                    "source_object_id": source.source_object_id,
+                    "revision_id": revision.revision_id,
+                    "decision_id": decision_id,
+                    "observation_id": observation_id,
+                    "applicability_id": applicability_id,
+                    "connection_id": source.connection_id,
+                    "scope_reference": uuid5(
+                        NAMESPACE_URL, f"projection-scope:{source.source_object_id}"
+                    ),
+                    "scope_version_id": uuid5(
+                        NAMESPACE_URL, f"projection-scope:v1:{source.source_object_id}"
+                    ),
+                    "lifecycle_audit_id": uuid5(
+                        NAMESPACE_URL, f"projection-lifecycle-audit:{revision.revision_id}"
+                    ),
+                    "lifecycle_outbox_id": uuid5(
+                        NAMESPACE_URL, f"projection-lifecycle-outbox:{revision.revision_id}"
+                    ),
+                    "retention_audit_id": binding.audit_event_id,
+                    "retention_outbox_id": binding.outbox_event_id,
+                    "now": authority_time,
+                }
+                if source.connection_id is None:
+                    raise AssertionError(
+                        "projection contract source must have a connector identity"
+                    )
+                for audit_id, outbox_id, suffix in (
+                    (
+                        common["lifecycle_audit_id"],
+                        common["lifecycle_outbox_id"],
+                        "lifecycle",
+                    ),
+                    (
+                        common["retention_audit_id"],
+                        common["retention_outbox_id"],
+                        "retention",
+                    ),
+                ):
+                    await connection.execute(
+                        text(
+                            "INSERT INTO spine.audit_events (audit_event_id, workspace_id, "
+                            "environment_id, event_type, schema_version, origin, trace_id, "
+                            "service_principal_id, occurred_at, appended_at, target_type, target_id, "
+                            "target_schema_version, outcome, reason, producer_deduplication_id, "
+                            "payload) VALUES (:audit_id, :workspace_id, :environment_id, "
+                            "'source.authority.contract_test', 1, 'worker', :audit_id, "
+                            ":source_object_id, :now, "
+                            ":now, 'source_object', :source_object_id, 1, 'committed', "
+                            "'projection_contract_authority', :deduplication_id, '{}'::jsonb)"
+                        ),
+                        {
+                            **common,
+                            "audit_id": audit_id,
+                            "deduplication_id": f"projection-contract-{suffix}:{revision.revision_id}",
+                        },
+                    )
+                    await connection.execute(
+                        text(
+                            "INSERT INTO spine.outbox_intents (event_id, workspace_id, "
+                            "environment_id, event_type, event_schema_version, aggregate_type, "
+                            "aggregate_id, aggregate_schema_version, producer_deduplication_id, "
+                            "payload, trace_id, created_at) VALUES (:outbox_id, :workspace_id, "
+                            ":environment_id, 'source.authority.contract_test', 1, "
+                            "'source_object', :source_object_id, 1, :deduplication_id, "
+                            "'{}'::jsonb, :outbox_id, :now)"
+                        ),
+                        {
+                            **common,
+                            "outbox_id": outbox_id,
+                            "deduplication_id": f"projection-contract-{suffix}:{revision.revision_id}",
+                        },
+                    )
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.lifecycle_observations (observation_id, workspace_id, "
+                        "environment_id, source_object_id, connection_id, connection_version_id, "
+                        "scope_reference, scope_version_id, scope_digest, kind, evidence_reference, "
+                        "record, observed_at) VALUES (:observation_id, :workspace_id, "
+                        ":environment_id, :source_object_id, :connection_id, :revision_id, "
+                        ":scope_reference, :scope_version_id, repeat('d', 64), "
+                        "'move_within_scope', :revision_id, '{}'::jsonb, :now)"
+                    ),
+                    common,
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.lifecycle_decisions (decision_id, workspace_id, "
+                        "environment_id, source_object_id, observation_id, connection_id, "
+                        "connection_version_id, scope_reference, scope_version_id, scope_digest, "
+                        "effect, status, authority_reference, authority_version_id, authority_kind, "
+                        "actor_id, audit_event_id, outbox_event_id, generation, record, decided_at) "
+                        "VALUES (:decision_id, :workspace_id, :environment_id, :source_object_id, "
+                        ":observation_id, :connection_id, :revision_id, :scope_reference, "
+                        ":scope_version_id, repeat('d', 64), 'eligible', 'eligible', "
+                        ":source_object_id, :revision_id, 'source_governance', :source_object_id, "
+                        ":lifecycle_audit_id, :lifecycle_outbox_id, 1, '{}'::jsonb, :now)"
+                    ),
+                    common,
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.current_lifecycle_authorities (workspace_id, environment_id, "
+                        "source_object_id, current_decision_id, generation, updated_at) VALUES "
+                        "(:workspace_id, :environment_id, :source_object_id, :decision_id, 1, :now)"
+                    ),
+                    common,
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.retention_applicabilities (applicability_id, workspace_id, "
+                        "environment_id, target_kind, target_reference, source_object_id, "
+                        "retention_policy_id, retention_policy_version_id, retention_policy_digest, "
+                        "generation, audit_event_id, outbox_event_id, record, approved_at) VALUES "
+                        "(:applicability_id, :workspace_id, :environment_id, 'exact_source', "
+                        ":source_object_id, :source_object_id, :policy_id, :policy_version_id, "
+                        ":policy_digest, 1, :audit_id, :outbox_id, CAST(:record AS jsonb), :now)"
+                    ),
+                    {
+                        **common,
+                        "policy_id": binding.retention_policy_id,
+                        "policy_version_id": binding.retention_policy_version_id,
+                        "policy_digest": binding.retention_policy_digest,
+                        "audit_id": binding.audit_event_id,
+                        "outbox_id": binding.outbox_event_id,
+                        "record": binding.model_dump_json(),
+                    },
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.current_retention_applicabilities (workspace_id, "
+                        "environment_id, target_kind, target_reference, current_applicability_id, "
+                        "generation, updated_at) VALUES (:workspace_id, :environment_id, "
+                        "'exact_source', :source_object_id, :applicability_id, 1, :now)"
+                    ),
+                    common,
+                )
+        finally:
+            await migration_engine.dispose()
+
     try:
         yield PersistenceAdapter(
             uow_factory=persistence.uow_factory,
@@ -877,6 +1078,7 @@ async def postgresql_adapter(
             governance_context=governance_context,
             interactive_environment_context=interactive_environment_context,
             prepare_legacy_tombstone_selector=prepare_legacy_tombstone_selector,
+            prepare_current_source_authority=prepare_current_source_authority,
         )
     finally:
         await engine.dispose()
@@ -4044,6 +4246,132 @@ async def test_postgresql_projection_publication_satisfies_cas_contract(
     postgresql_adapter: PersistenceAdapter,
 ) -> None:
     await contract_projection_publication(postgresql_adapter)
+
+
+async def test_postgresql_source_usage_guard_fences_authority_changes_until_rollback(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    from spine.application.source_usage_guard import (
+        SourceUsageArtifact,
+        SourceUsageDependency,
+        SourceUsageKind,
+        SourceUsageRequest,
+    )
+    from spine.domain.sources import (
+        RetentionArtifactClass,
+        disclosure_hold_dependency_id,
+    )
+    from spine.domain.projections import ProjectionSnapshotMemberDisposition
+    from spine.infrastructure.persistence.postgresql_source_locks import (
+        retention_source_class_key,
+        source_lifecycle_key,
+    )
+    from spine.infrastructure.source_usage_guard import (
+        TransactionCurrentSourceUsageAuthority,
+    )
+
+    prepared = await _prepare_projection_publication(postgresql_adapter, seed=74700)
+    snapshot = prepared.assembled.value
+    async with postgresql_adapter.uow_factory(prepared.activation_context) as uow:
+        members = await uow.projections.list_snapshot_members(
+            snapshot.projection_snapshot_id
+        )
+        included = tuple(
+            member
+            for member in members
+            if member.disposition is ProjectionSnapshotMemberDisposition.INCLUDED
+        )
+        decision = await TransactionCurrentSourceUsageAuthority(uow).evaluate(
+            SourceUsageRequest(
+                workspace_id=snapshot.workspace_id,
+                environment_id=snapshot.environment_id,
+                usage=SourceUsageKind.PROJECTION_ACTIVATION,
+                artifact=SourceUsageArtifact(
+                    artifact_class=RetentionArtifactClass.PROJECTION,
+                    artifact_id=snapshot.projection_snapshot_id,
+                    artifact_version=prepared.activated.activation.activation_generation,
+                    artifact_digest=snapshot.manifest_digest,
+                ),
+                dependencies=tuple(
+                    SourceUsageDependency(
+                        source_object_id=member.source_object_id,
+                        source_revision_id=member.source_revision_id,
+                        dependency_id=disclosure_hold_dependency_id(
+                            snapshot.workspace_id,
+                            snapshot.environment_id,
+                            member.source_object_id,
+                            member.source_revision_id,
+                        ),
+                        artifact_member_id=member.projection_snapshot_member_id,
+                    )
+                    for member in included
+                ),
+                evaluated_at=INGESTION_CONTRACT_NOW,
+            )
+        )
+        assert decision.allowed
+        source_object_id = included[0].source_object_id
+        engine = create_async_engine(
+            postgresql_contract_database.migration_url.get_secret_value(),
+            hide_parameters=True,
+        )
+        try:
+            async with engine.begin() as connection:
+                acquired = await connection.scalar(
+                    text(
+                        "SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"
+                    ),
+                    {
+                        "key": source_lifecycle_key(
+                            workspace_id=snapshot.workspace_id,
+                            environment_id=snapshot.environment_id,
+                            source_object_id=source_object_id,
+                        )
+                    },
+                )
+                assert acquired is False
+            async with engine.begin() as connection:
+                acquired = await connection.scalar(
+                    text(
+                        "SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"
+                    ),
+                    {
+                        "key": retention_source_class_key(
+                            workspace_id=snapshot.workspace_id,
+                            environment_id=snapshot.environment_id,
+                            source_class="document",
+                        )
+                    },
+                )
+                assert acquired is False
+            for statement in (
+                "UPDATE spine.current_source_heads SET changed_at = changed_at "
+                "WHERE workspace_id = :workspace_id AND environment_id = :environment_id "
+                "AND source_object_id = :source_object_id",
+                "UPDATE spine.current_lifecycle_authorities SET updated_at = updated_at "
+                "WHERE workspace_id = :workspace_id AND environment_id = :environment_id "
+                "AND source_object_id = :source_object_id",
+                "UPDATE spine.current_retention_applicabilities SET updated_at = updated_at "
+                "WHERE workspace_id = :workspace_id AND environment_id = :environment_id "
+                "AND target_kind = 'exact_source' AND target_reference = :source_object_id",
+            ):
+                with pytest.raises(DBAPIError):
+                    async with engine.begin() as connection:
+                        await connection.execute(
+                            text("SET LOCAL lock_timeout = '100ms'")
+                        )
+                        await connection.execute(
+                            text(statement),
+                            {
+                                "workspace_id": snapshot.workspace_id,
+                                "environment_id": snapshot.environment_id,
+                                "source_object_id": source_object_id,
+                            },
+                        )
+        finally:
+            await engine.dispose()
+        await uow.rollback()
 
 
 async def test_postgresql_projection_successor_tombstone_satisfies_contract(

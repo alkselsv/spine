@@ -33,6 +33,9 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     disclosure_holds,
     lifecycle_decisions,
 )
+from spine.infrastructure.persistence.postgresql_source_locks import (
+    lock_source_lifecycle_exclusive,
+)
 
 
 class PostgreSQLDisclosureHoldRepository(DisclosureHoldRepository):
@@ -51,6 +54,12 @@ class PostgreSQLDisclosureHoldRepository(DisclosureHoldRepository):
         _context(context, hold.workspace_id, hold.environment_id, hold.actor_id)
         try:
             async with self._uow_factory(context) as uow:
+                await lock_source_lifecycle_exclusive(
+                    uow._execute,  # type: ignore[attr-defined]
+                    workspace_id=hold.workspace_id,
+                    environment_id=hold.environment_id,
+                    source_object_id=hold.source_object_id,
+                )
                 existing = await _hold_by_id(uow, hold.hold_id)
                 if existing is not None:
                     await uow.rollback()  # type: ignore[attr-defined]
@@ -185,6 +194,12 @@ class PostgreSQLDisclosureHoldRepository(DisclosureHoldRepository):
         )
         try:
             async with self._uow_factory(context) as uow:
+                await lock_source_lifecycle_exclusive(
+                    uow._execute,  # type: ignore[attr-defined]
+                    workspace_id=release.workspace_id,
+                    environment_id=release.environment_id,
+                    source_object_id=release.source_object_id,
+                )
                 result = await uow._execute(  # type: ignore[attr-defined]
                     select(disclosure_hold_releases).where(
                         disclosure_hold_releases.c.workspace_id == release.workspace_id,
