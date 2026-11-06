@@ -229,6 +229,7 @@ class QualificationAuthorityBinding(DefinitionModel):
     subject_reference: UUID | None = None
     workspace_reference: UUID | None = None
     environment_reference: UUID | None = None
+    scope: QualificationScopeCode | None = None
     purpose: QualificationScopeCode | None = None
     action: QualificationScopeCode | None = None
     evidence_reference: UUID | None = None
@@ -240,6 +241,7 @@ class QualificationAuthorityBinding(DefinitionModel):
             self.subject_reference,
             self.workspace_reference,
             self.environment_reference,
+            self.scope,
             self.purpose,
             self.action,
         )

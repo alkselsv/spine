@@ -80,6 +80,7 @@ def complete_synthetic_evidence_record():
                 subject_reference=reference(17),
                 workspace_reference=reference(18),
                 environment_reference=reference(14),
+                scope="commit_permit",
                 purpose="qualification",
                 action="commit",
                 evidence_reference=reference(19),
@@ -473,6 +474,20 @@ def test_incomplete_exact_binding_is_f4_denied() -> None:
 
     assert result.outcome_code is FenceDiagnosticOutcome.F4_DENIED
     assert result.reason_code is FenceDiagnosticReason.INCOMPLETE_AUTHORITY_BINDING
+
+
+def test_verified_authority_binding_requires_an_explicit_scope() -> None:
+    with pytest.raises(ValidationError):
+        QualificationAuthorityBinding(
+            status=QualificationEvidenceStatus.VERIFIED,
+            issuer_reference=reference(1),
+            subject_reference=reference(2),
+            workspace_reference=reference(3),
+            environment_reference=reference(4),
+            purpose="qualification",
+            action="commit",
+            evidence_reference=reference(5),
+        )
 
 
 def test_synthetic_authority_class_is_f4_denied() -> None:

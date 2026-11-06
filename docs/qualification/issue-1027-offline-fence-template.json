@@ -27,6 +27,7 @@
     "subject_reference": null,
     "workspace_reference": null,
     "environment_reference": null,
+    "scope": null,
     "purpose": null,
     "action": null,
     "evidence_reference": null

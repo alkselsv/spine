@@ -37,7 +37,7 @@ references.
 | `provider_reference`, `provider_identity` | Authority/provider identity and accountable authority owner; must identify the approval/terms authority, not a source-data connector. |
 | `provider_contract_version`, `provider_contract` | Exact authoritative contract, service/API version, evidence reference and permit/revocation semantics. |
 | `environment_reference`, `environment` | Named qualification environment, deployment boundary, runtime identity and provider configuration reference. |
-| `authority_binding` | Exact issuer, subject, workspace, environment, purpose and action, each represented by an opaque reference or bounded code and tied to evidence. |
+| `authority_binding` | Exact issuer, subject, scope, workspace, environment, purpose and action, each represented by an opaque reference or bounded code and tied to evidence. |
 | `permit_acquisition_release`, `revocation_acknowledgement_order` | Acquire/release behavior and documented commit-permit versus revocation-acknowledgement ordering, reviewed by Security. |
 | `expiry_renewal_guarantees`, `stale_holder_generation_semantics` | Provider expiry/renewal rules and stale-holder/generation behavior. |
 | `clock_uncertainty`, `transaction_commit_bounds`, `parameters` | Provider-approved clock model, uncertainty, safety margin, permit lifetime, maximum transaction duration, renewal support/interval, request timeout and retry bound. Every numeric parameter is `null` until provider/environment evidence supplies it; the verified form requires a value and evidence reference. |
