@@ -102,8 +102,13 @@ from spine.infrastructure.db.settings import (
     POSTGRESQL_SEARCH_PATH_OPTIONS,
     MigrationDatabaseSettings,
     OperatorDatabaseSettings,
+    TestDatabaseSettings,
 )
-from spine.infrastructure.db.test_harness import TestDatabaseProvision
+from spine.infrastructure.db.test_harness import (
+    TestDatabaseProvision,
+    install_container_marker,
+    provision_test_database,
+)
 from spine.infrastructure.object_storage.contracts import AuthorizedReadGrantRegistry
 from spine.infrastructure.object_storage.testing import (
     DeterministicOriginalObjectStoreFake,
@@ -2138,7 +2143,129 @@ async def test_postgresql_gmail_history_cursor_recovery_crash_replays_successor(
     assert sum(page.terminal for page in successor.pages) == 1
 
 
+@pytest_asyncio.fixture(loop_scope="session")
+async def historical_email_sync_database() -> AsyncIterator[TestDatabaseProvision]:
+    settings = TestDatabaseSettings(use_testcontainers=True)
+    provision = provision_test_database(
+        settings,
+        run_id=f"email-history-{uuid4().hex[:12]}",
+    )
+    if not provision.is_explicit:
+        await install_container_marker(provision)
+    try:
+        yield provision
+    finally:
+        if provision.container is not None:
+            provision.container.stop()
+
+
 async def test_email_sync_migration_supports_downgrade_and_upgrade(
+    historical_email_sync_database: TestDatabaseProvision,
+) -> None:
+    provision = historical_email_sync_database
+    await bootstrap_database_roles(
+        OperatorDatabaseSettings(
+            url=provision.url,
+            database_name=provision.target.database_name,
+            migration_role=MIGRATION_ROLE,
+            migration_password=MIGRATION_PASSWORD,
+            runtime_role=RUNTIME_ROLE,
+            runtime_password=RUNTIME_PASSWORD,
+            dispatcher_role=DISPATCHER_ROLE,
+            dispatcher_password=DISPATCHER_PASSWORD,
+        )
+    )
+    settings = MigrationDatabaseSettings(
+        url=_role_url(provision, MIGRATION_ROLE, MIGRATION_PASSWORD),
+        migration_role=MIGRATION_ROLE,
+        runtime_role=RUNTIME_ROLE,
+        dispatcher_role=DISPATCHER_ROLE,
+    )
+    config_path, script_location = locate_migration_assets()
+    config = Config(str(config_path))
+    config.set_main_option("script_location", str(script_location))
+    config.attributes["migration_settings"] = settings
+
+    await asyncio.to_thread(command.upgrade, config, "20270112_111")
+    migration_engine = create_async_engine(
+        settings.url.get_secret_value(), hide_parameters=True
+    )
+    workspace_id = UUID("8a000000-0000-0000-0000-000000000091")
+    environment_id = UUID("8b000000-0000-0000-0000-000000000091")
+    attempt_id = UUID("8c000000-0000-0000-0000-000000000091")
+    try:
+        async with migration_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.workspaces (id, slug, display_name) "
+                    "VALUES (:workspace, 'historical-email-sync', 'Historical')"
+                ),
+                {"workspace": workspace_id},
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.environments "
+                    "(id, workspace_id, kind, display_name) "
+                    "VALUES (:environment, :workspace, 'development', 'Historical')"
+                ),
+                {"environment": environment_id, "workspace": workspace_id},
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.email_sync_attempts "
+                    "(workspace_id, environment_id, attempt_id, attempt_key, revision, "
+                    "authorization_generation, configuration_generation, scope_generation, "
+                    "committed_checkpoint, record, created_at, updated_at) VALUES "
+                    "(:workspace, :environment, :attempt, 'historical-attempt', 1, 1, 1, 1, "
+                    "'cursor:historical:2', '{\"schema_version\":\"historical\"}'::jsonb, "
+                    "now(), now())"
+                ),
+                {
+                    "workspace": workspace_id,
+                    "environment": environment_id,
+                    "attempt": attempt_id,
+                },
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.email_sync_pages "
+                    "(workspace_id, environment_id, attempt_id, page_id, page_digest, committed, record) "
+                    "VALUES (:workspace, :environment, :attempt, 'historical-page', "
+                    "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', true, "
+                    "'{\"effects\":[]}'::jsonb)"
+                ),
+                {
+                    "workspace": workspace_id,
+                    "environment": environment_id,
+                    "attempt": attempt_id,
+                },
+            )
+        await asyncio.to_thread(command.downgrade, config, "20261227_95")
+        async with migration_engine.connect() as connection:
+            absent = await connection.scalar(
+                text("SELECT to_regclass('spine.email_sync_attempts') IS NULL")
+            )
+            revision = await connection.scalar(
+                text("SELECT version_num FROM spine.alembic_version")
+            )
+        assert absent is True
+        assert revision == "20261227_95"
+
+        await asyncio.to_thread(command.upgrade, config, "20270112_111")
+        async with migration_engine.connect() as connection:
+            present = await connection.scalar(
+                text("SELECT to_regclass('spine.email_sync_attempts') IS NOT NULL")
+            )
+            revision = await connection.scalar(
+                text("SELECT version_num FROM spine.alembic_version")
+            )
+        assert present is True
+        assert revision == "20270112_111"
+    finally:
+        await migration_engine.dispose()
+
+
+async def test_email_sync_erasure_migration_downgrade_is_irreversible(
     email_sync_repository,
 ) -> None:
     _, _, migration_engine, settings, *_ = email_sync_repository
@@ -2147,14 +2274,17 @@ async def test_email_sync_migration_supports_downgrade_and_upgrade(
     config.set_main_option("script_location", str(script_location))
     config.attributes["migration_settings"] = settings
 
-    await asyncio.to_thread(command.downgrade, config, "20261227_95")
+    with pytest.raises(RuntimeError, match="erasure migration is irreversible"):
+        await asyncio.to_thread(command.downgrade, config, "20270114_113")
     async with migration_engine.connect() as connection:
-        absent = await connection.scalar(
-            text("SELECT to_regclass('spine.email_sync_attempts') IS NULL")
+        revision = await connection.scalar(
+            text("SELECT version_num FROM spine.alembic_version")
         )
-    assert absent is True
-
-    await asyncio.to_thread(upgrade_database, settings)
+        function_present = await connection.scalar(
+            text("SELECT to_regprocedure('spine.email_sync_page_digest_v2(jsonb)') IS NOT NULL")
+        )
+    assert revision == "20270115_114"
+    assert function_present is True
 
 
 async def test_postgresql_gmail_crash_after_canonical_acceptance_has_one_effect(

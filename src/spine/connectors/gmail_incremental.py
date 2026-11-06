@@ -27,6 +27,7 @@ from spine.connectors.gmail_history import (
 )
 from spine.connectors.gmail_checkpoints import encode_gmail_history_checkpoint
 from spine.domain.connections.email_scope import MailboxReadScope
+from spine.domain.sources.gmail import GmailMessageKey, gmail_source_identity
 
 
 class GmailHistoryEffectFactory(Protocol):
@@ -264,7 +265,13 @@ class GmailIncrementalHistoryApplier:
                 change.event_id.encode("utf-8")
             ).hexdigest(),
             subject_reference_digest=hashlib.sha256(
-                change.message_id.encode("utf-8")
+                gmail_source_identity(
+                    GmailMessageKey(
+                        connection_id=self.scope.connection_id,
+                        mailbox_binding_id=self.scope.mailbox_binding_id,
+                        message_id=change.message_id,
+                    )
+                ).external_object_id.encode("utf-8")
             ).hexdigest(),
             provider_generation=change.history_id,
             outbox_event_id=outbox_event_id,

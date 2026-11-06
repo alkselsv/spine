@@ -109,6 +109,74 @@ def upgrade() -> None:
     )
     op.execute(
         f"""
+        CREATE FUNCTION {SCHEMA}.email_sync_page_json_canonical(p_value jsonb)
+        RETURNS text
+        LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+        SET search_path = pg_catalog, {SCHEMA}
+        AS $function$
+            SELECT CASE jsonb_typeof(p_value)
+                WHEN 'object' THEN
+                    '{{' || coalesce((
+                        SELECT string_agg(
+                            to_json(e.key)::text || ':' ||
+                                {SCHEMA}.email_sync_page_json_canonical(e.value),
+                            ',' ORDER BY e.key COLLATE "C"
+                        ) FROM jsonb_each(p_value) AS e
+                    ), '') || '}}'
+                WHEN 'array' THEN
+                    '[' || coalesce((
+                        SELECT string_agg(
+                            {SCHEMA}.email_sync_page_json_canonical(a.value),
+                            ',' ORDER BY a.ordinality
+                        ) FROM jsonb_array_elements(p_value) WITH ORDINALITY AS a(value, ordinality)
+                    ), '') || ']'
+                ELSE p_value::text
+            END
+        $function$
+        """
+    )
+    op.execute(
+        f"""
+        CREATE FUNCTION {SCHEMA}.email_sync_page_digest_v2(p_record jsonb)
+        RETURNS text
+        LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE
+        SET search_path = pg_catalog, {SCHEMA}
+        AS $function$
+        DECLARE
+            page_input jsonb;
+        BEGIN
+            page_input := p_record - ARRAY[
+                'page_digest', 'page_digest_contract', 'page_schema_version',
+                'covered_checkpoint',
+                'effect_receipts', 'committed'
+            ]::text[];
+            IF p_record->>'coverage_terminal' = 'false' THEN
+                page_input := page_input - 'coverage_terminal';
+            END IF;
+            IF p_record->>'page_kind' = 'provider_page' THEN
+                page_input := page_input - 'page_kind';
+            END IF;
+            RETURN encode(sha256(convert_to(
+                {SCHEMA}.email_sync_page_json_canonical(page_input), 'UTF8'
+            )), 'hex');
+        END
+        $function$
+        """
+    )
+    op.execute(
+        f"REVOKE ALL ON FUNCTION {SCHEMA}.email_sync_page_json_canonical(jsonb) FROM PUBLIC"
+    )
+    op.execute(
+        f"REVOKE ALL ON FUNCTION {SCHEMA}.email_sync_page_digest_v2(jsonb) FROM PUBLIC"
+    )
+    op.execute(
+        f"GRANT EXECUTE ON FUNCTION {SCHEMA}.email_sync_page_json_canonical(jsonb) TO {executor}"
+    )
+    op.execute(
+        f"GRANT EXECUTE ON FUNCTION {SCHEMA}.email_sync_page_digest_v2(jsonb) TO {executor}"
+    )
+    op.execute(
+        f"""
         CREATE FUNCTION {SCHEMA}.erase_email_sync_source_lineage()
         RETURNS trigger
         LANGUAGE plpgsql SECURITY DEFINER
@@ -128,6 +196,8 @@ def upgrade() -> None:
             intent_row record;
             receipt_row record;
             kept_receipts jsonb;
+            json_key text;
+            observation_record jsonb;
         BEGIN
             IF current_user <> '{executor.strip(chr(34))}'
                OR NOT {SCHEMA}.source_erasure_scope_allowed(
@@ -144,6 +214,100 @@ def upgrade() -> None:
                     USING ERRCODE = '23514';
             END IF;
             message_digest := encode(sha256(convert_to(OLD.external_object_id, 'UTF8')), 'hex');
+
+            FOR page_row IN
+                SELECT p.*
+                  FROM {SCHEMA}.email_sync_pages p
+                  JOIN {SCHEMA}.email_sync_attempts a
+                    ON a.workspace_id = p.workspace_id
+                   AND a.environment_id = p.environment_id
+                   AND a.attempt_id = p.attempt_id
+                 WHERE p.workspace_id = OLD.workspace_id
+                   AND p.environment_id = OLD.environment_id
+                   AND a.record->'admission'->>'connection_id' = OLD.connection_id::text
+            LOOP
+                IF jsonb_typeof(page_row.record) <> 'object'
+                   OR jsonb_typeof(page_row.record->'effects') <> 'array'
+                   OR page_row.record ? 'unclassified_lineage'
+                   OR coalesce(page_row.record->>'page_schema_version', 'email-sync-page:v1')
+                        <> 'email-sync-page:v1' THEN
+                    RAISE EXCEPTION 'Email sync page schema is not classified.'
+                        USING ERRCODE = '23514';
+                END IF;
+                FOR json_key IN SELECT jsonb_object_keys(page_row.record)
+                LOOP
+                    IF NOT json_key = ANY(ARRAY[
+                        'workspace_id', 'environment_id', 'page_kind', 'page_id',
+                        'page_digest', 'page_digest_contract', 'page_schema_version',
+                        'requested_checkpoint', 'covered_checkpoint', 'next_checkpoint',
+                        'terminal', 'publish_checkpoint', 'coverage_terminal',
+                        'evidence_digest', 'evidence_cursor', 'effects',
+                        'lifecycle_receipts'
+                    ]) THEN
+                        RAISE EXCEPTION 'Email sync page contains unclassified fields.'
+                            USING ERRCODE = '23514';
+                    END IF;
+                END LOOP;
+                FOR effect IN SELECT value FROM jsonb_array_elements(page_row.record->'effects')
+                LOOP
+                    IF jsonb_typeof(effect) <> 'object' THEN
+                        RAISE EXCEPTION 'Email sync page effect is unclassified.'
+                            USING ERRCODE = '23514';
+                    END IF;
+                    FOR json_key IN SELECT jsonb_object_keys(effect)
+                    LOOP
+                        IF NOT json_key = ANY(ARRAY[
+                            'workspace_id', 'environment_id', 'effect_key',
+                            'effect_reference', 'kind', 'state_observation'
+                        ]) THEN
+                            RAISE EXCEPTION 'Email sync effect contains unclassified fields.'
+                                USING ERRCODE = '23514';
+                        END IF;
+                    END LOOP;
+                    IF effect->>'kind' = 'state' THEN
+                        observation_record := effect->'state_observation';
+                        IF jsonb_typeof(observation_record) <> 'object'
+                           OR observation_record->>'schema_version'
+                              NOT IN ('email-sync-state-observation:v1',
+                                      'email-sync-state-observation:v2') THEN
+                            RAISE EXCEPTION 'Email sync state schema is not classified.'
+                                USING ERRCODE = '23514';
+                        END IF;
+                        IF observation_record->>'schema_version' = 'email-sync-state-observation:v1'
+                           AND observation_record->>'connection_id' = OLD.connection_id::text THEN
+                            RAISE EXCEPTION 'Legacy Gmail state lineage is not source-qualified.'
+                                USING ERRCODE = '23514';
+                        END IF;
+                        FOR json_key IN SELECT jsonb_object_keys(observation_record)
+                        LOOP
+                            IF NOT json_key = ANY(ARRAY[
+                                'schema_version', 'observation_id', 'workspace_id',
+                                'environment_id', 'connection_id', 'mailbox_binding_id',
+                                'state_kind', 'provider_event_digest',
+                                'subject_reference_digest', 'provider_generation',
+                                'outbox_event_id'
+                            ]) THEN
+                                RAISE EXCEPTION 'Email sync observation contains unclassified fields.'
+                                    USING ERRCODE = '23514';
+                            END IF;
+                        END LOOP;
+                    ELSIF effect->>'kind' <> 'content' THEN
+                        RAISE EXCEPTION 'Email sync effect kind is not classified.'
+                            USING ERRCODE = '23514';
+                    END IF;
+                END LOOP;
+            END LOOP;
+
+            IF EXISTS (
+                SELECT 1 FROM {SCHEMA}.email_sync_state_observations o
+                 WHERE o.workspace_id = OLD.workspace_id
+                   AND o.environment_id = OLD.environment_id
+                   AND o.connection_id = OLD.connection_id
+                   AND o.record->>'schema_version' = 'email-sync-state-observation:v1'
+            ) THEN
+                RAISE EXCEPTION 'Legacy Gmail state lineage is not source-qualified.'
+                    USING ERRCODE = '23514';
+            END IF;
 
             FOR page_row IN
                 SELECT p.*
@@ -237,8 +401,12 @@ def upgrade() -> None:
 
                 new_record := jsonb_set(page_row.record, '{{effects}}', kept_effects, false);
                 new_record := jsonb_set(new_record, '{{page_id}}', to_jsonb(new_page_id), true);
+                new_record := jsonb_set(new_record, '{{page_digest_contract}}',
+                    to_jsonb('email-sync-page-digest:v2'::text), true);
+                new_record := jsonb_set(new_record, '{{page_schema_version}}',
+                    to_jsonb('email-sync-page:v1'::text), true);
                 new_record := jsonb_set(new_record, '{{page_digest}}',
-                    to_jsonb(encode(sha256(convert_to(new_record::text, 'UTF8')), 'hex')), true);
+                    to_jsonb({SCHEMA}.email_sync_page_digest_v2(new_record)), true);
                 UPDATE {SCHEMA}.email_sync_pages
                    SET page_id = new_page_id,
                        page_digest = new_record->>'page_digest',

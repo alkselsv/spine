@@ -10,6 +10,7 @@ from sqlalchemy import insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from spine.application.email_sync import (
+    EmailSyncCoordinator,
     EmailSyncAttempt,
     EmailSyncConcurrentUpdateError,
     EmailSyncPageState,
@@ -21,6 +22,7 @@ from spine.application.email_sync import (
     EmailSyncStateObservedOutboxPayload,
     EMAIL_SYNC_STATE_OBSERVED_EVENT_TYPE,
     EMAIL_SYNC_STATE_OBSERVED_SCHEMA_VERSION,
+    EMAIL_SYNC_PAGE_DIGEST_V2,
     register_email_sync_outbox_event,
 )
 from spine.application.persistence.context import PersistenceOperation
@@ -167,16 +169,24 @@ class PostgreSQLEmailSyncRepository(EmailSyncRepository):
                         durable=receipt["durable"],
                     )
                 )
-            pages = tuple(
-                EmailSyncPageState.model_validate(
+            pages_list: list[EmailSyncPageState] = []
+            for page in pages_result.mappings().all():
+                state = EmailSyncPageState.model_validate(
                     {
                         **page["record"],
                         "committed": page["committed"],
                         "effect_receipts": receipt_index.get(page["page_id"], []),
                     }
                 )
-                for page in pages_result.mappings().all()
-            )
+                if state.page_digest_contract == EMAIL_SYNC_PAGE_DIGEST_V2:
+                    expected_digest = EmailSyncCoordinator._page_digest(
+                        EmailSyncCoordinator._page_from_state(state),
+                        contract=EMAIL_SYNC_PAGE_DIGEST_V2,
+                    )
+                    if state.page_digest != expected_digest:
+                        raise EmailSyncConcurrentUpdateError()
+                pages_list.append(state)
+            pages = tuple(pages_list)
             await uow.rollback()
             return EmailSyncAttempt.model_validate({**row["record"], "pages": pages})
 

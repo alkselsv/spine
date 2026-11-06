@@ -48,7 +48,13 @@ def connector_source(workspace_id: UUID, environment_id: UUID, generation: str) 
     )
 
 
-def revision(source_object: SourceObject, revision_id: UUID) -> object:
+def revision(
+    source_object: SourceObject,
+    revision_id: UUID,
+    *,
+    original_object_id: UUID | None = None,
+    original_generation: UUID | None = None,
+) -> object:
     values = {
         "revision_id": revision_id,
         "source_object_id": source_object.source_object_id,
@@ -61,8 +67,8 @@ def revision(source_object: SourceObject, revision_id: UUID) -> object:
         "revision_metadata_digest": canonical_revision_metadata_digest(RevisionMetadata(embedded_title="Contract title")),
         "original_reference": ObjectReference(
             schema_version=1,
-            object_id=synthetic_uuid(7002),
-            storage_generation=synthetic_uuid(7003),
+            object_id=original_object_id or synthetic_uuid(7002),
+            storage_generation=original_generation or synthetic_uuid(7003),
             digest_algorithm="sha256",
             digest_hex="c" * 64,
             byte_length=4,

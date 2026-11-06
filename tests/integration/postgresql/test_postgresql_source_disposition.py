@@ -10,6 +10,15 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from spine.application.disposition_authority import binding_from_tombstone_authorization
+from spine.application.email_sync import (
+    EMAIL_SYNC_PAGE_DIGEST_V2,
+    EmailSyncAdmissionState,
+    EmailSyncCoordinator,
+    EmailSyncEffectReceipt,
+    EmailSyncPage,
+    EmailSyncPageState,
+    EmailSyncStatus,
+)
 from spine.application.disposition_authority import DispositionAdmissionUnknownError
 from spine.application.disposition_coordinator import DispositionConflictError
 from spine.application.diagnostics.audit import AuditEventRegistry
@@ -38,6 +47,9 @@ from spine.domain.sources.deletion_authorization import (
 )
 from spine.infrastructure.persistence.postgresql_disposition import (
     PostgreSQLDispositionRepository,
+)
+from spine.infrastructure.persistence.postgresql_email_sync import (
+    PostgreSQLEmailSyncRepository,
 )
 from spine.infrastructure.persistence.postgresql_mappings import (
     source_disposition_outbox,
@@ -71,6 +83,7 @@ from tests.integration.postgresql.test_postgresql_lifecycle_authority import (
     _DecisionEffects,
     _decision,
     _observation,
+    _prepare_lifecycle_case,
 )
 from tests.integration.postgresql.test_postgresql_retention_applicability import (
     _applicability,
@@ -114,6 +127,14 @@ async def _issued_authorization(
     number: int,
     *,
     gmail_source: bool = False,
+    scope: tuple[UUID, UUID] | None = None,
+    create_scope: bool = True,
+    gmail_connection_id: UUID | None = None,
+    gmail_mailbox_binding_id: UUID | None = None,
+    gmail_message_id: str | None = None,
+    accepted_generation: int = 1,
+    reuse_qualification_binding: bool = False,
+    prepared_case: tuple[object, ...] | None = None,
 ):
     (
         case,
@@ -124,9 +145,19 @@ async def _issued_authorization(
         approval,
         issuer,
         authorization,
-    ) = await _repository_case(
-        adapter, database, number, gmail_source=gmail_source
-    )
+    ) = prepared_case or await _repository_case(
+            adapter,
+            database,
+            number,
+            gmail_source=gmail_source,
+            scope=scope,
+            create_scope=create_scope,
+            gmail_connection_id=gmail_connection_id,
+            gmail_mailbox_binding_id=gmail_mailbox_binding_id,
+            gmail_message_id=gmail_message_id,
+            accepted_generation=accepted_generation,
+            reuse_qualification_binding=reuse_qualification_binding,
+        )
     evidence = evidence.model_copy(
         update={
             "fresh_until": NOW + timedelta(days=365),
@@ -1372,15 +1403,44 @@ async def test_postgresql_expiry_purges_only_expired_verified_operation_identity
     assert await _outbox_count(postgresql_adapter, other_tenant_expired) == 1
 
 
-async def test_governed_erasure_preserves_unrelated_effect_on_shared_email_sync_page(
+async def test_governed_erasure_preserves_canonical_message_b_on_shared_email_sync_page(
     postgresql_adapter: PersistenceAdapter,
     postgresql_contract_database: PostgreSQLContractDatabase,
 ) -> None:
+    prepared_a = await _repository_case(
+        postgresql_adapter,
+        postgresql_contract_database,
+        753800,
+        gmail_source=True,
+        gmail_connection_id=synthetic_uuid(753802),
+        gmail_mailbox_binding_id=synthetic_uuid(753803),
+        gmail_message_id="synthetic-provider-message-A",
+    )
+    case = prepared_a[0]
+    mailbox_binding_id = synthetic_uuid(753803)
+    message_b = await _prepare_lifecycle_case(
+        postgresql_adapter,
+        753820,
+        gmail_source=True,
+        scope=(case.source.workspace_id, case.source.environment_id),
+        create_scope=False,
+        gmail_connection_id=case.source.connection_id,
+        gmail_mailbox_binding_id=mailbox_binding_id,
+        gmail_message_id="synthetic-provider-message-B",
+        accepted_generation=2,
+    )
+    async with postgresql_adapter.uow_factory(message_b.context) as uow:
+        await uow.canonical.accept(message_b.command)
+        await uow.commit()
     case, authorization = await _issued_authorization(
         postgresql_adapter,
         postgresql_contract_database,
         753800,
         gmail_source=True,
+        gmail_connection_id=synthetic_uuid(753802),
+        gmail_mailbox_binding_id=mailbox_binding_id,
+        gmail_message_id="synthetic-provider-message-A",
+        prepared_case=prepared_a,
     )
     operation_id = synthetic_uuid(753801)
     binding = binding_from_tombstone_authorization(
@@ -1389,18 +1449,17 @@ async def test_governed_erasure_preserves_unrelated_effect_on_shared_email_sync_
     operation = _operation(binding)
     assert await _repository(postgresql_adapter).admit_if_current(operation, binding)
     acceptance_id = case.command.canonical_acceptance_id
-    unrelated_effect_id = synthetic_uuid(753802)
     attempt_id = synthetic_uuid(753803)
     observation_id = synthetic_uuid(753804)
     outbox_event_id = synthetic_uuid(753805)
-    mailbox_binding_id = synthetic_uuid(753806)
+    message_b_acceptance_id = message_b.command.canonical_acceptance_id
     page_id = "gmail.history.page.synthetic-shared-753800"
     source_digest = hashlib.sha256(
         case.source.external_object_id.encode("utf-8")
     ).hexdigest()
     event_digest = hashlib.sha256(b"synthetic-history-event-753800").hexdigest()
     observation = {
-        "schema_version": "email-sync-state-observation:v1",
+        "schema_version": "email-sync-state-observation:v2",
         "observation_id": str(observation_id),
         "workspace_id": str(binding.workspace_id),
         "environment_id": str(binding.environment_id),
@@ -1411,6 +1470,19 @@ async def test_governed_erasure_preserves_unrelated_effect_on_shared_email_sync_
         "subject_reference_digest": source_digest,
         "provider_generation": "753800",
         "outbox_event_id": str(outbox_event_id),
+    }
+    message_b_observation_id = synthetic_uuid(753821)
+    message_b_outbox_event_id = synthetic_uuid(753822)
+    message_b_event_digest = hashlib.sha256(b"synthetic-history-event-753821").hexdigest()
+    message_b_digest = hashlib.sha256(
+        message_b.source.external_object_id.encode("utf-8")
+    ).hexdigest()
+    message_b_observation = {
+        **observation,
+        "observation_id": str(message_b_observation_id),
+        "provider_event_digest": message_b_event_digest,
+        "subject_reference_digest": message_b_digest,
+        "outbox_event_id": str(message_b_outbox_event_id),
     }
     effects = [
         {
@@ -1425,7 +1497,7 @@ async def test_governed_erasure_preserves_unrelated_effect_on_shared_email_sync_
             "workspace_id": str(binding.workspace_id),
             "environment_id": str(binding.environment_id),
             "effect_key": "gmail.message.unrelated.753800",
-            "effect_reference": str(unrelated_effect_id),
+            "effect_reference": str(message_b_acceptance_id),
             "kind": "content",
             "state_observation": None,
         },
@@ -1437,6 +1509,14 @@ async def test_governed_erasure_preserves_unrelated_effect_on_shared_email_sync_
             "kind": "state",
             "state_observation": observation,
         },
+        {
+            "workspace_id": str(binding.workspace_id),
+            "environment_id": str(binding.environment_id),
+            "effect_key": "gmail.label.active.753821",
+            "effect_reference": str(message_b_observation_id),
+            "kind": "state",
+            "state_observation": message_b_observation,
+        },
     ]
     page_record = {
         "workspace_id": str(binding.workspace_id),
@@ -1444,6 +1524,7 @@ async def test_governed_erasure_preserves_unrelated_effect_on_shared_email_sync_
         "page_kind": "history_drain",
         "page_id": page_id,
         "page_digest": "a" * 64,
+        "page_schema_version": "email-sync-page:v1",
         "requested_checkpoint": "gmail-history:v1:100",
         "covered_checkpoint": "gmail-history:v1:110",
         "next_checkpoint": "gmail-history:v1:110",
@@ -1521,8 +1602,9 @@ async def test_governed_erasure_preserves_unrelated_effect_on_shared_email_sync_
             )
             for key, receipt in (
                 ("gmail.message.disposed.753800", acceptance_id),
-                ("gmail.message.unrelated.753800", unrelated_effect_id),
+                ("gmail.message.unrelated.753800", message_b_acceptance_id),
                 ("gmail.label.disposed.753800", observation_id),
+                ("gmail.label.active.753821", message_b_observation_id),
             ):
                 await connection.execute(
                     text(
@@ -1540,51 +1622,53 @@ async def test_governed_erasure_preserves_unrelated_effect_on_shared_email_sync_
                         "receipt": str(receipt),
                     },
                 )
-            await connection.execute(
-                text(
-                    "INSERT INTO spine.outbox_intents "
-                    "(event_id, workspace_id, environment_id, event_type, event_schema_version, "
-                    "aggregate_type, aggregate_id, aggregate_schema_version, producer_deduplication_id, "
-                    "payload, trace_id, created_at) VALUES (:event_id, :workspace_id, :environment_id, "
-                    "'email.sync.state_observed', 1, 'mailbox_binding', :mailbox, 1, :dedup, "
-                    "CAST(:payload AS jsonb), :trace, :now)"
-                ),
-                {
-                    "event_id": outbox_event_id,
-                    "workspace_id": binding.workspace_id,
-                    "environment_id": binding.environment_id,
-                    "mailbox": mailbox_binding_id,
-                    "dedup": f"email-sync-state:{observation_id}",
-                    "payload": json.dumps({
-                        "observation_id": str(observation_id),
-                        "connection_id": str(case.source.connection_id),
-                        "mailbox_binding_id": str(mailbox_binding_id),
-                        "state_kind": "label_added",
-                        "provider_event_digest": event_digest,
-                    }),
-                    "trace": synthetic_uuid(753810),
-                    "now": NOW,
-                },
-            )
-            await connection.execute(
-                text(
-                    "INSERT INTO spine.email_sync_state_observations "
-                    "(workspace_id, environment_id, observation_id, connection_id, mailbox_binding_id, "
-                    "state_kind, provider_event_digest, outbox_event_id, record) VALUES "
-                    "(:workspace_id, :environment_id, :observation_id, :connection_id, :mailbox, "
-                    "'label_added', :event_digest, :outbox_event_id, CAST(:record AS jsonb))"
-                ),
-                {
-                    "workspace_id": binding.workspace_id,
-                    "environment_id": binding.environment_id,
-                    "observation_id": observation_id,
-                    "connection_id": case.source.connection_id,
-                    "mailbox": mailbox_binding_id,
-                    "event_digest": event_digest,
-                    "outbox_event_id": outbox_event_id,
-                    "record": json.dumps(observation),
-                },
-            )
+            for index, observation in enumerate((observation, message_b_observation)):
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.outbox_intents "
+                        "(event_id, workspace_id, environment_id, event_type, event_schema_version, "
+                        "aggregate_type, aggregate_id, aggregate_schema_version, producer_deduplication_id, "
+                        "payload, trace_id, created_at) VALUES (:event_id, :workspace_id, :environment_id, "
+                        "'email.sync.state_observed', 1, 'mailbox_binding', :mailbox, 1, :dedup, "
+                        "CAST(:payload AS jsonb), :trace, :now)"
+                    ),
+                    {
+                        "event_id": observation["outbox_event_id"],
+                        "workspace_id": binding.workspace_id,
+                        "environment_id": binding.environment_id,
+                        "mailbox": mailbox_binding_id,
+                        "dedup": f"email-sync-state:{observation['observation_id']}",
+                        "payload": json.dumps({
+                            "observation_id": observation["observation_id"],
+                            "connection_id": observation["connection_id"],
+                            "mailbox_binding_id": observation["mailbox_binding_id"],
+                            "state_kind": observation["state_kind"],
+                            "provider_event_digest": observation["provider_event_digest"],
+                        }),
+                        "trace": synthetic_uuid(753810 + index),
+                        "now": NOW,
+                    },
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.email_sync_state_observations "
+                        "(workspace_id, environment_id, observation_id, connection_id, mailbox_binding_id, "
+                        "state_kind, provider_event_digest, outbox_event_id, record) VALUES "
+                        "(:workspace_id, :environment_id, :observation_id, :connection_id, :mailbox, "
+                        ":state_kind, :event_digest, :outbox_event_id, CAST(:record AS jsonb))"
+                    ),
+                    {
+                        "workspace_id": binding.workspace_id,
+                        "environment_id": binding.environment_id,
+                        "observation_id": observation["observation_id"],
+                        "connection_id": observation["connection_id"],
+                        "mailbox": observation["mailbox_binding_id"],
+                        "state_kind": observation["state_kind"],
+                        "event_digest": observation["provider_event_digest"],
+                        "outbox_event_id": observation["outbox_event_id"],
+                        "record": json.dumps(observation),
+                    },
+                )
         with pytest.raises(DBAPIError) as immutable_outbox_error:
             async with engine.begin() as connection:
                 await connection.execute(
@@ -1592,6 +1676,56 @@ async def test_governed_erasure_preserves_unrelated_effect_on_shared_email_sync_
                     {"event_id": outbox_event_id},
                 )
         assert immutable_outbox_error.value.orig.sqlstate == "23514"
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE spine.email_sync_pages SET record = "
+                    "jsonb_set(record, '{page_schema_version}', "
+                    "to_jsonb(CAST(:schema_version AS text))) WHERE attempt_id = :attempt_id"
+                ),
+                {"attempt_id": attempt_id, "schema_version": "email-sync-page:v99"},
+            )
+        unknown_schema_runtime = create_async_engine(
+            postgresql_contract_database.runtime_url.get_secret_value(),
+            hide_parameters=True,
+        )
+        try:
+            with pytest.raises(DBAPIError) as unknown_page_schema_error:
+                async with unknown_schema_runtime.begin() as connection:
+                    await connection.execute(
+                        text(
+                            "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                            "set_config('spine.environment_id', :environment_id, true)"
+                        ),
+                        {
+                            "workspace_id": str(binding.workspace_id),
+                            "environment_id": str(binding.environment_id),
+                        },
+                    )
+                    await connection.execute(
+                        text(
+                            "SELECT spine.execute_source_disposition_erasure("
+                            ":workspace_id, :environment_id, :operation_id, :state_version)"
+                        ),
+                        {
+                            "workspace_id": binding.workspace_id,
+                            "environment_id": binding.environment_id,
+                            "operation_id": operation_id,
+                            "state_version": operation.state_version,
+                        },
+                    )
+            assert unknown_page_schema_error.value.orig.sqlstate == "23514"
+        finally:
+            await unknown_schema_runtime.dispose()
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE spine.email_sync_pages SET record = "
+                    "jsonb_set(record, '{page_schema_version}', "
+                    "to_jsonb(CAST(:schema_version AS text))) WHERE attempt_id = :attempt_id"
+                ),
+                {"attempt_id": attempt_id, "schema_version": "email-sync-page:v1"},
+            )
         runtime_engine = create_async_engine(
             postgresql_contract_database.runtime_url.get_secret_value(),
             hide_parameters=True,
@@ -1626,13 +1760,24 @@ async def test_governed_erasure_preserves_unrelated_effect_on_shared_email_sync_
             result = (
                 await connection.execute(
                     text(
-                        "SELECT p.page_id, p.record, p.committed, a.committed_checkpoint, a.revision, "
+                        "SELECT p.page_id, p.page_digest, p.record, p.committed, a.committed_checkpoint, a.revision, "
                         "(SELECT count(*) FROM spine.email_sync_effect_receipts r "
                         " WHERE r.workspace_id = p.workspace_id AND r.environment_id = p.environment_id "
                         " AND r.attempt_id = p.attempt_id AND r.page_id = p.page_id) AS receipts, "
                         "(SELECT count(*) FROM spine.email_sync_state_observations o "
                         " WHERE o.observation_id = :observation_id) AS observations, "
-                        "(SELECT count(*) FROM spine.outbox_intents i WHERE i.event_id = :outbox_event_id) AS outbox "
+                        "(SELECT count(*) FROM spine.outbox_intents i WHERE i.event_id = :outbox_event_id) AS outbox, "
+                        "(SELECT count(*) FROM spine.source_objects s "
+                        " WHERE s.source_object_id = :source_object_id) AS source_a, "
+                        "(SELECT count(*) FROM spine.canonical_acceptances c "
+                        " WHERE c.canonical_acceptance_id = :acceptance_id) AS acceptance_a, "
+                        "(SELECT count(*) FROM spine.source_objects s "
+                        " WHERE s.source_object_id = :source_b_id) AS source_b, "
+                        "(SELECT count(*) FROM spine.canonical_acceptances c "
+                        " WHERE c.canonical_acceptance_id = :acceptance_b_id) AS acceptance_b, "
+                        "(SELECT count(*) FROM spine.email_sync_state_observations o "
+                        " WHERE o.observation_id = :observation_b_id) AS observation_b, "
+                        "(SELECT count(*) FROM spine.outbox_intents i WHERE i.event_id = :outbox_b_id) AS outbox_b "
                         "FROM spine.email_sync_pages p JOIN spine.email_sync_attempts a "
                         "USING (workspace_id, environment_id, attempt_id) WHERE p.attempt_id = :attempt_id"
                     ),
@@ -1640,6 +1785,12 @@ async def test_governed_erasure_preserves_unrelated_effect_on_shared_email_sync_
                         "attempt_id": attempt_id,
                         "observation_id": observation_id,
                         "outbox_event_id": outbox_event_id,
+                        "source_object_id": case.source.source_object_id,
+                        "acceptance_id": acceptance_id,
+                        "source_b_id": message_b.source.source_object_id,
+                        "acceptance_b_id": message_b_acceptance_id,
+                        "observation_b_id": message_b_observation_id,
+                        "outbox_b_id": message_b_outbox_event_id,
                     },
                 )
             ).mappings().one()
@@ -1648,14 +1799,117 @@ async def test_governed_erasure_preserves_unrelated_effect_on_shared_email_sync_
             assert result["committed_checkpoint"] == "gmail-history:v1:110"
             assert result["revision"] == 2
             assert [effect["effect_key"] for effect in surviving] == [
-                "gmail.message.unrelated.753800"
+                "gmail.message.unrelated.753800",
+                "gmail.label.active.753821",
             ]
-            assert result["receipts"] == 1
+            assert result["receipts"] == 2
             assert result["observations"] == 0
             assert result["outbox"] == 0
+            assert result["source_a"] == 0 and result["acceptance_a"] == 0
+            assert result["source_b"] == 1 and result["acceptance_b"] == 1
+            assert result["observation_b"] == 1 and result["outbox_b"] == 1
+            receipt_rows = (
+                await connection.execute(
+                    text(
+                        "SELECT effect_key, receipt_reference, durable "
+                        "FROM spine.email_sync_effect_receipts "
+                        "WHERE attempt_id = :attempt_id AND page_id = :page_id "
+                        "ORDER BY effect_key"
+                    ),
+                    {"attempt_id": attempt_id, "page_id": result["page_id"]},
+                )
+            ).mappings().all()
+            persisted_state = dict(result["record"])
+            persisted_state["page_digest"] = result["page_digest"]
+            persisted_state["committed"] = result["committed"]
+            persisted_state["effect_receipts"] = [
+                {
+                    "effect_key": row["effect_key"],
+                    "receipt_reference": row["receipt_reference"],
+                    "durable": row["durable"],
+                }
+                for row in receipt_rows
+            ]
+            loaded_state = EmailSyncPageState.model_validate(persisted_state)
+            loaded_page = EmailSyncCoordinator._page_from_state(loaded_state)
+            assert loaded_state.page_digest_contract == EMAIL_SYNC_PAGE_DIGEST_V2
+            assert result["page_digest"] == EmailSyncCoordinator._page_digest(
+                loaded_page, contract=EMAIL_SYNC_PAGE_DIGEST_V2
+            )
+            attempt_record["revision"] = result["revision"]
+            email_repository = PostgreSQLEmailSyncRepository(
+                postgresql_adapter.uow_factory,
+                lambda operation, _identity: postgresql_adapter.ingestion_context(
+                    binding.workspace_id, binding.environment_id, operation.value
+                ),
+            )
+            persisted_attempt = await email_repository.get(
+                attempt_id, binding.workspace_id, binding.environment_id
+            )
+            assert persisted_attempt is not None
+            assert persisted_attempt.pages[0].page_digest == result["page_digest"]
+            assert persisted_attempt.committed_checkpoint == "gmail-history:v1:110"
+            assert {
+                receipt.effect_key: receipt.receipt_reference
+                for receipt in persisted_attempt.pages[0].effect_receipts
+            } == {
+                "gmail.message.unrelated.753800": str(message_b_acceptance_id),
+                "gmail.label.active.753821": str(message_b_observation_id),
+            }
+
+            class _CurrentAdmission:
+                async def check(self, _admission):
+                    return EmailSyncAdmissionState.ALLOWED
+
+            class _EffectsMustNotReplay:
+                def __init__(self) -> None:
+                    self.calls = 0
+
+                async def apply(self, effect):
+                    self.calls += 1
+                    return EmailSyncEffectReceipt(
+                        effect_key=effect.effect_key,
+                        receipt_reference="unexpected-replay",
+                        durable=True,
+                    )
+
+            replay_effects = _EffectsMustNotReplay()
+            coordinator = EmailSyncCoordinator(
+                repository=email_repository,
+                admission=_CurrentAdmission(),
+                effects=replay_effects,
+                clock=lambda: NOW,
+            )
+            original_page = EmailSyncPage.model_validate(
+                {
+                    key: value
+                    for key, value in page_record.items()
+                    if key not in {
+                        "page_digest",
+                        "covered_checkpoint",
+                        "page_schema_version",
+                    }
+                }
+            )
+            replay_result = await coordinator.apply_page(
+                attempt_id,
+                original_page,
+                workspace_id=binding.workspace_id,
+                environment_id=binding.environment_id,
+            )
+            assert replay_result.status is EmailSyncStatus.RECONCILIATION_REQUIRED
+            assert replay_result.committed_checkpoint == "gmail-history:v1:110"
+            assert replay_effects.calls == 0
+            assert await connection.scalar(
+                text(
+                    "SELECT count(*) FROM spine.source_objects "
+                    "WHERE source_object_id = :source_object_id"
+                ),
+                {"source_object_id": case.source.source_object_id},
+            ) == 0
             serialized = json.dumps(result["record"])
             assert source_digest not in serialized and event_digest not in serialized
             assert str(acceptance_id) not in serialized
-            assert str(unrelated_effect_id) in serialized
+            assert source_digest not in serialized and event_digest not in serialized
     finally:
         await engine.dispose()
