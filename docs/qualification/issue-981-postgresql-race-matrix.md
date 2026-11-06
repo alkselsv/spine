@@ -6,7 +6,7 @@ approval, or evidence for an external F2 provider.
 
 **Version:** `postgresql-transactional-race-matrix:v1`
 
-**Tested commit:** `c1386903acde42bd1ffaac9e7b1f2a8c1ad9e877`
+**Tested commit:** `77dda235` (offline qualification contract and static evidence)
 
 **Runtime boundary:** tests use the disposable PostgreSQL harness and the
 `spine_runtime` role (`NOBYPASSRLS`). The race cases use two independent
