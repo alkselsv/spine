@@ -302,6 +302,14 @@ class PrivateArtifactDeletionSourceBinding(PrivateASRApplicationContract):
             raise ValueError("active legal holds require resolved authority")
         return self
 
+    def calculate_digest(self) -> str:
+        payload = self.model_dump(mode="json")
+        return hashlib.sha256(
+            json.dumps(
+                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest()
+
 
 class PrivateArtifactDeletionRequestV2(PrivateASRApplicationContract):
     """Versioned whole-artifact deletion request with exact per-source bindings.
@@ -406,6 +414,141 @@ class PrivateArtifactDeletionAuthorization(PrivateASRApplicationContract):
         ):
             raise ValueError("artifact deletion authorization is invalid")
         return self
+
+
+class PrivateArtifactDeletionFenceContributorOutcome(PrivateASRApplicationContract):
+    """Fence evidence for one source contributor in a composite deletion."""
+
+    schema_version: Literal["private-asr-deletion-fence-contributor:v2"] = (
+        "private-asr-deletion-fence-contributor:v2"
+    )
+    authority_kind: Literal["postgresql_f1", "external_f2"]
+    request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    authorization_reference: UUID
+    source_binding_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_lineage: PrivateArtifactSourceLineage
+    permit_reference: UUID | None = None
+    permit_valid_until: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_contributor(self) -> "PrivateArtifactDeletionFenceContributorOutcome":
+        if self.authority_kind == "external_f2":
+            if self.permit_reference is None or self.permit_reference.int == 0:
+                raise ValueError("F2 contributor requires an acquired permit")
+            if (
+                self.permit_valid_until is None
+                or self.permit_valid_until.tzinfo is None
+                or self.permit_valid_until.utcoffset() is None
+            ):
+                raise ValueError("F2 contributor permit validity is required")
+        elif self.permit_reference is not None or self.permit_valid_until is not None:
+            raise ValueError("F1 contributor cannot carry an external permit")
+        if self.authorization_reference.int == 0:
+            raise ValueError("deletion fence contributor authorization is required")
+        return self
+
+
+class PrivateArtifactDeletionFenceOutcome(PrivateASRApplicationContract):
+    """One all-or-nothing set of per-source fence acquisitions."""
+
+    schema_version: Literal["private-asr-composite-deletion-fence:v1"] = (
+        "private-asr-composite-deletion-fence:v1"
+    )
+    artifact_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    authorization_reference: UUID
+    contributors: tuple[PrivateArtifactDeletionFenceContributorOutcome, ...] = Field(
+        min_length=1
+    )
+    acquired_at: datetime
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> "PrivateArtifactDeletionFenceOutcome":
+        if any(value.int == 0 for value in (
+            self.artifact_id,
+            self.workspace_id,
+            self.environment_id,
+            self.authorization_reference,
+        )):
+            raise ValueError("composite deletion fence identity must be complete")
+        if self.acquired_at.tzinfo is None or self.acquired_at.utcoffset() is None:
+            raise ValueError("composite deletion fence time must be timezone-aware")
+        identities = tuple(_source_lineage_contract_key(
+            contributor.source_lineage
+        ) for contributor in self.contributors)
+        if len(set(identities)) != len(identities):
+            raise ValueError("composite deletion fence lineage must be unique")
+        object.__setattr__(
+            self,
+            "contributors",
+            tuple(sorted(self.contributors, key=lambda contributor: (
+                str(contributor.source_lineage.source_object_id),
+                str(contributor.source_lineage.source_revision_id),
+                contributor.source_lineage.source_revision_digest,
+            ))),
+        )
+        return self
+
+    def matches(
+        self,
+        request: PrivateArtifactDeletionRequestV2,
+        authorization: PrivateArtifactDeletionAuthorization,
+    ) -> bool:
+        return (
+            self.artifact_id == request.artifact_id
+            and self.workspace_id == request.workspace_id
+            and self.environment_id == request.environment_id
+            and self.request_digest == request.calculate_digest()
+            and self.request_digest == authorization.request_digest
+            and self.authorization_reference == authorization.authorization_ref.reference_id
+            and request.requested_at <= self.acquired_at < request.valid_until
+            and self.acquired_at < authorization.valid_until
+            and all(
+                item.request_digest == request.calculate_digest()
+                and item.authorization_reference
+                == authorization.authorization_ref.reference_id
+                and any(
+                    binding.calculate_digest() == item.source_binding_digest
+                    and binding.source_object_id == item.source_lineage.source_object_id
+                    and binding.source_revision_id == item.source_lineage.source_revision_id
+                    and binding.revision_digest == item.source_lineage.source_revision_digest
+                    for binding in request.source_bindings
+                )
+                and (
+                    item.authority_kind != "external_f2"
+                    or (
+                        item.permit_valid_until is not None
+                        and self.acquired_at < item.permit_valid_until
+                        and item.permit_valid_until
+                        <= min(request.valid_until, authorization.valid_until)
+                    )
+                )
+                for item in self.contributors
+            )
+            and {
+                _source_lineage_contract_key(item)
+                for item in (
+                    contributor.source_lineage for contributor in self.contributors
+                )
+            }
+            == {
+                _source_lineage_contract_key(item)
+                for item in request.expected_source_lineage
+            }
+        )
+
+
+def _source_lineage_contract_key(
+    source: PrivateArtifactSourceLineage,
+) -> str:
+    return json.dumps(
+        source.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 class CompositeSourceRetentionState(PrivateASRApplicationContract):
@@ -590,12 +733,12 @@ class PrivateArtifactDeletionAuthority(Protocol):
 class PrivateArtifactDeletionFencePort(Protocol):
     """Fence one exact deletion decision through the storage transaction.
 
-    The authority decision and the fence are separate concerns.  A fence
-    implementation must bind the exact request digest, complete source
-    lineage, scope, action and revocation epoch before returning.  It may use
-    PostgreSQL-owned locks (F1) or a separately qualified provider (F2); an
-    absent or unsupported implementation must deny rather than infer a fence
-    from the request fields.
+    The authority decision and the fence are separate concerns. Implementations
+    must acquire every contributor in canonical source identity order and bind
+    the complete source set to one outcome. F2 implementations unwind earlier
+    permits if a later contributor fails. The consumer calls `validate_before_commit`
+    while the transaction is open, then `complete` only after a known commit or
+    rollback. An absent or unsupported contributor denies the whole operation.
     """
 
     async def acquire(
@@ -605,7 +748,67 @@ class PrivateArtifactDeletionFencePort(Protocol):
         *,
         context: TrustedPersistenceContext,
         transaction: object,
+    ) -> PrivateArtifactDeletionFenceOutcome: ...
+
+    async def validate_before_commit(
+        self,
+        outcome: PrivateArtifactDeletionFenceOutcome,
+        *,
+        transaction: object,
     ) -> None: ...
+
+    async def complete(
+        self,
+        outcome: PrivateArtifactDeletionFenceOutcome,
+        *,
+        transaction: object,
+        committed: bool,
+    ) -> None: ...
+
+    async def abandon(
+        self,
+        outcome: PrivateArtifactDeletionFenceOutcome,
+    ) -> None: ...
+
+
+class PrivateArtifactDeletionFenceContributorPort(Protocol):
+    """Acquire and settle the permit for one exact source contributor."""
+
+    async def acquire_contributor(
+        self,
+        request: PrivateArtifactDeletionRequestV2,
+        authorization: PrivateArtifactDeletionAuthorization,
+        contributor: PrivateArtifactDeletionSourceBinding,
+        *,
+        context: TrustedPersistenceContext,
+        transaction: object,
+    ) -> PrivateArtifactDeletionFenceContributorOutcome: ...
+
+    async def validate_contributor_before_commit(
+        self,
+        outcome: PrivateArtifactDeletionFenceContributorOutcome,
+        *,
+        transaction: object,
+    ) -> None: ...
+
+    async def complete_contributor(
+        self,
+        outcome: PrivateArtifactDeletionFenceContributorOutcome,
+        *,
+        transaction: object,
+        committed: bool,
+    ) -> None: ...
+
+
+class PrivateArtifactDeletionFenceResolver(Protocol):
+    """Resolve one supported F1/F2 adapter for an exact source contributor."""
+
+    def resolve(
+        self,
+        contributor: PrivateArtifactDeletionSourceBinding,
+        *,
+        context: TrustedPersistenceContext,
+    ) -> PrivateArtifactDeletionFenceContributorPort: ...
 
 
 class ScopedPrivateArtifactDeletionAuditPort(Protocol):
@@ -1345,8 +1548,11 @@ __all__ = [
     "MetadataInventoryPort", "OriginalReferencePort", "PrivacyPolicyApprovalPort",
     "PrivateAggregatePublicationAuthorityPort", "PrivateArtifactDeletionRequest",
     "PrivateArtifactDeletionRequestV2", "PrivateArtifactDeletionSourceBinding",
+    "PrivateArtifactDeletionFenceOutcome",
+    "PrivateArtifactDeletionFenceContributorOutcome",
     "PrivateArtifactDeletionAuthorization", "PrivateArtifactDeletionAuthority",
-    "PrivateArtifactDeletionFencePort",
+    "PrivateArtifactDeletionFencePort", "PrivateArtifactDeletionFenceContributorPort",
+    "PrivateArtifactDeletionFenceResolver",
     "PrivacySanitizationError",
     "PrivateAnnotationStoragePort", "PrivateReportReceipt", "PrivateReportSourceBinding", "PrivateReportStoragePort",
     "PurposeAdmissionRequest", "RetentionExpirationPort", "RevocationFencePort",
