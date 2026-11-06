@@ -378,6 +378,129 @@ async def test_postgresql_canonical_source_delete_remains_guarded(
         await runtime_engine.dispose()
 
 
+async def test_tombstone_selector_immutability_is_replaced_by_governed_guard(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    case, _ = await _issued_authorization(
+        postgresql_adapter, postgresql_contract_database, 753075
+    )
+    migration_engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    runtime_engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with migration_engine.connect() as connection:
+            trigger_rows = (
+                await connection.execute(
+                    text(
+                        "SELECT trigger.tgname, pg_get_triggerdef(trigger.oid) AS definition "
+                        "FROM pg_trigger AS trigger "
+                        "JOIN pg_class AS relation ON relation.oid = trigger.tgrelid "
+                        "JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' "
+                        "AND relation.relname = 'trusted_canonical_tombstone_selector_versions' "
+                        "AND NOT trigger.tgisinternal ORDER BY trigger.tgname"
+                    )
+                )
+            ).mappings().all()
+        trigger_names = {row.tgname for row in trigger_rows}
+        assert "trg_canonical_tombstone_selectors_immutable" not in trigger_names
+        assert "trg_trusted_canonical_tombstone_selector_versions_immutable" in trigger_names
+        replacement = next(
+            row for row in trigger_rows
+            if row.tgname == "trg_trusted_canonical_tombstone_selector_versions_immutable"
+        )
+        assert "BEFORE DELETE OR UPDATE" in replacement.definition
+        async with migration_engine.connect() as connection:
+            governed_trigger_tables = (
+                await connection.execute(
+                    text(
+                        "SELECT relation.relname FROM pg_trigger AS trigger "
+                        "JOIN pg_class AS relation ON relation.oid = trigger.tgrelid "
+                        "JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' "
+                        "AND trigger.tgfoid = 'spine.allow_governed_source_delete()'::regprocedure "
+                        "ORDER BY relation.relname"
+                    )
+                )
+            ).scalars().all()
+        assert set(governed_trigger_tables) == {
+            "access_policy_grants",
+            "access_policy_versions",
+            "admission_decisions",
+            "canonical_acceptances",
+            "lifecycle_decisions",
+            "lifecycle_observations",
+            "policy_activations",
+            "policy_approvals",
+            "policy_proposals",
+            "qualified_deletion_evidence",
+            "retention_applicabilities",
+            "source_objects",
+            "source_revision_provenance",
+            "source_revision_receipt_associations",
+            "source_revisions",
+            "tombstone_authorization_decisions",
+            "tombstone_authorizations",
+            "trusted_canonical_tombstone_selector_versions",
+        }
+
+        async with postgresql_adapter.uow_factory(
+            postgresql_adapter.environment_context(
+                case.source.workspace_id, case.source.environment_id
+            )
+        ) as uow:
+            selector_id = await uow.execute_statement(
+                text(
+                    "SELECT selector_id FROM spine.trusted_canonical_tombstone_selector_versions "
+                    "WHERE source_object_id = :source_id"
+                ),
+                {"source_id": case.source.source_object_id},
+            )
+            selector = selector_id.scalar_one()
+            await uow.rollback()
+
+        for sql in (
+            "UPDATE spine.trusted_canonical_tombstone_selector_versions "
+            "SET record = record WHERE selector_id = :selector_id",
+            "DELETE FROM spine.trusted_canonical_tombstone_selector_versions "
+            "WHERE selector_id = :selector_id",
+        ):
+            with pytest.raises(DBAPIError) as migration_error:
+                async with migration_engine.begin() as connection:
+                    await connection.execute(text(sql), {"selector_id": selector})
+            assert migration_error.value.orig.sqlstate == "23514"
+            assert migration_error.value.orig.diag.constraint_name == "ck_governed_source_erasure_only"
+
+            with pytest.raises(DBAPIError) as runtime_error:
+                async with runtime_engine.begin() as connection:
+                    await connection.execute(text(sql), {"selector_id": selector})
+            assert runtime_error.value.orig.sqlstate == "42501"
+
+        async with postgresql_adapter.uow_factory(
+            postgresql_adapter.environment_context(
+                case.source.workspace_id, case.source.environment_id
+            )
+        ) as uow:
+            selector_count = await uow.execute_statement(
+                text(
+                    "SELECT count(*) FROM spine.trusted_canonical_tombstone_selector_versions "
+                    "WHERE selector_id = :selector_id"
+                ),
+                {"selector_id": selector},
+            )
+            assert selector_count.scalar_one() == 1
+            await uow.rollback()
+    finally:
+        await migration_engine.dispose()
+        await runtime_engine.dispose()
+
+
 async def test_postgresql_erasure_role_is_nonlogin_and_unavailable_to_runtime(
     postgresql_contract_database: PostgreSQLContractDatabase,
 ) -> None:
