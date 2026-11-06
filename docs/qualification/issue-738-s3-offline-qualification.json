@@ -4,7 +4,7 @@
   "parent_ticket": 715,
   "status": "offline_pass",
   "qualified_base_commit": "f474f26c799f0902219c62d0fd9698cd23bca4f5",
-  "qualification_commit": "26df3f0220ed87191a0596da0ec5781e4d1588bb",
+  "qualification_commit": "cc5e4495b4418e91da7dd7666c6e9cf965110aa4",
   "required_scenarios": [
     "lifecycle_classification_and_current_authority",
     "withdrawal_read_revision_and_commit_races",
@@ -104,14 +104,14 @@
     "postgresql": {
       "status": "passed",
       "command": "uv run pytest -q tests/integration/postgresql/test_initial_tenancy_migration.py tests/integration/postgresql/test_postgresql_lifecycle_authority.py tests/integration/postgresql/test_postgresql_disclosure_holds.py tests/integration/postgresql/test_postgresql_retention_applicability.py tests/integration/postgresql/test_postgresql_tombstone_authorization.py tests/integration/postgresql/test_postgresql_canonical_tombstone_v3.py tests/integration/postgresql/test_postgresql_unit_of_work.py",
-      "passed": 295,
+      "passed": 298,
       "skipped": 0,
       "failed": 0
     },
     "repository": {
       "status": "passed",
       "command": "uv run pytest -q",
-      "passed": 7284,
+      "passed": 7324,
       "skipped": 7,
       "failed": 0
     },
