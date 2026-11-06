@@ -44,7 +44,7 @@ uv run pytest -q tests/qualification/test_issue1020_synthetic_cleanup_integratio
 72 passed in 1.54s
 ```
 
-The 15 collected #1020 integration nodes were:
+The 16 collected #1020 integration nodes were:
 
 ```text
 tests/qualification/test_issue1020_synthetic_cleanup_integration.py::test_issue1002_authority_vectors_block_at_canonical_state_machine[missing_authority-MISSING-AUTHORITY_MISSING]
