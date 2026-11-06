@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import timedelta
+import hashlib
+import json
 import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
@@ -1368,3 +1370,292 @@ async def test_postgresql_expiry_purges_only_expired_verified_operation_identity
         operation_id=other_tenant_expired.operation_id,
     ) is not None
     assert await _outbox_count(postgresql_adapter, other_tenant_expired) == 1
+
+
+async def test_governed_erasure_preserves_unrelated_effect_on_shared_email_sync_page(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    case, authorization = await _issued_authorization(
+        postgresql_adapter,
+        postgresql_contract_database,
+        753800,
+        gmail_source=True,
+    )
+    operation_id = synthetic_uuid(753801)
+    binding = binding_from_tombstone_authorization(
+        authorization, operation_id=operation_id
+    )
+    operation = _operation(binding)
+    assert await _repository(postgresql_adapter).admit_if_current(operation, binding)
+    acceptance_id = case.command.canonical_acceptance_id
+    unrelated_effect_id = synthetic_uuid(753802)
+    attempt_id = synthetic_uuid(753803)
+    observation_id = synthetic_uuid(753804)
+    outbox_event_id = synthetic_uuid(753805)
+    mailbox_binding_id = synthetic_uuid(753806)
+    page_id = "gmail.history.page.synthetic-shared-753800"
+    source_digest = hashlib.sha256(
+        case.source.external_object_id.encode("utf-8")
+    ).hexdigest()
+    event_digest = hashlib.sha256(b"synthetic-history-event-753800").hexdigest()
+    observation = {
+        "schema_version": "email-sync-state-observation:v1",
+        "observation_id": str(observation_id),
+        "workspace_id": str(binding.workspace_id),
+        "environment_id": str(binding.environment_id),
+        "connection_id": str(case.source.connection_id),
+        "mailbox_binding_id": str(mailbox_binding_id),
+        "state_kind": "label_added",
+        "provider_event_digest": event_digest,
+        "subject_reference_digest": source_digest,
+        "provider_generation": "753800",
+        "outbox_event_id": str(outbox_event_id),
+    }
+    effects = [
+        {
+            "workspace_id": str(binding.workspace_id),
+            "environment_id": str(binding.environment_id),
+            "effect_key": "gmail.message.disposed.753800",
+            "effect_reference": str(acceptance_id),
+            "kind": "content",
+            "state_observation": None,
+        },
+        {
+            "workspace_id": str(binding.workspace_id),
+            "environment_id": str(binding.environment_id),
+            "effect_key": "gmail.message.unrelated.753800",
+            "effect_reference": str(unrelated_effect_id),
+            "kind": "content",
+            "state_observation": None,
+        },
+        {
+            "workspace_id": str(binding.workspace_id),
+            "environment_id": str(binding.environment_id),
+            "effect_key": "gmail.label.disposed.753800",
+            "effect_reference": str(observation_id),
+            "kind": "state",
+            "state_observation": observation,
+        },
+    ]
+    page_record = {
+        "workspace_id": str(binding.workspace_id),
+        "environment_id": str(binding.environment_id),
+        "page_kind": "history_drain",
+        "page_id": page_id,
+        "page_digest": "a" * 64,
+        "requested_checkpoint": "gmail-history:v1:100",
+        "covered_checkpoint": "gmail-history:v1:110",
+        "next_checkpoint": "gmail-history:v1:110",
+        "terminal": True,
+        "publish_checkpoint": True,
+        "coverage_terminal": True,
+        "evidence_digest": None,
+        "evidence_cursor": None,
+        "effects": effects,
+        "lifecycle_receipts": [],
+    }
+    attempt_key = "attempt.shared.gmail.sync.753800"
+    attempt_record = {
+        "attempt_id": str(attempt_id),
+        "attempt_key": attempt_key,
+        "admission": {
+            "workspace_id": str(binding.workspace_id),
+            "environment_id": str(binding.environment_id),
+            "connection_id": str(case.source.connection_id),
+            "connection_version_id": str(synthetic_uuid(753807)),
+            "resource_scope_reference": str(synthetic_uuid(753808)),
+            "mailbox_subject_reference": str(synthetic_uuid(753809)),
+            "mailbox_binding_id": str(mailbox_binding_id),
+            "authorization_generation": 1,
+            "configuration_generation": 1,
+            "scope_generation": 1,
+        },
+        "status": "running",
+        "committed_checkpoint": "gmail-history:v1:110",
+        "failure_code": None,
+        "created_at": NOW.isoformat(),
+        "updated_at": NOW.isoformat(),
+        "revision": 1,
+    }
+    engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.email_sync_attempts "
+                    "(workspace_id, environment_id, attempt_id, attempt_key, revision, "
+                    "authorization_generation, configuration_generation, scope_generation, "
+                    "committed_checkpoint, record, created_at, updated_at) VALUES "
+                    "(:workspace_id, :environment_id, :attempt_id, :attempt_key, 1, 1, 1, 1, "
+                    ":checkpoint, CAST(:record AS jsonb), :now, :now)"
+                ),
+                {
+                    "workspace_id": binding.workspace_id,
+                    "environment_id": binding.environment_id,
+                    "attempt_id": attempt_id,
+                    "attempt_key": attempt_key,
+                    "checkpoint": attempt_record["committed_checkpoint"],
+                    "record": json.dumps(attempt_record),
+                    "now": NOW,
+                },
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.email_sync_pages "
+                    "(workspace_id, environment_id, attempt_id, page_id, page_digest, committed, record) "
+                    "VALUES (:workspace_id, :environment_id, :attempt_id, :page_id, :digest, true, "
+                    "CAST(:record AS jsonb))"
+                ),
+                {
+                    "workspace_id": binding.workspace_id,
+                    "environment_id": binding.environment_id,
+                    "attempt_id": attempt_id,
+                    "page_id": page_id,
+                    "digest": "a" * 64,
+                    "record": json.dumps(page_record),
+                },
+            )
+            for key, receipt in (
+                ("gmail.message.disposed.753800", acceptance_id),
+                ("gmail.message.unrelated.753800", unrelated_effect_id),
+                ("gmail.label.disposed.753800", observation_id),
+            ):
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.email_sync_effect_receipts "
+                        "(workspace_id, environment_id, attempt_id, page_id, effect_key, "
+                        "receipt_reference, durable) VALUES (:workspace_id, :environment_id, "
+                        ":attempt_id, :page_id, :effect_key, :receipt, true)"
+                    ),
+                    {
+                        "workspace_id": binding.workspace_id,
+                        "environment_id": binding.environment_id,
+                        "attempt_id": attempt_id,
+                        "page_id": page_id,
+                        "effect_key": key,
+                        "receipt": str(receipt),
+                    },
+                )
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.outbox_intents "
+                    "(event_id, workspace_id, environment_id, event_type, event_schema_version, "
+                    "aggregate_type, aggregate_id, aggregate_schema_version, producer_deduplication_id, "
+                    "payload, trace_id, created_at) VALUES (:event_id, :workspace_id, :environment_id, "
+                    "'email.sync.state_observed', 1, 'mailbox_binding', :mailbox, 1, :dedup, "
+                    "CAST(:payload AS jsonb), :trace, :now)"
+                ),
+                {
+                    "event_id": outbox_event_id,
+                    "workspace_id": binding.workspace_id,
+                    "environment_id": binding.environment_id,
+                    "mailbox": mailbox_binding_id,
+                    "dedup": f"email-sync-state:{observation_id}",
+                    "payload": json.dumps({
+                        "observation_id": str(observation_id),
+                        "connection_id": str(case.source.connection_id),
+                        "mailbox_binding_id": str(mailbox_binding_id),
+                        "state_kind": "label_added",
+                        "provider_event_digest": event_digest,
+                    }),
+                    "trace": synthetic_uuid(753810),
+                    "now": NOW,
+                },
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.email_sync_state_observations "
+                    "(workspace_id, environment_id, observation_id, connection_id, mailbox_binding_id, "
+                    "state_kind, provider_event_digest, outbox_event_id, record) VALUES "
+                    "(:workspace_id, :environment_id, :observation_id, :connection_id, :mailbox, "
+                    "'label_added', :event_digest, :outbox_event_id, CAST(:record AS jsonb))"
+                ),
+                {
+                    "workspace_id": binding.workspace_id,
+                    "environment_id": binding.environment_id,
+                    "observation_id": observation_id,
+                    "connection_id": case.source.connection_id,
+                    "mailbox": mailbox_binding_id,
+                    "event_digest": event_digest,
+                    "outbox_event_id": outbox_event_id,
+                    "record": json.dumps(observation),
+                },
+            )
+        with pytest.raises(DBAPIError) as immutable_outbox_error:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("DELETE FROM spine.outbox_intents WHERE event_id = :event_id"),
+                    {"event_id": outbox_event_id},
+                )
+        assert immutable_outbox_error.value.orig.sqlstate == "23514"
+        runtime_engine = create_async_engine(
+            postgresql_contract_database.runtime_url.get_secret_value(),
+            hide_parameters=True,
+        )
+        try:
+            async with runtime_engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                        "set_config('spine.environment_id', :environment_id, true)"
+                    ),
+                    {
+                        "workspace_id": str(binding.workspace_id),
+                        "environment_id": str(binding.environment_id),
+                    },
+                )
+                await connection.execute(
+                    text(
+                        "SELECT spine.execute_source_disposition_erasure("
+                        ":workspace_id, :environment_id, :operation_id, :state_version)"
+                    ),
+                    {
+                        "workspace_id": binding.workspace_id,
+                        "environment_id": binding.environment_id,
+                        "operation_id": operation_id,
+                        "state_version": operation.state_version,
+                    },
+                )
+        finally:
+            await runtime_engine.dispose()
+        async with engine.connect() as connection:
+            result = (
+                await connection.execute(
+                    text(
+                        "SELECT p.page_id, p.record, p.committed, a.committed_checkpoint, a.revision, "
+                        "(SELECT count(*) FROM spine.email_sync_effect_receipts r "
+                        " WHERE r.workspace_id = p.workspace_id AND r.environment_id = p.environment_id "
+                        " AND r.attempt_id = p.attempt_id AND r.page_id = p.page_id) AS receipts, "
+                        "(SELECT count(*) FROM spine.email_sync_state_observations o "
+                        " WHERE o.observation_id = :observation_id) AS observations, "
+                        "(SELECT count(*) FROM spine.outbox_intents i WHERE i.event_id = :outbox_event_id) AS outbox "
+                        "FROM spine.email_sync_pages p JOIN spine.email_sync_attempts a "
+                        "USING (workspace_id, environment_id, attempt_id) WHERE p.attempt_id = :attempt_id"
+                    ),
+                    {
+                        "attempt_id": attempt_id,
+                        "observation_id": observation_id,
+                        "outbox_event_id": outbox_event_id,
+                    },
+                )
+            ).mappings().one()
+            surviving = result["record"]["effects"]
+            assert result["page_id"].startswith("erased.")
+            assert result["committed_checkpoint"] == "gmail-history:v1:110"
+            assert result["revision"] == 2
+            assert [effect["effect_key"] for effect in surviving] == [
+                "gmail.message.unrelated.753800"
+            ]
+            assert result["receipts"] == 1
+            assert result["observations"] == 0
+            assert result["outbox"] == 0
+            serialized = json.dumps(result["record"])
+            assert source_digest not in serialized and event_digest not in serialized
+            assert str(acceptance_id) not in serialized
+            assert str(unrelated_effect_id) in serialized
+    finally:
+        await engine.dispose()

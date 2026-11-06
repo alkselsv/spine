@@ -167,7 +167,7 @@ async def test_operator_bootstrap_failure_redacts_credentials(
 async def test_operator_activates_only_fixed_erasure_entrypoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connection = FakeConnection([(False, False, False), (True,)])
+    connection = FakeConnection([(False, False, False), (True,), (True,)])
 
     @asynccontextmanager
     async def connect(_url: str):  # type: ignore[no-untyped-def]
@@ -182,6 +182,7 @@ async def test_operator_activates_only_fixed_erasure_entrypoint(
         for statement, _ in connection.statements
     )
     assert "spine.execute_source_disposition_erasure(uuid,uuid,uuid,integer)" in rendered
+    assert "spine.erase_email_sync_source_lineage()" in rendered
     assert 'OWNER TO "spine_erasure_executor"' in rendered
     assert 'TO "spine_runtime"' in rendered
     assert "arbitrary" not in rendered

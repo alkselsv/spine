@@ -116,6 +116,7 @@ async def activate_postgresql_source_erasure_executor(
     function_signature = (
         "spine.execute_source_disposition_erasure(uuid,uuid,uuid,integer)"
     )
+    email_sync_trigger_signature = "spine.erase_email_sync_source_lineage()"
     try:
         async with _connect(settings.url.get_secret_value()) as connection:
             role = await (
@@ -135,6 +136,16 @@ async def activate_postgresql_source_erasure_executor(
             ).fetchone()
             if exists is None or exists[0] is not True:
                 return False
+            email_sync_trigger = await (
+                await connection.execute(
+                    "SELECT to_regprocedure(%s) IS NOT NULL",
+                    (email_sync_trigger_signature,),
+                )
+            ).fetchone()
+            if email_sync_trigger is None or email_sync_trigger[0] is not True:
+                raise OperatorBootstrapError(
+                    "email sync erasure trigger function is unavailable"
+                )
             await connection.execute(
                 sql.SQL("REVOKE ALL ON FUNCTION {} FROM PUBLIC").format(
                     sql.SQL(function_signature)
@@ -143,6 +154,12 @@ async def activate_postgresql_source_erasure_executor(
             await connection.execute(
                 sql.SQL("ALTER FUNCTION {} OWNER TO {}").format(
                     sql.SQL(function_signature),
+                    sql.Identifier(settings.erasure_role),
+                )
+            )
+            await connection.execute(
+                sql.SQL("ALTER FUNCTION {} OWNER TO {}").format(
+                    sql.SQL(email_sync_trigger_signature),
                     sql.Identifier(settings.erasure_role),
                 )
             )
