@@ -430,6 +430,8 @@ async def test_tombstone_selector_immutability_is_replaced_by_governed_guard(
                 )
             ).scalars().all()
         assert set(governed_trigger_tables) == {
+            "gmail_message_label_observations",
+            "gmail_message_relationship_evidence",
             "access_policy_grants",
             "access_policy_versions",
             "admission_decisions",
@@ -589,6 +591,74 @@ async def test_authorized_erasure_executor_physically_removes_supported_source_g
     operation = _operation(binding)
     assert await _repository(postgresql_adapter).admit_if_current(operation, binding)
 
+    observation_id = synthetic_uuid(753610)
+    evidence_id = synthetic_uuid(753611)
+    lineage_engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with lineage_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.gmail_message_label_observations "
+                    "(observation_id, workspace_id, environment_id, source_object_id, "
+                    "source_revision_id, history_id, event_identity, label_id, state, "
+                    "record, received_at) VALUES (:observation_id, :workspace_id, "
+                    ":environment_id, :source_id, :revision_id, 11, :event_identity, "
+                    ":label_id, 'present', CAST(:record AS jsonb), :received_at)"
+                ),
+                {
+                    "observation_id": observation_id,
+                    "workspace_id": binding.workspace_id,
+                    "environment_id": binding.environment_id,
+                    "source_id": case.source.source_object_id,
+                    "revision_id": case.revision.revision_id,
+                    "event_identity": "synthetic-provider-event-753610",
+                    "label_id": "synthetic-label-753610",
+                    "record": '{"message_id":"synthetic-message-753610"}',
+                    "received_at": NOW,
+                },
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.gmail_message_label_heads "
+                    "(workspace_id, environment_id, source_object_id, label_id, "
+                    "observation_id, history_id, event_identity, state) VALUES "
+                    "(:workspace_id, :environment_id, :source_id, :label_id, "
+                    ":observation_id, 11, :event_identity, 'present')"
+                ),
+                {
+                    "workspace_id": binding.workspace_id,
+                    "environment_id": binding.environment_id,
+                    "source_id": case.source.source_object_id,
+                    "label_id": "synthetic-label-753610",
+                    "observation_id": observation_id,
+                    "event_identity": "synthetic-provider-event-753610",
+                },
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.gmail_message_relationship_evidence "
+                    "(evidence_id, workspace_id, environment_id, source_object_id, "
+                    "source_revision_id, kind, authority, record, received_at) VALUES "
+                    "(:evidence_id, :workspace_id, :environment_id, :source_id, "
+                    ":revision_id, 'provider_thread', 'provider_reported_thread_id', "
+                    "CAST(:record AS jsonb), :received_at)"
+                ),
+                {
+                    "evidence_id": evidence_id,
+                    "workspace_id": binding.workspace_id,
+                    "environment_id": binding.environment_id,
+                    "source_id": case.source.source_object_id,
+                    "revision_id": case.revision.revision_id,
+                    "record": '{"thread_id":"synthetic-thread-753610"}',
+                    "received_at": NOW,
+                },
+            )
+    finally:
+        await lineage_engine.dispose()
+
     engine = create_async_engine(
         postgresql_contract_database.runtime_url.get_secret_value(),
         hide_parameters=True,
@@ -624,7 +694,10 @@ async def test_authorized_erasure_executor_physically_removes_supported_source_g
                     "(SELECT count(*) FROM spine.canonical_acceptances WHERE source_object_id = :source_id) AS acceptances, "
                     "(SELECT count(*) FROM spine.current_source_heads WHERE source_object_id = :source_id) AS heads, "
                     "(SELECT count(*) FROM spine.qualified_deletion_evidence WHERE source_object_id = :source_id) AS deletion_evidence, "
-                    "(SELECT count(*) FROM spine.trusted_canonical_tombstone_selector_versions WHERE source_object_id = :source_id) AS selectors"
+                    "(SELECT count(*) FROM spine.trusted_canonical_tombstone_selector_versions WHERE source_object_id = :source_id) AS selectors, "
+                    "(SELECT count(*) FROM spine.gmail_message_label_heads WHERE source_object_id = :source_id) AS label_heads, "
+                    "(SELECT count(*) FROM spine.gmail_message_label_observations WHERE source_object_id = :source_id) AS label_observations, "
+                    "(SELECT count(*) FROM spine.gmail_message_relationship_evidence WHERE source_object_id = :source_id) AS relationship_evidence"
                 ),
                 {"source_id": case.source.source_object_id},
             )
@@ -638,6 +711,9 @@ async def test_authorized_erasure_executor_physically_removes_supported_source_g
                 "heads": 0,
                 "deletion_evidence": 0,
                 "selectors": 0,
+                "label_heads": 0,
+                "label_observations": 0,
+                "relationship_evidence": 0,
             }
             await uow.rollback()
 

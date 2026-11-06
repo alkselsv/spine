@@ -30,6 +30,9 @@ ERASURE_TABLES = (
     "lifecycle_observations",
     "current_retention_applicabilities",
     "retention_applicabilities",
+    "gmail_message_label_heads",
+    "gmail_message_label_observations",
+    "gmail_message_relationship_evidence",
     "source_objects",
     "source_revisions",
     "source_revision_provenance",
@@ -54,6 +57,8 @@ AUTHORITY_TABLES = (
     "source_objects",
 )
 IMMUTABLE_ERASURE_TABLES = (
+    "gmail_message_label_observations",
+    "gmail_message_relationship_evidence",
     "tombstone_authorization_decisions",
     "qualified_deletion_evidence",
     "trusted_canonical_tombstone_selector_versions",
@@ -472,6 +477,9 @@ def upgrade() -> None:
                 'lifecycle_observations',
                 'current_retention_applicabilities',
                 'retention_applicabilities',
+                'gmail_message_label_heads',
+                'gmail_message_label_observations',
+                'gmail_message_relationship_evidence',
                 'source_revision_receipt_associations',
                 'source_revision_provenance',
                 'source_revisions',
