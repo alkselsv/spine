@@ -54,7 +54,9 @@ class Bitrix24Scope(str, Enum):
 class Bitrix24GrantBinding(ValidatedDefinitionModel):
     """One immutable exact provider identity bound to a connection version."""
 
-    schema_version: Literal["bitrix24-grant-binding:v1"] = "bitrix24-grant-binding:v1"
+    schema_version: Literal[
+        "bitrix24-grant-binding:v1", "bitrix24-grant-binding:v2"
+    ] = "bitrix24-grant-binding:v1"
     binding_id: UUID
     workspace_id: UUID
     environment_id: UUID
@@ -85,21 +87,26 @@ class Bitrix24GrantBinding(ValidatedDefinitionModel):
     @field_validator("granted_scopes")
     @classmethod
     def _validate_scopes(
-        cls, values: tuple[Bitrix24Scope, ...]
+        cls, values: tuple[Bitrix24Scope, ...], info: ValidationInfo
     ) -> tuple[Bitrix24Scope, ...]:
         if len(set(values)) != len(values):
             raise ValueError("granted_scopes must be unique")
-        if values != (Bitrix24Scope.DISK,):
-            raise ValueError("offline Bitrix24 authority permits only the disk scope")
+        expected = (
+            (Bitrix24Scope.DISK,)
+            if info.data.get("schema_version") == "bitrix24-grant-binding:v1"
+            else (Bitrix24Scope.DISK, Bitrix24Scope.CRM)
+        )
+        if values != expected:
+            raise ValueError("Bitrix24 grant scopes do not match the contract version")
         return values
 
 
 class Bitrix24GrantAuthority(ValidatedDefinitionModel):
     """Canonical reference-only snapshot selecting one complete token pair."""
 
-    schema_version: Literal["bitrix24-grant-authority:v1"] = (
-        "bitrix24-grant-authority:v1"
-    )
+    schema_version: Literal[
+        "bitrix24-grant-authority:v1", "bitrix24-grant-authority:v2"
+    ] = "bitrix24-grant-authority:v1"
     binding: Bitrix24GrantBinding
     active_pair_reference: OpaqueProviderReference
     token_epoch: int = Field(ge=1)
@@ -108,6 +115,9 @@ class Bitrix24GrantAuthority(ValidatedDefinitionModel):
 
     @model_validator(mode="after")
     def _validate_fenced_state(self) -> "Bitrix24GrantAuthority":
+        expected_binding_version = self.schema_version.replace("authority", "binding")
+        if self.binding.schema_version != expected_binding_version:
+            raise ValueError("Bitrix24 grant authority and binding versions must match")
         if self.state is Bitrix24GrantState.CONTAINED and self.security_fence < 1:
             raise ValueError("contained grant authority requires a security fence")
         return self
