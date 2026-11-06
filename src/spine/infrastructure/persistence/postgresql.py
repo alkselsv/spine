@@ -377,6 +377,11 @@ from spine.infrastructure.persistence.postgresql_answer_disclosure import (
     PostgreSQLAnswerDisclosureRepository,
 )
 
+_SOURCE_IDENTITY_INDEX_PREDICATES = {
+    "connector": text("identity_mode = 'connector'"),
+    "upload": text("identity_mode = 'upload'"),
+}
+
 _BIND_CONTEXT = text(
     "SELECT "
     "set_config('spine.workspace_id', :workspace_id, true), "
@@ -2084,7 +2089,10 @@ class _PostgreSQLSourceObservationRepository:
             values["source_kind"] = getattr(source.source_kind, "value", source.source_kind)
             values["identity_mode"] = source.identity_mode.value
             await self._uow._execute(
-                postgresql_insert(_SOURCE_OBJECTS).values(**values).on_conflict_do_nothing(index_elements=columns, index_where=_SOURCE_OBJECTS.c.identity_mode == source.identity_mode.value)
+                postgresql_insert(_SOURCE_OBJECTS).values(**values).on_conflict_do_nothing(
+                    index_elements=columns,
+                    index_where=_SOURCE_IDENTITY_INDEX_PREDICATES[source.identity_mode.value],
+                )
             )
             row = (await self._uow._execute(select(_SOURCE_OBJECTS).where(*predicates))).mappings().one_or_none()
         if row is None:
