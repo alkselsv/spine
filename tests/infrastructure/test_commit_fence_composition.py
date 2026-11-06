@@ -11,6 +11,7 @@ from spine.application.commit_fence import (
     CommitFenceBinding,
     canonical_commit_fence_lineage_digest,
 )
+from spine.application.commit_fence_qualification import build_offline_qualification_template
 from spine.application.persistence.context import EnvironmentScope
 from spine.application.private_asr_corpus import PrivateArtifactSourceLineage
 from spine.infrastructure.commit_fence_composition import (
@@ -204,6 +205,16 @@ def test_production_factory_rejects_synthetic_f2_registration() -> None:
         build_production_commit_fence_composition(
             scope=SCOPE,
             postgresql_sources=(synthetic,),  # type: ignore[arg-type]
+        )
+
+
+def test_offline_qualification_record_cannot_enter_production_composition() -> None:
+    record = build_offline_qualification_template(record_reference=UUID(int=900))
+
+    with pytest.raises(ValueError, match="only qualified F1 sources"):
+        build_production_commit_fence_composition(
+            scope=SCOPE,
+            postgresql_sources=(record,),  # type: ignore[arg-type]
         )
 
 

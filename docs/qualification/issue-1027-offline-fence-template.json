@@ -1,0 +1,136 @@
+{
+  "schema_version": "external-commit-fence-qualification:v1",
+  "record_reference": "00000000-0000-0000-0000-000000000403",
+  "authority_class": "UNKNOWN",
+  "qualification_status": "F2_NOT_QUALIFIED",
+  "provider_reference": null,
+  "provider_identity": {
+    "status": "NOT_PROVIDED",
+    "evidence_reference": null,
+    "valid_until": null
+  },
+  "provider_contract_version": null,
+  "provider_contract": {
+    "status": "NOT_PROVIDED",
+    "evidence_reference": null,
+    "valid_until": null
+  },
+  "environment_reference": null,
+  "environment": {
+    "status": "NOT_PROVIDED",
+    "evidence_reference": null,
+    "valid_until": null
+  },
+  "authority_binding": {
+    "status": "NOT_PROVIDED",
+    "issuer_reference": null,
+    "subject_reference": null,
+    "workspace_reference": null,
+    "environment_reference": null,
+    "purpose": null,
+    "action": null,
+    "evidence_reference": null
+  },
+  "permit_acquisition_release": {
+    "status": "NOT_PROVIDED",
+    "evidence_reference": null,
+    "valid_until": null
+  },
+  "revocation_acknowledgement_order": {
+    "status": "NOT_PROVIDED",
+    "evidence_reference": null,
+    "valid_until": null
+  },
+  "expiry_renewal_guarantees": {
+    "status": "NOT_PROVIDED",
+    "evidence_reference": null,
+    "valid_until": null
+  },
+  "stale_holder_generation_semantics": {
+    "status": "NOT_PROVIDED",
+    "evidence_reference": null,
+    "valid_until": null
+  },
+  "clock_uncertainty": {
+    "status": "NOT_PROVIDED",
+    "evidence_reference": null,
+    "valid_until": null
+  },
+  "transaction_commit_bounds": {
+    "status": "NOT_PROVIDED",
+    "evidence_reference": null,
+    "valid_until": null
+  },
+  "timeout_retry_recovery": {
+    "status": "NOT_PROVIDED",
+    "evidence_reference": null,
+    "valid_until": null
+  },
+  "provider_conformance_results": {
+    "status": "NOT_PROVIDED",
+    "evidence_reference": null,
+    "valid_until": null
+  },
+  "parameters": {
+    "status": "NOT_PROVIDED",
+    "permit_lifetime_ms": null,
+    "maximum_transaction_ms": null,
+    "renewal_supported": null,
+    "renewal_interval_ms": null,
+    "clock_uncertainty_ms": null,
+    "safety_margin_ms": null,
+    "request_timeout_ms": null,
+    "retry_limit": null,
+    "evidence_reference": null
+  },
+  "adapter_version": null,
+  "composition_version": null,
+  "adapter_composition_evidence": {
+    "status": "NOT_PROVIDED",
+    "evidence_reference": null,
+    "valid_until": null
+  },
+  "reviewer_decisions": [
+    {
+      "role": "PROVIDER_OWNER",
+      "decision": "NOT_PROVIDED",
+      "reviewer_reference": null,
+      "decided_at": null,
+      "evidence_reference": null
+    },
+    {
+      "role": "SECURITY_OWNER",
+      "decision": "NOT_PROVIDED",
+      "reviewer_reference": null,
+      "decided_at": null,
+      "evidence_reference": null
+    },
+    {
+      "role": "OPERATIONS_OWNER",
+      "decision": "NOT_PROVIDED",
+      "reviewer_reference": null,
+      "decided_at": null,
+      "evidence_reference": null
+    },
+    {
+      "role": "APPLICATION_INTEGRATION_OWNER",
+      "decision": "NOT_PROVIDED",
+      "reviewer_reference": null,
+      "decided_at": null,
+      "evidence_reference": null
+    },
+    {
+      "role": "DECISION_OWNER",
+      "decision": "NOT_PROVIDED",
+      "reviewer_reference": null,
+      "decided_at": null,
+      "evidence_reference": null
+    }
+  ],
+  "remaining_unsupported_scopes": {
+    "status": "NOT_PROVIDED",
+    "scopes": [],
+    "evidence_reference": null,
+    "valid_until": null
+  }
+}
