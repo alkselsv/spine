@@ -54,6 +54,11 @@ retention duration is authorized.
 - [#813](https://github.com/alkselsv/spine/issues/813) and
   [#976](https://github.com/alkselsv/spine/issues/976) own publication and
   revocation fencing; this matrix does not create a second fence service.
+- #1016 adds current-source usage guards for general source read/process paths
+  (`src/spine/application/source_usage_guard.py`,
+  `src/spine/infrastructure/current_source_constraints.py`, and their focused
+  tests). Those checks do not implement Gmail cleanup or qualify any row in
+  this matrix; all 13 scenarios remain `NOT_RUN`.
 - #857 owns email access/retention enforcement, not physical deletion.
 - `RetentionApplicability` remains the single policy-applicability authority;
   it does not define a duration or authorize cleanup.
