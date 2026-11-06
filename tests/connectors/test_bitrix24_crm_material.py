@@ -8,12 +8,10 @@ from spine.connectors.bitrix24_crm_material import (
     Bitrix24CrmActivity,
     Bitrix24CrmAttachment,
     Bitrix24CrmMaterialAdapter,
-    Bitrix24CrmMaterialNotFoundError,
     Bitrix24CrmMaterialPermissionLostError,
     Bitrix24CrmMaterialReadCommand,
     Bitrix24CrmMaterialReadProfile,
     bitrix24_crm_capability,
-    bitrix24_crm_normalized_observation,
 )
 from spine.connectors.bitrix24_disk import bitrix24_disk_capabilities
 from spine.domain.connections.provider import (
@@ -24,6 +22,7 @@ from spine.domain.connections.provider import (
     ProviderConnectionStatus,
     ProviderKind,
 )
+from spine.domain.sources.bitrix24_crm import Bitrix24CrmMaterialV1OperationDeniedError
 
 NOW = datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
 
@@ -140,44 +139,19 @@ def _adapter(service: FakeCrmService) -> Bitrix24CrmMaterialAdapter:
 
 
 @pytest.mark.asyncio
-async def test_crm_activity_attachment_preserves_exact_binding_and_disk_revision() -> (
-    None
-):
+async def test_legacy_crm_reader_denies_before_provider_access_without_acting_human() -> None:
     service = FakeCrmService()
-    observation = await _adapter(service).read(_connection(), _command())
-
-    assert observation.crm_entity_type == "deal"
-    assert observation.crm_entity_id == "932"
-    assert observation.crm_activity_id == "501"
-    assert observation.disk_file_id == "9043"
-    assert observation.disk_file_revision == "42"
-    assert observation.target_source_revision_id == _id(21)
-    assert "brief" not in observation.model_dump_json().lower()
+    with pytest.raises(Bitrix24CrmMaterialV1OperationDeniedError):
+        await _adapter(service).read(
+            _connection(), _command(acting_subject_id=None)
+        )
+    assert service.calls == []
 
 
 @pytest.mark.asyncio
-async def test_crm_relationship_maps_to_shared_structured_observation() -> None:
-    observation = await _adapter(FakeCrmService()).read(_connection(), _command())
-
-    normalized = bitrix24_crm_normalized_observation(
-        observation,
-        authorization_generation=2,
-        configuration_generation=3,
-    )
-
-    assert normalized.representation.kind == "structured"
-    assert normalized.provider_kind is ProviderKind.BITRIX24
-    assert normalized.external_identity.provider_key.provider_object_id == (
-        "501:attachment-1"
-    )
-    assert normalized.authorization_generation == 2
-    assert normalized.configuration_generation == 3
-
-
-@pytest.mark.asyncio
-async def test_crm_reader_rejects_unapproved_entity_and_never_calls_provider() -> None:
+async def test_legacy_crm_reader_denies_before_validating_live_read() -> None:
     service = FakeCrmService()
-    with pytest.raises(ValueError, match="approved entity"):
+    with pytest.raises(Bitrix24CrmMaterialV1OperationDeniedError):
         await _adapter(service).read(
             _connection(), _command(approved_entity_types=("contact",))
         )
@@ -185,9 +159,9 @@ async def test_crm_reader_rejects_unapproved_entity_and_never_calls_provider() -
 
 
 @pytest.mark.asyncio
-async def test_crm_reader_rejects_missing_scope_before_provider_access() -> None:
+async def test_legacy_crm_reader_denies_without_resource_scope_validation() -> None:
     service = FakeCrmService()
-    with pytest.raises(ValueError, match="resource scope"):
+    with pytest.raises(Bitrix24CrmMaterialV1OperationDeniedError):
         await _adapter(service).read(
             _connection(),
             _command(resource_scope_reference=OpaqueProviderReference(value=_id(99))),
@@ -196,17 +170,17 @@ async def test_crm_reader_rejects_missing_scope_before_provider_access() -> None
 
 
 @pytest.mark.asyncio
-async def test_crm_reader_rejects_cross_workspace_before_provider_access() -> None:
+async def test_legacy_crm_reader_denies_without_connection_scope_validation() -> None:
     service = FakeCrmService()
-    with pytest.raises(ValueError, match="trusted connection scope"):
+    with pytest.raises(Bitrix24CrmMaterialV1OperationDeniedError):
         await _adapter(service).read(_connection(), _command(workspace_id=_id(44)))
     assert service.calls == []
 
 
 @pytest.mark.asyncio
-async def test_crm_reader_rejects_mismatched_attachment_file() -> None:
+async def test_legacy_crm_reader_denies_before_attachment_matching() -> None:
     service = FakeCrmService()
-    with pytest.raises(Bitrix24CrmMaterialNotFoundError):
+    with pytest.raises(Bitrix24CrmMaterialV1OperationDeniedError):
         await _adapter(service).read(
             _connection(), _command(disk_file_id="different-file")
         )
@@ -233,7 +207,7 @@ def test_crm_capability_is_conditional_and_does_not_enable_unrelated_management(
 
 
 @pytest.mark.asyncio
-async def test_crm_reader_translates_current_access_loss_without_disclosing_payload() -> (
+async def test_legacy_crm_reader_denies_before_access_authorization() -> (
     None
 ):
     service = FakeCrmService()
@@ -248,6 +222,7 @@ async def test_crm_reader_translates_current_access_loss_without_disclosing_payl
         raise Bitrix24CrmMaterialPermissionLostError()
 
     service.authorize_read = deny
-    with pytest.raises(Bitrix24CrmMaterialPermissionLostError):
+    with pytest.raises(Bitrix24CrmMaterialV1OperationDeniedError):
         await _adapter(service).read(_connection(), _command())
+    assert service.calls == []
     assert "9043" not in str(Bitrix24CrmMaterialPermissionLostError())

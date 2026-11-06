@@ -20,6 +20,9 @@ from spine.domain.sources import (
     Bitrix24CrmMaterialHandoff,
     Bitrix24CrmMaterialRevocation,
 )
+from spine.domain.sources.bitrix24_crm import (
+    deny_bitrix24_crm_material_v1_live_operation,
+)
 from spine.infrastructure.persistence.postgresql_mappings import (
     bitrix24_crm_material_acceptances,
     bitrix24_crm_material_claims,
@@ -44,6 +47,7 @@ class PostgreSQLBitrix24CrmMaterialAssociationRepository:
         self._context_factory = context_factory
 
     async def record_claim(self, claim: Bitrix24CrmMaterialClaim) -> Bitrix24CrmMaterialClaim:
+        deny_bitrix24_crm_material_v1_live_operation()
         async with self._uow("bitrix24_crm_material_observe", claim.claim_id) as uow:
             row = await self._load_claim(uow, claim.claim_id)
             if row is not None:
@@ -93,6 +97,7 @@ class PostgreSQLBitrix24CrmMaterialAssociationRepository:
         claim_id: UUID,
         acceptance: Bitrix24CrmMaterialAcceptance,
     ) -> Bitrix24CrmMaterialHandoff:
+        deny_bitrix24_crm_material_v1_live_operation()
         async with self._uow("bitrix24_crm_material_accept", claim_id) as uow:
             row = await self._load_claim(uow, claim_id)
             if row is None:
@@ -148,6 +153,7 @@ class PostgreSQLBitrix24CrmMaterialAssociationRepository:
     async def revoke_claim(
         self, revocation: Bitrix24CrmMaterialRevocation
     ) -> Bitrix24CrmMaterialHandoff:
+        deny_bitrix24_crm_material_v1_live_operation()
         async with self._uow("bitrix24_crm_material_revoke", revocation.claim_id) as uow:
             row = await self._load_claim(uow, revocation.claim_id)
             if row is None:

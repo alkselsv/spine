@@ -10,6 +10,9 @@ from spine.application.persistence.context import (
     TrustedPersistenceContext,
 )
 from spine.domain.common import ContextOrigin
+from spine.domain.sources.bitrix24_crm import (
+    deny_bitrix24_crm_material_v1_live_operation,
+)
 from spine.domain.sources import (
     Bitrix24CrmMaterialAcceptance,
     Bitrix24CrmMaterialClaim,
@@ -82,6 +85,7 @@ class Bitrix24CrmMaterialAssociationService:
         self._context = context
 
     async def observe(self, claim: Bitrix24CrmMaterialClaim) -> Bitrix24CrmMaterialHandoff:
+        deny_bitrix24_crm_material_v1_live_operation()
         persisted = await self._repository.record_claim(claim)
         existing = await self._repository.resolve_handoff(persisted.claim_id)
         if existing is not None:
@@ -94,6 +98,7 @@ class Bitrix24CrmMaterialAssociationService:
         claim_id: UUID,
         acceptance: Bitrix24CrmMaterialAcceptance,
     ) -> Bitrix24CrmMaterialHandoff:
+        deny_bitrix24_crm_material_v1_live_operation()
         if self._context is not None:
             validate_bitrix24_crm_material_acceptance_authority(
                 self._context, acceptance
@@ -111,6 +116,7 @@ class Bitrix24CrmMaterialAssociationService:
     async def revoke(
         self, revocation: Bitrix24CrmMaterialRevocation
     ) -> Bitrix24CrmMaterialHandoff:
+        deny_bitrix24_crm_material_v1_live_operation()
         return await self._repository.revoke_claim(revocation)
 
 

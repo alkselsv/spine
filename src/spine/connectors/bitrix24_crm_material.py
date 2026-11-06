@@ -28,6 +28,9 @@ from spine.domain.connections.provider import (
     ProviderConnection,
     ProviderKind,
 )
+from spine.domain.sources.bitrix24_crm import (
+    deny_bitrix24_crm_material_v1_live_operation,
+)
 from spine.domain.sources import Bitrix24CrmMaterialClaim
 
 BITRIX24_CRM_EXTERNAL_GENERATION = "bitrix24-crm-activity-attachment:v1"
@@ -379,6 +382,7 @@ class Bitrix24CrmMaterialAdapter:
         connection: ProviderConnection,
         command: Bitrix24CrmMaterialReadCommand,
     ) -> Bitrix24CrmMaterialObservation:
+        deny_bitrix24_crm_material_v1_live_operation()
         if len(command.approved_entity_types) > self._profile.max_entity_types:
             raise Bitrix24CrmMaterialContractError()
         self._validate_admission(connection, command)
