@@ -6,9 +6,9 @@ approval, or evidence for an external F2 provider.
 
 **Version:** `postgresql-transactional-race-matrix:v1`
 
-**Tested commit:** `64901c41f4f3ea101608f9e3a29d6dca7c9c89d9`
+**Tested commit:** `1a5b6b90ef4c3c536300c05f2d448660f0477de5`
 
-**CI run:** [#42178402686](https://github.com/alkselsv/spine/actions/runs/42178402686)
+**CI run:** [#42181459547](https://github.com/alkselsv/spine/actions/runs/42181459547)
 completed successfully on 2026-11-06. The mandatory repository and PostgreSQL
 suite reported `7329 passed, 7 skipped, 2 deselected` in 370.24 seconds. All
 focused PostgreSQL tests cited below were part of that suite and passed. The
