@@ -11,9 +11,10 @@ statuses are `NOT_RUN` against any state-machine or production boundary.
 
 Vectors use the state names and event vocabulary proposed for #1001. This branch
 is standalone and imports no #1001 code, so it has no hidden branch dependency.
-Until #1001 is merged, the state mapping is specification-only; #1002 unit tests
-validate the vector catalog and fake-store behavior, not #1001 transition
-semantics.
+Although #1001 is now merged, this PR remains standalone: its state mapping is
+specification-only and its unit tests validate the vector catalog and fake-store
+behavior, not the canonical #1001 transition semantics. A separate integration
+task must execute these vectors against #1001.
 
 | Vector | #1001 starting state → event mapping | Expected #1001 state | Required deny/fence | Qualification |
 |---|---|---|---|---|
@@ -60,3 +61,7 @@ rejects forbidden fields. They do not execute a cleanup state machine, real
 storage adapter, PostgreSQL/RLS, backup restore or production telemetry. Those
 qualification results remain `NOT_RUN` and require their named integration
 boundaries plus HD5/HD6 approval.
+
+The generic commit-fence recovery contract introduced by #1018 is a separate
+application boundary and does not execute these synthetic cleanup vectors or
+qualify Gmail cleanup.
