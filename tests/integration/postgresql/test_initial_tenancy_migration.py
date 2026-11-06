@@ -1530,6 +1530,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
             row.relname not in policy_tables
             or row.relname.startswith("crm_relationship_")
             or row.relname.startswith("private_asr_corpus_")
+            or row.relname == "source_erasure_execution_contexts"
         )
     }
     policies = {
@@ -1561,6 +1562,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         )
         or row.table_name.startswith("crm_relationship_")
         or row.table_name.startswith("private_asr_corpus_")
+        if not row.policy_name.endswith("_erasure_executor")
+        and row.policy_name != "pol_source_erasure_context_executor"
     }
     privilege_names = ("select_ok", "insert_ok", "update_ok", "delete_ok")
     privileges = {
@@ -1665,6 +1668,9 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "source_revisions",
         "source_revision_provenance",
         "source_revision_receipt_associations",
+        "source_disposition_operations",
+        "source_disposition_outbox",
+        "source_erasure_execution_contexts",
         "trusted_content_verification_evidence",
         "ingestion_runs",
         "ingestion_run_sources",
@@ -2515,6 +2521,12 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
     assert indexes == {
         "alembic_version_pkc",
         "ix_environments_workspace_id",
+        "pk_source_disposition_operations",
+        "ix_source_disposition_operations_expiry",
+        "pk_source_disposition_outbox",
+        "uq_source_disposition_outbox_operation_event",
+        "ix_source_disposition_outbox_created",
+        "source_erasure_execution_contexts_pkey",
         "pk_qualified_deletion_evidence",
         "uq_qualified_deletion_evidence_exact",
         "pk_source_deletion_policy_approvals",
@@ -2818,6 +2830,9 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
     expected_rls = {
         "workspaces": (True, True),
         "environments": (True, True),
+        "source_disposition_operations": (True, True),
+        "source_disposition_outbox": (True, True),
+        "source_erasure_execution_contexts": (True, True),
         "email_sync_attempts": (True, True),
         "email_sync_pages": (True, True),
         "email_sync_effect_receipts": (True, True),
@@ -2954,6 +2969,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "outbox_deliveries",
         "private_asr_corpus_manifests",
         "private_asr_corpus_releases",
+        "source_erasure_execution_contexts",
     }
     assert set(policies) == {
         (table_name, f"pol_{table_name}_{policy_kind}"[:63])
@@ -2972,6 +2988,26 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         ("private_asr_corpus_releases", "pol_private_asr_corpus_releases_tenant_isolation"),
         ("private_asr_corpus_releases", "pol_private_asr_corpus_releases_migration_maintenance"),
     }
+    erasure_policies = (
+        await connection.execute(
+            text(
+                "SELECT relation.relname AS table_name, policy.polname AS policy_name, "
+                "relation.relrowsecurity AS rls_enabled, "
+                "relation.relforcerowsecurity AS rls_forced, "
+                "ARRAY(SELECT role.rolname FROM pg_roles AS role "
+                "WHERE role.oid = ANY(policy.polroles)) AS roles "
+                "FROM pg_policy AS policy "
+                "JOIN pg_class AS relation ON relation.oid = policy.polrelid "
+                "JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
+                "WHERE namespace.nspname = 'spine' AND "
+                "(policy.polname LIKE '%_erasure_executor' OR "
+                "policy.polname = 'pol_source_erasure_context_executor')"
+            )
+        )
+    ).mappings().all()
+    assert erasure_policies
+    assert all(tuple(row.roles) == ("spine_erasure_executor",) for row in erasure_policies)
+    assert all(row.rls_enabled and row.rls_forced for row in erasure_policies)
     for table_name in standard_tenant_rls_tables:
         tenant_policy = policies[
             (table_name, f"pol_{table_name}_tenant_isolation"[:63])
@@ -3022,6 +3058,9 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
     )
     assert privileges == {
         "alembic_version": (True, False, False, False),
+        "source_disposition_operations": (True, True, True, True),
+        "source_disposition_outbox": (True, True, True, True),
+        "source_erasure_execution_contexts": (False, False, False, False),
         "audit_events": (True, True, False, False),
         "workspaces": (True, True, True, True),
         "environments": (True, True, True, True),
