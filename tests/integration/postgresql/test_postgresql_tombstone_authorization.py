@@ -158,7 +158,7 @@ async def _repository_case(
                     "principal_id": evidence_context.service_principal_id,
                     "purpose": evidence_context.purpose.value,
                     "operation": evidence_context.operation.value,
-                    "expires_at": NOW + timedelta(days=1),
+                    "expires_at": NOW + timedelta(days=365),
                     "change_id": synthetic_uuid(number + 22),
                 },
             )
@@ -618,7 +618,7 @@ async def test_postgresql_revoked_qualification_successor_hides_active_predecess
                     "principal_id": evidence.qualifier_service_principal_id,
                     "purpose": evidence_context.purpose.value,
                     "operation": evidence_context.operation.value,
-                    "expires_at": NOW + timedelta(days=1),
+                    "expires_at": NOW + timedelta(days=365),
                     "change_id": synthetic_uuid(739702),
                 },
             )
@@ -660,7 +660,7 @@ async def test_postgresql_other_qualification_scope_does_not_hide_requested_bind
                 "workspace_id": evidence.workspace_id,
                 "environment_id": evidence.environment_id,
                 "principal_id": evidence.qualifier_service_principal_id,
-                "expires_at": NOW + timedelta(days=1),
+                "expires_at": NOW + timedelta(days=365),
             }
             await connection.execute(
                 statement,

@@ -140,7 +140,7 @@ def _selector_record(
         audit_reference=audit_id,
         idempotency_identity=key,
         valid_from=NOW,
-        valid_until=NOW + timedelta(days=1),
+        valid_until=NOW + timedelta(days=365),
         created_at=NOW,
     )
 
@@ -813,7 +813,7 @@ async def test_tombstone_selector_publication_is_immutable_and_cas_serialized(
             audit_reference=audit_id,
             idempotency_identity=key,
             valid_from=NOW,
-            valid_until=NOW + timedelta(days=1),
+            valid_until=NOW + timedelta(days=365),
             created_at=NOW,
         )
 
