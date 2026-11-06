@@ -86,6 +86,19 @@ def upgrade() -> None:
     executor = _role("erasure_role")
     runtime = _role("runtime_role")
     op.execute(f"GRANT USAGE ON SCHEMA {SCHEMA} TO {executor}")
+    op.execute(
+        f"ALTER TABLE {SCHEMA}.source_disposition_operations "
+        "ADD COLUMN canonical_erasure_state text NOT NULL DEFAULT 'not_started', "
+        "ADD COLUMN canonical_erasure_completed_at timestamptz"
+    )
+    op.execute(
+        f"ALTER TABLE {SCHEMA}.source_disposition_operations "
+        "ADD CONSTRAINT ck_source_disposition_canonical_erasure_state "
+        "CHECK ((canonical_erasure_state = 'not_started' AND "
+        "canonical_erasure_completed_at IS NULL) OR "
+        "(canonical_erasure_state = 'applied' AND "
+        "canonical_erasure_completed_at IS NOT NULL))"
+    )
 
     # The v3 tombstone acceptance and its authorizing decision form an exact,
     # tenant-scoped cycle. Defer both checks to transaction end so the governed
@@ -217,6 +230,11 @@ def upgrade() -> None:
             "current_source_heads",
             "tombstone_authorizations",
             "current_tombstone_authorization_decisions",
+            "current_source_deletion_policy_approvals",
+            "current_tombstone_authorization_issuers",
+            "current_retention_applicabilities",
+            "current_lifecycle_authorities",
+            "source_objects",
         } else "SELECT"
         op.execute(f"GRANT {grants} ON {SCHEMA}.{table} TO {executor}")
     for table in ERASURE_TABLES:
@@ -266,10 +284,33 @@ def upgrade() -> None:
             auth_record jsonb;
             current_head record;
             decision_disposition text;
+            lifecycle_status text;
             operation_xid xid8 := pg_current_xact_id();
             target record;
             target_table text;
         BEGIN
+            SELECT * INTO op_row
+              FROM {SCHEMA}.source_disposition_operations
+             WHERE workspace_id = p_workspace_id
+               AND environment_id = p_environment_id
+               AND operation_id = p_operation_id;
+            IF NOT FOUND THEN
+                RETURN 'DENIED';
+            END IF;
+            binding := op_row.operation_data->'authority_binding';
+            IF jsonb_typeof(binding) <> 'object'
+               OR (binding->>'workspace_id')::uuid <> p_workspace_id
+               OR (binding->>'environment_id')::uuid <> p_environment_id
+               OR (binding->>'operation_id')::uuid <> p_operation_id THEN
+                RETURN 'DENIED';
+            END IF;
+            source_id := (binding->>'source_object_id')::uuid;
+
+            PERFORM pg_advisory_xact_lock(hashtextextended(
+                p_workspace_id::text || ':' || p_environment_id::text || ':' || source_id::text,
+                0
+            ));
+
             SELECT * INTO op_row
               FROM {SCHEMA}.source_disposition_operations
              WHERE workspace_id = p_workspace_id
@@ -281,12 +322,16 @@ def upgrade() -> None:
                OR NOT op_row.fence_active THEN
                 RETURN 'DENIED';
             END IF;
+            IF op_row.canonical_erasure_state = 'applied' THEN
+                RETURN 'CANONICAL_ERASED';
+            END IF;
 
             binding := op_row.operation_data->'authority_binding';
             IF jsonb_typeof(binding) <> 'object'
                OR (binding->>'workspace_id')::uuid <> p_workspace_id
                OR (binding->>'environment_id')::uuid <> p_environment_id
-               OR (binding->>'operation_id')::uuid <> p_operation_id THEN
+               OR (binding->>'operation_id')::uuid <> p_operation_id
+               OR (binding->>'source_object_id')::uuid <> source_id THEN
                 RETURN 'DENIED';
             END IF;
             source_id := (binding->>'source_object_id')::uuid;
@@ -337,54 +382,66 @@ def upgrade() -> None:
                 RETURN 'DENIED';
             END IF;
 
-            IF NOT EXISTS (
-                SELECT 1 FROM {SCHEMA}.current_source_deletion_policy_approvals p
-                 WHERE p.workspace_id = p_workspace_id
-                   AND p.environment_id = p_environment_id
-                   AND p.current_approval_id = (binding->>'deletion_policy_approval_id')::uuid
-                   AND p.generation = (binding->>'deletion_policy_generation')::integer
-            ) OR NOT EXISTS (
-                SELECT 1 FROM {SCHEMA}.current_tombstone_authorization_issuers i
-                 WHERE i.workspace_id = p_workspace_id
-                   AND i.environment_id = p_environment_id
-                   AND i.current_issuer_authority_id = (binding->>'issuer_authority_id')::uuid
-                   AND i.generation = (binding->>'issuer_generation')::integer
-            ) OR NOT EXISTS (
-                SELECT 1 FROM {SCHEMA}.current_retention_applicabilities r
-                 WHERE r.workspace_id = p_workspace_id
-                   AND r.environment_id = p_environment_id
-                   AND r.current_applicability_id = (binding->>'retention_eligibility_reference')::uuid
-                   AND r.generation = (binding->>'retention_eligibility_generation')::integer
-                   AND r.target_kind = 'exact_source'
-                   AND r.target_reference = source_id
-            ) OR NOT EXISTS (
-                SELECT 1 FROM {SCHEMA}.current_lifecycle_authorities l
-                 JOIN {SCHEMA}.lifecycle_decisions d
-                   ON d.workspace_id = l.workspace_id
-                  AND d.environment_id = l.environment_id
-                  AND d.source_object_id = l.source_object_id
-                  AND d.decision_id = l.current_decision_id
-                  AND d.generation = l.generation
-                 WHERE l.workspace_id = p_workspace_id
-                   AND l.environment_id = p_environment_id
-                   AND l.source_object_id = source_id
-                   AND l.current_decision_id = (auth_record->>'legal_hold_check_reference')::uuid
-                   AND l.generation = (auth_record->>'legal_hold_generation')::integer
-                   AND d.record->>'status' = 'eligible'
-                   AND coalesce((d.record->>'legal_hold_active')::boolean, true) = false
-            ) THEN
+            PERFORM 1 FROM {SCHEMA}.current_source_deletion_policy_approvals p
+             WHERE p.workspace_id = p_workspace_id
+               AND p.environment_id = p_environment_id
+               AND p.current_approval_id = (binding->>'deletion_policy_approval_id')::uuid
+               AND p.generation = (binding->>'deletion_policy_generation')::integer
+             FOR UPDATE;
+            IF NOT FOUND THEN
                 RETURN 'DENIED';
             END IF;
 
-            IF NOT EXISTS (
-                SELECT 1 FROM {SCHEMA}.source_objects s
-                 WHERE s.workspace_id = p_workspace_id
-                   AND s.environment_id = p_environment_id
-                   AND s.source_object_id = source_id
-                   AND s.connection_id = (auth_record->>'connection_id')::uuid
-                   AND s.external_namespace = auth_record->>'object_namespace'
-                   AND s.external_object_id = auth_record->>'object_identity'
-            ) THEN
+            PERFORM 1 FROM {SCHEMA}.current_tombstone_authorization_issuers i
+             WHERE i.workspace_id = p_workspace_id
+               AND i.environment_id = p_environment_id
+               AND i.current_issuer_authority_id = (binding->>'issuer_authority_id')::uuid
+               AND i.generation = (binding->>'issuer_generation')::integer
+             FOR UPDATE;
+            IF NOT FOUND THEN
+                RETURN 'DENIED';
+            END IF;
+
+            PERFORM 1 FROM {SCHEMA}.current_retention_applicabilities r
+             WHERE r.workspace_id = p_workspace_id
+               AND r.environment_id = p_environment_id
+               AND r.current_applicability_id = (binding->>'retention_eligibility_reference')::uuid
+               AND r.generation = (binding->>'retention_eligibility_generation')::integer
+               AND r.target_kind = 'exact_source'
+               AND r.target_reference = source_id
+             FOR UPDATE;
+            IF NOT FOUND THEN
+                RETURN 'DENIED';
+            END IF;
+
+            SELECT d.record->>'status' INTO lifecycle_status
+              FROM {SCHEMA}.current_lifecycle_authorities l
+              JOIN {SCHEMA}.lifecycle_decisions d
+                ON d.workspace_id = l.workspace_id
+               AND d.environment_id = l.environment_id
+               AND d.source_object_id = l.source_object_id
+               AND d.decision_id = l.current_decision_id
+               AND d.generation = l.generation
+             WHERE l.workspace_id = p_workspace_id
+               AND l.environment_id = p_environment_id
+               AND l.source_object_id = source_id
+               AND l.current_decision_id = (auth_record->>'legal_hold_check_reference')::uuid
+               AND l.generation = (auth_record->>'legal_hold_generation')::integer
+               AND coalesce((d.record->>'legal_hold_active')::boolean, true) = false
+             FOR UPDATE OF l;
+            IF lifecycle_status IS DISTINCT FROM 'eligible' THEN
+                RETURN 'DENIED';
+            END IF;
+
+            PERFORM 1 FROM {SCHEMA}.source_objects s
+             WHERE s.workspace_id = p_workspace_id
+               AND s.environment_id = p_environment_id
+               AND s.source_object_id = source_id
+               AND s.connection_id = (auth_record->>'connection_id')::uuid
+               AND s.external_namespace = auth_record->>'object_namespace'
+               AND s.external_object_id = auth_record->>'object_identity'
+             FOR UPDATE;
+            IF NOT FOUND THEN
                 RETURN 'DENIED';
             END IF;
 
@@ -506,7 +563,18 @@ def upgrade() -> None:
             DELETE FROM {SCHEMA}.source_erasure_execution_contexts
              WHERE transaction_id = operation_xid
                AND operation_id = p_operation_id;
-            RETURN 'ERASED';
+            UPDATE {SCHEMA}.source_disposition_operations
+               SET canonical_erasure_state = 'applied',
+                   canonical_erasure_completed_at = statement_timestamp()
+             WHERE workspace_id = p_workspace_id
+               AND environment_id = p_environment_id
+               AND operation_id = p_operation_id
+               AND canonical_erasure_state = 'not_started';
+            IF NOT FOUND THEN
+                RAISE EXCEPTION 'Canonical erasure operation state changed.'
+                    USING ERRCODE = '40001';
+            END IF;
+            RETURN 'CANONICAL_ERASED';
         END
         $function$
         """

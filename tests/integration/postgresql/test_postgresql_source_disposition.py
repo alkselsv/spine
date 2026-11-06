@@ -100,6 +100,8 @@ async def _issued_authorization(
     adapter: PersistenceAdapter,
     database: PostgreSQLContractDatabase,
     number: int,
+    *,
+    gmail_source: bool = False,
 ):
     (
         case,
@@ -110,7 +112,9 @@ async def _issued_authorization(
         approval,
         issuer,
         authorization,
-    ) = await _repository_case(adapter, database, number)
+    ) = await _repository_case(
+        adapter, database, number, gmail_source=gmail_source
+    )
     evidence = evidence.model_copy(
         update={
             "fresh_until": NOW + timedelta(days=365),
@@ -447,7 +451,10 @@ async def test_authorized_erasure_executor_physically_removes_supported_source_g
     postgresql_contract_database: PostgreSQLContractDatabase,
 ) -> None:
     case, authorization = await _issued_authorization(
-        postgresql_adapter, postgresql_contract_database, 753600
+        postgresql_adapter,
+        postgresql_contract_database,
+        753600,
+        gmail_source=True,
     )
     unrelated_case, _ = await _issued_authorization(
         postgresql_adapter, postgresql_contract_database, 753602
@@ -477,7 +484,7 @@ async def test_authorized_erasure_executor_physically_removes_supported_source_g
                     "state_version": operation.state_version,
                 },
             )
-            assert outcome.scalar_one() == "ERASED"
+            assert outcome.scalar_one() == "CANONICAL_ERASED"
 
         async with postgresql_adapter.uow_factory(
             postgresql_adapter.environment_context(
@@ -540,9 +547,269 @@ async def test_authorized_erasure_executor_physically_removes_supported_source_g
                     "state_version": operation.state_version,
                 },
             )
-            assert replay.scalar_one() == "DENIED"
+            assert replay.scalar_one() == "CANONICAL_ERASED"
     finally:
         await engine.dispose()
+
+
+async def test_erasure_executor_rolls_back_all_rows_when_final_source_delete_fails(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    case, authorization = await _issued_authorization(
+        postgresql_adapter,
+        postgresql_contract_database,
+        753700,
+        gmail_source=True,
+    )
+    operation_id = synthetic_uuid(753701)
+    binding = binding_from_tombstone_authorization(
+        authorization, operation_id=operation_id
+    )
+    operation = _operation(binding)
+    assert await _repository(postgresql_adapter).admit_if_current(operation, binding)
+
+    migration_engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    runtime_engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with migration_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "CREATE FUNCTION spine.test_fail_source_erasure() "
+                    "RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+                    "RAISE EXCEPTION 'synthetic erasure failure' "
+                    "USING ERRCODE = 'P0001'; END $$"
+                )
+            )
+            await connection.execute(
+                text(
+                    "CREATE TRIGGER zz_test_fail_source_erasure "
+                    "BEFORE DELETE ON spine.source_objects FOR EACH ROW "
+                    "EXECUTE FUNCTION spine.test_fail_source_erasure()"
+                )
+            )
+
+        with pytest.raises(DBAPIError) as error:
+            async with runtime_engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "SELECT spine.execute_source_disposition_erasure("
+                        ":workspace_id, :environment_id, :operation_id, :state_version)"
+                    ),
+                    {
+                        "workspace_id": binding.workspace_id,
+                        "environment_id": binding.environment_id,
+                        "operation_id": operation_id,
+                        "state_version": operation.state_version,
+                    },
+                )
+        assert error.value.orig.sqlstate == "P0001"
+
+        async with postgresql_adapter.uow_factory(
+            postgresql_adapter.environment_context(
+                binding.workspace_id, binding.environment_id
+            )
+        ) as uow:
+            persisted = await uow.execute_statement(
+                text(
+                    "SELECT "
+                    "(SELECT count(*) FROM spine.source_objects WHERE source_object_id = :source_id) AS objects, "
+                    "(SELECT count(*) FROM spine.source_revisions WHERE source_object_id = :source_id) AS revisions, "
+                    "(SELECT count(*) FROM spine.canonical_acceptances WHERE source_object_id = :source_id) AS acceptances, "
+                    "(SELECT count(*) FROM spine.current_source_heads WHERE source_object_id = :source_id) AS heads"
+                ),
+                {"source_id": case.source.source_object_id},
+            )
+            assert dict(persisted.one()._mapping) == {
+                "objects": 1,
+                "revisions": 1,
+                "acceptances": 1,
+                "heads": 1,
+            }
+            await uow.rollback()
+    finally:
+        async with migration_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "DROP TRIGGER IF EXISTS zz_test_fail_source_erasure "
+                    "ON spine.source_objects"
+                )
+            )
+            await connection.execute(
+                text("DROP FUNCTION IF EXISTS spine.test_fail_source_erasure()")
+            )
+        await migration_engine.dispose()
+        await runtime_engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "invalid_call",
+    ("workspace", "environment", "operation", "state_version", "missing_fence"),
+)
+async def test_erasure_executor_denies_wrong_scope_or_stale_operation(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+    invalid_call: str,
+) -> None:
+    seed = 758000 + ("workspace", "environment", "operation", "state_version", "missing_fence").index(invalid_call) * 100
+    case, authorization = await _issued_authorization(
+        postgresql_adapter, postgresql_contract_database, seed, gmail_source=True
+    )
+    operation_id = synthetic_uuid(seed + 1)
+    binding = binding_from_tombstone_authorization(
+        authorization, operation_id=operation_id
+    )
+    operation = _operation(binding)
+    if invalid_call == "missing_fence":
+        operation = operation.model_copy(
+            update={"status": DispositionStatus.BLOCKED, "fence_active": False}
+        )
+    assert await _repository(postgresql_adapter).admit_if_current(operation, binding)
+
+    arguments = {
+        "workspace_id": binding.workspace_id,
+        "environment_id": binding.environment_id,
+        "operation_id": operation_id,
+        "state_version": operation.state_version,
+    }
+    if invalid_call == "workspace":
+        arguments["workspace_id"] = synthetic_uuid(seed + 2)
+    elif invalid_call == "environment":
+        arguments["environment_id"] = synthetic_uuid(seed + 3)
+    elif invalid_call == "operation":
+        arguments["operation_id"] = synthetic_uuid(seed + 4)
+    elif invalid_call == "state_version":
+        arguments["state_version"] += 1
+
+    engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with engine.begin() as connection:
+            outcome = await connection.execute(
+                text(
+                    "SELECT spine.execute_source_disposition_erasure("
+                    ":workspace_id, :environment_id, :operation_id, :state_version)"
+                ),
+                arguments,
+            )
+            assert outcome.scalar_one() == "DENIED"
+        async with postgresql_adapter.uow_factory(
+            postgresql_adapter.environment_context(
+                binding.workspace_id, binding.environment_id
+            )
+        ) as uow:
+            source = await uow.execute_statement(
+                text(
+                    "SELECT count(*) FROM spine.source_objects "
+                    "WHERE source_object_id = :source_id"
+                ),
+                {"source_id": case.source.source_object_id},
+            )
+            assert source.scalar_one() == 1
+            await uow.rollback()
+    finally:
+        await engine.dispose()
+
+
+async def test_erasure_executor_fails_closed_on_unknown_source_foreign_key(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    case, authorization = await _issued_authorization(
+        postgresql_adapter,
+        postgresql_contract_database,
+        759000,
+        gmail_source=True,
+    )
+    operation_id = synthetic_uuid(759001)
+    binding = binding_from_tombstone_authorization(
+        authorization, operation_id=operation_id
+    )
+    operation = _operation(binding)
+    assert await _repository(postgresql_adapter).admit_if_current(operation, binding)
+
+    migration_engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    runtime_engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with migration_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "CREATE TABLE spine.test_unknown_source_dependency ("
+                    "workspace_id uuid NOT NULL, environment_id uuid NOT NULL, "
+                    "source_object_id uuid NOT NULL, "
+                    "CONSTRAINT fk_test_unknown_source_dependency FOREIGN KEY "
+                    "(workspace_id, environment_id, source_object_id) REFERENCES "
+                    "spine.source_objects(workspace_id, environment_id, source_object_id))"
+                )
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.test_unknown_source_dependency "
+                    "(workspace_id, environment_id, source_object_id) "
+                    "VALUES (:workspace_id, :environment_id, :source_id)"
+                ),
+                {
+                    "workspace_id": binding.workspace_id,
+                    "environment_id": binding.environment_id,
+                    "source_id": case.source.source_object_id,
+                },
+            )
+
+        with pytest.raises(DBAPIError) as error:
+            async with runtime_engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "SELECT spine.execute_source_disposition_erasure("
+                        ":workspace_id, :environment_id, :operation_id, :state_version)"
+                    ),
+                    {
+                        "workspace_id": binding.workspace_id,
+                        "environment_id": binding.environment_id,
+                        "operation_id": operation_id,
+                        "state_version": operation.state_version,
+                    },
+                )
+        assert error.value.orig.sqlstate == "23503"
+        assert (
+            error.value.orig.diag.constraint_name
+            == "fk_test_unknown_source_dependency"
+        )
+
+        async with postgresql_adapter.uow_factory(
+            postgresql_adapter.environment_context(
+                binding.workspace_id, binding.environment_id
+            )
+        ) as uow:
+            source_count = await uow.execute_statement(
+                text(
+                    "SELECT count(*) FROM spine.source_objects "
+                    "WHERE source_object_id = :source_id"
+                ),
+                {"source_id": case.source.source_object_id},
+            )
+            assert source_count.scalar_one() == 1
+            await uow.rollback()
+    finally:
+        async with migration_engine.begin() as connection:
+            await connection.execute(
+                text("DROP TABLE IF EXISTS spine.test_unknown_source_dependency")
+            )
+        await migration_engine.dispose()
+        await runtime_engine.dispose()
 
 
 @pytest.mark.parametrize(

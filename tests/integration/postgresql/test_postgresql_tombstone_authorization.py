@@ -122,8 +122,12 @@ async def _repository_case(
     adapter: PersistenceAdapter,
     database: PostgreSQLContractDatabase,
     number: int,
+    *,
+    gmail_source: bool = False,
 ):
-    case = await _prepare_lifecycle_case(adapter, number)
+    case = await _prepare_lifecycle_case(
+        adapter, number, gmail_source=gmail_source
+    )
     async with adapter.uow_factory(case.context) as uow:
         await uow.canonical.accept(case.command)
         await uow.commit()
@@ -582,7 +586,7 @@ async def test_postgresql_authorization_row_is_immutable(
         assert getattr(raised.value.orig, "sqlstate", None) == "23514"
         assert (
             getattr(getattr(raised.value.orig, "diag", None), "constraint_name", None)
-            == "ck_tombstone_authorizations_immutable"
+            == "ck_governed_source_erasure_only"
         )
     finally:
         await migration_engine.dispose()
