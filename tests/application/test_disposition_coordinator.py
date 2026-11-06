@@ -110,8 +110,7 @@ class MemoryOperationRepository:
         expired_keys = [
             key
             for key, operation in self.items.items()
-            if operation.status is DispositionStatus.VERIFIED
-            and operation.completion_ack_expires_at is not None
+            if operation.completion_ack_expires_at is not None
             and operation.completion_ack_expires_at <= evaluated_at
         ]
         for key in expired_keys:
@@ -391,9 +390,15 @@ async def test_disposition_completion_replay_rechecks_store_registry() -> None:
     repository = MemoryOperationRepository()
     repository.lose_completion_response_once = True
     admission = CurrentDispositionAdmission()
+    clock = FixedClock(datetime(2030, 1, 1, tzinfo=timezone.utc))
     canonical = ScriptedStore()
     object_store = ScriptedStore()
-    coordinator = _coordinator(repository, {"canonical": canonical, "object": object_store}, admission)
+    coordinator = _coordinator(
+        repository,
+        {"canonical": canonical, "object": object_store},
+        admission,
+        clock,
+    )
 
     completed = await coordinator.execute(_request())
     changed_coordinator = DispositionCoordinator(
@@ -404,6 +409,7 @@ async def test_disposition_completion_replay_rechecks_store_registry() -> None:
             "object": object_store,
             "backup": ScriptedStore(),
         },
+        clock=clock,
     )
     replay = await changed_coordinator.execute(_request())
 
@@ -415,6 +421,11 @@ async def test_disposition_completion_replay_rechecks_store_registry() -> None:
     assert object_store.dispose_calls == 1
     with pytest.raises(DispositionConflictError, match="not been verified"):
         await changed_coordinator.acknowledge_completion(replay)
+    assert replay.completion_ack_expires_at is not None
+    clock.now = replay.completion_ack_expires_at + timedelta(microseconds=1)
+    assert await changed_coordinator.expire_completed_operations() == 1
+    assert repository.items == {}
+    assert repository.completed_audits == 1
 
 
 @pytest.mark.asyncio

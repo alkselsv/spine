@@ -78,7 +78,7 @@ class DispositionOperationRepository(Protocol):
         """Purge operation identity only after completion was delivered/acknowledged."""
 
     async def expire_completed(self, *, evaluated_at: datetime) -> int:
-        """Purge expired operation identities while retaining audit records."""
+        """Purge expired completion identities, including later topology downgrades."""
 
     async def get(
         self,
