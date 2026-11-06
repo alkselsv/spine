@@ -34,6 +34,9 @@ content, filenames, hashes, SourceObject/SourceRevision references, provenance,
 evidence links, correlation tokens or join paths. An idempotency key and its
 Gmail mapping are limited to the bounded open operation/retry lifecycle and are
 disposed when that lifecycle closes.
+The implementation bounds post-verification response replay to 24 hours. If the
+result is not acknowledged by that deadline, purge the operation identity and
+request digest while retaining only the allowlisted content-free audit record.
 
 ## Artifact policy
 
