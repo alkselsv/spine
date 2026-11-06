@@ -146,22 +146,36 @@ exact UTC expiry no more than seven days after approval. It accepts no caller
 selected approval, connection, principal, credential, grant, scope or
 qualification reference.
 
-The command uses `SPINE_DATABASE_URL` authenticated as `spine_runtime` and the
+The command uses `SPINE_CONTROL_DATABASE_URL` authenticated as the dedicated
+`spine_control` role and the
 existing `SPINE_QUALIFICATION_*` runtime verification inputs. It never loads
 migration-owner credentials and makes no Yandex request. Migration 112 grants
-that role only `EXECUTE` on an exact `SECURITY DEFINER` provisioning capability;
+the control role, never `spine_runtime`, `EXECUTE` on the exact
+`SECURITY DEFINER` provisioning capability plus only the tenant-scoped
+exact-ID read privileges needed for predecessor and replay checks. The role has
+no direct table-write grant: the function alone appends the approval, exact
+version and both Audit Events atomically;
 the function rejects public callers, a different tenant session, any non-v1 or
 non-metadata predecessor, changed references/capabilities, an expired deadline
 or a window longer than seven days. Approval, two content-free Audit Events and
 connection version 2 commit atomically. The refs-only mode-`0600` report records
 the immutable lineage and expiry without credentials, paths or file content.
 
-An identical replay returns version 2 without a second logical effect. A stale
+The approved manifest digest is stored on both canonical approval and version;
+every content read must present the same digest and a mismatch is rejected before
+provider access. An identical, still-current replay returns version 2 without a
+second logical effect. An expired replay, stale
 predecessor, conflicting approval/audit/version, cross-tenant context or altered
 generation fails closed. At expiry both PostgreSQL admission and application
 admission reject the authority; if expiry crosses during a download, the
 observation is discarded. Consequently #787 remains `NOT_VERIFIED` and performs
 no subsequent content read when provisioning or admission is rejected.
+
+The ten-run campaign budget, one-run-per-target rule, transient-only repeat and
+terminal PASS/cleanup state are consumed and durably enforced by #787's live-run
+orchestrator; #789 provisions no connector and starts no campaign run. Until that
+separate run-admission contract exists, this canonical authority alone is not a
+live-execution permit.
 
 Rollback is append-only: revoke/expire version 2 or create a separately approved
 successor; never reactivate or edit version 1 or delete audit history. Cleanup is

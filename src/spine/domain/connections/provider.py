@@ -167,6 +167,11 @@ class ProviderConnection(DefinitionModel):
     valid_until: datetime | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+    approved_manifest_digest: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        exclude_if=lambda value: value is None,
+    )
     capabilities: tuple[ProviderCapability, ...] = ()
 
     @field_validator(
@@ -268,6 +273,11 @@ class ProviderConnectionApproval(DefinitionModel):
     status: ProviderConnectionStatus
     valid_until: datetime | None = Field(
         default=None, exclude_if=lambda value: value is None
+    )
+    approved_manifest_digest: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        exclude_if=lambda value: value is None,
     )
 
     @field_validator(

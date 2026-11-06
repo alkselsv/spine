@@ -65,6 +65,7 @@ pytestmark = pytest.mark.postgresql
 MIGRATION_ROLE = "spine_migration"
 RUNTIME_ROLE = "spine_runtime"
 DISPATCHER_ROLE = "spine_dispatcher"
+CONTROL_ROLE = "spine_control"
 MIGRATION_PASSWORD = "migration-test-secret"
 RUNTIME_PASSWORD = "runtime-test-secret"
 DISPATCHER_PASSWORD = "dispatcher-test-secret"
@@ -2963,6 +2964,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         ("audit_events", "pol_audit_events_tenant_read"),
         ("audit_events", "pol_audit_events_tenant_append"),
         ("audit_events", "pol_audit_events_migration_maintenance"),
+        ("audit_events", "pol_audit_events_control_789"),
         ("outbox_intents", "pol_outbox_intents_dispatcher_read"),
         ("outbox_deliveries", "pol_outbox_deliveries_tenant_read"),
         ("outbox_deliveries", "pol_outbox_deliveries_dispatcher"),
@@ -3004,6 +3006,9 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "true",
         "true",
     )
+    control_policy = policies[("audit_events", "pol_audit_events_control_789")]
+    assert control_policy[0] == (CONTROL_ROLE,)
+    assert control_policy[1] is not None and control_policy[2] is None
     assert policies[("outbox_intents", "pol_outbox_intents_dispatcher_read")][0] == (
         DISPATCHER_ROLE,
     )
@@ -4719,6 +4724,14 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         for table_name in standard_tables
         for policy_kind in ("tenant_isolation", "migration_maintenance")
     } | {
+        (
+            "provider_connection_approvals",
+            "pol_provider_connection_approvals_control_789",
+        ),
+        (
+            "provider_connection_versions",
+            "pol_provider_connection_versions_control_789",
+        ),
         ("outbox_intents", "pol_outbox_intents_dispatcher_read"),
         ("outbox_deliveries", "pol_outbox_deliveries_tenant_read"),
         ("outbox_deliveries", "pol_outbox_deliveries_dispatcher"),
@@ -4744,6 +4757,13 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "pol_private_asr_corpus_releases_migration_maintenance",
         ),
     }
+    for table_name in (
+        "provider_connection_approvals",
+        "provider_connection_versions",
+    ):
+        control_policy = policies[(table_name, f"pol_{table_name}_control_789")]
+        assert control_policy[0] == [CONTROL_ROLE]
+        assert control_policy[1] is not None and control_policy[2] is None
     for table_name in standard_tables:
         roles, using_expression, check_expression = policies[
             (table_name, f"pol_{table_name}_tenant_isolation"[:63])

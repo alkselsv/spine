@@ -21,8 +21,8 @@ from spine.application.yandex_qualification_connection import (
     YandexQualificationBinaryReadProvisioner,
 )
 from spine.infrastructure.db.settings import (
+    ControlDatabaseSettings,
     POSTGRESQL_SEARCH_PATH_OPTIONS,
-    RuntimeDatabaseSettings,
 )
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.connections.postgresql_yandex_qualification import (
@@ -63,7 +63,7 @@ def _same_database_target(left_url: str, right_url: str) -> bool:
 async def _run(
     *, config: YandexQualificationBinaryReadConfig, report_path: Path
 ) -> int:
-    database_settings = RuntimeDatabaseSettings()
+    database_settings = ControlDatabaseSettings()
     authority_settings = QualificationVerificationSettings()
     database_url = database_settings.url.get_secret_value()
     if not _same_database_target(database_url, authority_settings.runtime_database_url):

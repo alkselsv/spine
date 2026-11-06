@@ -122,6 +122,10 @@ def test_binary_read_plan_is_exact_successor_of_metadata_authority() -> None:
     assert plan.approval.authorization_generation == 2
     assert plan.approval.configuration_generation == 4
     assert plan.approval.valid_until == _binary_read_config().expires_at
+    assert (
+        plan.approval.approved_manifest_digest
+        == _binary_read_config().manifest_digest
+    )
     assert plan.request.expected_version == 1
     assert plan.request.expected_predecessor_version_id == predecessor.connection_version_id
     assert tuple(capability.kind for capability in plan.observation.capabilities) == (
@@ -181,6 +185,7 @@ async def test_binary_read_provisioning_returns_refs_only_successor_report(
         repository=Repository(),
         artifact_writer=Writer(),
         context=context,
+        clock=lambda: config.approved_at,
     ).run(config, report_path=report_path)
 
     assert report.connection_version == 2
@@ -197,6 +202,49 @@ async def test_binary_read_provisioning_returns_refs_only_successor_report(
     assert report.credentials_recorded is False
     assert report.provider_request_made is False
     assert report_path.exists()
+
+
+@pytest.mark.parametrize(
+    "evaluated_at",
+    (
+        _binary_read_config().approved_at - timedelta(seconds=1),
+        _binary_read_config().expires_at,
+    ),
+    ids=("future_approval", "expired"),
+)
+async def test_binary_read_provisioning_rejects_inactive_window_before_authority(
+    tmp_path: Path,
+    evaluated_at: datetime,
+) -> None:
+    config = _binary_read_config()
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=_id(20), secret=b"issue-789-window-test-secret-v1!!!"
+    )
+    context = boundary.interactive(
+        scope=EnvironmentScope(
+            workspace_id=config.workspace_id,
+            environment_id=config.environment_id,
+        ),
+        acting_subject_id=config.operator_identity_id,
+        purpose=PersistencePurpose("source_connection_control"),
+        operation=PersistenceOperation("provider_connection_configure"),
+        trace_id=_id(21),
+    )
+
+    class MustNotRun:
+        def __getattr__(self, name):
+            raise AssertionError(f"{name} must not run outside the authority window")
+
+    provisioner = YandexQualificationBinaryReadProvisioner(
+        authority=MustNotRun(),
+        repository=MustNotRun(),
+        artifact_writer=MustNotRun(),
+        context=context,
+        clock=lambda: evaluated_at,
+    )
+
+    with pytest.raises(ValueError, match="window is not current"):
+        await provisioner.run(config, report_path=tmp_path / "report.json")
 
 
 @pytest.mark.parametrize(
@@ -250,6 +298,15 @@ def test_config_rejects_unapproved_scope_version() -> None:
 
     with pytest.raises(ValidationError):
         YandexQualificationConnectionConfig.model_validate(payload)
+
+
+@pytest.mark.parametrize("field_name", ("approved_at", "expires_at"))
+def test_binary_read_config_requires_exact_utc_timestamps(field_name: str) -> None:
+    payload = _binary_read_config().model_dump(mode="python")
+    payload[field_name] = payload[field_name].astimezone(timezone(timedelta(hours=3)))
+
+    with pytest.raises(ValidationError, match="must use UTC"):
+        YandexQualificationBinaryReadConfig.model_validate(payload)
 
 
 @pytest.mark.parametrize(

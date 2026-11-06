@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 import hashlib
 from pathlib import Path
 from typing import Literal, Protocol
@@ -103,6 +104,8 @@ class YandexQualificationBinaryReadConfig(DefinitionModel):
     def validate_timestamps(cls, value: datetime, info: ValidationInfo) -> datetime:
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError(f"{info.field_name} must be timezone-aware")
+        if value.utcoffset() != timedelta(0):
+            raise ValueError(f"{info.field_name} must use UTC")
         return value
 
     @model_validator(mode="after")
@@ -248,7 +251,7 @@ class YandexQualificationConnectionBootstrap:
     def __init__(
         self,
         *,
-        authority: YandexQualificationBinaryReadAuthority,
+        authority: YandexQualificationExistingAuthority,
         repository: YandexQualificationConnectionRepository,
         artifact_writer: PrivateQualificationArtifactWriter,
         context: TrustedPersistenceContext,
@@ -333,15 +336,17 @@ class YandexQualificationBinaryReadProvisioner:
     def __init__(
         self,
         *,
-        authority: YandexQualificationExistingAuthority,
+        authority: YandexQualificationBinaryReadAuthority,
         repository: YandexQualificationBinaryReadRepository,
         artifact_writer: PrivateQualificationArtifactWriter,
         context: TrustedPersistenceContext,
+        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self._authority = authority
         self._repository = repository
         self._artifact_writer = artifact_writer
         self._context = context
+        self._clock = clock
 
     async def run(
         self, config: YandexQualificationBinaryReadConfig, *, report_path: Path
@@ -356,6 +361,13 @@ class YandexQualificationBinaryReadProvisioner:
             or self._context.scope.environment_id != config.environment_id
         ):
             raise ValueError("Yandex qualification scope does not match trusted context")
+        evaluated_at = self._clock()
+        if (
+            config.approved_at > evaluated_at
+            or config.expires_at <= evaluated_at
+            or config.expires_at > evaluated_at + timedelta(days=7)
+        ):
+            raise ValueError("Yandex binary-read authority window is not current")
         await self._authority.verify(config)
         predecessor = await self._repository.get_current(
             YANDEX_QUALIFICATION_CONNECTION_ID, self._context
@@ -477,6 +489,7 @@ def build_yandex_qualification_binary_read_plan(
             configuration_generation=predecessor.configuration_generation,
             status=predecessor.status,
             valid_until=predecessor.valid_until,
+            approved_manifest_digest=predecessor.approved_manifest_digest,
         )
         return YandexQualificationConnectionPlan(
             approval=approval,
@@ -558,6 +571,7 @@ def build_yandex_qualification_binary_read_plan(
         configuration_generation=predecessor.configuration_generation + 1,
         status=ProviderConnectionStatus.ACTIVE,
         valid_until=config.expires_at,
+        approved_manifest_digest=config.manifest_digest,
     )
     return YandexQualificationConnectionPlan(
         approval=approval,
@@ -609,6 +623,7 @@ def _is_exact_binary_read_successor(
         )
         and connection.status is ProviderConnectionStatus.ACTIVE
         and connection.valid_until == config.expires_at
+        and connection.approved_manifest_digest == config.manifest_digest
         and set(item.kind for item in connection.capabilities)
         == set(expected_qualifications)
         and all(

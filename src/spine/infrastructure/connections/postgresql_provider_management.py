@@ -101,6 +101,7 @@ provider_connection_approvals = Table(
     Column("configuration_generation", BigInteger, nullable=False),
     Column("status", String(32), nullable=False),
     Column("valid_until", DateTime(timezone=True), nullable=True),
+    Column("approved_manifest_digest", String(64), nullable=True),
     Column("recorded_at", DateTime(timezone=True), nullable=False),
     ForeignKeyConstraint(
         ["workspace_id", "environment_id"],
@@ -138,6 +139,7 @@ provider_connection_versions = Table(
     Column("configuration_generation", BigInteger, nullable=False),
     Column("status", String(32), nullable=False),
     Column("valid_until", DateTime(timezone=True), nullable=True),
+    Column("approved_manifest_digest", String(64), nullable=True),
     Column("capabilities", JSONB, nullable=False),
     Column("health", String(32), nullable=False),
     Column("diagnostic_codes", ARRAY(String(64)), nullable=False),
@@ -416,6 +418,8 @@ class PostgreSQLProviderConnectionRepository:
                                 == command.authorization_generation,
                                 provider_connection_versions.c.configuration_generation
                                 == command.configuration_generation,
+                                provider_connection_versions.c.approved_manifest_digest
+                                == command.manifest_digest,
                                 provider_connection_versions.c.status
                                 == ProviderConnectionStatus.ACTIVE.value,
                                 (
@@ -572,6 +576,7 @@ def _version_values(
         "configuration_generation": connection.configuration_generation,
         "status": connection.status.value,
         "valid_until": connection.valid_until,
+        "approved_manifest_digest": connection.approved_manifest_digest,
         "capabilities": [
             capability.model_dump(mode="json") for capability in connection.capabilities
         ],
@@ -637,6 +642,7 @@ def _approval_from_row(row) -> ProviderConnectionApproval:
         configuration_generation=row.configuration_generation,
         status=ProviderConnectionStatus(row.status),
         valid_until=row.valid_until,
+        approved_manifest_digest=row.approved_manifest_digest,
     )
 
 
@@ -664,6 +670,7 @@ def _inspection_from_row(row) -> ProviderConnectionInspection:
         configuration_generation=row.configuration_generation,
         status=ProviderConnectionStatus(row.status),
         valid_until=row.valid_until,
+        approved_manifest_digest=row.approved_manifest_digest,
         capabilities=tuple(
             ProviderCapability.model_validate(value) for value in row.capabilities
         ),

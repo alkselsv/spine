@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+import json
 from uuid import UUID
 
 from sqlalchemy import insert, select, text
@@ -259,6 +260,8 @@ class PostgreSQLYandexQualificationBinaryReadRepository:
             or result.inspection.connection.approval_id != plan.approval.approval_id
             or result.inspection.connection.connection_id != plan.request.connection_id
             or result.inspection.connection.valid_until != plan.approval.valid_until
+            or result.inspection.connection.approved_manifest_digest
+            != plan.approval.approved_manifest_digest
             or result.inspection.connection.capabilities
             != tuple(
                 sorted(plan.observation.capabilities, key=lambda item: item.kind.value)
@@ -300,6 +303,15 @@ class PostgreSQLYandexQualificationBinaryReadRepository:
                         )
                     ).mappings().all()
                     if version_rows:
+                        database_now = await session.scalar(
+                            text("SELECT clock_timestamp()")
+                        )
+                        if (
+                            database_now is None
+                            or plan.approval.valid_until is None
+                            or database_now >= plan.approval.valid_until
+                        ):
+                            raise YandexQualificationBootstrapConflictError()
                         approval_rows = (
                             await session.execute(
                                 select(provider_connection_approvals).where(
@@ -338,7 +350,13 @@ class PostgreSQLYandexQualificationBinaryReadRepository:
                             ":predecessor_version_id, :service_principal_id, "
                             ":credential_reference, :grant_reference, "
                             ":resource_scope_reference, :authorization_generation, "
-                            ":configuration_generation, :valid_until, :recorded_at)"
+                            ":configuration_generation, :manifest_digest, "
+                            ":valid_until, :recorded_at, :connection_version_id, "
+                            ":receipt_id, :idempotency_key, :command_digest, "
+                            ":authority_audit_event_id, :connection_audit_event_id, "
+                            ":acting_subject_id, :trace_id, "
+                            "CAST(:authority_payload AS jsonb), "
+                            "CAST(:connection_payload AS jsonb))"
                         ),
                         {
                             "approval_id": plan.approval.approval_id,
@@ -362,27 +380,40 @@ class PostgreSQLYandexQualificationBinaryReadRepository:
                             "configuration_generation": (
                                 plan.approval.configuration_generation
                             ),
+                            "manifest_digest": plan.approval.approved_manifest_digest,
                             "valid_until": plan.approval.valid_until,
                             "recorded_at": plan.request.occurred_at,
+                            "connection_version_id": (
+                                result.inspection.connection.connection_version_id
+                            ),
+                            "receipt_id": result.receipt_id,
+                            "idempotency_key": plan.request.idempotency_key,
+                            "command_digest": provider_connection_version_values(
+                                plan.request, result, trusted
+                            )["command_digest"],
+                            "authority_audit_event_id": (
+                                canonical_authority_audit.audit_event_id
+                            ),
+                            "connection_audit_event_id": (
+                                canonical_connection_audit.audit_event_id
+                            ),
+                            "acting_subject_id": trusted.acting_subject_id,
+                            "trace_id": trusted.trace_id,
+                            "authority_payload": json.dumps(
+                                audit_event_values(canonical_authority_audit)["payload"],
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ),
+                            "connection_payload": json.dumps(
+                                audit_event_values(canonical_connection_audit)["payload"],
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ),
                         },
                     )
-                    if inserted is not True:
+                    if inserted not in {True, False}:
                         raise YandexQualificationBootstrapConflictError()
-                    await session.execute(
-                        insert(audit_events),
-                        [
-                            audit_event_values(canonical_authority_audit),
-                            audit_event_values(canonical_connection_audit),
-                        ],
-                    )
-                    await session.execute(
-                        insert(provider_connection_versions).values(
-                            **provider_connection_version_values(
-                                plan.request, result, trusted
-                            )
-                        )
-                    )
-                    return result
+                    return replace(result, replay=not inserted)
         except asyncio.CancelledError:
             raise
         except YandexQualificationBootstrapConflictError:
@@ -422,6 +453,7 @@ def _approval_values(
         "configuration_generation": approval.configuration_generation,
         "status": approval.status.value,
         "valid_until": approval.valid_until,
+        "approved_manifest_digest": approval.approved_manifest_digest,
         "recorded_at": recorded_at,
     }
 
@@ -443,6 +475,7 @@ def _approval_from_row(row) -> ProviderConnectionApproval:
         configuration_generation=row.configuration_generation,
         status=ProviderConnectionStatus(row.status),
         valid_until=row.valid_until,
+        approved_manifest_digest=row.approved_manifest_digest,
     )
 
 

@@ -556,6 +556,7 @@ async def test_audit_catalog_has_named_append_only_tenant_contract(
     }
     assert policies == {
         "pol_audit_events_migration_maintenance": "*",
+        "pol_audit_events_control_789": "r",
         "pol_audit_events_tenant_append": "a",
         "pol_audit_events_tenant_read": "r",
     }

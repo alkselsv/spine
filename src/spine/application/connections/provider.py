@@ -54,6 +54,7 @@ class ProviderReadCommand:
     resource_scope_reference: OpaqueProviderReference
     authorization_generation: int
     configuration_generation: int
+    manifest_digest: str | None = None
     required_capabilities: tuple[ProviderCapabilityKind, ...] = ()
     resource_object_reference: str | None = None
     acting_subject_id: UUID | None = None
@@ -77,6 +78,11 @@ class ProviderReadCommand:
             raise ValueError("connection generations must be positive")
         if len(set(self.required_capabilities)) != len(self.required_capabilities):
             raise ValueError("required provider capabilities must be unique")
+        if self.manifest_digest is not None and (
+            len(self.manifest_digest) != 64
+            or any(character not in "0123456789abcdef" for character in self.manifest_digest)
+        ):
+            raise ValueError("manifest_digest must be lowercase sha256")
         if self.resource_object_reference is not None and not (
             1 <= len(self.resource_object_reference) <= 1024
         ):
@@ -213,6 +219,8 @@ class ProviderReadAdmission:
             command.authorization_generation,
             command.configuration_generation,
         ):
+            raise ProviderReadDeniedError()
+        if connection.approved_manifest_digest != command.manifest_digest:
             raise ProviderReadDeniedError()
         if (
             command.lifecycle_query is not None

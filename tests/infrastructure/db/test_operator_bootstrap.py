@@ -67,6 +67,8 @@ async def test_operator_bootstrap_creates_missing_roles_and_database(
             None,
             None,
             None,
+            None,
+            [],
             [],
             [],
             None,
@@ -89,13 +91,14 @@ async def test_operator_bootstrap_creates_missing_roles_and_database(
     assert "CREATE ROLE \"spine_migration\" LOGIN" in rendered
     assert "CREATE ROLE \"spine_runtime\" LOGIN" in rendered
     assert "CREATE ROLE \"spine_dispatcher\" LOGIN" in rendered
+    assert "CREATE ROLE \"spine_control\" NOLOGIN" in rendered
     assert "CREATE DATABASE \"spine\" OWNER \"spine_migration\"" in rendered
     assert "migration-secret" not in rendered
     assert "runtime-secret" not in rendered
     assert "dispatcher-secret" not in rendered
     assert (
         sum("ALTER ROLE" in str(statement) for statement, _ in connection.statements)
-        == 3
+        == 4
     )
 
 
@@ -109,7 +112,9 @@ async def test_operator_bootstrap_revokes_existing_runtime_memberships(
             (1,),
             (1,),
             (1,),
+            (1,),
             [("spine_migration",), ("legacy_admin",)],
+            [("legacy_admin",)],
             [("legacy_admin",)],
             ("operator",),
         ]
@@ -131,6 +136,7 @@ async def test_operator_bootstrap_revokes_existing_runtime_memberships(
     assert 'REVOKE "spine_migration" FROM "spine_runtime"' in rendered
     assert 'REVOKE "legacy_admin" FROM "spine_runtime"' in rendered
     assert 'REVOKE "legacy_admin" FROM "spine_dispatcher"' in rendered
+    assert 'REVOKE "legacy_admin" FROM "spine_control"' in rendered
 
 
 @pytest.mark.asyncio

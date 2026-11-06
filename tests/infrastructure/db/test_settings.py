@@ -4,6 +4,7 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from spine.infrastructure.db.settings import (
+    ControlDatabaseSettings,
     DispatcherDatabaseSettings,
     MigrationDatabaseSettings,
     OperatorDatabaseSettings,
@@ -13,6 +14,7 @@ from spine.infrastructure.db.settings import (
 
 RUNTIME_URL = "postgresql+psycopg://runtime_user:runtime_secret@db/runtime"
 DISPATCHER_URL = "postgresql+psycopg://spine_dispatcher:dispatcher_secret@db/runtime"
+CONTROL_URL = "postgresql+psycopg://spine_control:control_secret@db/runtime"
 MIGRATION_URL = "postgresql+psycopg://migration_user:migration_secret@db/migration"
 TEST_URL = "postgresql+psycopg://test_user:test_secret@db/spine_test_explicit"
 OPERATOR_URL = "postgresql+psycopg://operator:operator_secret@db/postgres"
@@ -72,6 +74,37 @@ def test_dispatcher_settings_reject_a_database_login_outside_its_role() -> None:
 
     assert "secret" not in error.value.json()
     assert "admin" not in error.value.json()
+
+
+def test_control_settings_require_the_dedicated_control_login() -> None:
+    settings = ControlDatabaseSettings(
+        url=CONTROL_URL,
+        control_role="spine_control",
+    )
+
+    assert settings.control_role == "spine_control"
+    with pytest.raises(ValidationError, match="authenticate as control role"):
+        ControlDatabaseSettings(
+            url="postgresql+psycopg://spine_runtime:secret@db/runtime",
+            control_role="spine_control",
+        )
+
+
+def test_operator_control_role_must_be_distinct() -> None:
+    values = {
+        "url": OPERATOR_URL,
+        "database_name": "spine",
+        "migration_role": "spine_migration",
+        "migration_password": "migration-secret",
+        "runtime_role": "spine_runtime",
+        "runtime_password": "runtime-secret",
+        "dispatcher_role": "spine_dispatcher",
+        "dispatcher_password": "dispatcher-secret",
+        "control_role": "spine_runtime",
+    }
+
+    with pytest.raises(ValidationError, match="roles must be distinct"):
+        OperatorDatabaseSettings(**values)
 
 
 def test_database_settings_representations_redact_credentials() -> None:

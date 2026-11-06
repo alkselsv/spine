@@ -101,6 +101,7 @@ def _connection(
     provider_kind: ProviderKind = ProviderKind.GOOGLE,
     status: ProviderConnectionStatus = ProviderConnectionStatus.ACTIVE,
     valid_until: datetime | None = None,
+    approved_manifest_digest: str | None = None,
 ) -> ProviderConnection:
     return ProviderConnection(
         connection_version_id=_id(1),
@@ -119,6 +120,7 @@ def _connection(
         status=status,
         capabilities=capabilities,
         valid_until=valid_until,
+        approved_manifest_digest=approved_manifest_digest,
     )
 
 
@@ -259,6 +261,31 @@ async def test_expired_connection_is_denied_before_provider_read() -> None:
 
     with pytest.raises(ProviderReadDeniedError):
         await admission.read(_command(ProviderCapabilityKind.BINARY_READ), _context())
+
+    assert provider.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_manifest_mismatch_is_denied_before_provider_read() -> None:
+    connection = _connection(
+        _capability(
+            ProviderCapabilityKind.BINARY_READ, ProviderCapabilityStatus.SUPPORTED
+        ),
+        approved_manifest_digest="a" * 64,
+    )
+    provider = _Provider(_observation(assurance=ExternalIdentityAssurance.UNPROVEN))
+    admission = ProviderReadAdmission(
+        repository=_Repository(connection), provider=provider
+    )
+
+    with pytest.raises(ProviderReadDeniedError):
+        await admission.read(
+            replace(
+                _command(ProviderCapabilityKind.BINARY_READ),
+                manifest_digest="b" * 64,
+            ),
+            _context(),
+        )
 
     assert provider.calls == 0
 
