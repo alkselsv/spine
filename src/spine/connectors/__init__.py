@@ -157,6 +157,15 @@ from spine.connectors.bitrix24_crm_material import (
     bitrix24_crm_capability,
     bitrix24_crm_claim_from_observation,
 )
+from spine.connectors.bitrix24_crm_files_v2 import (
+    BITRIX24_CRM_FILES_FIELD,
+    Bitrix24CrmDirectDiskObject,
+    Bitrix24CrmFilesErrorCode,
+    Bitrix24CrmFilesItem,
+    Bitrix24CrmFilesItemResult,
+    Bitrix24CrmFilesMappingResult,
+    map_bitrix24_crm_files,
+)
 
 __all__ = [
     "CONNECTOR_OBSERVATION_SCHEMA",
@@ -298,4 +307,11 @@ __all__ = [
     "Bitrix24CrmMaterialService",
     "bitrix24_crm_capability",
     "bitrix24_crm_claim_from_observation",
+    "BITRIX24_CRM_FILES_FIELD",
+    "Bitrix24CrmDirectDiskObject",
+    "Bitrix24CrmFilesErrorCode",
+    "Bitrix24CrmFilesItem",
+    "Bitrix24CrmFilesItemResult",
+    "Bitrix24CrmFilesMappingResult",
+    "map_bitrix24_crm_files",
 ]
