@@ -8,6 +8,10 @@ from spine.application.connections.bitrix24_oauth import (
     Bitrix24ReadMethod,
     SecretTokenPair,
 )
+from spine.application.crm_relationship_v2_contracts import (
+    CrmRelationshipBindingOperationsProfile,
+    CrmRelationshipBindingOutcome,
+)
 from spine.application.crm_relationship_v2_admission import (
     CrmRelationshipV2AdmissionDenied,
     CrmRelationshipV2AdmissionService,
@@ -99,6 +103,15 @@ def request() -> CrmRelationshipV2ReadRequest:
         entity_id="deal-7",
         mapping_profile_id=ident(30),
         mapping_profile_version=2,
+        operations_profile=CrmRelationshipBindingOperationsProfile(
+            profile_id="synthetic.crm-binding:v1",
+            profile_version="1",
+            profile_kind="synthetic",
+            page_size=20,
+            max_pages=5,
+            max_response_bytes=100_000,
+            max_attempts=10,
+        ),
     )
 
 
@@ -321,6 +334,15 @@ class ProviderFake:
             binding_evidence_reference="evidence:binding:42",
             binding_evidence_digest="a" * 64,
             positive_pair_observed=True,
+            outcome=CrmRelationshipBindingOutcome.POSITIVE_OBSERVED,
+            binding_method="crm.activity.binding.list",
+            raw_entity_type_id="DEAL",
+            entity_id="deal-7",
+            normalizer_id="crm.activity.binding.list:entityTypeId",
+            normalizer_version="v1",
+            page_count=1,
+            attempt_count=1,
+            response_bytes=64,
         )
 
 
