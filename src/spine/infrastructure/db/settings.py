@@ -184,10 +184,11 @@ class MigrationDatabaseSettings(_DatabaseSettings):
     migration_role: str = "spine_migration"
     runtime_role: str = "spine_runtime"
     dispatcher_role: str = "spine_dispatcher"
+    erasure_role: str = "spine_erasure_executor"
 
     _supported_url = field_validator("url")(_validate_postgresql_url)
 
-    @field_validator("migration_role", "runtime_role", "dispatcher_role")
+    @field_validator("migration_role", "runtime_role", "dispatcher_role", "erasure_role")
     @classmethod
     def _safe_role_identifier(cls, value: str) -> str:
         if not POSTGRESQL_IDENTIFIER.fullmatch(value):
@@ -196,8 +197,8 @@ class MigrationDatabaseSettings(_DatabaseSettings):
 
     @model_validator(mode="after")
     def _migration_roles_are_distinct(self) -> MigrationDatabaseSettings:
-        if len({self.migration_role, self.runtime_role, self.dispatcher_role}) != 3:
-            raise ValueError("migration, runtime and dispatcher roles must be distinct")
+        if len({self.migration_role, self.runtime_role, self.dispatcher_role, self.erasure_role}) != 4:
+            raise ValueError("database roles must be distinct")
         return self
 
 
@@ -221,6 +222,7 @@ class OperatorDatabaseSettings(_DatabaseSettings):
     runtime_password: SecretStr = Field(repr=False)
     dispatcher_role: str
     dispatcher_password: SecretStr = Field(repr=False)
+    erasure_role: str = "spine_erasure_executor"
 
     _supported_url = field_validator("url")(_validate_postgresql_url)
 
@@ -229,6 +231,7 @@ class OperatorDatabaseSettings(_DatabaseSettings):
         "migration_role",
         "runtime_role",
         "dispatcher_role",
+        "erasure_role",
     )
     @classmethod
     def _safe_identifier(cls, value: str) -> str:
@@ -240,7 +243,7 @@ class OperatorDatabaseSettings(_DatabaseSettings):
 
     @model_validator(mode="after")
     def _roles_are_distinct(self) -> OperatorDatabaseSettings:
-        if len({self.migration_role, self.runtime_role, self.dispatcher_role}) != 3:
+        if len({self.migration_role, self.runtime_role, self.dispatcher_role, self.erasure_role}) != 4:
             raise ValueError("database roles must be distinct")
         return self
 

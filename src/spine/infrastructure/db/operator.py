@@ -64,6 +64,21 @@ async def bootstrap_database_roles(settings: OperatorDatabaseSettings) -> None:
                 role=settings.dispatcher_role,
                 password=settings.dispatcher_password.get_secret_value(),
             )
+            await _ensure_erasure_role(
+                connection,
+                role=settings.erasure_role,
+            )
+            await _revoke_erasure_role_members(
+                connection,
+                role=settings.erasure_role,
+                allowed_member=settings.migration_role,
+            )
+            await connection.execute(
+                sql.SQL("GRANT {} TO {}").format(
+                    sql.Identifier(settings.erasure_role),
+                    sql.Identifier(settings.migration_role),
+                )
+            )
             await _revoke_role_memberships(connection, role=settings.runtime_role)
             await _revoke_role_memberships(
                 connection,
@@ -114,6 +129,53 @@ async def _ensure_role(
             "NOINHERIT NOBYPASSRLS PASSWORD {}"
         ).format(sql.Identifier(role), sql.Literal(password))
     )
+
+
+async def _ensure_erasure_role(
+    connection: _Connection,
+    *,
+    role: str,
+) -> None:
+    existing = await (
+        await connection.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,))
+    ).fetchone()
+    if existing is None:
+        await connection.execute(
+            sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(role))
+        )
+    await connection.execute(
+        sql.SQL(
+            "ALTER ROLE {} WITH NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+            "NOINHERIT NOBYPASSRLS"
+        ).format(sql.Identifier(role))
+    )
+
+
+async def _revoke_erasure_role_members(
+    connection: _Connection,
+    *,
+    role: str,
+    allowed_member: str,
+) -> None:
+    members = await (
+        await connection.execute(
+            "SELECT member.rolname FROM pg_auth_members AS membership "
+            "JOIN pg_roles AS parent ON parent.oid = membership.roleid "
+            "JOIN pg_roles AS member ON member.oid = membership.member "
+            "WHERE parent.rolname = %s",
+            (role,),
+        )
+    ).fetchall()
+    for (member,) in members:
+        if not isinstance(member, str):
+            raise OperatorBootstrapError("erasure role membership is invalid")
+        if member != allowed_member:
+            await connection.execute(
+                sql.SQL("REVOKE {} FROM {}").format(
+                    sql.Identifier(role),
+                    sql.Identifier(member),
+                )
+            )
 
 
 async def _revoke_role_memberships(connection: _Connection, *, role: str) -> None:
