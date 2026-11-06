@@ -101,10 +101,14 @@ that authority is unavailable, keep the source fenced and report
 Disposition is a tenant- and environment-scoped, idempotent operation. The
 durable coordinator persists its operation state and transactional outbox intent
 in PostgreSQL, then invokes independently idempotent store handlers outside the
-canonical transaction. Current authority and exact generations are rechecked;
-revocation or a stale generation denies work. `DELETION_PENDING` fences reads,
-processing, projection/index rebuild and publication, disclosure, and checkpoint
-advancement before cleanup starts. Keep the fence active through partial
+canonical transaction. Before fencing, a revoked deletion approval or mismatched
+source generation denies the operation. Before each store side effect, recheck
+the current deletion-only approval and exact source generation. Revoking only
+read/processing authority does not block cleanup; revoking deletion authority or
+changing its generation pauses further side effects, retains the fence, and
+reports `NOT_VERIFIED`. `DELETION_PENDING` fences reads, processing,
+projection/index rebuild and publication, disclosure, and checkpoint advancement
+before cleanup starts. Keep the fence active through partial
 failure, cancellation and unknown commit until the same operation is
 reconciled and every registered store verifies disposition. Unknown stores,
 incomplete cleanup or failed restore checks are `NOT_VERIFIED`, never PASS.
