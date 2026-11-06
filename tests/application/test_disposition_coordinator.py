@@ -107,12 +107,19 @@ class MemoryOperationRepository:
             raise DispositionConflictError("completion is not current")
         del self.items[_key(operation)]
 
-    async def expire_completed(self, *, evaluated_at: datetime) -> int:
+    async def expire_completed(
+        self, *, workspace_id: UUID, environment_id: UUID, evaluated_at: datetime
+    ) -> int:
         expired_keys = [
             key
             for key, operation in self.items.items()
-            if operation.completion_ack_expires_at is not None
-            and operation.completion_ack_expires_at <= evaluated_at
+            if (
+                operation.workspace_id == workspace_id
+                and operation.environment_id == environment_id
+                and operation.status is DispositionStatus.VERIFIED
+                and operation.completion_ack_expires_at is not None
+                and operation.completion_ack_expires_at <= evaluated_at
+            )
         ]
         for key in expired_keys:
             del self.items[key]
@@ -410,7 +417,10 @@ async def test_disposition_unacknowledged_completion_expires_operation_identity(
     assert repository.items
 
     clock.now = completed.completion_ack_expires_at + timedelta(microseconds=1)
-    purged = await coordinator.expire_completed_operations()
+    purged = await coordinator.expire_completed_operations(
+        workspace_id=completed.workspace_id,
+        environment_id=completed.environment_id,
+    )
 
     assert purged == 1
     assert repository.items == {}
@@ -455,8 +465,11 @@ async def test_disposition_completion_replay_rechecks_store_registry() -> None:
         await changed_coordinator.acknowledge_completion(replay)
     assert replay.completion_ack_expires_at is not None
     clock.now = replay.completion_ack_expires_at + timedelta(microseconds=1)
-    assert await changed_coordinator.expire_completed_operations() == 1
-    assert repository.items == {}
+    assert await changed_coordinator.expire_completed_operations(
+        workspace_id=replay.workspace_id,
+        environment_id=replay.environment_id,
+    ) == 0
+    assert repository.items
     assert repository.completed_audits == 1
 
 

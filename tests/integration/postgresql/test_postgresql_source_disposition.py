@@ -20,6 +20,7 @@ from spine.domain.sources.disposition import (
     DispositionOperation,
     DispositionStatus,
     DispositionStoreState,
+    StoreDispositionStatus,
 )
 from spine.domain.sources.canonical_tombstone_selector import CanonicalTombstoneWriterMode
 from spine.domain.sources.lifecycle import (
@@ -29,6 +30,10 @@ from spine.domain.sources.lifecycle import (
     LifecycleReasonCode,
 )
 from spine.domain.sources.retention import RetentionArtifactClass
+from spine.domain.sources.deletion_authorization import (
+    TombstoneAuthorizationDecision,
+    TombstoneAuthorizationDisposition,
+)
 from spine.infrastructure.persistence.postgresql_disposition import (
     PostgreSQLDispositionRepository,
 )
@@ -41,11 +46,16 @@ from spine.infrastructure.persistence.postgresql_canonical_tombstone_selectors i
 from spine.infrastructure.persistence.postgresql_lifecycle import (
     PostgreSQLLifecycleAuthorityRepository,
 )
+from spine.infrastructure.persistence.postgresql_tombstone_authorization import (
+    PostgreSQLTombstoneAuthorizationRepository,
+)
 from spine.infrastructure.persistence.postgresql_retention import (
     PostgreSQLRetentionApplicabilityRepository,
 )
 from tests.application.test_tombstone_authorization import NOW
 from tests.integration.postgresql.test_postgresql_tombstone_authorization import (
+    _CommitVerifier,
+    _Effects,
     _repository_case,
 )
 from tests.integration.postgresql.test_postgresql_canonical_tombstone_v3 import (
@@ -664,20 +674,24 @@ async def test_authorized_erasure_executor_physically_removes_supported_source_g
         hide_parameters=True,
     )
     try:
-        async with engine.begin() as connection:
-            outcome = await connection.execute(
-                text(
-                    "SELECT spine.execute_source_disposition_erasure("
-                    ":workspace_id, :environment_id, :operation_id, :state_version)"
-                ),
-                {
-                    "workspace_id": binding.workspace_id,
-                    "environment_id": binding.environment_id,
-                    "operation_id": operation_id,
-                    "state_version": operation.state_version,
-                },
-            )
-            assert outcome.scalar_one() == "CANONICAL_ERASED"
+        async def commit_erasure_then_lose_response() -> None:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "SELECT spine.execute_source_disposition_erasure("
+                        ":workspace_id, :environment_id, :operation_id, :state_version)"
+                    ),
+                    {
+                        "workspace_id": binding.workspace_id,
+                        "environment_id": binding.environment_id,
+                        "operation_id": operation_id,
+                        "state_version": operation.state_version,
+                    },
+                )
+            raise TimeoutError("synthetic lost executor response after PostgreSQL commit")
+
+        with pytest.raises(TimeoutError, match="lost executor response"):
+            await commit_erasure_then_lose_response()
 
         async with postgresql_adapter.uow_factory(
             postgresql_adapter.environment_context(
@@ -913,6 +927,100 @@ async def test_erasure_executor_denies_wrong_scope_or_stale_operation(
                 {"source_id": case.source.source_object_id},
             )
             assert source.scalar_one() == 1
+            await uow.rollback()
+    finally:
+        await engine.dispose()
+
+
+async def test_erasure_executor_denies_revoked_persisted_authorization(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    case, authorization = await _issued_authorization(
+        postgresql_adapter,
+        postgresql_contract_database,
+        758900,
+        gmail_source=True,
+    )
+    operation_id = synthetic_uuid(758901)
+    binding = binding_from_tombstone_authorization(
+        authorization, operation_id=operation_id
+    )
+    operation = _operation(binding)
+    repository = _repository(postgresql_adapter)
+    assert await repository.admit_if_current(operation, binding)
+
+    authorization_context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id,
+        case.source.environment_id,
+        "tombstone_authorization",
+    )
+    authority_repository = PostgreSQLTombstoneAuthorizationRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        effects=_Effects(),
+        commit_verifier=_CommitVerifier(),
+        clock=lambda: NOW,
+    )
+    current = await authority_repository.current_decision(
+        authorization.authorization_id, authorization_context
+    )
+    assert current is not None
+    revocation = TombstoneAuthorizationDecision(
+        decision_id=synthetic_uuid(758902),
+        workspace_id=authorization.workspace_id,
+        environment_id=authorization.environment_id,
+        source_object_id=authorization.source_object_id,
+        authorization_id=authorization.authorization_id,
+        disposition=TombstoneAuthorizationDisposition.REVOKED,
+        expected_current_decision_id=current.decision_id,
+        expected_current_generation=current.generation,
+        generation=current.generation + 1,
+        authority_reference=authorization.issuer_authority_id,
+        authority_generation=authorization.issuer_authority_generation,
+        audit_event_id=synthetic_uuid(758903),
+        decided_at=NOW + timedelta(seconds=1),
+    )
+    await authority_repository.record_decision(revocation, authorization_context)
+
+    engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with engine.begin() as connection:
+            outcome = await connection.execute(
+                text(
+                    "SELECT spine.execute_source_disposition_erasure("
+                    ":workspace_id, :environment_id, :operation_id, :state_version)"
+                ),
+                {
+                    "workspace_id": binding.workspace_id,
+                    "environment_id": binding.environment_id,
+                    "operation_id": operation_id,
+                    "state_version": operation.state_version,
+                },
+            )
+            assert outcome.scalar_one() == "DENIED"
+        async with postgresql_adapter.uow_factory(
+            postgresql_adapter.environment_context(
+                binding.workspace_id, binding.environment_id
+            )
+        ) as uow:
+            source_count = await uow.execute_statement(
+                text(
+                    "SELECT count(*) FROM spine.source_objects "
+                    "WHERE source_object_id = :source_id"
+                ),
+                {"source_id": case.source.source_object_id},
+            )
+            persisted_operation = await repository.get(
+                workspace_id=binding.workspace_id,
+                environment_id=binding.environment_id,
+                operation_id=operation_id,
+            )
+            assert source_count.scalar_one() == 1
+            assert persisted_operation is not None
+            assert persisted_operation.fence_active is True
             await uow.rollback()
     finally:
         await engine.dispose()
@@ -1179,3 +1287,84 @@ async def test_postgresql_disposition_recovers_commit_with_lost_response(
         operation_id=operation.operation_id,
     ) == operation
     assert await _outbox_count(postgresql_adapter, operation) == 1
+
+
+async def test_postgresql_expiry_purges_only_expired_verified_operation_identity(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    _, first_authority = await _issued_authorization(
+        postgresql_adapter, postgresql_contract_database, 754900
+    )
+    _, other_authority = await _issued_authorization(
+        postgresql_adapter, postgresql_contract_database, 754910
+    )
+    repository = _repository(postgresql_adapter)
+
+    async def persist_operation(authorization, number: int, *, verified: bool):
+        operation_id = synthetic_uuid(number)
+        binding = binding_from_tombstone_authorization(
+            authorization, operation_id=operation_id
+        )
+        operation = _operation(binding)
+        assert await repository.admit_if_current(operation, binding)
+        store_status = (
+            StoreDispositionStatus.VERIFIED
+            if verified
+            else StoreDispositionStatus.UNKNOWN
+        )
+        store_state = DispositionStoreState(
+            store_id="canonical",
+            status=store_status,
+            attempts=1,
+            result_code="CANONICAL_ERASED" if verified else "COMMIT_UNKNOWN",
+        )
+        persisted = DispositionOperation.model_validate(
+            {
+                **operation.model_dump(mode="python"),
+                "state_version": operation.state_version + 1,
+                "status": (
+                    DispositionStatus.VERIFIED
+                    if verified
+                    else DispositionStatus.UNKNOWN
+                ),
+                "fence_active": True,
+                "safe_code": "DISPOSITION_VERIFIED" if verified else "COMMIT_UNKNOWN",
+                "completion_ack_expires_at": NOW - timedelta(seconds=1),
+                "stores": (store_state,),
+            }
+        )
+        await repository.save(
+            persisted, expected_state_version=operation.state_version
+        )
+        return persisted
+
+    expired = await persist_operation(first_authority, 754901, verified=True)
+    other_tenant_expired = await persist_operation(
+        other_authority, 754911, verified=True
+    )
+    fenced_unknown = await persist_operation(first_authority, 754902, verified=False)
+
+    assert await repository.expire_completed(
+        workspace_id=expired.workspace_id,
+        environment_id=expired.environment_id,
+        evaluated_at=NOW,
+    ) == 1
+    assert await repository.get(
+        workspace_id=expired.workspace_id,
+        environment_id=expired.environment_id,
+        operation_id=expired.operation_id,
+    ) is None
+    assert await _outbox_count(postgresql_adapter, expired) == 0
+    assert await repository.get(
+        workspace_id=fenced_unknown.workspace_id,
+        environment_id=fenced_unknown.environment_id,
+        operation_id=fenced_unknown.operation_id,
+    ) is not None
+    assert await _outbox_count(postgresql_adapter, fenced_unknown) == 1
+    assert await repository.get(
+        workspace_id=other_tenant_expired.workspace_id,
+        environment_id=other_tenant_expired.environment_id,
+        operation_id=other_tenant_expired.operation_id,
+    ) is not None
+    assert await _outbox_count(postgresql_adapter, other_tenant_expired) == 1

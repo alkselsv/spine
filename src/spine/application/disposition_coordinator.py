@@ -99,7 +99,9 @@ class DispositionOperationRepository(Protocol):
     ) -> None:
         """Purge operation identity only after completion was delivered/acknowledged."""
 
-    async def expire_completed(self, *, evaluated_at: datetime) -> int:
+    async def expire_completed(
+        self, *, workspace_id: UUID, environment_id: UUID, evaluated_at: datetime
+    ) -> int:
         """Purge expired completion identities, including later topology downgrades."""
 
     async def get(
@@ -159,7 +161,10 @@ class DispositionCoordinator:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     async def execute(self, request: DispositionRequest) -> DispositionOperation:
-        await self.expire_completed_operations()
+        await self.expire_completed_operations(
+            workspace_id=request.workspace_id,
+            environment_id=request.environment_id,
+        )
         store_ids = tuple(sorted(set(self._stores) | set(request.store_ids)))
         operation = DispositionOperation(
             workspace_id=request.workspace_id,
@@ -214,7 +219,10 @@ class DispositionCoordinator:
         return await self._run(operation)
 
     async def reconcile(self, request: DispositionRequest) -> DispositionOperation:
-        await self.expire_completed_operations()
+        await self.expire_completed_operations(
+            workspace_id=request.workspace_id,
+            environment_id=request.environment_id,
+        )
         operation = await self._repository.get(
             workspace_id=request.workspace_id,
             environment_id=request.environment_id,
@@ -237,7 +245,10 @@ class DispositionCoordinator:
         return await self._run(operation)
 
     async def cancel(self, operation: DispositionOperation) -> DispositionOperation:
-        await self.expire_completed_operations()
+        await self.expire_completed_operations(
+            workspace_id=operation.workspace_id,
+            environment_id=operation.environment_id,
+        )
         current = await self._repository.get(
             workspace_id=operation.workspace_id,
             environment_id=operation.environment_id,
@@ -259,7 +270,10 @@ class DispositionCoordinator:
     ) -> DispositionOperation:
         """Resume the same fenced operation under a fresh exact authority binding."""
 
-        await self.expire_completed_operations()
+        await self.expire_completed_operations(
+            workspace_id=request.workspace_id,
+            environment_id=request.environment_id,
+        )
         current = await self._repository.get(
             workspace_id=request.workspace_id,
             environment_id=request.environment_id,
@@ -456,7 +470,10 @@ class DispositionCoordinator:
         self,
         operation: DispositionOperation,
     ) -> None:
-        await self.expire_completed_operations()
+        await self.expire_completed_operations(
+            workspace_id=operation.workspace_id,
+            environment_id=operation.environment_id,
+        )
         current = await self._repository.get(
             workspace_id=operation.workspace_id,
             environment_id=operation.environment_id,
@@ -482,11 +499,17 @@ class DispositionCoordinator:
             expected_state_version=current.state_version,
         )
 
-    async def expire_completed_operations(self) -> int:
+    async def expire_completed_operations(
+        self, *, workspace_id: UUID, environment_id: UUID
+    ) -> int:
         """Enforce the bounded response-replay window without keeping joins."""
 
         evaluated_at = self._aware_now()
-        return await self._repository.expire_completed(evaluated_at=evaluated_at)
+        return await self._repository.expire_completed(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            evaluated_at=evaluated_at,
+        )
 
     def _aware_now(self) -> datetime:
         now = self._clock()

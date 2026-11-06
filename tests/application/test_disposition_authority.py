@@ -280,13 +280,20 @@ class MemoryDispositionRuntime:
                 raise RuntimeError("concurrent disposition update")
             del self.operations[key]
 
-    async def expire_completed(self, *, evaluated_at: datetime) -> int:
+    async def expire_completed(
+        self, *, workspace_id: UUID, environment_id: UUID, evaluated_at: datetime
+    ) -> int:
         async with self.lock:
             expired = [
                 key
                 for key, operation in self.operations.items()
-                if operation.completion_ack_expires_at is not None
-                and operation.completion_ack_expires_at <= evaluated_at
+                if (
+                    operation.workspace_id == workspace_id
+                    and operation.environment_id == environment_id
+                    and operation.status is DispositionStatus.VERIFIED
+                    and operation.completion_ack_expires_at is not None
+                    and operation.completion_ack_expires_at <= evaluated_at
+                )
             ]
             for key in expired:
                 del self.operations[key]

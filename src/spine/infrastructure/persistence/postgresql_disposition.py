@@ -279,13 +279,27 @@ class PostgreSQLDispositionRepository(DispositionOperationRepository):
                 raise DispositionConflictError("disposition completion changed")
             await uow.commit()
 
-    async def expire_completed(self, *, evaluated_at: datetime) -> int:
+    async def expire_completed(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        evaluated_at: datetime,
+    ) -> int:
         if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
             raise ValueError("disposition expiry time must be timezone-aware")
-        # Expiry is performed per tenant by the scheduled T9 worker, which
-        # supplies a trusted context. The repository does not use an unscoped
-        # privileged delete here.
-        return 0
+        context = self._context(workspace_id, environment_id)
+        async with self._uow_factory(context) as uow:
+            result = await uow.execute_statement(
+                delete(source_disposition_operations).where(
+                    source_disposition_operations.c.workspace_id == workspace_id,
+                    source_disposition_operations.c.environment_id == environment_id,
+                    source_disposition_operations.c.status == DispositionStatus.VERIFIED.value,
+                    source_disposition_operations.c.completion_ack_expires_at <= evaluated_at,
+                )
+            )
+            await uow.commit()
+            return result.rowcount or 0
 
     async def get(
         self,
