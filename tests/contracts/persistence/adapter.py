@@ -37,6 +37,9 @@ class PersistenceAdapter:
     interactive_environment_context: Callable[
         [UUID, UUID, PersistenceOperation, UUID], TrustedPersistenceContext
     ] | None = field(default=None, kw_only=True)
+    canonical_tombstone_selector_context: Callable[
+        [UUID, UUID, UUID], TrustedPersistenceContext
+    ] | None = field(default=None, kw_only=True)
     prepare_legacy_tombstone_selector: Callable[
         [Any, TrustedPersistenceContext, UUID], Awaitable[None]
     ] | None = field(default=None, kw_only=True)

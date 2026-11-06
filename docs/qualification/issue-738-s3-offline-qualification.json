@@ -50,6 +50,7 @@
     "canonical_v3_selector_writer_retry_and_cas": [
       "tests/domain/sources/test_canonical_tombstone_v3.py::test_v3_acceptance_requires_exact_tombstone_authorization_link",
       "tests/integration/postgresql/test_postgresql_canonical_tombstone_v3.py::test_tombstone_selector_publication_is_immutable_and_cas_serialized",
+      "tests/integration/postgresql/test_postgresql_canonical_tombstone_v3.py::test_postgresql_deadlock_is_translated_and_retried_within_bound",
       "tests/application/persistence/test_canonical_acceptance_retry.py::test_v3_tombstone_authority_is_revalidated_inside_every_retry_uow",
       "tests/application/persistence/test_canonical_acceptance_retry.py::test_serialization_retry_exhaustion_fails_closed_and_is_audited",
       "tests/application/persistence/test_canonical_acceptance_retry.py::test_unknown_commit_reconciles_with_same_command_identity",
@@ -75,7 +76,9 @@
       "tests/domain/sources/test_canonical_tombstone_v3.py::test_legacy_selector_is_time_bounded_and_successor_is_immutable_history",
       "tests/application/persistence/test_canonical_acceptance_retry.py::test_legacy_tombstone_without_selector_authority_fails_closed",
       "tests/infrastructure/persistence/test_canonical_tombstone_v3_schema.py::test_v3_reader_first_migration_retains_schema_on_writer_rollback",
-      "tests/integration/postgresql/test_postgresql_canonical_tombstone_v3.py::test_v3_reader_first_migration_rollback_retains_read_schema_and_disables_writer",
+      "tests/integration/postgresql/test_postgresql_canonical_tombstone_v3.py::test_v3_reader_first_rollout_reads_legacy_before_writer_activation",
+      "tests/integration/postgresql/test_postgresql_canonical_tombstone_v3.py::test_v3_migration_rollback_preserves_history_and_restores_constraints",
+      "tests/integration/postgresql/test_postgresql_canonical_tombstone_v3.py::test_v3_migration_rollback_disables_new_writer",
       "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_selector_migration_rollback_preserves_existing_v1_acceptance",
       "tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head"
     ],
