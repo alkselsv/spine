@@ -750,6 +750,19 @@ async def postgresql_adapter(
             trace_id=trace_id,
         )
 
+    def canonical_tombstone_selector_context(
+        workspace_id: UUID, environment_id: UUID, actor_id: UUID
+    ) -> TrustedPersistenceContext:
+        return boundary.interactive(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id, environment_id=environment_id
+            ),
+            acting_subject_id=actor_id,
+            purpose=PersistencePurpose("canonical_tombstone_selector"),
+            operation=PersistenceOperation("canonical_tombstone_selector.publish"),
+            trace_id=synthetic_uuid(963),
+        )
+
     def worker_workspace_context(workspace_id: UUID) -> TrustedPersistenceContext:
         return boundary.worker(
             scope=WorkspaceScope(workspace_id=workspace_id),
@@ -1077,6 +1090,7 @@ async def postgresql_adapter(
             ingestion_context=ingestion_context,
             governance_context=governance_context,
             interactive_environment_context=interactive_environment_context,
+            canonical_tombstone_selector_context=canonical_tombstone_selector_context,
             prepare_legacy_tombstone_selector=prepare_legacy_tombstone_selector,
             prepare_current_source_authority=prepare_current_source_authority,
         )
