@@ -121,6 +121,34 @@ def test_mapping_profile_requires_ownership_proof_for_attached_objects() -> None
         )
 
 
+def test_mapping_profile_requires_attached_object_read_method() -> None:
+    with pytest.raises(ValueError, match="exact read method"):
+        CrmRelationshipMappingProfile(
+            schema_version="bitrix24-crm-files-mapping-profile:v1",
+            record_kind="mapping_profile",
+            profile_id=UUID(int=1),
+            workspace_id=UUID(int=2),
+            environment_id=UUID(int=3),
+            profile_version=1,
+            provider_instance="portal-test",
+            connection_id=UUID(int=4),
+            connection_approval_id=UUID(int=5),
+            qualification_reference=UUID(int=6),
+            approval_reference=UUID(int=7),
+            activity_namespace="bitrix.activity",
+            activity_type_ids=("1",),
+            raw_entity_type_ids=("2",),
+            entity_namespace="bitrix.company",
+            files_namespace="bitrix.activity.files",
+            normalizer_id="bitrix.enum.ownertype",
+            normalizer_version="1",
+            read_methods=("crm.activity.binding.list",),
+            mapping_strategy="attached_object",
+            ownership_proof_reference="synthetic:proof",
+            disk_namespace="bitrix.disk",
+        )
+
+
 def test_positive_receipt_requires_exact_binding_pair_evidence() -> None:
     with pytest.raises(ValueError, match="positive eligibility"):
         CrmRelationshipObservationReceipt(
