@@ -54,12 +54,15 @@ class CrmActivityBindingPage(DefinitionModel):
     items: tuple[CrmActivityEntityPair, ...] = ()
     response_bytes: int = Field(ge=0)
     next_start: int | None = Field(default=None, ge=0)
+    enumeration_complete: bool
     permission_filtered: bool = False
 
     @model_validator(mode="after")
     def validate_page(self) -> "CrmActivityBindingPage":
         if self.status is not CrmBindingPageStatus.SUCCESS and self.items:
             raise ValueError("unsuccessful binding pages cannot carry items")
+        if self.next_start is not None and self.enumeration_complete:
+            raise ValueError("a page with a next cursor cannot complete enumeration")
         return self
 
 
@@ -116,7 +119,9 @@ class Bitrix24CrmActivityBindingReader(Bitrix24CrmRelationshipV2ProviderPort):
                 normalizer_version=normalizer_version,
             )
 
-        evidence_pages: list[tuple[int, int, tuple[tuple[str, str], ...]]] = []
+        evidence_pages: list[
+            tuple[int, int, tuple[tuple[str, str], ...], int | None, bool]
+        ] = []
         seen_pairs: set[tuple[str, str]] = set()
         start = 0
         successful_pages = 0
@@ -244,7 +249,15 @@ class Bitrix24CrmActivityBindingReader(Bitrix24CrmRelationshipV2ProviderPort):
             seen_pairs.update(pairs)
             total_bytes += page.response_bytes
             successful_pages += 1
-            evidence_pages.append((start, page.response_bytes, pairs))
+            evidence_pages.append(
+                (
+                    start,
+                    page.response_bytes,
+                    pairs,
+                    page.next_start,
+                    page.enumeration_complete,
+                )
+            )
 
             if (command.raw_entity_type_id, command.entity_id) in pairs:
                 return self._result(
@@ -271,7 +284,9 @@ class Bitrix24CrmActivityBindingReader(Bitrix24CrmRelationshipV2ProviderPort):
             if page.next_start is None:
                 return self._result(
                     command,
-                    CrmRelationshipBindingOutcome.NOT_VERIFIED,
+                    CrmRelationshipBindingOutcome.NOT_VERIFIED
+                    if page.enumeration_complete
+                    else CrmRelationshipBindingOutcome.AUTHORITY_UNAVAILABLE,
                     page_count=successful_pages,
                     attempt_count=attempts,
                     response_bytes=total_bytes,
@@ -298,7 +313,10 @@ class Bitrix24CrmActivityBindingReader(Bitrix24CrmRelationshipV2ProviderPort):
         outcome: CrmRelationshipBindingOutcome,
         *,
         page_count: int,
-        evidence_pages: list[tuple[int, int, tuple[tuple[str, str], ...]]] | None = None,
+        evidence_pages: list[
+            tuple[int, int, tuple[tuple[str, str], ...], int | None, bool]
+        ]
+        | None = None,
         normalizer_id: str,
         normalizer_version: str,
         attempt_count: int,

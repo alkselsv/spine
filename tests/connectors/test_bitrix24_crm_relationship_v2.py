@@ -99,6 +99,7 @@ def _page(
     pairs: tuple[tuple[str, str], ...] = (),
     *,
     next_start: int | None = None,
+    enumeration_complete: bool | None = None,
     status: CrmBindingPageStatus = CrmBindingPageStatus.SUCCESS,
     response_bytes: int = 10,
     permission_filtered: bool = False,
@@ -108,6 +109,9 @@ def _page(
         items=tuple(CrmActivityEntityPair(entity_type_id=kind, entity_id=value) for kind, value in pairs),
         response_bytes=response_bytes,
         next_start=next_start,
+        enumeration_complete=(next_start is None)
+        if enumeration_complete is None
+        else enumeration_complete,
         permission_filtered=permission_filtered,
     )
 
@@ -170,6 +174,16 @@ async def test_raw_entity_pair_mismatch_is_not_positive() -> None:
     assert result.positive_pair_observed is False
     assert result.outcome == "NOT_VERIFIED"
     assert result.page_count == 1
+
+
+@pytest.mark.asyncio
+async def test_incomplete_page_without_cursor_is_not_classified_as_absence() -> None:
+    pages = Pages(_page((), enumeration_complete=False))
+
+    result = await Bitrix24CrmActivityBindingReader(pages).read(_command())
+
+    assert result.outcome == "AUTHORITY_UNAVAILABLE"
+    assert result.positive_pair_observed is False
 
 
 @pytest.mark.asyncio
