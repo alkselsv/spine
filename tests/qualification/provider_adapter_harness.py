@@ -16,12 +16,7 @@ from spine.application.connections.provider import (
     ProviderReadCommand,
 )
 from spine.connectors.bitrix24_crm_material import (
-    BITRIX24_CRM_REQUIRED_CAPABILITIES,
-    Bitrix24CrmActivity,
-    Bitrix24CrmAttachment,
-    Bitrix24CrmMaterialAdapter,
-    Bitrix24CrmMaterialReadCommand,
-    Bitrix24CrmMaterialReadProfile,
+    Bitrix24CrmMaterialObservation,
     bitrix24_crm_normalized_observation,
 )
 from spine.connectors.bitrix24_disk import (
@@ -382,58 +377,6 @@ class GoogleSheetsService:
         )
 
 
-class BitrixCrmService:
-    async def authorize_read(self, *args: object, **kwargs: object) -> None:
-        del args, kwargs
-
-    async def get_activity(
-        self, *args: object, **kwargs: object
-    ) -> Bitrix24CrmActivity:
-        del args, kwargs
-        return Bitrix24CrmActivity(
-            ID="501",
-            OWNER_TYPE_ID="deal",
-            OWNER_ID="932",
-            LAST_UPDATED=NOW,
-            ACTIVITY_REVISION="activity-v7",
-        )
-
-    async def get_attachment(
-        self, *args: object, **kwargs: object
-    ) -> Bitrix24CrmAttachment:
-        del args, kwargs
-        return Bitrix24CrmAttachment(
-            ID="attachment-1",
-            ACTIVITY_ID="501",
-            OWNER_TYPE_ID="deal",
-            OWNER_ID="932",
-            DISK_FILE_ID="9043",
-            DISK_FILE_REVISION="42",
-            RELATIONSHIP_REVISION="link-v3",
-        )
-
-
-class BitrixCrmV2Adapter:
-    def __init__(
-        self,
-        adapter: Bitrix24CrmMaterialAdapter,
-        crm_command: Bitrix24CrmMaterialReadCommand,
-    ) -> None:
-        self.adapter = adapter
-        self.crm_command = crm_command
-
-    async def read(
-        self, connection: ProviderConnection, command: ProviderReadCommand
-    ) -> NormalizedExternalObservationV2:
-        assert command.connection_id == self.crm_command.connection_id
-        observed = await self.adapter.read(connection, self.crm_command)
-        return bitrix24_crm_normalized_observation(
-            observed,
-            authorization_generation=command.authorization_generation,
-            configuration_generation=command.configuration_generation,
-        )
-
-
 def provider_connection(case: BinaryProviderCase) -> ProviderConnection:
     qualification = OpaqueProviderReference(
         value=stable_id(f"{case.name}:qualification")
@@ -586,71 +529,28 @@ async def read_tabular_observation() -> NormalizedExternalObservationV2:
 
 
 async def read_structured_observation() -> NormalizedExternalObservationV2:
-    case = BINARY_PROVIDER_CASES[2]
-    base = provider_connection(case)
-    qualification = OpaqueProviderReference(
-        value=stable_id("bitrix24:crm-qualification")
-    )
-    connection = base.model_copy(
-        update={
-            "approved_crm_entity_types": ("deal",),
-            "capabilities": (
-                *base.capabilities,
-                ProviderCapability(
-                    kind=ProviderCapabilityKind.STABLE_IDENTITY,
-                    status=ProviderCapabilityStatus.SUPPORTED,
-                    qualification_reference=qualification,
-                ),
-                ProviderCapability(
-                    kind=ProviderCapabilityKind.CRM,
-                    status=ProviderCapabilityStatus.SUPPORTED,
-                    qualification_reference=qualification,
-                ),
-                ProviderCapability(
-                    kind=ProviderCapabilityKind.STRUCTURED_READ,
-                    status=ProviderCapabilityStatus.SUPPORTED,
-                    qualification_reference=qualification,
-                ),
-            ),
-        }
-    )
-    crm_command = Bitrix24CrmMaterialReadCommand(
+    """Build an archived synthetic observation without a live CRM v1 read."""
+    observation = Bitrix24CrmMaterialObservation(
         workspace_id=WORKSPACE_ID,
         environment_id=ENVIRONMENT_ID,
-        connection_id=connection.connection_id,
-        connection_version_id=connection.connection_version_id,
-        resource_scope_reference=connection.approved_resource_scope_references[0],
-        authorization_generation=1,
-        configuration_generation=1,
-        entity_type="deal",
-        entity_id="932",
-        activity_id="501",
-        disk_file_id="9043",
+        connection_id=stable_id("bitrix24:archived-crm:connection"),
+        connection_version_id=stable_id("bitrix24:archived-crm:connection-version"),
+        resource_scope_reference=stable_id("bitrix24:archived-crm:scope"),
+        crm_entity_type="deal",
+        crm_entity_id="932",
+        crm_activity_id="501",
+        crm_activity_revision="activity-v7",
+        crm_attachment_id="attachment-1",
+        relationship_revision="link-v3",
         target_source_object_id=stable_id("target-source"),
         target_source_revision_id=stable_id("target-revision"),
-        approved_entity_types=("deal",),
-        required_capabilities=BITRIX24_CRM_REQUIRED_CAPABILITIES,
+        disk_file_id="9043",
+        disk_file_revision="42",
+        binding_evidence_digest=hashlib.sha256(b"synthetic archived CRM binding").hexdigest(),
+        observed_at=NOW,
     )
-    repository = AdmittedConnectionRepository(connection)
-    provider = BitrixCrmV2Adapter(
-        Bitrix24CrmMaterialAdapter(
-            service=BitrixCrmService(),
-            profile=Bitrix24CrmMaterialReadProfile(),
-            clock=lambda: NOW,
-        ),
-        crm_command,
-    )
-    return await ProviderReadAdmission(repository=repository, provider=provider).read(
-        ProviderReadCommand(
-            workspace_id=WORKSPACE_ID,
-            environment_id=ENVIRONMENT_ID,
-            connection_id=connection.connection_id,
-            connection_version_id=connection.connection_version_id,
-            resource_scope_reference=connection.approved_resource_scope_references[0],
-            authorization_generation=1,
-            configuration_generation=1,
-            required_capabilities=BITRIX24_CRM_REQUIRED_CAPABILITIES,
-            resource_object_reference="501:attachment-1",
-        ),
-        object(),
+    return bitrix24_crm_normalized_observation(
+        observation,
+        authorization_generation=1,
+        configuration_generation=1,
     )

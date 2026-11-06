@@ -184,7 +184,7 @@
       "capabilities": {
         "binary": "supported",
         "tabular": "unsupported",
-        "structured_relationship": "supported",
+        "structured_relationship": "unqualified",
         "incremental": "unqualified",
         "full_reconciliation": "unsupported",
         "path_scoped_identity": "unsupported"
@@ -213,7 +213,6 @@
       "evidence": {
         "common_envelope_and_provider_provenance": [
           "tests/connectors/test_bitrix24_disk.py::test_reader_preserves_disk_object_version_exact_bytes_and_omits_signed_url",
-          "tests/connectors/test_bitrix24_crm_material.py::test_crm_activity_attachment_preserves_exact_binding_and_disk_revision",
           "tests/qualification/test_issue677_cross_provider_offline.py::test_typed_representations_keep_one_common_canonical_retrieval_contract",
           "tests/qualification/test_issue677_cross_provider_offline.py::test_provider_binary_runs_through_real_adapter_and_admission",
           "tests/qualification/test_issue677_cross_provider_offline.py::test_equivalent_provider_bytes_produce_equivalent_canonical_content"
@@ -223,7 +222,7 @@
         ],
         "workspace_isolation_and_pre_provider_denial": [
           "tests/connectors/test_bitrix24_disk.py::test_scope_workspace_and_revocation_are_denied_before_provider_read",
-          "tests/connectors/test_bitrix24_crm_material.py::test_crm_reader_rejects_cross_workspace_before_provider_access"
+          "tests/connectors/test_bitrix24_crm_material.py::test_legacy_crm_reader_denies_before_provider_access_without_acting_human"
         ],
         "replay_duplicates_pagination_and_partial_failure": [
           "tests/connectors/test_bitrix24_disk.py::test_pagination_duplicate_entries_and_throttle_are_bounded_and_replayable",
