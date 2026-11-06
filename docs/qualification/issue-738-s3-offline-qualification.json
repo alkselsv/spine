@@ -1,0 +1,133 @@
+{
+  "schema_version": "issue-738-s3-offline-qualification:v1",
+  "ticket": 738,
+  "parent_ticket": 715,
+  "status": "offline_pass",
+  "qualified_base_commit": "399f2519d765f026bc59ef21067c86a3256d95fc",
+  "qualification_commit": "WORKTREE",
+  "required_scenarios": [
+    "lifecycle_classification_and_current_authority",
+    "withdrawal_read_revision_and_commit_races",
+    "disclosure_review_hold_create_and_release",
+    "retention_lineage_mixed_artifacts_and_currentness",
+    "qualified_evidence_issuer_and_revocation",
+    "canonical_v3_selector_writer_retry_and_cas",
+    "projection_retrieval_citation_and_final_disclosure",
+    "governed_recovery_reappearance_and_no_policy_transfer",
+    "reader_first_mixed_version_rollout_and_rollback",
+    "provider_compatibility_and_strict_absence"
+  ],
+  "traceability": {
+    "lifecycle_classification_and_current_authority": [
+      "tests/domain/sources/test_lifecycle.py::test_lifecycle_observation_maps_to_safe_non_authorizing_effect",
+      "tests/domain/sources/test_lifecycle.py::test_lifecycle_decision_cannot_convert_deletion_evidence_to_tombstone",
+      "tests/integration/postgresql/test_postgresql_lifecycle_authority.py::test_postgresql_lifecycle_authority_persists_current_scoped_decision"
+    ],
+    "withdrawal_read_revision_and_commit_races": [
+      "tests/application/test_connector_ingestion.py::test_scope_withdrawal_blocks_connector_before_provider_read",
+      "tests/integration/postgresql/test_postgresql_lifecycle_authority.py::test_postgresql_lifecycle_fence_orders_replacement_and_commit",
+      "tests/integration/postgresql/test_postgresql_lifecycle_authority.py::test_postgresql_withdrawal_serializes_after_inflight_canonical_acceptance"
+    ],
+    "disclosure_review_hold_create_and_release": [
+      "tests/application/test_disclosure_holds.py::test_authorized_hold_create_replay_and_current_reader",
+      "tests/application/test_disclosure_holds.py::test_separate_release_clears_only_exact_hold_without_granting_disclosure",
+      "tests/integration/postgresql/test_postgresql_disclosure_holds.py::test_postgresql_hold_create_release_replay_and_workspace_isolation",
+      "tests/integration/postgresql/test_postgresql_disclosure_holds.py::test_postgresql_hold_release_cas_allows_one_immutable_winner"
+    ],
+    "retention_lineage_mixed_artifacts_and_currentness": [
+      "tests/application/test_retention_applicability.py::test_mixed_artifact_reports_ineligible_source_for_suppression_or_rebuild",
+      "tests/application/test_retention_applicability.py::test_cross_tenant_context_fails_closed_without_resolving_sources",
+      "tests/integration/postgresql/test_postgresql_retention_applicability.py::test_postgresql_retention_reader_enforces_revision_lineage_and_tenant_rls",
+      "tests/integration/postgresql/test_postgresql_retention_applicability.py::test_postgresql_retention_fence_orders_replacement_and_commit"
+    ],
+    "qualified_evidence_issuer_and_revocation": [
+      "tests/application/test_tombstone_authorization.py::test_stale_missing_or_unsupported_current_guarantee_fails_closed",
+      "tests/application/test_tombstone_authorization.py::test_unknown_commit_reconciles_by_original_command_identity",
+      "tests/integration/postgresql/test_postgresql_tombstone_authorization.py::test_postgresql_authorization_replays_one_logical_effect",
+      "tests/integration/postgresql/test_postgresql_tombstone_authorization.py::test_postgresql_revocation_makes_issued_authorization_non_current",
+      "tests/integration/postgresql/test_postgresql_tombstone_authorization.py::test_postgresql_authorization_is_not_visible_across_workspaces"
+    ],
+    "canonical_v3_selector_writer_retry_and_cas": [
+      "tests/domain/sources/test_canonical_tombstone_v3.py::test_v3_acceptance_requires_exact_tombstone_authorization_link",
+      "tests/integration/postgresql/test_postgresql_canonical_tombstone_v3.py::test_tombstone_selector_publication_is_immutable_and_cas_serialized",
+      "tests/application/persistence/test_canonical_acceptance_retry.py::test_v3_tombstone_authority_is_revalidated_inside_every_retry_uow",
+      "tests/application/persistence/test_canonical_acceptance_retry.py::test_serialization_retry_exhaustion_fails_closed_and_is_audited",
+      "tests/application/persistence/test_canonical_acceptance_retry.py::test_unknown_commit_reconciles_with_same_command_identity",
+      "tests/integration/postgresql/test_initial_tenancy_migration.py::test_initial_schema_has_named_tenancy_constraints_and_postgresql_types"
+    ],
+    "projection_retrieval_citation_and_final_disclosure": [
+      "tests/application/test_projection_request_resolution.py::test_production_resolver_fences_tombstoned_current_revision_before_physical_io",
+      "tests/infrastructure/test_source_usage_guard.py::test_transaction_guard_suppresses_whole_mixed_artifact_on_one_denial",
+      "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_source_usage_guard_fences_authority_changes_until_rollback",
+      "tests/application/test_authorized_retrieval_scope.py::test_missing_retention_or_tombstoned_current_revision_fails_closed",
+      "tests/application/test_citation_validation.py::test_current_source_lifecycle_fails_closed",
+      "tests/application/test_disclosure_revalidation.py::test_current_ineligible_dependency_suppresses_whole_answer",
+      "tests/application/test_answer_disclosure.py::test_gate_suppresses_replay_after_current_authority_revocation"
+    ],
+    "governed_recovery_reappearance_and_no_policy_transfer": [
+      "tests/application/test_source_lifecycle.py::test_reappearance_requires_existing_tombstone_and_fresh_canonical_evidence",
+      "tests/application/test_source_lifecycle.py::test_reappearance_cannot_transfer_a_pre_tombstone_access_policy",
+      "tests/application/test_connector_ingestion.py::test_connector_reappearance_without_governed_authority_fails_closed",
+      "tests/application/test_connector_ingestion.py::test_google_drive_reappearance_replay_keeps_the_accepted_lineage"
+    ],
+    "reader_first_mixed_version_rollout_and_rollback": [
+      "tests/domain/sources/test_canonical_tombstone_v3.py::test_historical_versions_cannot_fabricate_tombstone_authorization_link",
+      "tests/domain/sources/test_canonical_tombstone_v3.py::test_legacy_selector_is_time_bounded_and_successor_is_immutable_history",
+      "tests/application/persistence/test_canonical_acceptance_retry.py::test_legacy_tombstone_without_selector_authority_fails_closed",
+      "tests/infrastructure/persistence/test_canonical_tombstone_v3_schema.py::test_v3_reader_first_migration_retains_schema_on_writer_rollback",
+      "tests/integration/postgresql/test_postgresql_canonical_tombstone_v3.py::test_v3_reader_first_migration_rollback_retains_read_schema_and_disables_writer",
+      "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_selector_migration_rollback_preserves_existing_v1_acceptance",
+      "tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head"
+    ],
+    "provider_compatibility_and_strict_absence": [
+      "tests/application/test_connector_ingestion.py::test_google_v1_and_provider_v2_produce_equivalent_canonical_outcomes",
+      "tests/application/test_connector_ingestion.py::test_yandex_file_replay_keeps_one_immutable_revision_and_projection_effect",
+      "tests/application/test_connector_ingestion.py::test_mounted_filesystem_observation_reaches_canonical_path_with_stable_replay",
+      "tests/application/test_connector_ingestion.py::test_google_sheets_reader_reaches_shared_canonical_and_projection_handoff",
+      "tests/application/test_yandex_disk_reconciliation.py::test_provider_reordering_cannot_certify_complete_coverage_or_tombstone",
+      "tests/application/test_google_sheets_lifecycle.py::test_incomplete_scan_cannot_create_candidate_or_tombstone"
+    ]
+  },
+  "reader_before_writer": "verified_offline",
+  "rollback_preserves_v3_history": "verified_offline",
+  "verification": {
+    "focused": {
+      "status": "passed",
+      "command": "uv run pytest -q tests/qualification/test_issue738_s3_offline_qualification.py tests/domain/sources/test_lifecycle.py tests/domain/sources/test_canonical_tombstone_v3.py tests/application/test_connector_ingestion.py tests/application/test_disclosure_holds.py tests/application/test_retention_applicability.py tests/application/test_tombstone_authorization.py tests/application/persistence/test_canonical_acceptance_retry.py tests/application/test_projection_request_resolution.py tests/application/test_authorized_retrieval_scope.py tests/application/test_citation_validation.py tests/application/test_disclosure_revalidation.py tests/application/test_answer_disclosure.py tests/application/test_source_lifecycle.py tests/application/test_yandex_disk_reconciliation.py tests/application/test_google_sheets_lifecycle.py tests/infrastructure/test_source_usage_guard.py tests/infrastructure/persistence/test_canonical_tombstone_v3_schema.py",
+      "passed": 240,
+      "skipped": 0,
+      "failed": 0
+    },
+    "postgresql": {
+      "status": "passed",
+      "command": "uv run pytest -q tests/integration/postgresql/test_initial_tenancy_migration.py tests/integration/postgresql/test_postgresql_lifecycle_authority.py tests/integration/postgresql/test_postgresql_disclosure_holds.py tests/integration/postgresql/test_postgresql_retention_applicability.py tests/integration/postgresql/test_postgresql_tombstone_authorization.py tests/integration/postgresql/test_postgresql_canonical_tombstone_v3.py tests/integration/postgresql/test_postgresql_unit_of_work.py",
+      "passed": 295,
+      "skipped": 0,
+      "failed": 0
+    },
+    "repository": {
+      "status": "passed",
+      "command": "uv run pytest -q",
+      "passed": 7284,
+      "skipped": 7,
+      "failed": 0
+    },
+    "compileall": "passed"
+  },
+  "privacy": {
+    "synthetic_fixtures_only": true,
+    "credentials_recorded": false,
+    "raw_provider_payloads_recorded": false,
+    "customer_content_recorded": false,
+    "production_data_recorded": false
+  },
+  "live_provider_status": "not_exercised",
+  "production_activation_status": "not_approved",
+  "physical_cleanup_status": "not_exercised",
+  "issue_679_status": "not_approved_for_execution",
+  "unverified_prerequisites": [
+    "No live Google, Sheets, Yandex, filesystem, or Bitrix24 provider was exercised.",
+    "No named production deployment, production role, production selector activation, tombstone, or cleanup was exercised.",
+    "Security, Operations, Legal, retention-term, physical-erasure, and provider-specific production approvals remain external prerequisites."
+  ]
+}

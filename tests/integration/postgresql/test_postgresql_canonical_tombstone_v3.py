@@ -6,8 +6,15 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import create_async_engine
 
-from spine.application.canonical_tombstone_selectors import CanonicalTombstoneSelectorError
+from spine.application.canonical_tombstone_selectors import (
+    CanonicalTombstoneSelectorError,
+)
 from spine.application.tombstone_authorization import (
     IssueTombstoneAuthorizationCommand,
     TombstoneAuthorizationOutcome,
@@ -28,6 +35,8 @@ from spine.domain.sources.canonical_tombstone_selector import (
 from spine.infrastructure.persistence.postgresql_canonical_tombstone_selectors import (
     PostgreSQLCanonicalTombstoneSelectorRepository,
 )
+from spine.infrastructure.db.migrations import locate_migration_assets, upgrade_database
+from spine.infrastructure.db.settings import MigrationDatabaseSettings
 from spine.infrastructure.persistence.postgresql_canonical_tombstone import (
     PostgreSQLCurrentTombstoneAuthorizationAuthority,
 )
@@ -36,8 +45,11 @@ from tests.integration.postgresql.test_postgresql_tombstone_authorization import
     _admitted_case,
 )
 from tests.integration.postgresql.test_postgresql_unit_of_work import (
+    DISPATCHER_ROLE,
+    MIGRATION_ROLE,
     PersistenceAdapter,
     PostgreSQLContractDatabase,
+    RUNTIME_ROLE,
     postgresql_adapter,
     postgresql_contract_database,
     synthetic_uuid,
@@ -46,13 +58,135 @@ from tests.integration.postgresql.test_postgresql_unit_of_work import (
 pytestmark = [pytest.mark.postgresql, pytest.mark.asyncio(loop_scope="session")]
 
 
+async def test_v3_reader_first_migration_rollback_retains_read_schema_and_disables_writer(
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    migration_settings = MigrationDatabaseSettings(
+        url=postgresql_contract_database.migration_url,
+        migration_role=MIGRATION_ROLE,
+        runtime_role=RUNTIME_ROLE,
+        dispatcher_role=DISPATCHER_ROLE,
+    )
+    config_path, script_location = locate_migration_assets()
+    config = Config(str(config_path))
+    config.set_main_option("script_location", str(script_location))
+    config.attributes["migration_settings"] = migration_settings
+    engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    migration_failure: BaseException | None = None
+    try:
+        await asyncio.to_thread(command.downgrade, config, "20270111_110")
+        async with engine.connect() as connection:
+            columns = set(
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT column_name FROM information_schema.columns "
+                            "WHERE table_schema = 'spine' "
+                            "AND table_name = 'canonical_acceptances'"
+                        )
+                    )
+                ).scalars()
+            )
+            selector_table = await connection.scalar(
+                text(
+                    "SELECT to_regclass("
+                    "'spine.trusted_canonical_tombstone_selector_versions')"
+                )
+            )
+            disabled_trigger = await connection.scalar(
+                text(
+                    "SELECT count(*) FROM pg_trigger AS trigger "
+                    "JOIN pg_class AS relation ON relation.oid = trigger.tgrelid "
+                    "JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
+                    "WHERE namespace.nspname = 'spine' "
+                    "AND relation.relname = 'canonical_acceptances' "
+                    "AND trigger.tgname = 'trg_canonical_acceptance_v3_disabled' "
+                    "AND NOT trigger.tgisinternal"
+                )
+            )
+        assert {
+            "revision_kind",
+            "tombstone_authorization_id",
+            "tombstone_authorization_digest",
+            "transition_id",
+        } <= columns
+        assert selector_table == "spine.trusted_canonical_tombstone_selector_versions"
+        assert disabled_trigger == 1
+
+        with pytest.raises(
+            DBAPIError,
+            match="Canonical acceptance v3 writes are disabled by rollback",
+        ):
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.canonical_acceptances "
+                        "(canonical_acceptance_id, canonical_acceptance_schema_version, "
+                        "source_object_id, source_revision_id, revision_kind, workspace_id, "
+                        "environment_id, accepted_generation, ordering, provenance_id, "
+                        "idempotency_receipt_id, audit_event_id, outbox_event_id, accepted_at) "
+                        "VALUES (:id, 3, :id, :id, 'tombstone', :id, :id, 1, "
+                        "'expected_current', :id, :id, :id, :id, :accepted_at)"
+                    ),
+                    {"id": synthetic_uuid(738001), "accepted_at": NOW},
+                )
+    except BaseException as error:
+        migration_failure = error
+    finally:
+        await engine.dispose()
+
+    try:
+        await asyncio.to_thread(upgrade_database, migration_settings)
+    except BaseException as cleanup_error:
+        if migration_failure is not None:
+            raise cleanup_error from migration_failure
+        raise
+    if migration_failure is not None:
+        raise migration_failure
+
+    engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with engine.connect() as connection:
+            restored_fk = await connection.scalar(
+                text(
+                    "SELECT count(*) FROM pg_constraint "
+                    "WHERE conname = 'fk_canonical_acceptances_tombstone_authorization'"
+                )
+            )
+            disabled_trigger = await connection.scalar(
+                text(
+                    "SELECT count(*) FROM pg_trigger "
+                    "WHERE tgname = 'trg_canonical_acceptance_v3_disabled'"
+                )
+            )
+        assert restored_fk == 1
+        assert disabled_trigger == 0
+    finally:
+        await engine.dispose()
+
+
 async def test_tombstone_selector_publication_is_immutable_and_cas_serialized(
     postgresql_adapter: PersistenceAdapter,
     postgresql_contract_database: PostgreSQLContractDatabase,
 ) -> None:
-    case, ingestion_context, _, authorization_repository, _, approval, _, authorization, _, _ = await _admitted_case(
-        postgresql_adapter, postgresql_contract_database, 736200
-    )
+    (
+        case,
+        ingestion_context,
+        _,
+        authorization_repository,
+        _,
+        approval,
+        _,
+        authorization,
+        _,
+        _,
+    ) = await _admitted_case(postgresql_adapter, postgresql_contract_database, 736200)
     boundary = postgresql_adapter.uow_factory._context_verifier  # type: ignore[attr-defined]
 
     def context_factory(_operation: str, workspace_id: UUID, environment_id: UUID):
@@ -158,7 +292,9 @@ async def test_tombstone_selector_publication_is_immutable_and_cas_serialized(
     async with postgresql_adapter.uow_factory(ingestion_context) as uow:
         await PostgreSQLCurrentTombstoneAuthorizationAuthority(
             clock=lambda: NOW
-        ).revalidate(legacy_command, uow)  # type: ignore[arg-type]
+        ).revalidate(
+            legacy_command, uow
+        )  # type: ignore[arg-type]
         await uow.rollback()
     unrelated_command = SimpleNamespace(
         source=case.source.model_copy(
@@ -170,7 +306,9 @@ async def test_tombstone_selector_publication_is_immutable_and_cas_serialized(
         with pytest.raises(CanonicalEligibilityError):
             await PostgreSQLCurrentTombstoneAuthorizationAuthority(
                 clock=lambda: NOW
-            ).revalidate(unrelated_command, uow)  # type: ignore[arg-type]
+            ).revalidate(
+                unrelated_command, uow
+            )  # type: ignore[arg-type]
         await uow.rollback()
     issuance = await TombstoneAuthorizationService(
         authorization_repository,
@@ -196,7 +334,9 @@ async def test_tombstone_selector_publication_is_immutable_and_cas_serialized(
         with pytest.raises(CanonicalEligibilityError):
             await PostgreSQLCurrentTombstoneAuthorizationAuthority(
                 clock=lambda: NOW
-            ).revalidate(legacy_command, uow)  # type: ignore[arg-type]
+            ).revalidate(
+                legacy_command, uow
+            )  # type: ignore[arg-type]
         await uow.rollback()
     left = selector(
         synthetic_uuid(736207),
@@ -230,6 +370,7 @@ async def test_tombstone_selector_publication_is_immutable_and_cas_serialized(
         return_exceptions=True,
     )
     assert sum(not isinstance(value, Exception) for value in outcomes) == 1
-    assert sum(
-        isinstance(value, CanonicalTombstoneSelectorError) for value in outcomes
-    ) == 1
+    assert (
+        sum(isinstance(value, CanonicalTombstoneSelectorError) for value in outcomes)
+        == 1
+    )
