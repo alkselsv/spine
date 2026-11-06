@@ -297,10 +297,20 @@ def _command_with_lifecycle_query(
     )
 
 
-async def _prepare_lifecycle_case(adapter: PersistenceAdapter, number: int):
+async def _prepare_lifecycle_case(
+    adapter: PersistenceAdapter, number: int, *, gmail_source: bool = False
+):
     workspace_id = synthetic_uuid(number)
     environment_id = synthetic_uuid(number + 1)
     source = connector_source(workspace_id, environment_id, "provider1")
+    if gmail_source:
+        source = source.model_copy(
+            update={
+                "source_kind": "email_message",
+                "external_namespace": "gmail",
+                "external_object_id": f"synthetic-message-{number}",
+            }
+        )
     return await prepare_canonical_case(adapter, number, source_object=source)
 
 
