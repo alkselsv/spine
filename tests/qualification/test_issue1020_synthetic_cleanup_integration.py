@@ -362,6 +362,37 @@ def test_issue1002_audit_redaction_vector_uses_closed_fake_schema() -> None:
     assert vector.safe_code == "AUDIT_FIELD_REJECTED"
 
 
+def test_issue1020_state_machine_and_denied_fake_store_emit_no_diagnostics(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    failed = transition_synthetic_cleanup(
+        _pending(),
+        _event(
+            SyntheticEventKind.STORE_RESULT,
+            authority_status=SyntheticAuthorityStatus.CURRENT_TEST_ONLY,
+            store_ref=FakeOpaqueId.STORE_A,
+            store_status=SyntheticStoreStatus.FAILED,
+        ),
+    )
+    store = FakeStoreHarness(
+        workspace_ref=FakeRef.WORKSPACE_B,
+        store_refs=(FakeRef.STORE_B,),
+        artifact_refs=(FakeRef.ARTIFACT_B,),
+    )
+    denied = store.delete_synthetic(
+        operation_key=FakeRef.OPERATION_A,
+        workspace_ref=FakeRef.WORKSPACE_A,
+        store_ref=FakeRef.STORE_B,
+        artifact_ref=FakeRef.ARTIFACT_B,
+        current_test_authority=True,
+    )
+
+    assert failed.safe_code == "STORE_FAILED"
+    assert denied is FakeStoreResult.DENIED
+    assert caplog.records == []
+    assert caplog.text == ""
+
+
 def test_issue1002_vector_catalog_has_explicit_status_and_deny_fences() -> None:
     assert len(VECTORS) == 12
     assert all(item.qualification.value == "NOT_RUN" for item in VECTORS)

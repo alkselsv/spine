@@ -4,17 +4,17 @@
 
 **Scope:** deterministic synthetic vector catalog and a store-effect fake. The
 fake records only invented opaque IDs and safe result codes; it does not execute
-cleanup, a state machine, or physical deletion. All vector qualification
-statuses are `NOT_RUN` against any state-machine or production boundary.
+cleanup, a state machine, or physical deletion. The catalog's per-vector
+`NOT_RUN` fields preserve the status of this standalone fixture; they do not
+represent the separate #1020 integration qualification.
 
 ## State/transition mapping
 
-Vectors use the state names and event vocabulary proposed for #1001. This branch
-is standalone and imports no #1001 code, so it has no hidden branch dependency.
-Although #1001 is now merged, this PR remains standalone: its state mapping is
-specification-only and its unit tests validate the vector catalog and fake-store
-behavior, not the canonical #1001 transition semantics. A separate integration
-task must execute these vectors against #1001.
+This document describes the original standalone fixture contribution. Its tests
+validate the vector catalog and fake-store behavior; the #1020 follow-up imports
+the canonical #1001 state machine and executes the applicable recovery vectors.
+See [the #1020 integration qualification](issue-1020-synthetic-cleanup-integration.md)
+for exact event mappings, outcomes, safe-code differences and limitations.
 
 | Vector | #1001 starting state → event mapping | Expected #1001 state | Required deny/fence | Qualification |
 |---|---|---|---|---|
@@ -34,14 +34,12 @@ task must execute these vectors against #1001.
 The catalog additionally pins each expected safe code, access-path denial, and
 qualification status in `tests/qualification/test_issue1002_synthetic_recovery_vectors.py`.
 
-The #1001 mapping is intentionally unqualified. Its current contract uses
-`FAILED`/`UNKNOWN` store outcomes rather than a distinct outage result and does
-not define an uncovered-store event; the cross-workspace, audit-redaction and
-restore-read checks also need application/adapter boundaries. The harness uses
-its own invented fake-reference vocabulary, while #1001 accepts only its closed
-fixture enum. Keep those mappings `NOT_RUN` until the follow-up integration task
-selects exact transitions, identifiers and safe codes without weakening the
-#1001 fence invariants.
+The integration qualification in #1020 resolves applicable mappings and records
+which behaviors have no corresponding #1001 state-machine event. In particular,
+the contract has no separate outage or uncovered-store event; cross-workspace,
+audit-redaction and restore-read checks stay at their fake boundary. The
+integration report records those exact safe-code/state differences without
+weakening the #1001 fence invariants.
 
 ## Fake-store boundary
 
@@ -55,12 +53,13 @@ selectors, provider interface, credentials, retention terms, or production
 composition. `SyntheticAuditEntry` rejects extra fields including body, address,
 provider ID, attachment name and digest.
 
-The pytest checks prove only that the vectors are complete as data, the fake
+The original pytest checks prove that the vectors are complete as data, the fake
 store is deterministic/idempotent/tenant-scoped, and the synthetic audit schema
-rejects forbidden fields. They do not execute a cleanup state machine, real
-storage adapter, PostgreSQL/RLS, backup restore or production telemetry. Those
-qualification results remain `NOT_RUN` and require their named integration
-boundaries plus HD5/HD6 approval.
+rejects forbidden fields. The #1020 report separately records state-machine and
+fake-boundary results. Neither qualification executes a real storage adapter,
+PostgreSQL/RLS, production backup restore or production telemetry; those results
+remain `NOT_VERIFIED` and require their named integration boundaries plus HD5/HD6
+approval.
 
 The generic commit-fence recovery contract introduced by #1018 is a separate
 application boundary and does not execute these synthetic cleanup vectors or
