@@ -17,9 +17,11 @@ from pydantic import Field, StringConstraints, model_validator
 
 from spine.domain.common import DefinitionModel
 from spine.domain.sources.disposition import (
+    DispositionAuthorityBinding,
     DispositionOperation,
     DispositionStatus,
     DispositionStoreState,
+    StoreEffectPermitStatus,
     StoreDispositionStatus,
 )
 
@@ -43,6 +45,26 @@ class DispositionAdmission(Protocol):
     ) -> DispositionOperation | None: ...
 
     async def is_current(self, operation: DispositionOperation) -> bool: ...
+
+    async def store_effect_permit(
+        self,
+        operation: DispositionOperation,
+        store_id: str,
+    ) -> "DispositionStoreEffectPermit": ...
+
+    async def rebind_authority(
+        self,
+        operation: DispositionOperation,
+        new_binding: DispositionAuthorityBinding,
+    ) -> DispositionOperation | None: ...
+
+
+class DispositionStoreEffectPermit(Protocol):
+    """Lease serializing one store effect against authority revocation."""
+
+    async def __aenter__(self) -> StoreEffectPermitStatus: ...
+
+    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None: ...
 
 
 class DispositionStore(Protocol):
@@ -103,6 +125,7 @@ class DispositionRequest(DefinitionModel):
     operation_id: UUID
     request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     store_ids: tuple[DispositionStoreId, ...] = Field(min_length=1)
+    authority_binding: DispositionAuthorityBinding | None = None
 
     @model_validator(mode="after")
     def validate_request(self) -> "DispositionRequest":
@@ -110,6 +133,12 @@ class DispositionRequest(DefinitionModel):
             raise ValueError("disposition request identifiers must be non-zero")
         if len(set(self.store_ids)) != len(self.store_ids):
             raise ValueError("disposition request store IDs must be unique")
+        if self.authority_binding is not None and (
+            self.authority_binding.workspace_id != self.workspace_id
+            or self.authority_binding.environment_id != self.environment_id
+            or self.authority_binding.operation_id != self.operation_id
+        ):
+            raise ValueError("disposition authority binding scope does not match request")
         return self
 
 
@@ -138,6 +167,7 @@ class DispositionCoordinator:
             operation_id=request.operation_id,
             request_digest=request.request_digest,
             declared_store_ids=request.store_ids,
+            authority_binding=request.authority_binding,
             stores=tuple(DispositionStoreState(store_id=store_id) for store_id in store_ids),
         )
         current = await self._repository.get(
@@ -150,6 +180,8 @@ class DispositionCoordinator:
                 raise DispositionConflictError("request digest changed")
             if set(current.declared_store_ids) != set(request.store_ids):
                 raise DispositionConflictError("declared store coverage changed")
+            if current.authority_binding != request.authority_binding:
+                raise DispositionConflictError("disposition authority binding changed")
             if current.status is DispositionStatus.CANCELLED:
                 return current
             if current.status is DispositionStatus.VERIFIED:
@@ -192,6 +224,8 @@ class DispositionCoordinator:
             raise DispositionConflictError("disposition operation identity is unavailable")
         if set(operation.declared_store_ids) != set(request.store_ids):
             raise DispositionConflictError("declared store coverage changed")
+        if operation.authority_binding != request.authority_binding:
+            raise DispositionConflictError("disposition authority binding changed")
         if not self._has_exact_store_coverage(request, operation):
             return await self._save_coverage_mismatch(request, operation)
         if not any(
@@ -218,6 +252,37 @@ class DispositionCoordinator:
                 update={"status": DispositionStatus.CANCELLED, "safe_code": "CANCELLED"}
             )
         )
+
+    async def resume_with_current_authority(
+        self,
+        request: DispositionRequest,
+    ) -> DispositionOperation:
+        """Resume the same fenced operation under a fresh exact authority binding."""
+
+        await self.expire_completed_operations()
+        current = await self._repository.get(
+            workspace_id=request.workspace_id,
+            environment_id=request.environment_id,
+            operation_id=request.operation_id,
+        )
+        if (
+            current is None
+            or current.request_digest != request.request_digest
+            or set(current.declared_store_ids) != set(request.store_ids)
+            or request.authority_binding is None
+            or not current.fence_active
+            or current.status in {DispositionStatus.VERIFIED, DispositionStatus.CANCELLED}
+        ):
+            raise DispositionConflictError("disposition operation identity is unavailable")
+        rebound = await self._admission.rebind_authority(
+            current,
+            request.authority_binding,
+        )
+        if rebound is None:
+            return current.model_copy(
+                update={"status": DispositionStatus.INCOMPLETE, "safe_code": "AUTHORITY_NOT_CURRENT"}
+            )
+        return await self.execute(request)
 
     async def _run(self, operation: DispositionOperation) -> DispositionOperation:
         if operation.status in {DispositionStatus.VERIFIED, DispositionStatus.CANCELLED}:
@@ -264,17 +329,50 @@ class DispositionCoordinator:
             )
             if operation.status is DispositionStatus.CANCELLED:
                 return operation
+            permit_status = StoreEffectPermitStatus.UNAVAILABLE
             try:
-                outcome = (
-                    await handler.reconcile(operation)
-                    if store_state.status
-                    in {StoreDispositionStatus.UNKNOWN, StoreDispositionStatus.IN_PROGRESS}
-                    else await handler.dispose(operation)
+                permit = await self._admission.store_effect_permit(
+                    operation,
+                    store_state.store_id,
                 )
+                async with permit as result:
+                    permit_status = result
+                    if result is StoreEffectPermitStatus.ALLOWED:
+                        outcome = (
+                            await handler.reconcile(operation)
+                            if store_state.status
+                            in {StoreDispositionStatus.UNKNOWN, StoreDispositionStatus.IN_PROGRESS}
+                            else await handler.dispose(operation)
+                        )
             except Exception:
                 # A lost response may follow a committed deletion; reconcile
                 # under the same operation identity before any replay.
                 outcome = StoreOutcome.UNKNOWN
+            if permit_status is not StoreEffectPermitStatus.ALLOWED:
+                # No store call was allowed. Restore the previous commit state
+                # so UNKNOWN/IN_PROGRESS is reconciled before any fresh delete.
+                operation = _replace_store(
+                    operation,
+                    index,
+                    status=store_state.status,
+                    result_code=store_state.result_code,
+                    attempts=store_state.attempts,
+                )
+                result_code = (
+                    "AUTHORITY_NOT_CURRENT"
+                    if permit_status is StoreEffectPermitStatus.AUTHORITY_NOT_CURRENT
+                    else "STORE_PERMIT_UNAVAILABLE"
+                    if permit_status is StoreEffectPermitStatus.UNAVAILABLE
+                    else "OPERATION_NOT_CURRENT"
+                )
+                return await self._save(
+                    operation.model_copy(
+                        update={
+                            "status": DispositionStatus.INCOMPLETE,
+                            "safe_code": result_code,
+                        }
+                    )
+                )
             current = await self._repository.get(
                 workspace_id=operation.workspace_id,
                 environment_id=operation.environment_id,
@@ -374,6 +472,7 @@ class DispositionCoordinator:
             operation_id=current.operation_id,
             request_digest=current.request_digest,
             store_ids=current.declared_store_ids,
+            authority_binding=current.authority_binding,
         )
         if not self._has_exact_store_coverage(request, current):
             await self._save_coverage_mismatch(request, current)
@@ -462,14 +561,15 @@ def _replace_store(
     index: int,
     *,
     status: StoreDispositionStatus,
-    result_code: str,
+    result_code: str | None,
+    attempts: int | None = None,
 ) -> DispositionOperation:
     stores = list(operation.stores)
     prior = stores[index]
     stores[index] = DispositionStoreState(
         store_id=prior.store_id,
         status=status,
-        attempts=prior.attempts,
+        attempts=prior.attempts if attempts is None else attempts,
         result_code=result_code,
     )
     return operation.model_copy(update={"stores": tuple(stores)})
@@ -489,7 +589,7 @@ def _start_store_attempt(
     return operation.model_copy(
         update={
             "stores": tuple(stores),
-            "status": DispositionStatus.FENCED,
+            "status": DispositionStatus.DELETION_PENDING,
             "safe_code": "DISPOSITION_PENDING",
         }
     )
