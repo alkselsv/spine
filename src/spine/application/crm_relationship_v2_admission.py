@@ -16,6 +16,7 @@ from spine.application.connections.bitrix24_oauth import (
     Bitrix24ReadMethod,
 )
 from spine.application.crm_relationship_v2_contracts import (
+    CrmRelationshipBindingOperationsProfile,
     Bitrix24CrmRelationshipV2ProviderPort,
     Bitrix24CrmRelationshipV2ReadCommand,
     Bitrix24CrmRelationshipV2ReadResult,
@@ -81,6 +82,7 @@ class CrmRelationshipV2ReadRequest(DefinitionModel):
     entity_id: str = Field(min_length=1, max_length=256)
     mapping_profile_id: UUID
     mapping_profile_version: int = Field(ge=1)
+    operations_profile: CrmRelationshipBindingOperationsProfile
 
     @model_validator(mode="after")
     def validate_ids(self) -> "CrmRelationshipV2ReadRequest":
@@ -253,6 +255,7 @@ class CrmRelationshipV2AdmissionService:
                 entity_namespace=requested.entity_namespace,
                 entity_id=requested.entity_id,
                 mapping_profile=profile,
+                operations_profile=requested.operations_profile,
                 pinned_grant=pinned,
             )
         )
