@@ -4,11 +4,24 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+from typing import NoReturn
 from uuid import UUID
 
 from pydantic import ConfigDict, Field, model_validator
 
 from spine.domain.common import DefinitionModel
+
+
+class Bitrix24CrmMaterialV1OperationDeniedError(PermissionError):
+    """A new live operation through the legacy CRM material contract was denied."""
+
+
+def deny_bitrix24_crm_material_v1_live_operation() -> NoReturn:
+    """Fail closed for every new live operation through the legacy v1 contract."""
+
+    raise Bitrix24CrmMaterialV1OperationDeniedError(
+        "Legacy Bitrix24 CRM v1 live operations are disabled."
+    )
 
 
 class Bitrix24CrmMaterialState(str, Enum):
@@ -201,9 +214,11 @@ class Bitrix24CrmMaterialHandoff(DefinitionModel):
 
 
 __all__ = [
+    "Bitrix24CrmMaterialV1OperationDeniedError",
     "Bitrix24CrmMaterialAcceptance",
     "Bitrix24CrmMaterialClaim",
     "Bitrix24CrmMaterialHandoff",
     "Bitrix24CrmMaterialRevocation",
     "Bitrix24CrmMaterialState",
+    "deny_bitrix24_crm_material_v1_live_operation",
 ]

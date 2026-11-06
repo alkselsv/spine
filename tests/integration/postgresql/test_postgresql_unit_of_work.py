@@ -12909,3 +12909,197 @@ async def test_postgresql_access_policy_fence_orders_replacement_and_commit(
     assert consumer_waiting is not None
     after_replacement = await consumer_waiting
     assert after_replacement.outcome is CommitFenceOutcomeKind.STALE
+
+
+async def test_postgresql_runtime_denies_legacy_bitrix24_v1_mutations_before_uow(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    from spine.domain.sources import (
+        Bitrix24CrmMaterialAcceptance,
+        Bitrix24CrmMaterialClaim,
+        Bitrix24CrmMaterialRevocation,
+        Bitrix24CrmMaterialState,
+        Bitrix24CrmMaterialV1OperationDeniedError,
+    )
+    from spine.infrastructure.persistence.postgresql_bitrix24_crm_material import (
+        PostgreSQLBitrix24CrmMaterialAssociationRepository,
+    )
+
+    workspace_id = synthetic_uuid(102300)
+    environment_id = synthetic_uuid(102301)
+    uow_calls: list[TrustedPersistenceContext] = []
+
+    def uow_factory(context: TrustedPersistenceContext):
+        uow_calls.append(context)
+        return postgresql_adapter.uow_factory(context)
+
+    repository = PostgreSQLBitrix24CrmMaterialAssociationRepository(
+        uow_factory=uow_factory,
+        context_factory=lambda operation, trace_id: (
+            postgresql_adapter.interactive_environment_context(
+                workspace_id, environment_id, operation, trace_id
+            )
+        ),
+    )
+    now = datetime(2026, 11, 6, 12, tzinfo=timezone.utc)
+    claim = Bitrix24CrmMaterialClaim(
+        claim_id=synthetic_uuid(102302),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        connection_id=synthetic_uuid(102303),
+        connection_version_id=synthetic_uuid(102304),
+        resource_scope_reference=synthetic_uuid(102305),
+        crm_entity_type="deal",
+        crm_entity_id="932",
+        crm_activity_id="501",
+        crm_activity_revision="activity-v7",
+        crm_attachment_id="attachment-1",
+        relationship_revision="link-v3",
+        target_source_object_id=synthetic_uuid(102306),
+        target_source_revision_id=synthetic_uuid(102307),
+        disk_file_id="9043",
+        disk_file_revision="42",
+        binding_evidence_digest="a" * 64,
+        observed_at=now,
+    )
+    acceptance = Bitrix24CrmMaterialAcceptance(
+        acceptance_id=synthetic_uuid(102308),
+        claim_id=claim.claim_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        target_source_object_id=claim.target_source_object_id,
+        target_source_revision_id=claim.target_source_revision_id,
+        disk_file_id=claim.disk_file_id,
+        disk_file_revision=claim.disk_file_revision,
+        accepted_by=synthetic_uuid(102309),
+        accepted_at=now,
+    )
+    revocation = Bitrix24CrmMaterialRevocation(
+        revocation_id=synthetic_uuid(102310),
+        claim_id=claim.claim_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        state=Bitrix24CrmMaterialState.RELATION_REVOKED,
+        reason="activity_attachment_removed",
+        observed_at=now,
+    )
+
+    with pytest.raises(Bitrix24CrmMaterialV1OperationDeniedError):
+        await repository.record_claim(claim)
+    with pytest.raises(Bitrix24CrmMaterialV1OperationDeniedError):
+        await repository.accept_claim(claim_id=claim.claim_id, acceptance=acceptance)
+    with pytest.raises(Bitrix24CrmMaterialV1OperationDeniedError):
+        await repository.revoke_claim(revocation)
+
+    assert uow_calls == []
+
+
+async def test_postgresql_historical_crm_handoff_uses_latest_revocation(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    from sqlalchemy import insert
+
+    from spine.domain.sources import (
+        Bitrix24CrmMaterialClaim,
+        Bitrix24CrmMaterialRevocation,
+        Bitrix24CrmMaterialState,
+    )
+    from spine.infrastructure.persistence.postgresql_bitrix24_crm_material import (
+        PostgreSQLBitrix24CrmMaterialAssociationRepository,
+    )
+    from spine.infrastructure.persistence.postgresql_mappings import (
+        bitrix24_crm_material_claims,
+        bitrix24_crm_material_revocations,
+    )
+
+    case = await prepare_canonical_case(postgresql_adapter, 102320)
+    now = datetime(2026, 11, 6, 12, tzinfo=timezone.utc)
+    claim = Bitrix24CrmMaterialClaim(
+        claim_id=synthetic_uuid(102321),
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        connection_id=synthetic_uuid(102322),
+        connection_version_id=synthetic_uuid(102323),
+        resource_scope_reference=synthetic_uuid(102324),
+        crm_entity_type="deal",
+        crm_entity_id="932",
+        crm_activity_id="501",
+        crm_activity_revision="activity-v7",
+        crm_attachment_id="attachment-1",
+        relationship_revision="link-v3",
+        target_source_object_id=case.source.source_object_id,
+        target_source_revision_id=case.revision.revision_id,
+        disk_file_id="9043",
+        disk_file_revision="42",
+        binding_evidence_digest="a" * 64,
+        observed_at=now,
+    )
+    older = Bitrix24CrmMaterialRevocation(
+        revocation_id=synthetic_uuid(102325),
+        claim_id=claim.claim_id,
+        workspace_id=claim.workspace_id,
+        environment_id=claim.environment_id,
+        state=Bitrix24CrmMaterialState.RELATION_REVOKED,
+        reason="older_observation",
+        observed_at=now - timedelta(days=2),
+    )
+    latest = Bitrix24CrmMaterialRevocation(
+        revocation_id=synthetic_uuid(102326),
+        claim_id=claim.claim_id,
+        workspace_id=claim.workspace_id,
+        environment_id=claim.environment_id,
+        state=Bitrix24CrmMaterialState.INACCESSIBLE,
+        reason="latest_observation",
+        observed_at=now - timedelta(days=1),
+    )
+
+    migration_engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with migration_engine.begin() as connection:
+            await connection.execute(
+                insert(bitrix24_crm_material_claims).values(
+                    claim_id=claim.claim_id,
+                    workspace_id=claim.workspace_id,
+                    environment_id=claim.environment_id,
+                    target_source_object_id=claim.target_source_object_id,
+                    target_source_revision_id=claim.target_source_revision_id,
+                    disk_file_id=claim.disk_file_id,
+                    disk_file_revision=claim.disk_file_revision,
+                    record=claim.model_dump(mode="json"),
+                    observed_at=claim.observed_at,
+                )
+            )
+            for revocation in (older, latest):
+                await connection.execute(
+                    insert(bitrix24_crm_material_revocations).values(
+                        revocation_id=revocation.revocation_id,
+                        claim_id=revocation.claim_id,
+                        workspace_id=revocation.workspace_id,
+                        environment_id=revocation.environment_id,
+                        state=revocation.state.value,
+                        record=revocation.model_dump(mode="json"),
+                        observed_at=revocation.observed_at,
+                    )
+                )
+    finally:
+        await migration_engine.dispose()
+
+    repository = PostgreSQLBitrix24CrmMaterialAssociationRepository(
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=lambda operation, _trace_id: postgresql_adapter.governance_context(
+            claim.workspace_id,
+            claim.environment_id,
+            synthetic_uuid(102327),
+            operation.value,
+        ),
+    )
+
+    replay = await repository.resolve_handoff(claim.claim_id)
+
+    assert replay is not None
+    assert replay.claim == claim
+    assert replay.revocation == latest

@@ -127,6 +127,24 @@ This amendment preserves v1 history and replay and does not authorize new live v
 
 Provider Connection/acting-user authority controls provider reads. S2 controls Disk source/revision admission. S3 controls source withdrawal, holds, retention and tombstones. ADR-0011 AccessPolicy remains the sole source disclosure authority. This contract grants no disclosure, AccessPolicy mutation or PricingBasis authority and creates no second source registry. Entity approval does not imply flow/mapping approval. Default is DENY ALL.
 
+### Legacy v1 live-operation fence (#1023)
+
+The legacy v1 adapter, association service and PostgreSQL repository remain
+available for compatibility, but their new live operations are unconditionally
+denied at each operation boundary: provider `read`, claim observation,
+acceptance, revocation and relationship publication through that contract. The
+repository's `resolve_claim` and `resolve_handoff` remain read-only historical
+replay paths with their persisted schema and interpretation unchanged. These
+records grant no v2 authority and no ADR-0011 disclosure permission.
+
+The checked-in API, worker and Temporal composition roots contain no legacy v1
+live registration. This repository inspection does not establish external
+deployment wiring; its status remains `EXTERNAL_COMPOSITION_UNKNOWN`. Unknown
+execution-mode evidence cannot enable a v1 operation, and there is no caller
+flag or environment switch that bypasses the operation fences. This offline
+deny fence grants no live Bitrix24 access, production activation or authority
+for #679.
+
 ### Consequences
 
 The v2 design preserves historical v1 evidence while making current relationship evidence auditable and governance-revocable. It rejects timestamp ordering, owner/BINDINGS fallback, mutable v1 reinterpretation, sibling-bundled claims, FILES heuristics and provider-absence revocation. Offline acceptance does not qualify a portal, prove database behavior, approve concrete Data/Portal/Product scope, authorize #679 or enable production.

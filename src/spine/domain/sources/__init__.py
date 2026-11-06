@@ -97,11 +97,13 @@ from .register_associations import (
     RegisterObservedLinkClaim,
 )
 from .bitrix24_crm import (
+    Bitrix24CrmMaterialV1OperationDeniedError,
     Bitrix24CrmMaterialAcceptance,
     Bitrix24CrmMaterialClaim,
     Bitrix24CrmMaterialHandoff,
     Bitrix24CrmMaterialRevocation,
     Bitrix24CrmMaterialState,
+    deny_bitrix24_crm_material_v1_live_operation,
 )
 from .crm_relationship_v2 import (
     CRM_RELATIONSHIP_V2,
@@ -217,6 +219,8 @@ __all__ = [
     "Bitrix24CrmMaterialHandoff",
     "Bitrix24CrmMaterialRevocation",
     "Bitrix24CrmMaterialState",
+    "Bitrix24CrmMaterialV1OperationDeniedError",
+    "deny_bitrix24_crm_material_v1_live_operation",
     "CRM_RELATIONSHIP_V2",
     "CrmEligibilityOutcome",
     "CrmRelationshipClaim",
