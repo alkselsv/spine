@@ -3,7 +3,7 @@
 **Qualification boundary:** offline synthetic domain and fake-store tests only.
 No provider, mailbox, production cleanup, physical deletion, or erasure claim.
 
-**Tested code head:** `0fd86122d9462c75b6c894bce660eb1713273090`.
+**Tested code head:** `371fd4a7c0392b54e175ade0698c8a1475c8af30`.
 The qualification command below was run against this exact commit. The report
 is recorded in a later documentation commit; CI must also pass for the final PR
 head before merge.
@@ -37,11 +37,11 @@ remain `NOT_VERIFIED`; no such runtime boundary is part of these tests.
 
 ## Exact pytest nodes
 
-Tested at `0fd86122d9462c75b6c894bce660eb1713273090` with:
+Tested at `371fd4a7c0392b54e175ade0698c8a1475c8af30` with:
 
 ```text
 uv run pytest -q tests/qualification/test_issue1020_synthetic_cleanup_integration.py tests/qualification/test_issue1002_synthetic_recovery_vectors.py tests/domain/test_synthetic_cleanup.py tests/test_architecture_scaffold.py::ArchitectureScaffoldTests::test_domain_layer_has_no_framework_imports tests/test_architecture_scaffold.py::ArchitectureScaffoldTests::test_domain_layer_has_no_application_or_infrastructure_imports
-71 passed in 2.17s
+72 passed in 1.54s
 ```
 
 The 15 collected #1020 integration nodes were:
@@ -60,6 +60,7 @@ tests/qualification/test_issue1020_synthetic_cleanup_integration.py::test_issue1
 tests/qualification/test_issue1020_synthetic_cleanup_integration.py::test_issue1002_restore_vector_releases_only_after_successful_machine_replay
 tests/qualification/test_issue1020_synthetic_cleanup_integration.py::test_issue1002_cross_workspace_duplicate_stays_denied_before_replay_disclosure
 tests/qualification/test_issue1020_synthetic_cleanup_integration.py::test_issue1002_audit_redaction_vector_uses_closed_fake_schema
+tests/qualification/test_issue1020_synthetic_cleanup_integration.py::test_issue1020_state_machine_and_denied_fake_store_emit_no_diagnostics
 tests/qualification/test_issue1020_synthetic_cleanup_integration.py::test_issue1002_vector_catalog_has_explicit_status_and_deny_fences
 tests/qualification/test_issue1020_synthetic_cleanup_integration.py::test_issue1002_restore_fake_stays_unreadable_after_restriction_replay
 ```
@@ -73,8 +74,9 @@ git diff --check
 PASS
 ```
 
-The repository-wide `uv run pytest -q` was attempted and interrupted after
-10:19: 5,785 passed, 6 skipped, 6 failed. All six failures require the missing
+The repository-wide `uv run pytest -q` was attempted against the initial test
+commit `0fd86122d9462c75b6c894bce660eb1713273090` and interrupted after 10:19:
+5,785 passed, 6 skipped, 6 failed. All six failures require the missing
 `ffprobe` binary in unrelated ASR v2 fixture validation. One subsequent test was
 still running and was interrupted. This is an environment limitation, not a
 passing repository-wide suite; the final PR CI result is required before merge.
