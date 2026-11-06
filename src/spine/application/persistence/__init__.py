@@ -143,6 +143,8 @@ from spine.application.persistence.context_profiles import ContextProfileReposit
 from spine.application.persistence.idempotency import (
     IdempotencyClaimResult,
     IdempotencyKey,
+    IdempotencyResolution,
+    IdempotencyResolutionState,
     IdempotencyReplay,
     OpaqueResultReference,
     OwnedIdempotencyClaim,
@@ -341,6 +343,8 @@ __all__ = [
     "RevisionDigestMismatchError",
     "IdempotencyClaimResult",
     "IdempotencyConflictError",
+    "IdempotencyResolution",
+    "IdempotencyResolutionState",
     "IdempotencyKey",
     "IdempotencyReplay",
     "IdempotencyRepository",

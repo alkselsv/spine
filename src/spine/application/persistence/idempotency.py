@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from enum import Enum
 from typing import Literal, Protocol
 from uuid import UUID
 
@@ -75,10 +76,42 @@ class IdempotencyReplay:
         _require_version(self.operation_schema_version, field_name="operation schema version")
 
 
+class IdempotencyResolutionState(str, Enum):
+    """Canonical state observed while recovering an uncertain commit."""
+
+    ABSENT = "absent"
+    COMPLETED = "completed"
+    CLAIMED = "claimed"
+    CONFLICT = "conflict"
+
+
+@dataclass(frozen=True, slots=True)
+class IdempotencyResolution:
+    """Disclosure-safe result of a read-only idempotency reconciliation."""
+
+    state: IdempotencyResolutionState
+    result: OpaqueResultReference | None = None
+
+    def __post_init__(self) -> None:
+        if self.state is IdempotencyResolutionState.COMPLETED:
+            if self.result is None:
+                raise ValueError("completed idempotency resolution requires a result")
+        elif self.result is not None:
+            raise ValueError("only a completed idempotency resolution carries a result")
+
+
 IdempotencyClaimResult = OwnedIdempotencyClaim | IdempotencyReplay
 
 
 class IdempotencyRepository(Protocol):
+    async def resolve(
+        self,
+        *,
+        operation_schema_version: int,
+        key: IdempotencyKey,
+        digest: CommandDigest,
+    ) -> IdempotencyResolution: ...
+
     async def claim(
         self,
         *,

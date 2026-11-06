@@ -49,3 +49,8 @@ future named-provider qualification must retain the provider's written contract
 version, ordering evidence, expiry/renewal semantics, clock model, stale-holder
 behavior and lost-response recovery. Until then, this interface is a typed
 boundary only.
+
+Canonical idempotency reconciliation and retry state transitions are recorded
+in [commit-fence recovery](commit-fence-recovery.md). An unresolved provider
+permit or canonical receipt remains denied; a retry is eligible only after
+canonical rollback evidence and a fresh authorization/permit.

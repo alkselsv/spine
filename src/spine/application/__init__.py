@@ -83,6 +83,14 @@ if TYPE_CHECKING:
         GmailHistoryCursorRecoveryReceipt,
         GmailHistoryCursorRecoveryState,
     )
+    from .commit_fence_recovery import (
+        CommitFenceCanonicalReconciler,
+        CommitFenceRecovery,
+        CommitFenceRecoveryState,
+        FencedIdempotentOperationCoordinator,
+        FencedUnitOfWork,
+        IdempotencyCommitFenceReconciler,
+    )
 
 __all__ = [
     "AnswerQuestionAuthorizedContext",
@@ -175,6 +183,12 @@ __all__ = [
     "GmailHistoryCursorRecoveryProfile",
     "GmailHistoryCursorRecoveryReceipt",
     "GmailHistoryCursorRecoveryState",
+    "CommitFenceCanonicalReconciler",
+    "CommitFenceRecovery",
+    "CommitFenceRecoveryState",
+    "FencedIdempotentOperationCoordinator",
+    "FencedUnitOfWork",
+    "IdempotencyCommitFenceReconciler",
     "ExplicitTranscriptPublicationPolicy",
     "InMemoryTranscriptPublicationRepository",
     "PublishTranscriptCommand",
@@ -307,6 +321,15 @@ def __getattr__(name: str) -> object:
             "GmailHistoryCursorRecoveryState",
         }:
             module_name = "spine.application.gmail_history_cursor_recovery"
+        if name in {
+            "CommitFenceCanonicalReconciler",
+            "CommitFenceRecovery",
+            "CommitFenceRecoveryState",
+            "FencedIdempotentOperationCoordinator",
+            "FencedUnitOfWork",
+            "IdempotencyCommitFenceReconciler",
+        }:
+            module_name = "spine.application.commit_fence_recovery"
         if name in {
             "AuthorizedQAStreamService",
             "QAEventLogStore",

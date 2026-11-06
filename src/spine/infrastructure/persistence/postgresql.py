@@ -137,6 +137,8 @@ from spine.application.persistence.projection import (
 from spine.application.persistence.idempotency import (
     IdempotencyClaimResult,
     IdempotencyKey,
+    IdempotencyResolution,
+    IdempotencyResolutionState,
     IdempotencyReplay,
     OpaqueResultReference,
     OwnedIdempotencyClaim,
@@ -5525,6 +5527,65 @@ class _PostgreSQLAccessPolicyRepository:
 class _PostgreSQLIdempotencyRepository:
     def __init__(self, uow: "PostgreSQLTenantUnitOfWork") -> None:
         self._uow = uow
+
+    async def resolve(
+        self,
+        *,
+        operation_schema_version: int,
+        key: IdempotencyKey,
+        digest: CommandDigest,
+    ) -> IdempotencyResolution:
+        """Read canonical receipt state without claiming or mutating it."""
+
+        self._uow._guard_active()
+        operation = self._uow._operation_snapshot()
+        if (
+            digest.operation != operation
+            or digest.operation_schema_version != operation_schema_version
+        ):
+            return IdempotencyResolution(IdempotencyResolutionState.CONFLICT)
+
+        legacy = await self._uow._execute(
+            select(_IDEMPOTENCY_RECEIPTS).where(
+                *self._key_predicates(
+                    operation, operation_schema_version, key, actor_id=None
+                )
+            )
+        )
+        row = legacy.mappings().one_or_none()
+        if row is None:
+            row_result = await self._uow._execute(
+                select(_IDEMPOTENCY_RECEIPTS).where(
+                    *self._key_predicates(
+                        operation,
+                        operation_schema_version,
+                        key,
+                        actor_id=self._actor_id(),
+                    )
+                )
+            )
+            row = row_result.mappings().one_or_none()
+        if row is None:
+            return IdempotencyResolution(IdempotencyResolutionState.ABSENT)
+        if (
+            row["digest_algorithm_version"] != digest.algorithm_version
+            or row["command_digest"] != digest.value
+        ):
+            return IdempotencyResolution(IdempotencyResolutionState.CONFLICT)
+        if (
+            row["result_type"] is None
+            or row["result_id"] is None
+            or row["result_schema_version"] is None
+        ):
+            return IdempotencyResolution(IdempotencyResolutionState.CLAIMED)
+        return IdempotencyResolution(
+            IdempotencyResolutionState.COMPLETED,
+            OpaqueResultReference(
+                result_type=row["result_type"],
+                result_id=row["result_id"],
+                schema_version=row["result_schema_version"],
+            ),
+        )
 
     async def claim(
         self,
