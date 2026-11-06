@@ -100,6 +100,7 @@ def _connection(
     environment_id: UUID = _id(5),
     provider_kind: ProviderKind = ProviderKind.GOOGLE,
     status: ProviderConnectionStatus = ProviderConnectionStatus.ACTIVE,
+    valid_until: datetime | None = None,
 ) -> ProviderConnection:
     return ProviderConnection(
         connection_version_id=_id(1),
@@ -117,6 +118,7 @@ def _connection(
         configuration_generation=3,
         status=status,
         capabilities=capabilities,
+        valid_until=valid_until,
     )
 
 
@@ -240,6 +242,47 @@ async def test_active_scoped_connection_allows_qualified_binary_read() -> None:
     result = await admission.read(command, context)
 
     assert result == observation
+
+
+@pytest.mark.asyncio
+async def test_expired_connection_is_denied_before_provider_read() -> None:
+    connection = _connection(
+        _capability(
+            ProviderCapabilityKind.BINARY_READ, ProviderCapabilityStatus.SUPPORTED
+        ),
+        valid_until=NOW,
+    )
+    provider = _Provider(_observation(assurance=ExternalIdentityAssurance.UNPROVEN))
+    admission = ProviderReadAdmission(
+        repository=_Repository(connection), provider=provider, clock=lambda: NOW
+    )
+
+    with pytest.raises(ProviderReadDeniedError):
+        await admission.read(_command(ProviderCapabilityKind.BINARY_READ), _context())
+
+    assert provider.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_authority_expiring_during_download_discards_observation() -> None:
+    connection = _connection(
+        _capability(
+            ProviderCapabilityKind.BINARY_READ, ProviderCapabilityStatus.SUPPORTED
+        ),
+        valid_until=NOW.replace(minute=1),
+    )
+    provider = _Provider(_observation(assurance=ExternalIdentityAssurance.UNPROVEN))
+    clock_values = iter((NOW, NOW.replace(minute=1)))
+    admission = ProviderReadAdmission(
+        repository=_Repository(connection),
+        provider=provider,
+        clock=lambda: next(clock_values),
+    )
+
+    with pytest.raises(ProviderReadDeniedError):
+        await admission.read(_command(ProviderCapabilityKind.BINARY_READ), _context())
+
+    assert provider.calls == 1
 
 
 @pytest.mark.asyncio

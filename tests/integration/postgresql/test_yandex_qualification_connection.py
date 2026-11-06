@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -11,6 +11,7 @@ import pytest
 import pytest_asyncio
 from pydantic import SecretStr
 from sqlalchemy import insert, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
@@ -41,6 +42,7 @@ from spine.application.persistence import (
 )
 from spine.application.yandex_qualification_connection import (
     YANDEX_QUALIFICATION_APPROVAL_ID,
+    YANDEX_QUALIFICATION_BINARY_READ_APPROVAL_ID,
     YANDEX_QUALIFICATION_CONNECTION_ID,
     YANDEX_QUALIFICATION_CREDENTIAL_REFERENCE,
     YANDEX_QUALIFICATION_GRANT_REFERENCE,
@@ -49,6 +51,8 @@ from spine.application.yandex_qualification_connection import (
     YANDEX_QUALIFICATION_SERVICE_PRINCIPAL_ID,
     YandexQualificationConnectionBootstrap,
     YandexQualificationConnectionConfig,
+    YandexQualificationBinaryReadConfig,
+    YandexQualificationBinaryReadProvisioner,
 )
 from spine.domain.connections.provider import (
     OpaqueProviderReference,
@@ -58,6 +62,7 @@ from spine.domain.connections.provider import (
     ProviderDiagnosticCode,
     ProviderKind,
 )
+from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.connections.postgresql_provider_management import (
     PostgreSQLProviderConnectionRepository,
     provider_connection_approvals,
@@ -65,6 +70,7 @@ from spine.infrastructure.connections.postgresql_provider_management import (
 )
 from spine.infrastructure.connections.postgresql_yandex_qualification import (
     PostgreSQLYandexQualificationConnectionRepository,
+    PostgreSQLYandexQualificationBinaryReadRepository,
     YandexQualificationBootstrapConflictError,
 )
 from spine.infrastructure.db.migrations import upgrade_database
@@ -75,7 +81,6 @@ from spine.infrastructure.db.settings import (
     OperatorDatabaseSettings,
 )
 from spine.infrastructure.db.test_harness import TestDatabaseProvision
-from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.private_qualification_artifacts import (
     FilePrivateQualificationArtifactWriter,
 )
@@ -214,6 +219,23 @@ def _config() -> YandexQualificationConnectionConfig:
     )
 
 
+def _binary_read_config(approved_at: datetime) -> YandexQualificationBinaryReadConfig:
+    return YandexQualificationBinaryReadConfig(
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        operator_identity_id=_id(10),
+        approved_at=approved_at,
+        expires_at=approved_at + timedelta(days=7),
+        manifest_digest=(
+            "487360a49df37aa6fd3dac3b78750b0d991a8a7de44f5fc405a85f304befedc7"
+        ),
+        security_approval_reference="issue-789-comment-6687500665",
+        data_approval_reference="issue-789-comment-6687500665",
+        max_live_runs=10,
+        download_redirect_host="mds.storage.yandex.net",
+    )
+
+
 def _service(
     database: YandexDatabase,
     *,
@@ -268,6 +290,7 @@ async def test_bootstrap_records_audited_authority_and_replays_exact_connection(
     assert created.connection_replay is False
     assert replay.connection_replay is True
     assert replay.connection_version_id == created.connection_version_id
+
     async with yandex_database.migration_engine.connect() as connection:
         audit_rows = (
             (
@@ -371,6 +394,135 @@ async def test_bootstrap_records_audited_authority_and_replays_exact_connection(
     )
     assert str(config.approval_id) not in str(denied.value)
 
+
+async def test_runtime_control_plane_provisions_binary_read_successor(
+    yandex_database: YandexDatabase,
+    tmp_path: Path,
+) -> None:
+    metadata_config = _config()
+    bootstrap, boundary = _service(yandex_database, config=metadata_config)
+    metadata = await bootstrap.run(
+        metadata_config, report_path=(tmp_path / "metadata.json").resolve()
+    )
+    async with yandex_database.migration_engine.connect() as connection:
+        approved_at = await connection.scalar(text("SELECT clock_timestamp()"))
+    assert isinstance(approved_at, datetime)
+    binary_config = _binary_read_config(approved_at)
+    context = boundary.interactive(
+        scope=EnvironmentScope(
+            workspace_id=binary_config.workspace_id,
+            environment_id=binary_config.environment_id,
+        ),
+        acting_subject_id=binary_config.operator_identity_id,
+        purpose=PersistencePurpose("source_connection_control"),
+        operation=PersistenceOperation("provider_connection_configure"),
+        trace_id=_id(40),
+    )
+
+    class ExistingAuthority:
+        async def verify(self, candidate):
+            assert candidate == binary_config
+
+    provisioner = YandexQualificationBinaryReadProvisioner(
+        authority=ExistingAuthority(),
+        repository=PostgreSQLYandexQualificationBinaryReadRepository(
+            session_factory=async_sessionmaker(
+                yandex_database.runtime_engine, expire_on_commit=False
+            ),
+            context_verifier=boundary,
+        ),
+        artifact_writer=FilePrivateQualificationArtifactWriter(),
+        context=context,
+    )
+
+    created = await provisioner.run(
+        binary_config, report_path=(tmp_path / "binary-created.json").resolve()
+    )
+    replay = await provisioner.run(
+        binary_config, report_path=(tmp_path / "binary-replay.json").resolve()
+    )
+
+    assert created.approval_id == YANDEX_QUALIFICATION_BINARY_READ_APPROVAL_ID
+    assert created.connection_version == 2
+    assert created.predecessor_version_id == metadata.connection_version_id
+    assert created.connection_replay is False
+    assert replay.connection_replay is True
+    assert replay.connection_version_id == created.connection_version_id
+
+    async with yandex_database.migration_engine.connect() as connection:
+        audit_rows = (
+            await connection.execute(
+                text(
+                    "SELECT event_type, payload FROM spine.audit_events "
+                    "WHERE target_id IN (:approval_id, :version_id) "
+                    "ORDER BY event_type"
+                ),
+                {
+                    "approval_id": created.approval_id,
+                    "version_id": created.connection_version_id,
+                },
+            )
+        ).mappings().all()
+    assert [row.event_type for row in audit_rows] == [
+        "command.outcome",
+        "yandex.qualification_binary_read_authority",
+    ]
+    assert audit_rows[1].payload["manifest_digest"] == binary_config.manifest_digest
+    assert audit_rows[1].payload["max_live_runs"] == 10
+
+    with pytest.raises(SQLAlchemyError):
+        async with yandex_database.runtime_engine.begin() as connection:
+            await connection.execute(
+                insert(provider_connection_approvals).values(
+                    approval_id=_id(90),
+                    workspace_id=binary_config.workspace_id,
+                    environment_id=binary_config.environment_id,
+                    service_principal_id=YANDEX_QUALIFICATION_SERVICE_PRINCIPAL_ID,
+                    provider_kind=ProviderKind.YANDEX_DISK.value,
+                    credential_reference=YANDEX_QUALIFICATION_CREDENTIAL_REFERENCE,
+                    grant_reference=YANDEX_QUALIFICATION_GRANT_REFERENCE,
+                    approved_resource_scope_references=[
+                        YANDEX_QUALIFICATION_RESOURCE_SCOPE_REFERENCE
+                    ],
+                    authorization_generation=2,
+                    configuration_generation=5,
+                    status=ProviderConnectionStatus.ACTIVE.value,
+                    recorded_at=binary_config.approved_at,
+                )
+            )
+
+    read_repository = PostgreSQLProviderConnectionRepository(
+        session_factory=async_sessionmaker(
+            yandex_database.runtime_engine, expire_on_commit=False
+        ),
+        context_verifier=boundary,
+    )
+    command = ProviderReadCommand(
+        workspace_id=binary_config.workspace_id,
+        environment_id=binary_config.environment_id,
+        connection_id=created.connection_id,
+        connection_version_id=created.connection_version_id,
+        resource_scope_reference=OpaqueProviderReference(
+            value=YANDEX_QUALIFICATION_RESOURCE_SCOPE_REFERENCE
+        ),
+        authorization_generation=created.authorization_generation,
+        configuration_generation=created.configuration_generation,
+        required_capabilities=(ProviderCapabilityKind.BINARY_READ,),
+    )
+    read_context = boundary.worker(
+        scope=EnvironmentScope(
+            workspace_id=binary_config.workspace_id,
+            environment_id=binary_config.environment_id,
+        ),
+        service_principal_id=YANDEX_QUALIFICATION_SERVICE_PRINCIPAL_ID,
+        purpose=PersistencePurpose("yandex_qualification"),
+        operation=PersistenceOperation("provider_connection_read"),
+        trace_id=_id(41),
+    )
+
+    async with read_repository.admit_read(command, read_context) as admitted:
+        assert admitted.supports(ProviderCapabilityKind.BINARY_READ)
+        assert admitted.valid_until == binary_config.expires_at
 
 async def test_conflicting_connection_fails_without_recording_approval_or_audit(
     yandex_database: YandexDatabase,

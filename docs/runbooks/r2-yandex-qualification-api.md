@@ -133,6 +133,43 @@ authority has a database-time hard expiry; refresh it through the normal
 disposable qualification provisioning flow before bootstrap instead of editing
 history or bypassing the resolver with SQL.
 
+### Manifest-bound binary-read successor
+
+Issue #789 authorizes one immutable successor of the metadata-only connection.
+The operator runs `spine-yandex-binary-read-authority` with a strict
+`yandex-qualification-binary-read-config:v1` private document and a private
+`--report` path. The config pins owner decision
+`issue-789-comment-6687500665`, manifest digest
+`487360a49df37aa6fd3dac3b78750b0d991a8a7de44f5fc405a85f304befedc7`,
+the single allowed redirect host `mds.storage.yandex.net`, ten live runs and an
+exact UTC expiry no more than seven days after approval. It accepts no caller
+selected approval, connection, principal, credential, grant, scope or
+qualification reference.
+
+The command uses `SPINE_DATABASE_URL` authenticated as `spine_runtime` and the
+existing `SPINE_QUALIFICATION_*` runtime verification inputs. It never loads
+migration-owner credentials and makes no Yandex request. Migration 112 grants
+that role only `EXECUTE` on an exact `SECURITY DEFINER` provisioning capability;
+the function rejects public callers, a different tenant session, any non-v1 or
+non-metadata predecessor, changed references/capabilities, an expired deadline
+or a window longer than seven days. Approval, two content-free Audit Events and
+connection version 2 commit atomically. The refs-only mode-`0600` report records
+the immutable lineage and expiry without credentials, paths or file content.
+
+An identical replay returns version 2 without a second logical effect. A stale
+predecessor, conflicting approval/audit/version, cross-tenant context or altered
+generation fails closed. At expiry both PostgreSQL admission and application
+admission reject the authority; if expiry crosses during a download, the
+observation is discarded. Consequently #787 remains `NOT_VERIFIED` and performs
+no subsequent content read when provisioning or admission is rejected.
+
+Rollback is append-only: revoke/expire version 2 or create a separately approved
+successor; never reactivate or edit version 1 or delete audit history. Cleanup is
+owned by `alkselsv`: remove the local token and private reports within 24 hours
+after the campaign, while retaining only sanitized refs-only evidence for 90
+days. There is no backup cleanup owner, so the campaign must not begin unless
+the named owner can complete cleanup.
+
 ### Recursive metadata inventory
 
 After the acting identity is approved, the recursive inventory runner is the

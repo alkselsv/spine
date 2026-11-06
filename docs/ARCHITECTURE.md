@@ -448,10 +448,12 @@ state; недоступность или mismatch любого reference при�
 Provider Connection является отдельной версионируемой границей delegated read
 authority для connector-worker. PostgreSQL хранит только opaque credential/grant
 references, approved resource-scope references, trusted service principal,
-authorization/configuration generations и lifecycle status. Каждый provider
+authorization/configuration generations, lifecycle status и опциональный общий
+hard `valid_until` approval/version. Каждый provider
 read допускается только по текущей active версии с точным совпадением
-Workspace/Environment, service principal, scope и generations; отказ происходит
-до provider request. Provider Connection не создаёт `AccessPolicy`, не даёт
+Workspace/Environment, service principal, scope и generations и до истечения
+authority; expiry повторно проверяется после provider request, поэтому результат
+скачивания через границу срока отбрасывается. Provider Connection не создаёт `AccessPolicy`, не даёт
 `read_content`/`process_content` и не назначает `PricingBasis` authority.
 
 Роль `administrator` даёт доступ к Control Plane, operational lifecycle, safe

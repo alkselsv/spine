@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import Literal
 from uuid import UUID
@@ -163,6 +164,9 @@ class ProviderConnection(DefinitionModel):
     authorization_generation: int = Field(ge=1)
     configuration_generation: int = Field(ge=1)
     status: ProviderConnectionStatus
+    valid_until: datetime | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     capabilities: tuple[ProviderCapability, ...] = ()
 
     @field_validator(
@@ -206,6 +210,13 @@ class ProviderConnection(DefinitionModel):
         cls, values: tuple[EmailProviderOperation, ...]
     ) -> tuple[EmailProviderOperation, ...]:
         return _normalize_permitted_operations(values)
+
+    @field_validator("valid_until")
+    @classmethod
+    def _validate_valid_until(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("provider connection expiry must be timezone-aware")
+        return value
 
     @model_validator(mode="after")
     def _validate_version_history(self) -> "ProviderConnection":
@@ -255,6 +266,9 @@ class ProviderConnectionApproval(DefinitionModel):
     authorization_generation: int = Field(ge=1)
     configuration_generation: int = Field(ge=1)
     status: ProviderConnectionStatus
+    valid_until: datetime | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @field_validator(
         "approval_id",
@@ -293,6 +307,13 @@ class ProviderConnectionApproval(DefinitionModel):
             self.provider_kind, self.permitted_operations
         )
         return self
+
+    @field_validator("valid_until")
+    @classmethod
+    def _validate_valid_until(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("provider approval expiry must be timezone-aware")
+        return value
 
 
 def google_v1_connection_to_v2(

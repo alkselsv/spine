@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Protocol
 from uuid import UUID
 
@@ -139,11 +141,13 @@ class ProviderReadAdmission:
         provider: ProviderObservationReader,
         lifecycle_reader: CurrentLifecycleEligibilityReader | None = None,
         source_identity_resolvers: tuple[ProviderSourceIdentityResolver, ...] = (),
+        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self._repository = repository
         self._provider = provider
         self._lifecycle_reader = lifecycle_reader
         self._source_identity_resolvers = source_identity_resolvers
+        self._clock = clock
 
     async def read(
         self,
@@ -151,11 +155,12 @@ class ProviderReadAdmission:
         context: TrustedPersistenceContext,
     ) -> NormalizedExternalObservationV2:
         async with self._repository.admit_read(command, context) as connection:
-            self._validate_connection(command, connection)
+            self._validate_connection(command, connection, evaluated_at=self._clock())
             self._require_capabilities(connection, command.required_capabilities)
             await self._require_lifecycle_eligibility(command, context)
             self._validate_requested_source_identity(command, connection)
             observation = await self._provider.read(connection, command)
+            self._validate_connection(command, connection, evaluated_at=self._clock())
             self._validate_observation(command, connection, observation)
             self._require_capabilities(connection, observation.required_capabilities())
             await self._require_lifecycle_eligibility(command, context)
@@ -184,9 +189,14 @@ class ProviderReadAdmission:
 
     @staticmethod
     def _validate_connection(
-        command: ProviderReadCommand, connection: ProviderConnection
+        command: ProviderReadCommand,
+        connection: ProviderConnection,
+        *,
+        evaluated_at: datetime,
     ) -> None:
         if connection.status is not ProviderConnectionStatus.ACTIVE:
+            raise ProviderReadDeniedError()
+        if connection.valid_until is not None and evaluated_at >= connection.valid_until:
             raise ProviderReadDeniedError()
         if (
             connection.connection_id,

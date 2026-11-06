@@ -6179,6 +6179,7 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20270110_109_gmail_message_state.py",
         "20270111_110_tombstone_authorization.py",
         "20270112_111_canonical_tombstone_v3.py",
+        "20270113_112_yandex_binary_read_authority.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "transactional_failure_probe.py").write_text(

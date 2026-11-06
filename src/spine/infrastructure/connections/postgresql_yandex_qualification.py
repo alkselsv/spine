@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from uuid import UUID
 
 from sqlalchemy import insert, select, text
 
@@ -22,6 +23,7 @@ from spine.application.yandex_qualification_connection import (
 )
 from spine.domain.connections.provider import (
     OpaqueProviderReference,
+    ProviderConnection,
     ProviderConnectionApproval,
     ProviderConnectionStatus,
     ProviderKind,
@@ -199,6 +201,209 @@ class PostgreSQLYandexQualificationConnectionRepository:
         )
 
 
+class PostgreSQLYandexQualificationBinaryReadRepository:
+    """Provision the exact #789 successor through a runtime-only SQL capability."""
+
+    def __init__(
+        self,
+        *,
+        session_factory: SessionFactory,
+        context_verifier: TrustedContextVerifier,
+    ) -> None:
+        self._session_factory = session_factory
+        self._context_verifier = context_verifier
+
+    async def get_current(
+        self, connection_id: UUID, context: TrustedPersistenceContext
+    ) -> ProviderConnection:
+        trusted = self._trusted_context(context)
+        async with self._session_factory() as session:
+            async with session.begin():
+                await session.execute(
+                    text(
+                        "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                        "set_config('spine.environment_id', :environment_id, true)"
+                    ),
+                    {
+                        "workspace_id": str(trusted.scope.workspace_id),
+                        "environment_id": str(trusted.scope.environment_id),
+                    },
+                )
+                row = (
+                    await session.execute(
+                        select(provider_connection_versions)
+                        .where(
+                            provider_connection_versions.c.connection_id
+                            == connection_id
+                        )
+                        .order_by(provider_connection_versions.c.version.desc())
+                        .limit(1)
+                    )
+                ).mappings().one_or_none()
+                if row is None:
+                    raise YandexQualificationBootstrapConflictError()
+                return provider_connection_inspection_from_row(row).connection
+
+    async def provision(
+        self,
+        *,
+        plan: YandexQualificationConnectionPlan,
+        result: ProviderConnectionConfigurationResult,
+        authority_audit: AuditEvent,
+        context: TrustedPersistenceContext,
+    ) -> ProviderConnectionConfigurationResult:
+        trusted = self._trusted_context(context)
+        if (
+            trusted.scope.workspace_id != plan.approval.workspace_id
+            or trusted.scope.environment_id != plan.approval.environment_id
+            or result.inspection.connection.approval_id != plan.approval.approval_id
+            or result.inspection.connection.connection_id != plan.request.connection_id
+            or result.inspection.connection.valid_until != plan.approval.valid_until
+            or result.inspection.connection.capabilities
+            != tuple(
+                sorted(plan.observation.capabilities, key=lambda item: item.kind.value)
+            )
+        ):
+            raise YandexQualificationBootstrapConflictError()
+        registry = AuditEventRegistry.with_default_families()
+        canonical_authority_audit = validate_audit_event_for_context(
+            authority_audit, registry=registry, context=trusted
+        )
+        canonical_connection_audit = validate_audit_event_for_context(
+            result.audit, registry=registry, context=trusted
+        )
+        try:
+            async with self._session_factory() as session:
+                async with session.begin():
+                    await session.execute(
+                        text(
+                            "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                            "set_config('spine.environment_id', :environment_id, true)"
+                        ),
+                        {
+                            "workspace_id": str(trusted.scope.workspace_id),
+                            "environment_id": str(trusted.scope.environment_id),
+                        },
+                    )
+                    await session.execute(
+                        text(
+                            "SELECT pg_advisory_xact_lock(hashtextextended(:lock, 0))"
+                        ),
+                        {"lock": str(plan.request.connection_id)},
+                    )
+                    version_rows = (
+                        await session.execute(
+                            select(provider_connection_versions).where(
+                                provider_connection_versions.c.idempotency_key
+                                == plan.request.idempotency_key
+                            )
+                        )
+                    ).mappings().all()
+                    if version_rows:
+                        approval_rows = (
+                            await session.execute(
+                                select(provider_connection_approvals).where(
+                                    provider_connection_approvals.c.approval_id
+                                    == plan.approval.approval_id
+                                )
+                            )
+                        ).mappings().all()
+                        audit_rows = (
+                            await session.execute(
+                                select(audit_events).where(
+                                    audit_events.c.audit_event_id.in_(
+                                        (
+                                            canonical_authority_audit.audit_event_id,
+                                            canonical_connection_audit.audit_event_id,
+                                        )
+                                    )
+                                )
+                            )
+                        ).mappings().all()
+                        if not PostgreSQLYandexQualificationConnectionRepository._is_exact_replay(
+                            plan,
+                            result,
+                            canonical_authority_audit,
+                            approval_rows,
+                            version_rows,
+                            audit_rows,
+                        ):
+                            raise YandexQualificationBootstrapConflictError()
+                        return replace(result, replay=True)
+
+                    inserted = await session.scalar(
+                        text(
+                            "SELECT spine.provision_yandex_qualification_binary_read_approval("
+                            ":approval_id, :workspace_id, :environment_id, :connection_id, "
+                            ":predecessor_version_id, :service_principal_id, "
+                            ":credential_reference, :grant_reference, "
+                            ":resource_scope_reference, :authorization_generation, "
+                            ":configuration_generation, :valid_until, :recorded_at)"
+                        ),
+                        {
+                            "approval_id": plan.approval.approval_id,
+                            "workspace_id": plan.approval.workspace_id,
+                            "environment_id": plan.approval.environment_id,
+                            "connection_id": plan.request.connection_id,
+                            "predecessor_version_id": (
+                                plan.request.expected_predecessor_version_id
+                            ),
+                            "service_principal_id": plan.approval.service_principal_id,
+                            "credential_reference": (
+                                plan.approval.credential_reference.value
+                            ),
+                            "grant_reference": plan.approval.grant_reference.value,
+                            "resource_scope_reference": (
+                                plan.approval.approved_resource_scope_references[0].value
+                            ),
+                            "authorization_generation": (
+                                plan.approval.authorization_generation
+                            ),
+                            "configuration_generation": (
+                                plan.approval.configuration_generation
+                            ),
+                            "valid_until": plan.approval.valid_until,
+                            "recorded_at": plan.request.occurred_at,
+                        },
+                    )
+                    if inserted is not True:
+                        raise YandexQualificationBootstrapConflictError()
+                    await session.execute(
+                        insert(audit_events),
+                        [
+                            audit_event_values(canonical_authority_audit),
+                            audit_event_values(canonical_connection_audit),
+                        ],
+                    )
+                    await session.execute(
+                        insert(provider_connection_versions).values(
+                            **provider_connection_version_values(
+                                plan.request, result, trusted
+                            )
+                        )
+                    )
+                    return result
+        except asyncio.CancelledError:
+            raise
+        except YandexQualificationBootstrapConflictError:
+            raise
+        except Exception:
+            raise YandexQualificationBootstrapConflictError() from None
+
+    def _trusted_context(
+        self, context: TrustedPersistenceContext
+    ) -> TrustedPersistenceContext:
+        trusted = self._context_verifier.verify(context)
+        if (
+            not isinstance(trusted.scope, EnvironmentScope)
+            or trusted.acting_subject_id is None
+            or trusted.purpose.value != "source_connection_control"
+            or trusted.operation.value != "provider_connection_configure"
+        ):
+            raise YandexQualificationBootstrapConflictError()
+        return trusted
+
+
 def _approval_values(
     approval: ProviderConnectionApproval, recorded_at
 ) -> dict[str, object]:
@@ -216,6 +421,7 @@ def _approval_values(
         "authorization_generation": approval.authorization_generation,
         "configuration_generation": approval.configuration_generation,
         "status": approval.status.value,
+        "valid_until": approval.valid_until,
         "recorded_at": recorded_at,
     }
 
@@ -236,10 +442,12 @@ def _approval_from_row(row) -> ProviderConnectionApproval:
         authorization_generation=row.authorization_generation,
         configuration_generation=row.configuration_generation,
         status=ProviderConnectionStatus(row.status),
+        valid_until=row.valid_until,
     )
 
 
 __all__ = [
     "PostgreSQLYandexQualificationConnectionRepository",
+    "PostgreSQLYandexQualificationBinaryReadRepository",
     "YandexQualificationBootstrapConflictError",
 ]

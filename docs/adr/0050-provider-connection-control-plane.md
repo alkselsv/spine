@@ -15,7 +15,9 @@ capability claims or Security/Data Owner approval.
 PostgreSQL stores provider-neutral approvals separately from append-only
 connection versions. A version contains only opaque credential/grant/resource
 references, explicit capability statements, generations and allowlisted safe
-health observations. Tenant RLS protects both tables. A unique predecessor and
+health observations. An approval and its derived version may carry the same
+hard `valid_until`; provider-read admission rejects it at or after that database
+time. Tenant RLS protects both tables. A unique predecessor and
 optimistic expected-version check make concurrent successors explicit conflicts;
 the scope-bound command receipt makes a repeated command return the original
 version without another provider call. The version and its allowlisted
@@ -51,3 +53,11 @@ configuration and current health. The management module owns replay, versioning,
 scope checks and safe projection for all providers. Connecting material still
 does not publish an AccessPolicy, make content proposal-eligible or create a
 `PricingBasis`; those remain separate decisions and canonical paths.
+
+An isolated qualification may need to materialize a previously recorded owner
+decision without granting the runtime role general approval-write authority. In
+that case a migration may install one `SECURITY DEFINER` capability whose inputs,
+predecessor, tenant session scope, references, generations and expiry are all
+closed over the exact approved decision. Public execution is revoked and only
+the runtime role receives `EXECUTE`. This is a bounded control-plane capability,
+not a fourth database credential surface or a general approval API.

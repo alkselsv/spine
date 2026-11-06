@@ -150,6 +150,35 @@ class YandexQualificationAuthorityAuditPayload(BaseModel):
         return checked
 
 
+class YandexQualificationBinaryReadAuthorityAuditPayload(BaseModel):
+    """Content-free lineage for the manifest-bound #789 successor authority."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    security_approval_reference: AuditIdentifier
+    data_approval_reference: AuditIdentifier
+    manifest_digest: AuditDigest
+    resource_scope_reference_id: UUID
+    qualification_reference_id: UUID
+    valid_until: datetime
+    max_live_runs: int = Field(ge=1, le=10)
+    redirect_host_digest: AuditDigest
+
+    @field_validator("resource_scope_reference_id", "qualification_reference_id")
+    @classmethod
+    def validate_ids(cls, value: UUID, info: ValidationInfo) -> UUID:
+        checked = _require_non_zero_uuid(value, field_name=info.field_name)
+        assert checked is not None
+        return checked
+
+    @field_validator("valid_until")
+    @classmethod
+    def validate_valid_until(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("binary-read authority expiry must be timezone-aware")
+        return value
+
+
 class CanonicalTransitionAuditPayload(BaseModel):
     """Safe canonical-transition payload; the envelope owns the target."""
 
