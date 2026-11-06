@@ -31,7 +31,9 @@ class RetentionArtifactClass(str, Enum):
 
     The private-ASR values are additive taxonomy only. Their existence does not
     approve a policy, applicability binding, retention term, or processing
-    purpose. Until those authorities exist, ASR storage must fail closed.
+    purpose. Until those authorities exist, ASR storage must fail closed. The
+    legacy email aggregate values remain for compatibility; the exact #820
+    taxonomy uses distinct additive values from ``email_retention``.
     """
 
     ORIGINAL = "original"
@@ -51,6 +53,24 @@ class RetentionArtifactClass(str, Enum):
     EMAIL_ATTACHMENT_ORIGINAL = "email_attachment_original"
     EMAIL_ATTACHMENT_ARTIFACT = "email_attachment_artifact"
     EMAIL_PROJECTION = "email_projection"
+    EMAIL_HEADERS_ADDRESSES = "email_headers_addresses"
+    EMAIL_PLAIN_TEXT_BODY = "email_plain_text_body"
+    EMAIL_PARSED_HTML = "email_parsed_html"
+    EMAIL_SANITIZED_CONTENT = "email_sanitized_content"
+    EMAIL_ATTACHMENT_DERIVED_TEXT = "email_attachment_derived_text"
+    EMAIL_ATTACHMENT_DERIVED_STRUCTURED = "email_attachment_derived_structured"
+    EMAIL_THREAD_CONVERSATION_METADATA = "email_thread_conversation_metadata"
+    EMAIL_PROVIDER_IDENTIFIERS = "email_provider_identifiers"
+    EMAIL_SOURCE_IDENTITY_LINEAGE = "email_source_identity_lineage"
+    EMAIL_SEARCH_INDEX = "email_search_index"
+    EMAIL_VECTOR_EMBEDDING = "email_vector_embedding"
+    EMAIL_GENERATED_SUMMARY = "email_generated_summary"
+    EMAIL_MONITORING_EVIDENCE = "email_monitoring_evidence"
+    EMAIL_STAGING_ARTIFACT = "email_staging_artifact"
+    EMAIL_TEMPORARY_FILE_CACHE = "email_temporary_file_cache"
+    EMAIL_REPLICA_BACKUP = "email_replica_backup"
+    EMAIL_AUDIT_RECORD = "email_audit_record"
+    EMAIL_OPERATIONAL_DIAGNOSTIC = "email_operational_diagnostic"
 
 
 class RetentionAuthorityKind(str, Enum):

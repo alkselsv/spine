@@ -464,6 +464,19 @@ def test_stale_connection_version_is_disclosure_safe() -> None:
     assert MESSAGE_ID not in rendered
 
 
+def test_missing_provider_received_time_fails_without_observation_fallback() -> None:
+    missing_provider_time = raw_result().model_copy(update={"internal_date_ms": None})
+
+    with pytest.raises(GmailObservationMappingError) as error:
+        gmail_raw_message_observation(
+            missing_provider_time,
+            connection_version_id=CONNECTION_VERSION_ID,
+            received_at=NOW,
+        )
+
+    assert error.value.code is GmailObservationFailureCode.NOT_ELIGIBLE
+
+
 def test_failed_raw_result_is_disclosure_safe() -> None:
     failed = GmailRawMessageResult(
         status=GmailRawMessageStatus.PROVIDER_ERROR,
