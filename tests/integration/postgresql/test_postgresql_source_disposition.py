@@ -355,7 +355,7 @@ async def test_postgresql_canonical_source_delete_remains_guarded(
                     ),
                     {"source_object_id": case.source.source_object_id},
                 )
-        assert error.value.orig.diag.constraint_name == "ck_source_objects_immutable"
+        assert error.value.orig.diag.constraint_name == "ck_governed_source_erasure_only"
         with pytest.raises(DBAPIError) as runtime_error:
             async with runtime_engine.begin() as connection:
                 await connection.execute(
@@ -440,6 +440,109 @@ async def test_postgresql_erasure_role_is_nonlogin_and_unavailable_to_runtime(
     finally:
         await migration_engine.dispose()
         await runtime_engine.dispose()
+
+
+async def test_authorized_erasure_executor_physically_removes_supported_source_graph(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    case, authorization = await _issued_authorization(
+        postgresql_adapter, postgresql_contract_database, 753600
+    )
+    unrelated_case, _ = await _issued_authorization(
+        postgresql_adapter, postgresql_contract_database, 753602
+    )
+    operation_id = synthetic_uuid(753601)
+    binding = binding_from_tombstone_authorization(
+        authorization, operation_id=operation_id
+    )
+    operation = _operation(binding)
+    assert await _repository(postgresql_adapter).admit_if_current(operation, binding)
+
+    engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with engine.begin() as connection:
+            outcome = await connection.execute(
+                text(
+                    "SELECT spine.execute_source_disposition_erasure("
+                    ":workspace_id, :environment_id, :operation_id, :state_version)"
+                ),
+                {
+                    "workspace_id": binding.workspace_id,
+                    "environment_id": binding.environment_id,
+                    "operation_id": operation_id,
+                    "state_version": operation.state_version,
+                },
+            )
+            assert outcome.scalar_one() == "ERASED"
+
+        async with postgresql_adapter.uow_factory(
+            postgresql_adapter.environment_context(
+                binding.workspace_id, binding.environment_id
+            )
+        ) as uow:
+            rows = await uow.execute_statement(
+                text(
+                    "SELECT "
+                    "(SELECT count(*) FROM spine.source_objects WHERE source_object_id = :source_id) AS objects, "
+                    "(SELECT count(*) FROM spine.source_revisions WHERE source_object_id = :source_id) AS revisions, "
+                    "(SELECT count(*) FROM spine.source_revision_provenance WHERE source_object_id = :source_id) AS provenance, "
+                    "(SELECT count(*) FROM spine.source_revision_receipt_associations WHERE source_object_id = :source_id) AS receipts, "
+                    "(SELECT count(*) FROM spine.canonical_acceptances WHERE source_object_id = :source_id) AS acceptances, "
+                    "(SELECT count(*) FROM spine.current_source_heads WHERE source_object_id = :source_id) AS heads, "
+                    "(SELECT count(*) FROM spine.qualified_deletion_evidence WHERE source_object_id = :source_id) AS deletion_evidence, "
+                    "(SELECT count(*) FROM spine.trusted_canonical_tombstone_selector_versions WHERE source_object_id = :source_id) AS selectors"
+                ),
+                {"source_id": case.source.source_object_id},
+            )
+            result = rows.one()._mapping
+            assert dict(result) == {
+                "objects": 0,
+                "revisions": 0,
+                "provenance": 0,
+                "receipts": 0,
+                "acceptances": 0,
+                "heads": 0,
+                "deletion_evidence": 0,
+                "selectors": 0,
+            }
+            await uow.rollback()
+
+        async with postgresql_adapter.uow_factory(
+            postgresql_adapter.environment_context(
+                unrelated_case.source.workspace_id,
+                unrelated_case.source.environment_id,
+            )
+        ) as unrelated_uow:
+            unrelated_source = await unrelated_uow.execute_statement(
+                text(
+                    "SELECT count(*) FROM spine.source_objects "
+                    "WHERE source_object_id = :source_id"
+                ),
+                {"source_id": unrelated_case.source.source_object_id},
+            )
+            assert unrelated_source.scalar_one() == 1
+            await unrelated_uow.rollback()
+
+        async with engine.begin() as connection:
+            replay = await connection.execute(
+                text(
+                    "SELECT spine.execute_source_disposition_erasure("
+                    ":workspace_id, :environment_id, :operation_id, :state_version)"
+                ),
+                {
+                    "workspace_id": binding.workspace_id,
+                    "environment_id": binding.environment_id,
+                    "operation_id": operation_id,
+                    "state_version": operation.state_version,
+                },
+            )
+            assert replay.scalar_one() == "DENIED"
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.parametrize(
