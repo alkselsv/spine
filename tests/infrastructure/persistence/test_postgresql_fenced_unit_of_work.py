@@ -26,6 +26,7 @@ from spine.application.persistence.context import (
 )
 from spine.application.persistence.errors import (
     CommitFenceInvalidatedError,
+    CommitFenceReleaseError,
     InvalidCommitFenceConfigurationError,
     UnknownCommitOutcomeError,
 )
@@ -171,13 +172,22 @@ class FakeProvider:
         self.events = events
         self.permit_ttl = permit_ttl
         self.validate_started = asyncio.Event()
+        self.acquire_started = asyncio.Event()
+        self.renew_started = asyncio.Event()
+        self.finish_started = asyncio.Event()
+        self.block_acquire = False
+        self.block_renew = False
         self.block_validate = False
         self.ambiguous_renewal = False
+        self.block_finish = False
         self.validation_ttl: timedelta | None = None
         self._permit: CommitFencePermit | None = None
 
     async def acquire(self, binding: CommitFenceBinding) -> CommitFenceOperationResult:
         self.events.append("provider_acquire")
+        self.acquire_started.set()
+        if self.block_acquire:
+            await asyncio.Event().wait()
         now = self.clock()
         self._permit = CommitFencePermit(
             binding=binding,
@@ -196,6 +206,9 @@ class FakeProvider:
         self, permit: CommitFencePermit, *, evaluated_at: datetime
     ) -> CommitFenceOperationResult:
         self.events.append("provider_renew")
+        self.renew_started.set()
+        if self.block_renew:
+            await asyncio.Event().wait()
         if self.ambiguous_renewal:
             return self._result(
                 CommitFenceOperation.RENEW,
@@ -246,6 +259,9 @@ class FakeProvider:
 
     async def finish(self, permit: CommitFencePermit) -> CommitFenceOperationResult:
         self.events.append("provider_finish")
+        self.finish_started.set()
+        if self.block_finish:
+            await asyncio.Event().wait()
         return self._result(
             CommitFenceOperation.FINISH,
             CommitFenceOperationState.RELEASED,
@@ -402,6 +418,83 @@ async def test_ambiguous_renewal_never_opens_database_transaction() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancellation_during_acquire_does_not_open_database_or_detach_provider_call() -> None:
+    events: list[str] = []
+    clock = ManualClock(NOW)
+    bounded = FakeBoundedFactory(events)
+    provider = FakeProvider(clock=clock, events=events)
+    provider.block_acquire = True
+
+    async def protected_work() -> None:
+        async with _factory(clock=clock, provider=provider, bounded=bounded)(
+            CONTEXT, _binding()
+        ):
+            pytest.fail("acquire cancellation must not expose a database UoW")
+
+    task = asyncio.create_task(protected_work())
+    await provider.acquire_started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert bounded.created == []
+    assert events == ["provider_acquire"]
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_renewal_aborts_acquired_permit() -> None:
+    events: list[str] = []
+    clock = ManualClock(NOW)
+    bounded = FakeBoundedFactory(events)
+    provider = FakeProvider(
+        clock=clock,
+        events=events,
+        permit_ttl=timedelta(seconds=3),
+    )
+    provider.block_renew = True
+
+    async def protected_work() -> None:
+        async with _factory(clock=clock, provider=provider, bounded=bounded)(
+            CONTEXT, _binding()
+        ):
+            pytest.fail("renewal cancellation must not open a database UoW")
+
+    task = asyncio.create_task(protected_work())
+    await provider.renew_started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert bounded.created == []
+    assert events == ["provider_acquire", "provider_renew", "provider_abort"]
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_release_keeps_permit_pending_for_reconciliation() -> None:
+    events: list[str] = []
+    clock = ManualClock(NOW)
+    bounded = FakeBoundedFactory(events)
+    provider = FakeProvider(clock=clock, events=events)
+    provider.block_finish = True
+    fenced = _factory(clock=clock, provider=provider, bounded=bounded)(
+        CONTEXT, _binding()
+    )
+
+    async def protected_work() -> None:
+        async with fenced as uow:
+            await uow.commit()
+
+    task = asyncio.create_task(protected_work())
+    await provider.finish_started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert events[-2:] == ["db_close", "provider_finish"]
+    assert fenced.recovery_pending is True
+
+
+@pytest.mark.asyncio
 async def test_cancellation_awaiting_provider_rolls_back_and_closes_before_release() -> (
     None
 ):
@@ -475,10 +568,12 @@ async def test_cancellation_during_commit_never_false_releases_unknown_outcome()
     bounded = FakeBoundedFactory(events)
     provider = FakeProvider(clock=clock, events=events)
 
+    fenced = _factory(clock=clock, provider=provider, bounded=bounded)(
+        CONTEXT, _binding()
+    )
+
     async def protected_work() -> None:
-        async with _factory(clock=clock, provider=provider, bounded=bounded)(
-            CONTEXT, _binding()
-        ) as uow:
+        async with fenced as uow:
             bounded.created[0].block_commit = True
             await uow.commit()
 
@@ -493,6 +588,7 @@ async def test_cancellation_during_commit_never_false_releases_unknown_outcome()
     assert events[-2:] == ["db_rollback", "db_close"]
     assert "provider_abort" not in events
     assert "provider_finish" not in events
+    assert fenced.recovery_pending is True
 
 
 @pytest.mark.asyncio
@@ -504,10 +600,11 @@ async def test_unknown_commit_outcome_keeps_permit_unresolved_for_reconciliation
     bounded = FakeBoundedFactory(events)
     provider = FakeProvider(clock=clock, events=events)
 
+    fenced = _factory(clock=clock, provider=provider, bounded=bounded)(
+        CONTEXT, _binding()
+    )
     with pytest.raises(UnknownCommitOutcomeError):
-        async with _factory(clock=clock, provider=provider, bounded=bounded)(
-            CONTEXT, _binding()
-        ) as uow:
+        async with fenced as uow:
             bounded.created[0].commit_error = UnknownCommitOutcomeError(
                 "Commit outcome requires idempotent reconciliation."
             )
@@ -516,3 +613,50 @@ async def test_unknown_commit_outcome_keeps_permit_unresolved_for_reconciliation
     assert events[-2:] == ["db_rollback", "db_close"]
     assert "provider_abort" not in events
     assert "provider_finish" not in events
+    assert fenced.recovery_pending is True
+
+
+@pytest.mark.asyncio
+async def test_canonical_replay_settles_unknown_commit_before_returning_result() -> None:
+    events: list[str] = []
+    clock = ManualClock(NOW)
+    bounded = FakeBoundedFactory(events)
+    provider = FakeProvider(clock=clock, events=events)
+    fenced = _factory(clock=clock, provider=provider, bounded=bounded)(
+        CONTEXT, _binding()
+    )
+
+    with pytest.raises(UnknownCommitOutcomeError):
+        async with fenced as uow:
+            bounded.created[0].commit_error = UnknownCommitOutcomeError("unknown")
+            await uow.commit()
+
+    assert fenced.recovery_pending is True
+    await fenced.settle_recovery(committed=True)
+
+    assert fenced.recovery_pending is False
+    assert events[-1] == "provider_finish"
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_release_keeps_mutation_blocked_until_provider_resolves() -> None:
+    events: list[str] = []
+    clock = ManualClock(NOW)
+    bounded = FakeBoundedFactory(events)
+    provider = FakeProvider(clock=clock, events=events)
+    provider.block_finish = True
+    fenced = _factory(
+        clock=clock,
+        provider=provider,
+        bounded=bounded,
+        timing=_timing(provider_operation_timeout=timedelta(milliseconds=1)),
+    )(CONTEXT, _binding())
+
+    with pytest.raises(CommitFenceReleaseError):
+        async with fenced as uow:
+            await uow.commit()
+
+    assert fenced.recovery_pending is True
+    with pytest.raises(CommitFenceReleaseError):
+        await fenced.settle_recovery(committed=True)
+    assert fenced.recovery_pending is True

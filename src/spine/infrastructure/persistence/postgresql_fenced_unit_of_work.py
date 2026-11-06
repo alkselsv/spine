@@ -122,6 +122,7 @@ class PostgreSQLFencedUnitOfWork:
         self._commit_outcome_unknown = False
         self._committed = False
         self._closed = False
+        self._recovery_pending = False
 
     async def __aenter__(self) -> PostgreSQLFencedUnitOfWork:
         if self._entered or self._closed:
@@ -178,8 +179,50 @@ class PostgreSQLFencedUnitOfWork:
         try:
             await self._release_permit(operation, permit)
         except BaseException:
+            self._recovery_pending = True
             if exc_value is None:
                 raise
+
+    @property
+    def recovery_pending(self) -> bool:
+        """Whether the permit still needs an explicit, safe settlement."""
+
+        return self._recovery_pending
+
+    @property
+    def commit_outcome_unknown(self) -> bool:
+        """Whether PostgreSQL commit may have become durable."""
+
+        return self._commit_outcome_unknown
+
+    @property
+    def committed(self) -> bool:
+        """Whether this UoW observed a successful database commit."""
+
+        return self._committed
+
+    async def settle_recovery(self, *, committed: bool) -> None:
+        """Resolve a pending permit only after the canonical outcome is known.
+
+        An unresolved database commit must first be classified by the canonical
+        idempotency receipt.  This method deliberately accepts that decision as
+        an explicit argument and never infers it from a lost response.
+        """
+
+        if not self._recovery_pending and not self._commit_outcome_unknown:
+            return
+        if not self._closed or self._permit is None:
+            raise UnitOfWorkLifecycleError(
+                "Commit-fence recovery requires a closed Unit of Work."
+            )
+        operation = (
+            self._provider.finish(self._permit)
+            if committed
+            else self._provider.abort(self._permit)
+        )
+        await self._release_permit(operation, self._permit)
+        self._recovery_pending = False
+        self._commit_outcome_unknown = False
 
     async def commit(self) -> None:
         uow, permit = self._require_active()
@@ -208,6 +251,7 @@ class PostgreSQLFencedUnitOfWork:
             await uow.commit()
         except (asyncio.CancelledError, UnknownCommitOutcomeError):
             self._commit_outcome_unknown = True
+            self._recovery_pending = True
             raise
         self._committed = True
 
@@ -311,6 +355,7 @@ class PostgreSQLFencedUnitOfWork:
             try:
                 await self._release_permit(self._provider.abort(permit), permit)
             except BaseException:
+                self._recovery_pending = True
                 # Entry already failed closed.  An inconclusive release remains
                 # unavailable until provider expiry/reconciliation.
                 pass

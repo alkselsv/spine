@@ -63,6 +63,8 @@ from spine.application.persistence.errors import RevisionDigestMismatchError
 from spine.application.persistence.idempotency import (
     IdempotencyClaimResult,
     IdempotencyKey,
+    IdempotencyResolution,
+    IdempotencyResolutionState,
     IdempotencyReplay,
     OpaqueResultReference,
     OwnedIdempotencyClaim,
@@ -3770,6 +3772,38 @@ class _InMemoryIngestionRepository:
 class _IdempotencyRepository:
     def __init__(self, uow: "InMemoryUnitOfWork") -> None:
         self._uow = uow
+
+    async def resolve(
+        self,
+        *,
+        operation_schema_version: int,
+        key: IdempotencyKey,
+        digest: CommandDigest,
+    ) -> IdempotencyResolution:
+        self._uow._guard_active()
+        operation = self._uow._operation_snapshot()
+        if (
+            digest.operation != operation
+            or digest.operation_schema_version != operation_schema_version
+        ):
+            return IdempotencyResolution(IdempotencyResolutionState.CONFLICT)
+        receipt = self._uow._resolve_receipt(
+            self._uow._receipt_key(
+                operation=operation,
+                operation_schema_version=operation_schema_version,
+                key=key,
+            )
+        )
+        if receipt is None:
+            return IdempotencyResolution(IdempotencyResolutionState.ABSENT)
+        if receipt.digest != digest:
+            return IdempotencyResolution(IdempotencyResolutionState.CONFLICT)
+        if receipt.result is None:
+            return IdempotencyResolution(IdempotencyResolutionState.CLAIMED)
+        return IdempotencyResolution(
+            IdempotencyResolutionState.COMPLETED,
+            receipt.result,
+        )
 
     async def claim(
         self,

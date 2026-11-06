@@ -11,6 +11,7 @@ from spine.application.persistence.errors import IdempotencyConflictError, UnitO
 from spine.application.persistence.idempotency import (
     IdempotencyKey,
     IdempotencyReplay,
+    IdempotencyResolutionState,
     OpaqueResultReference,
     OwnedIdempotencyClaim,
 )
@@ -96,6 +97,13 @@ async def test_claim_complete_and_replay_return_same_result_reference(
         await uow.commit()
 
     async with persistence_adapter.uow_factory(context) as uow:
+        resolved = await uow.idempotency.resolve(
+            operation_schema_version=OPERATION_SCHEMA_VERSION,
+            key=key,
+            digest=digest,
+        )
+        assert resolved.state is IdempotencyResolutionState.COMPLETED
+        assert resolved.result == expected
         replay = await uow.idempotency.claim(
             operation_schema_version=OPERATION_SCHEMA_VERSION,
             key=key,
@@ -205,6 +213,37 @@ async def test_incomplete_owned_claim_prevents_commit_and_rolls_back(
             digest=digest,
         )
         assert isinstance(claim, OwnedIdempotencyClaim)
+
+
+@pytest.mark.asyncio
+async def test_resolution_distinguishes_absent_and_claimed_receipts(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(1110)
+    await persist_workspace(persistence_adapter, workspace_id)
+    context = persistence_adapter.workspace_context(workspace_id)
+    key = IdempotencyKey("resolution-state-key")
+    digest = command_digest(context.operation)
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        absent = await uow.idempotency.resolve(
+            operation_schema_version=OPERATION_SCHEMA_VERSION,
+            key=key,
+            digest=digest,
+        )
+        assert absent.state is IdempotencyResolutionState.ABSENT
+        claim = await uow.idempotency.claim(
+            operation_schema_version=OPERATION_SCHEMA_VERSION,
+            key=key,
+            digest=digest,
+        )
+        assert isinstance(claim, OwnedIdempotencyClaim)
+        claimed = await uow.idempotency.resolve(
+            operation_schema_version=OPERATION_SCHEMA_VERSION,
+            key=key,
+            digest=digest,
+        )
+        assert claimed.state is IdempotencyResolutionState.CLAIMED
 
 
 @pytest.mark.asyncio
