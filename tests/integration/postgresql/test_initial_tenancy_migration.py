@@ -2987,6 +2987,12 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         ("private_asr_corpus_manifests", "pol_private_asr_corpus_manifests_migration_maintenance"),
         ("private_asr_corpus_releases", "pol_private_asr_corpus_releases_tenant_isolation"),
         ("private_asr_corpus_releases", "pol_private_asr_corpus_releases_migration_maintenance"),
+        ("email_sync_attempts", "pol_email_sync_attempts_governed_erasure"),
+        ("email_sync_pages", "pol_email_sync_pages_governed_erasure"),
+        ("email_sync_effect_receipts", "pol_email_sync_effect_receipts_governed_erasure"),
+        ("email_sync_state_observations", "pol_email_sync_state_observations_governed_erasure"),
+        ("outbox_intents", "pol_outbox_intents_governed_erasure"),
+        ("outbox_deliveries", "pol_outbox_deliveries_governed_erasure"),
     }
     erasure_policies = (
         await connection.execute(
