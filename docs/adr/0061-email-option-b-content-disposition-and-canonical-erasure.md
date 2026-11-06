@@ -73,6 +73,31 @@ does not extend Spine retention.
 
 ## Disposition and recovery invariants
 
+`RetentionApplicability` establishes retention eligibility and terms; by itself
+it is not deletion authority. A disposition command must also use the existing
+versioned current deletion-policy approval pattern from #812. Bind that approval
+to the trusted workspace and environment, exact source scope and expected source
+generation, the approved policy/version/digest, one recognized disposition
+basis, its immutable evidence reference, and an idempotent operation identity.
+Revalidate the approval's issuer, current pointer, generation and revocation
+state in the same PostgreSQL transaction that creates `DELETION_PENDING` and
+the outbox intent. Connector observations and caller-supplied reason codes are
+never authority.
+
+Recognized bases are: deterministic expiry from verified provider receipt under
+the current approved terms; an authorized owner/authority withdrawal, mailbox
+reassignment/disconnect or approved-purpose termination; a deletion request
+validated and approved under the current deletion policy; and provider deletion
+only after qualified reconciliation plus a current authorized lifecycle
+decision. These are removal triggers, not new read or retention grants. A
+read/processing/disclosure revocation immediately denies those actions but does
+not revoke the separate deletion-only authority needed to finish cleanup. A
+deletion-policy approval revoked before the fence transaction denies new work;
+revocation after fencing cannot clear the fence. Cleanup may resume only under
+a fresh current deletion approval bound to the same scope and operation. If
+that authority is unavailable, keep the source fenced and report
+`NOT_VERIFIED`.
+
 Disposition is a tenant- and environment-scoped, idempotent operation. The
 durable coordinator persists its operation state and transactional outbox intent
 in PostgreSQL, then invokes independently idempotent store handlers outside the
@@ -83,6 +108,16 @@ advancement before cleanup starts. Keep the fence active through partial
 failure, cancellation and unknown commit until the same operation is
 reconciled and every registered store verifies disposition. Unknown stores,
 incomplete cleanup or failed restore checks are `NOT_VERIFIED`, never PASS.
+
+The versioned store-coverage manifest maps every #820 class to every configured
+durable and transient boundary, its owner, handler and verifier, including
+PostgreSQL, object versions, staging, projections/indexes, caches, diagnostics,
+replicas, WAL and backup/restore paths. Release qualification reconciles that
+manifest against the application adapter registry and the declared runtime and
+recovery topology. An unregistered, newly configured or otherwise unknown
+boundary invalidates completeness and cannot be omitted from a success result.
+Local synthetic qualification proves only the declared local topology; an
+unknown production topology remains `NOT_VERIFIED`.
 
 Use the existing deletion-authorization pattern in #812 and publication /
 revocation fences in #813 and #976 at their established boundaries. Do not
