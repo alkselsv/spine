@@ -3,8 +3,8 @@
   "ticket": 738,
   "parent_ticket": 715,
   "status": "offline_pass",
-  "qualified_base_commit": "399f2519d765f026bc59ef21067c86a3256d95fc",
-  "qualification_commit": "WORKTREE",
+  "qualified_base_commit": "f474f26c799f0902219c62d0fd9698cd23bca4f5",
+  "qualification_commit": "26df3f0220ed87191a0596da0ec5781e4d1588bb",
   "required_scenarios": [
     "lifecycle_classification_and_current_authority",
     "withdrawal_read_revision_and_commit_races",

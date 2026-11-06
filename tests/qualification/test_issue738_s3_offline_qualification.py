@@ -154,7 +154,7 @@ def test_issue738_report_records_exact_offline_limits_and_verification() -> None
 
     assert report["status"] == "offline_pass"
     assert re.fullmatch(r"[0-9a-f]{40}", report["qualified_base_commit"])
-    assert report["qualification_commit"] == "WORKTREE"
+    assert re.fullmatch(r"[0-9a-f]{40}", report["qualification_commit"])
     for gate in ("focused", "postgresql", "repository"):
         result = report["verification"][gate]
         assert result["status"] == "passed"
