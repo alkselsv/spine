@@ -124,6 +124,11 @@ class CrmRelationshipMappingProfile(DefinitionModel):
             raise ValueError("mapping profile read methods must be unique")
         if self.mapping_strategy == "attached_object" and not self.ownership_proof_reference:
             raise ValueError("attached-object mapping requires an ownership proof reference")
+        if (
+            self.mapping_strategy == "attached_object"
+            and "disk.attachedObject.get" not in self.read_methods
+        ):
+            raise ValueError("attached-object mapping must qualify its exact read method")
         return self
 
 

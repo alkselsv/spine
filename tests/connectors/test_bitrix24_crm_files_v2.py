@@ -91,6 +91,10 @@ def test_strategy_mismatch_denies_every_item_without_direct_fallback() -> None:
         profile=_profile(
             mapping_strategy="attached_object",
             ownership_proof_reference="synthetic:ownership",
+            read_methods=(
+                "crm.activity.binding.list",
+                "disk.attachedObject.get",
+            ),
         ),
     )
 
