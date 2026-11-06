@@ -82,3 +82,42 @@ def test_grant_binding_rejects_unbounded_or_missing_identity(
 
     with pytest.raises(ValidationError):
         Bitrix24GrantBinding.model_validate(values)
+
+
+def test_v2_grant_explicitly_versions_conditional_crm_scope() -> None:
+    v1_values = _binding().model_dump()
+    v1_values["granted_scopes"] = (Bitrix24Scope.DISK, Bitrix24Scope.CRM)
+    v2_values = {
+        **v1_values,
+        "schema_version": "bitrix24-grant-binding:v2",
+    }
+
+    with pytest.raises(ValidationError):
+        Bitrix24GrantBinding.model_validate(v1_values)
+
+    binding = Bitrix24GrantBinding.model_validate(v2_values)
+    authority = Bitrix24GrantAuthority(
+        schema_version="bitrix24-grant-authority:v2",
+        binding=binding,
+        active_pair_reference=OpaqueProviderReference(value=_id(10)),
+        token_epoch=3,
+        security_fence=0,
+        state=Bitrix24GrantState.READY,
+    )
+
+    assert authority.binding.granted_scopes == (
+        Bitrix24Scope.DISK,
+        Bitrix24Scope.CRM,
+    )
+
+
+def test_grant_authority_rejects_mixed_contract_versions() -> None:
+    with pytest.raises(ValidationError):
+        Bitrix24GrantAuthority(
+            schema_version="bitrix24-grant-authority:v2",
+            binding=_binding(),
+            active_pair_reference=OpaqueProviderReference(value=_id(10)),
+            token_epoch=3,
+            security_fence=0,
+            state=Bitrix24GrantState.READY,
+        )
