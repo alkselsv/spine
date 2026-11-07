@@ -1,14 +1,16 @@
 # Issue #586 — R2 Pricing Authority Decision Package v1
 
-**Status:** PROPOSED / PENDING_APPROVAL
+**Status:** PARTIALLY APPROVED — PRODUCT OWNER SCOPE ONLY; FINANCE / SECURITY / DATA / ARCHITECTURE PENDING
+**Current decision-package snapshot:** v1.2 (status and attribution overlay; no D1–D10 normative product text changed)
+**Product Owner decision basis:** package v1.1, SHA-256 `73c04fc138dcb36c34fff57169085ddbd87ada19b15d8be31dc4eae54b4e8325`; conversational ACCEPT at 2026-11-07 11:11:07 UTC, recorded in [Product Owner decision record](issue-586-product-owner-decision-v1.md).
 **Decision scope:** R2 commercial proposal pricing authority and deterministic commercial rules
-**Repository baseline:** `alkselsv/spine` `main` at `a272e982db26cb92170cd633c279c5857ab112f1` (2026-11-07)
+**Repository baseline at initial analysis:** `main` at `a272e982db26cb92170cd633c279c5857ab112f1`; **reverified current main:** `07caa391bcc221de1c61f099d775db7a0ce2ef2b` (2026-11-07). The intervening commit changes R1 answer-quality evaluation and does not touch pricing, source, workflow or approval contracts reviewed here.
 **Issue:** [#586](https://github.com/alkselsv/spine/issues/586)
 **Parent:** [#584](https://github.com/alkselsv/spine/issues/584)
 
-Separate role-scoped decision records: [Product Owner](issue-586-product-owner-decision-v1.md), [Finance](issue-586-finance-approval-checklist-v1.md), [Security](issue-586-security-approval-record-v1.md), [Data](issue-586-data-approval-record-v1.md), and [Architecture](issue-586-architecture-acceptance-v1.md). All remain pending until an authorized human records a decision.
+Separate role-scoped decision records: [Product Owner](issue-586-product-owner-decision-v1.md), [Finance](issue-586-finance-approval-checklist-v1.md), [Security](issue-586-security-approval-record-v1.md), [Data](issue-586-data-approval-record-v1.md), and [Architecture](issue-586-architecture-acceptance-v1.md). Product Owner scope is accepted against the exact v1.1 digest above; all other role decisions remain pending.
 
-This is a human decision package, not an approval record or runtime implementation. Recommendations below do not establish a source's price authority, a user's role, a tax/FX rule, or implementation readiness. Record each approval as an attributable, role-scoped decision against this exact package version. A single person's approval in one role does not imply approval in another role.
+This is a human decision package and decision-status record, not a runtime implementation. The Product Owner acceptance is limited to product direction/principles listed in the role record. Recommendations do not establish actual price authority, a user's role, a tax/FX rule, or implementation readiness. Finance, Security, Data and Architecture approvals must be separately attributable and role-scoped. A single person's approval in one role does not imply approval in another role. This v1.2 status overlay does not retroactively alter the accepted v1.1 decision text.
 
 ## 1. Decision requested
 
@@ -24,18 +26,18 @@ Select **Option 2: versioned rule-set selection by service/project class with ex
 
 ## 2. Proposed decision summary
 
-| Decision | Recommendation | Status |
+| Decision | Product-scope outcome | Remaining role decision(s) |
 |---|---|---|
-| D1 Pricing authority | Only explicitly approved contract rates, service/project price books and workspace base price book can establish price facts; manual override is a separate approved decision; historical estimates are reference only. | PROPOSED / PENDING_APPROVAL |
-| D2 Selection | Resolve one eligible basis by a versioned policy and fixed precedence; same-priority conflict fails closed. | PROPOSED / PENDING_APPROVAL |
-| D3 Freshness | Use an explicit estimate `pricing_as_of` date and exact source effective period/approval/currentness; no universal TTL. | PROPOSED / PENDING_APPROVAL |
-| D4 Currency/FX | Estimate has explicit currency; FX only through one Finance-approved, versioned authority with a pinned rate/date/version. | PROPOSED / PENDING_APPROVAL |
-| D5 Arithmetic | Decimal-only formula pipeline and versioned currency rounding policy; `ROUND_HALF_UP` is a proposal for Finance, not an approved policy. | PROPOSED / PENDING_APPROVAL |
-| D6 Tax | Versioned approved jurisdiction/category rules; explicit inclusive/exclusive semantics; unknown applicability blocks approval. | PROPOSED / PENDING_APPROVAL |
-| D7 Discounts/overrides | Policy-bounded discounts; manual prices require rationale, exact prior/proposed state and explicit independent approval. Numeric bounds remain unset. | PROPOSED / PENDING_APPROVAL |
-| D8 Exceptions | Typed fail-closed outcomes; no historic-price fallback; disclosure-safe user result and auditable internal reason. | PROPOSED / PENDING_APPROVAL |
-| D9 Review | Estimate is an immutable versioned artifact in the existing R2 WorkflowRun; material successor requires new approval. | PROPOSED / PENDING_APPROVAL |
-| D10 Security/audit | Current authorization is distinct from pricing authority; tenant-scoped exact lineage and append-only attributable decisions. | PROPOSED / PENDING_APPROVAL |
+| D1 Pricing authority | Product policy accepts the listed source classes and historical references as non-authoritative. | Finance authority owners/evidence; Data identity and provenance. |
+| D2 Selection | Product precedence and fail-closed equal-rank conflict are accepted. | Finance approval of commercial authority/order and Data mapping. |
+| D3 Freshness | `pricing_as_of` means the business quote date; source validity/currentness governs, with no global TTL. | Finance/Data exact date normalization, boundaries and revocation policy. |
+| D4 Currency/FX | Explicit estimate currency and pinned FX basis are required. | Finance currency allowlist, FX authority, rate policy and conversion stage. |
+| D5 Arithmetic | Decimal-only deterministic calculation; no LLM arithmetic. | Finance precision, traps, rounding, quantization and aggregation profile. |
+| D6 Tax | Explicit approved tax basis; unresolved applicability blocks approval. | Finance/Tax jurisdiction, rates, formulas, inclusion, order and exemptions. |
+| D7 Discounts/overrides | Manual override requires separate human approval; it is not a fallback or source mutation. | Finance limits/approver authority; Security permissions and separation. |
+| D8 Exceptions | Typed fail-closed outcomes; no historical-price fallback. | Security disclosure and audit visibility; Finance/Data exception policy. |
+| D9 Review | Immutable Estimate versions, exact-version reapproval and existing R2 WorkflowRun accepted. | Architecture CAS/atomic boundary; Finance/Security approval authority. |
+| D10 Security/audit | Authority is distinct from access; exact lineage and attribution required. | Security permissions/isolation; Data provenance; Architecture ADR/atomicity. |
 
 ## 3. Decisions D1–D10
 
@@ -54,7 +56,7 @@ Select **Option 2: versioned rule-set selection by service/project class with ex
 - **Accountable roles:** Finance Owner (pricing fact authority); Product Owner (product scope); Data Owner (source identity/lineage); Security Owner (access); Architecture (contract fit).
 - **Implementation impact:** New versioned pricing authority records and approval references; extensions to canonical source/association handoffs are required only if existing contracts cannot carry the approved binding. No second source registry.
 - **Acceptance criteria:** Given an unapproved revision, historical estimate, inaccessible source or LLM-proposed numeric value, no `PricingBasis` is emitted. An approved exact source produces a basis only within its declared scope. Revocation prevents new use without rewriting historical artifacts.
-- **Status:** PROPOSED / PENDING_APPROVAL.
+- **Status:** PRODUCT SCOPE ACCEPTED; FINANCE / DATA AUTHORITY DETAILS PENDING.
 
 ### D2 — Source selection and precedence
 
@@ -72,7 +74,7 @@ Select **Option 2: versioned rule-set selection by service/project class with ex
 - **Accountable roles:** Finance Owner (selection semantics); Product Owner (class model); Data Owner (source keys); Security Owner (candidate visibility); Architecture.
 - **Implementation impact:** New deterministic resolver contract and typed conflict outcome. The Context Broker supplies authorized evidence but does not choose commercial authority. Any `proposal.pricing.v1` Context Profile must select candidate evidence narrowly; it cannot grant price authority.
 - **Acceptance criteria:** Golden candidate sets prove each tier, scope mismatch exclusion, exact tie conflict, and stable identical result independent of candidate ordering. Unauthorized candidates are not disclosed and cannot affect selection.
-- **Status:** PROPOSED / PENDING_APPROVAL.
+- **Status:** PRODUCT PRECEDENCE ACCEPTED; FINANCE / DATA VALIDATION PENDING.
 
 ### D3 — Price freshness and effective period
 
@@ -84,7 +86,7 @@ Select **Option 2: versioned rule-set selection by service/project class with ex
 - **Accountable roles:** Finance Owner (validity); Product Owner (business date); Data Owner (revision/current pointers); Security Owner (revocation access); Architecture.
 - **Implementation impact:** Exact source-version and policy snapshot on every basis and calculation. Existing SourceRevision immutability/current-source patterns are reusable, but pricing approval/effective-period semantics are new contracts.
 - **Acceptance criteria:** Boundary tests at start, exclusive end, supersession and revocation; replay against pinned basis reproduces the original calculation; new calculation refuses revoked/stale basis and does not edit old artifact.
-- **Status:** PROPOSED / PENDING_APPROVAL.
+- **Status:** PRODUCT `pricing_as_of` SEMANTICS ACCEPTED; FINANCE / DATA EFFECTIVE-DATE POLICY PENDING.
 
 ### D4 — Currency and FX authority
 
@@ -96,7 +98,7 @@ Select **Option 2: versioned rule-set selection by service/project class with ex
 - **Accountable roles:** Finance Owner (currency and FX authority); Data Owner (rate provenance); Security Owner (read policy); Product Owner (quote currency); Architecture.
 - **Implementation impact:** New FX basis contract and calculator operation. No provider, bank, rate or numerical example is selected by this package.
 - **Acceptance criteria:** Same exact inputs replay to identical converted amount; wrong pair, inverted rate, stale/unapproved rate and missing rate fail closed; no network request exists in calculator path.
-- **Status:** PROPOSED / PENDING_APPROVAL.
+- **Status:** PRODUCT REQUIREMENT ACCEPTED; FINANCE CURRENCY / FX POLICY PENDING.
 
 ### D5 — Decimal arithmetic and rounding
 
@@ -109,7 +111,7 @@ Select **Option 2: versioned rule-set selection by service/project class with ex
 - **Accountable roles:** Finance Owner (all arithmetic policy); Data Owner (input representation/locale); Architecture (deterministic implementation).
 - **Implementation impact:** Pure Decimal calculator and immutable calculation profile; calculator cannot fetch sources or call models.
 - **Acceptance criteria:** Independent hand-calculated golden vectors cover exact, repeating, half-way up/down, large and small boundary values, quantity fractions, discounts and tax ordering. Same versioned input always yields byte-stable canonical output; NaN/Infinity/float inputs are rejected.
-- **Status:** PROPOSED / PENDING_APPROVAL.
+- **Status:** PRODUCT DETERMINISM / NO-LLM-ARITHMETIC PRINCIPLE ACCEPTED; FINANCE PROFILE PENDING.
 
 ### D6 — Taxes
 
@@ -121,7 +123,7 @@ Select **Option 2: versioned rule-set selection by service/project class with ex
 - **Accountable roles:** Finance/Tax Owner (rules and rates); Data Owner (jurisdiction/category source); Product Owner (required user inputs); Security Owner (sensitive tax data access); Architecture.
 - **Implementation impact:** New tax rule/basis contract and typed unresolved outcome; do not embed country assumptions in the calculator.
 - **Acceptance criteria:** Tests cover inclusive/exclusive prices, discount-before-tax policy, multiple applicable rules, exemption evidence, effective-date boundaries, rounding and unresolved classification. Unknown cases cannot produce an approvable total.
-- **Status:** PROPOSED / PENDING_APPROVAL.
+- **Status:** PRODUCT FAIL-CLOSED PRINCIPLE ACCEPTED; FINANCE / TAX POLICY PENDING.
 
 ### D7 — Discounts and manager overrides
 
@@ -133,7 +135,7 @@ Select **Option 2: versioned rule-set selection by service/project class with ex
 - **Accountable roles:** Finance Owner (limits/approval); Product Owner (manager actions); Security Owner (permission and attribution); Data Owner (basis lineage); Architecture.
 - **Implementation impact:** Workflow command/decision and artifact successor, using existing run and audit seams. No mutable price-list write path.
 - **Acceptance criteria:** Unauthorized edit and self-approved/unapproved override are rejected under approved policy; every accepted override records before/after and approvals; source book digest remains unchanged; material successor cannot inherit predecessor approval.
-- **Status:** PROPOSED / PENDING_APPROVAL.
+- **Status:** PRODUCT SEPARATE-APPROVAL PRINCIPLE ACCEPTED; FINANCE LIMITS / SECURITY AUTHORITY PENDING.
 
 ### D8 — Missing, stale and conflicting pricing
 
@@ -158,7 +160,7 @@ No status falls back silently to an old estimate, adjacent row, LLM-generated pr
 - **Accountable roles:** Product Owner (experience); Finance Owner (pricing resolution); Security Owner (disclosure); Data Owner (source state); Architecture.
 - **Implementation impact:** Typed outcomes and run read-model states; context/access failures must not leak source metadata.
 - **Acceptance criteria:** Every outcome has a deterministic transition and no-money-leak test; all blocked cases preserve source/evidence lineage and cannot pass approval gate.
-- **Status:** PROPOSED / PENDING_APPROVAL.
+- **Status:** PRODUCT FAIL-CLOSED PRINCIPLE ACCEPTED; FINANCE / DATA / SECURITY PARAMETERS PENDING.
 
 ### D9 — Estimate review and reapproval
 
@@ -170,7 +172,7 @@ No status falls back silently to an old estimate, adjacent row, LLM-generated pr
 - **Accountable roles:** Product Owner (lifecycle); Finance Owner (financial approval); Security Owner (authority); Architecture (WorkflowRun/artifact mapping).
 - **Implementation impact:** Extend WorkflowCommand, event/read-model and artifact schemas after confirming the R2 workflow command contract. Existing requirements artifact precedent (ADR-0047/0058) is reusable; a generic proposal approval service is not present and must not be assumed.
 - **Acceptance criteria:** Approval binds one exact artifact version; stale optimistic-concurrency command is rejected; duplicate command replays one stable decision; successor version is not approved by predecessor decision; rejection/recalc remains in the same run.
-- **Status:** PROPOSED / PENDING_APPROVAL.
+- **Status:** PRODUCT IMMUTABILITY / EXACT-REAPPROVAL / SINGLE-WORKFLOW PRINCIPLES ACCEPTED; ARCHITECTURE / FINANCE / SECURITY DETAILS PENDING.
 
 ### D10 — Security, provenance and audit
 
@@ -183,7 +185,7 @@ No status falls back silently to an old estimate, adjacent row, LLM-generated pr
 - **Accountable roles:** Security Owner (authorization/roles); Finance Owner (business authority); Data Owner (identity and provenance); Product Owner (manager scopes); Architecture (boundary and audit fit).
 - **Implementation impact:** Reuse trusted execution context, current AccessPolicy, immutable SourceRevision, tenant-scoped artifacts, Context Broker authorization, canonical AuditEvent and idempotent command digest/outbox. New pricing authority and artifact contracts are needed. No Cognee projection is canonical for prices.
 - **Acceptance criteria:** Two-workspace isolation; denied protected content absent from output/error/audit metadata; every successful line validates exact lineage; changing any pinned digest/version changes calculation identity; repeated identical command/key has one logical effect and stable response; no source mutation on pricing operation.
-- **Status:** PROPOSED / PENDING_APPROVAL.
+- **Status:** PRODUCT SEPARATION / PROVENANCE PRINCIPLES ACCEPTED; SECURITY / DATA / ARCHITECTURE DECISIONS PENDING.
 
 ## 4. Formal contract summary
 
@@ -218,7 +220,7 @@ No second workflow, price store, registry, or authorization system is recommende
 
 ### Explicit blockers / gaps
 
-1. **Human authority is unresolved:** issue #586 has no comments or recorded role approvals. Project Owner selection alone cannot establish Finance, Security or Data policy.
+1. **Human authority is partially recorded:** the Product Owner accepted product-scoped principles against the exact v1.1 package digest. Finance, Security, Data and Architecture decisions remain unrecorded and cannot be inferred from that acceptance.
 2. **No pricing runtime contracts exist:** no `PricingBasis`, `EstimateLine`, `Estimate`, price-source approval, FX/tax/discount rules or deterministic commercial calculator found in current `main`.
 3. **Approval workflow is not generic today:** existing exact-version requirements acceptance is a precedent, not a reusable proposal approval implementation. R2 needs its own typed command/event contract inside the same WorkflowRun.
 4. **No ADR conflict identified.** Existing ADRs explicitly keep source read authority and source associations separate from PricingBasis authority. Should implementation decisions change canonical storage, authority, workflow or audit boundaries, record a new ADR after approvals; do not amend existing ADRs here.
@@ -228,15 +230,15 @@ No second workflow, price store, registry, or authorization system is recommende
 
 | #586 acceptance criterion | Decision | Contract | Future implementation/test | Current readiness |
 |---|---|---|---|---|
-| Product/Finance selects authority, precedence, freshness | D1–D3 | PricingAuthority, PricingRuleSet, PriceSourceRef | Authority binding and versioned resolver; approved source classes/scope/effective-boundary tests | Pending Product + Finance (+ Data for evidence) |
+| Product/Finance selects authority, precedence, freshness | D1–D3 | PricingAuthority, PricingRuleSet, PriceSourceRef | Authority binding and versioned resolver; approved source classes/scope/effective-boundary tests | Product scope accepted; Finance + Data pending |
 | Security/Data confirms read/override roles | D1, D7, D10 | PricingPermissionPolicy, ApprovalRef, AccessPolicy refs | Reauthorize source read and commands; two-workspace/denial tests | Pending Security + Data + Finance |
 | Currency, discount, tax, rounding deterministic | D4–D7 | Money, FXBasis, TaxBasis, DiscountPolicy, CalculationProfile | Pure Decimal engine and boundary golden vectors | Pending Finance/Tax + Data parameters |
 | Missing/stale/conflict and override audited | D7–D9 | PricingOutcome, OverrideDecision, EstimateReviewDecision | Typed blocked outcomes, approval transitions, replay/idempotency tests | Contract spec can follow after human decisions; implementation not approved |
-| Facts distinguished from model conclusions/historical analogues | D1, D2, D8, D10 | Authority-bound PricingBasis vs HistoricalEstimateRef | Adversarial retrieval/resolver tests; no fallback and no LLM money arithmetic | Proposed invariant; role approval pending |
+| Facts distinguished from model conclusions/historical analogues | D1, D2, D8, D10 | Authority-bound PricingBasis vs HistoricalEstimateRef | Adversarial retrieval/resolver tests; no fallback and no LLM money arithmetic | Product principle accepted; Data + Security details pending |
 
 ### Issue #586 closure blockers
 
-Keep #586 **OPEN / PENDING_APPROVAL** until an attributable resolution records the Product Owner decision and rationale; Finance Owner decisions for authority, currency/FX, precision/rounding, taxes, discount/override limits and effective-date policy; Security Owner decisions for pricing-source read, calculation, override, independent approval and disclosure; Data Owner decisions for source identity, revision, mapping and provenance; and Architecture confirmation of reuse/extension boundaries. Each approval identifies the decision IDs, exact package version/digest, actor's role, decision time and accepted parameters or explicit rejection/change. A Product Owner's acknowledgement does not substitute for any other required role.
+Keep #586 **OPEN / PENDING_APPROVAL**. Product Owner scope has been accepted and recorded against v1.1 digest `73c04fc138dcb36c34fff57169085ddbd87ada19b15d8be31dc4eae54b4e8325`. Closure still requires attributable Finance decisions for authority, currency/FX, precision/rounding, taxes, discount/override limits and effective-date policy; Security decisions for pricing-source read, calculation, override, independent approval and disclosure; Data decisions for source identity, revision, mapping and provenance; and Architecture confirmation of reuse/extension boundaries. Each role decision identifies decision IDs, exact package version/digest, actor's role, decision time and accepted parameters or explicit rejection/change. Product Owner approval does not substitute for any other role.
 
 Implementation readiness additionally requires approved parameter values and an approved detailed implementation specification with test vectors. No issue is closed and no `IMPLEMENTATION_APPROVED` status is implied by this proposal or documentation PR.
 
@@ -246,7 +248,7 @@ Use the role-specific forms; do not infer approvals across roles: [Product Owner
 
 | Owner | Must explicitly approve | Cannot be supplied by this package |
 |---|---|---|
-| Project Owner / Product Owner | Option 2 direction; business classes; manager review experience; pricing date semantics; material-change/reapproval scope; proposal lifecycle. | Finance authority, rates, FX source, tax rules or numeric discount caps. |
+| Project Owner / Product Owner | **Recorded ACCEPT** for Option 2, product source classes/scope/order, quote-date meaning, fail-closed behavior, separate override approval, immutable Estimate/reapproval, no LLM arithmetic and existing R2 WorkflowRun. | Finance authority, actual rates, currency allowlist, FX source/rates/stage, Decimal/rounding, tax rules, discount/override limits, Security/Data permissions and mappings, Architecture/ADR acceptance. |
 | Finance / Pricing Data Owner | Source classes/owners; authority approval evidence; rule precedence details; effective date source; quote currency; FX authority/rate policy; Decimal precision and rounding; tax source/jurisdiction/categories/inclusive rules; discount limits; override and estimate approvers. | Security grants or Data source identity decisions unless separately assigned those roles and recorded separately. |
 | Security Owner | Price-content reader/calculator/maintainer/approver principals and policy; least privilege; protected metadata and audit visibility; segregation constraints; delegated service identity. | Finance rate/tax/discount values or Data source correctness. |
 | Data Owner | Canonical structured-source identity/mapping, stable price-item IDs and UOM/currency/tax metadata, revision semantics, provenance quality and data-change/revocation semantics. | Business approval of prices or access grants. |
@@ -254,14 +256,24 @@ Use the role-specific forms; do not infer approvals across roles: [Product Owner
 
 Unresolved parameter register: (1) role/principal map and delegation, (2) service/project class taxonomy, (3) price item/UOM schema, (4) pricing-as-of source/timezone and interval boundary, (5) output currency set, (6) FX source/pairs/as-of/staleness/conversion policy, (7) decimal precision and rounding profile, (8) tax jurisdiction/category/source/period and inclusion mode, (9) discount form/caps/materiality, (10) override reason/evidence/segregation, (11) safe error/audit disclosure, (12) retention class and approved-estimate revocation disposition. None receives an invented value here.
 
-## 8. Ready-to-publish Project Owner comment (draft)
+### Sequential approval plan
 
-The following is a draft for review and publication. It is not posted and contains no approval claim. The Project Owner may approve only the Product/Architecture-scoped items they are authorized to decide; separate role-scoped Finance, Security and Data decisions remain required.
+1. **Product Owner — recorded.** ACCEPT is limited to Option 2 and the product principles listed in the role record, bound to the v1.1 digest above.
+2. **Finance/Tax — next.** Decide authority and precedence for financial facts; allowed source/output currencies; FX authority, exact rate evidence, and after-tax conversion stage; Decimal precision/traps/input scales; rounding mode, quantum and quantization/aggregation points; tax-inclusive/exclusive formulas, jurisdictions, multiple/compound ordering and exemptions; discount forms/limits; override and Estimate approver authority; effective periods, conflicts and missing-rate behavior. No actual tariff/rate/limit is presumed.
+3. **Data Owner.** Approve stable PriceItem identity, exact SourceRevision and row mapping, UOM/currency/tax metadata, provenance quality, source authorization/currentness binding, and revocation/supersession/ambiguity semantics.
+4. **Security Owner.** Approve role-scoped read/calculate/maintain/request/approve permissions, separation of duties, audit disclosure and workspace/environment isolation against the settled source and command contracts.
+5. **Architecture.** Decide canonical pricing-authority ownership and immutable rule-set activation; currentness model; atomic boundary for authorization, exact Estimate approval, CAS, audit and idempotency; reuse of R2 workflow/artifacts. Record a new ADR for this hard-to-reverse authority/atomicity decision before implementation approval; no ADR is approved here.
+
+Each decision is recorded separately by role against the exact current package version/digest. If an approval changes a previously accepted Product Owner principle, return that changed scope to the Project Owner for an attributable decision before implementation readiness.
+
+## 8. Issue decision comment content
+
+This is the status and content to publish as an assistant-authored issue comment. It reports the supplied conversational Product Owner decision with its provenance limitation; it does not represent a GitHub-authored decision or electronic signature by the Project Owner. Separate role-scoped Finance, Security, Data and Architecture decisions remain required.
 
 ```markdown
-## Proposed resolution — Issue #586 (PENDING_APPROVAL)
+## Product Owner scope accepted — Issue #586 (HUMAN_APPROVAL_PENDING)
 
-I propose Option 2: select prices through approved, immutable, versioned rule sets scoped by workspace, environment, service/project class, customer/contract where applicable, and effective period. This proposal does not approve pricing rules or make #586 implementation-ready.
+The Project Owner explicitly accepted Option 2 and the product-scoped D1–D10 principles on 2026-11-07 11:11:07 UTC. The accepted package was v1.1, SHA-256 `73c04fc138dcb36c34fff57169085ddbd87ada19b15d8be31dc4eae54b4e8325`. Exact question and answer, scope and attribution limitations are in the [Product Owner decision record](issue-586-product-owner-decision-v1.md). This reports conversational evidence; it is not a comment authored by the Project Owner, not an electronic signature, and not approval of remaining role decisions.
 
 Recommended source order:
 
@@ -282,7 +294,7 @@ Pricing-source authorization remains distinct from current source-content Access
 
 | Role | Decision requested | Status |
 |---|---|---|
-| Product Owner | Accept/reject Option 2 direction, class/scope semantics, pricing date meaning and review/reapproval behavior. | PENDING_APPROVAL |
+| Product Owner | Option 2 and product-scoped D1–D10 direction. | ACCEPTED, exact scope only |
 | Finance Owner | Approve source authority/precedence, FX authority, currency, Decimal/rounding, tax rules, discounts, override and approval limits. | PENDING_APPROVAL |
 | Security Owner | Approve read/calculate/maintain/override/approve permissions, segregation and safe disclosure/audit scope. | PENDING_APPROVAL |
 | Data Owner | Approve source identity, item/UOM mapping, revision/provenance and revocation semantics. | PENDING_APPROVAL |
@@ -293,7 +305,7 @@ Record each decision against `issue-586-r2-pricing-decision-package-v1` and iden
 
 ## 9. Evidence reviewed
 
-- Current upstream baseline: `origin/main` at `a272e982db26cb92170cd633c279c5857ab112f1` (2026-11-07). Working checkout was on a separate feature branch with pre-existing untracked files; those were left untouched.
+- Initial upstream baseline for the architecture review: `a272e982db26cb92170cd633c279c5857ab112f1`. Re-fetched current `origin/main` at `07caa391bcc221de1c61f099d775db7a0ce2ef2b`; intervening R1 evaluation changes do not touch reviewed pricing boundaries. The working checkout was on a separate feature branch with pre-existing untracked files; those were left untouched.
 - #586 full issue description: Option 2 is its working recommendation, acceptance criteria are unchecked, no native blockers, no comments at review time; [issue #586](https://github.com/alkselsv/spine/issues/586).
 - Parent #584 defines R2 boundaries and says pricing implementation waits for #586; requirements-first slice and #588 interaction decision do not depend on pricing. [Issue #584](https://github.com/alkselsv/spine/issues/584), [#584 handoff comment](https://github.com/alkselsv/spine/issues/584#issuecomment-6467689955).
 - #585 is closed research for governed Google source identity/revision/access and explicitly separates PricingBasis authority. [Issue #585](https://github.com/alkselsv/spine/issues/585).
@@ -308,5 +320,6 @@ Record each decision against `issue-586-r2-pricing-decision-package-v1` and iden
 
 | Version | Date | Change | Approval |
 |---|---|---|---|
-| v1 | 2026-11-07 | Initial recommendation and D1–D10 review package based on main `a272e982`. | None; all decisions pending. |
-| v1.1 | 2026-11-07 | Added a single concrete proposed Finance CalculationProfile, FX-after-tax stage, separate role-scoped approval records and an explicit pre-implementation ADR question after Standards/Spec review. | None; all decisions pending. |
+| v1 | 2026-11-07 | Initial recommendation and D1–D10 review package based on main `a272e982`. | None. |
+| v1.1 | 2026-11-07 | Added a single concrete proposed Finance CalculationProfile, FX-after-tax stage, separate role-scoped approval records and an explicit pre-implementation ADR question after Standards/Spec review. | Product Owner ACCEPT for product scope only, 11:11:07 UTC, exact SHA-256 recorded above; other roles pending. |
+| v1.2 | 2026-11-07 | Status/attribution overlay, granular D1–D10 role status, correction of stale “no approvals” language, and sequential approval plan. Normative product text unchanged from v1.1. | No additional approval; Finance, Security, Data and Architecture remain pending. |
