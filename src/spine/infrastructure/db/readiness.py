@@ -494,6 +494,15 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "email_message_artifacts": ExpectedTablePrivileges(True, True, True, False, False),
         "email_attachment_artifacts": ExpectedTablePrivileges(True, True, True, False, False),
         "email_attachment_processing_receipts": ExpectedTablePrivileges(True, True, True, False, False),
+        "source_disposition_operations": ExpectedTablePrivileges(
+            True, True, True, True, True
+        ),
+        "source_disposition_outbox": ExpectedTablePrivileges(
+            True, True, True, True, True
+        ),
+        "source_erasure_execution_contexts": ExpectedTablePrivileges(
+            True, False, False, False, False
+        ),
         "private_asr_corpus_manifests": ExpectedTablePrivileges(True, True, False, False, False),
         "private_asr_corpus_releases": ExpectedTablePrivileges(True, True, False, False, False),
         "gmail_message_label_observations": ExpectedTablePrivileges(

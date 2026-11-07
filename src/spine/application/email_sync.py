@@ -25,6 +25,8 @@ from spine.domain.sources.email_lifecycle import (
 EMAIL_SYNC_STATE_OBSERVED_EVENT_TYPE = "email.sync.state_observed"
 EMAIL_SYNC_STATE_OBSERVED_SCHEMA_VERSION = 1
 EMAIL_SYNC_STATE_OBSERVED_CONSUMER_NAME = "email_sync_state_observer"
+EMAIL_SYNC_PAGE_DIGEST_V1 = "email-sync-page-digest:v1"
+EMAIL_SYNC_PAGE_DIGEST_V2 = "email-sync-page-digest:v2"
 
 
 class EmailSyncStatus(str, Enum):
@@ -69,8 +71,10 @@ class EmailSyncEffectKind(str, Enum):
 class EmailSyncStateObservation(DefinitionModel):
     """Content-free provider state covered by one incremental checkpoint."""
 
-    schema_version: Literal["email-sync-state-observation:v1"] = (
-        "email-sync-state-observation:v1"
+    schema_version: Literal[
+        "email-sync-state-observation:v1", "email-sync-state-observation:v2"
+    ] = (
+        "email-sync-state-observation:v2"
     )
     observation_id: UUID
     workspace_id: UUID
@@ -197,6 +201,10 @@ class EmailSyncPage(DefinitionModel):
 
     @model_validator(mode="after")
     def validate_effects(self) -> EmailSyncPage:
+        if self.page_id.startswith("erased."):
+            raise ValueError(
+                "page identities prefixed with 'erased.' are reserved for erased page lineage"
+            )
         keys = tuple(effect.effect_key for effect in self.effects)
         if len(keys) != len(set(keys)):
             raise ValueError("page effect keys must be unique")
@@ -218,6 +226,25 @@ class EmailSyncPage(DefinitionModel):
             raise ValueError("a nonterminal page must advance its opaque checkpoint")
         return self
 
+    @classmethod
+    def from_persisted_state(cls, state: EmailSyncPageState) -> EmailSyncPage:
+        """Rebuild an already validated page state, including erased lineage IDs."""
+        return cls.model_construct(
+            workspace_id=state.workspace_id,
+            environment_id=state.environment_id,
+            page_kind=state.page_kind,
+            page_id=state.page_id,
+            requested_checkpoint=state.requested_checkpoint,
+            next_checkpoint=state.next_checkpoint,
+            terminal=state.terminal,
+            publish_checkpoint=state.publish_checkpoint,
+            coverage_terminal=state.coverage_terminal,
+            evidence_digest=state.evidence_digest,
+            evidence_cursor=state.evidence_cursor,
+            effects=state.effects,
+            lifecycle_receipts=state.lifecycle_receipts,
+        )
+
 
 class EmailSyncPageState(DefinitionModel):
     workspace_id: UUID
@@ -225,6 +252,10 @@ class EmailSyncPageState(DefinitionModel):
     page_kind: EmailSyncPageKind = EmailSyncPageKind.PROVIDER_PAGE
     page_id: str = Field(min_length=1, max_length=255, pattern=r"^[A-Za-z0-9_.:-]+$")
     page_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    page_schema_version: Literal["email-sync-page:v1"] = "email-sync-page:v1"
+    page_digest_contract: Literal[
+        "email-sync-page-digest:v1", "email-sync-page-digest:v2"
+    ] = EMAIL_SYNC_PAGE_DIGEST_V1
     requested_checkpoint: str | None = Field(default=None, max_length=4096)
     # Durable retry input; it is not the attempt's published checkpoint until
     # every covered effect has a durable receipt.
@@ -249,7 +280,6 @@ class EmailSyncPageState(DefinitionModel):
             self.lifecycle_receipts,
         )
         return self
-
 
 class EmailSyncAttempt(DefinitionModel):
     attempt_id: UUID
@@ -1111,10 +1141,16 @@ class EmailSyncCoordinator:
 
     @staticmethod
     def _matches(stored: EmailSyncPageState, supplied: EmailSyncPage) -> bool:
-        return stored.page_digest == EmailSyncCoordinator._page_digest(supplied)
+        return stored.page_digest == EmailSyncCoordinator._page_digest(
+            supplied, contract=stored.page_digest_contract
+        )
 
     @staticmethod
-    def _page_digest(page: EmailSyncPage) -> str:
+    def _page_digest(
+        page: EmailSyncPage,
+        *,
+        contract: str = EMAIL_SYNC_PAGE_DIGEST_V1,
+    ) -> str:
         payload = page.model_dump(mode="json")
         if not page.coverage_terminal:
             # Preserve identities written before coverage-terminal was added.
@@ -1123,10 +1159,26 @@ class EmailSyncCoordinator:
             # Preserve the digest of pages created before the semantic kind was
             # introduced; provider-specific kinds remain part of new identity.
             payload.pop("page_kind")
-        encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode(
-            "utf-8"
-        )
+        if contract == EMAIL_SYNC_PAGE_DIGEST_V1:
+            encoded = json.dumps(
+                payload, separators=(",", ":"), ensure_ascii=True
+            ).encode("utf-8")
+        elif contract == EMAIL_SYNC_PAGE_DIGEST_V2:
+            # Mirrors spine.email_sync_page_json_canonical(jsonb): UTF-8
+            # lexical object-key order, compact JSON and literal Unicode.
+            encoded = json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        else:
+            raise ValueError("email sync page digest contract is unsupported")
         return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _page_from_state(state: EmailSyncPageState) -> EmailSyncPage:
+        return EmailSyncPage.from_persisted_state(state)
 
     @staticmethod
     def _records_unusable_coverage(page: EmailSyncPage) -> bool:

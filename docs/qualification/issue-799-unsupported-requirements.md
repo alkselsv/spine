@@ -50,6 +50,20 @@ uv run pytest -q tests/evals/test_unsupported_requirements_gate.py
 The runner verifies that the supplied SHA is an ancestor of the current checkout
 and that every qualified implementation/dataset file is byte-identical to that
 commit. An unrelated or stale SHA produces a fail-closed `NOT_VERIFIED` report.
+The adjacent report is retained with its original tested commit identity. When that
+identity is unavailable or its qualified paths have changed, record a separate
+successor report rather than rewriting the historical artifact.
+
+The current historical JSON report is bound to
+`f3d413007e54285b98913d4016159ee9f3267045` and remains byte-for-byte unchanged
+(SHA-256 `5b2c702c9a9d433734727e291aacb488714cd458a4594b417fca2b0d649c06e8`). The
+prior PR head's report referenced `094cf838e240102886b00224b97955e3822f0dfd`,
+which caused the R1 reproducibility failure after that commit left the checkout's
+ancestry. This is treated as a stale qualification reference, not rewritten
+historical evidence. A separate successor report,
+`issue-799-unsupported-requirements-successor-0e2af248.json`, records the same
+NOT_VERIFIED measurement at `0e2af248f229eafe65660f48776e7e93e6b55bea` without
+changing the historical report identity.
 
 ## Scope and #646 follow-up
 

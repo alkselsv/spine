@@ -32,6 +32,7 @@ from spine.domain.connections.email_scope import (
     EmailProviderOperation,
     MailboxReadScope,
 )
+from spine.domain.sources.gmail import GmailMessageKey, gmail_source_identity
 
 WORKSPACE_ID = UUID("10000000-0000-0000-0000-000000000001")
 ENVIRONMENT_ID = UUID("20000000-0000-0000-0000-000000000002")
@@ -214,6 +215,40 @@ async def test_multi_page_history_commits_terminal_cursor_after_all_effect_recei
         for effect in effects.calls
         if effect.kind is EmailSyncEffectKind.STATE
     )
+    state_observation = next(
+        effect.state_observation
+        for effect in effects.calls
+        if effect.kind is EmailSyncEffectKind.STATE
+    )
+    expected_identity = gmail_source_identity(
+        GmailMessageKey(
+            connection_id=scope().connection_id,
+            mailbox_binding_id=scope().mailbox_binding_id,
+            message_id="message-a",
+        )
+    )
+    assert state_observation.subject_reference_digest == hashlib.sha256(
+        expected_identity.external_object_id.encode("utf-8")
+    ).hexdigest()
+
+
+def test_gmail_state_subject_digest_is_qualified_by_connection_and_mailbox() -> None:
+    key = GmailMessageKey(
+        connection_id=CONNECTION_ID,
+        mailbox_binding_id=MAILBOX_BINDING_ID,
+        message_id="same-provider-local-id",
+    )
+    other_mailbox_key = key.model_copy(
+        update={"mailbox_binding_id": UUID("70000000-0000-0000-0000-000000000008")}
+    )
+    other_connection_key = key.model_copy(
+        update={"connection_id": UUID("30000000-0000-0000-0000-000000000008")}
+    )
+    identities = {
+        gmail_source_identity(candidate).external_object_id
+        for candidate in (key, other_mailbox_key, other_connection_key)
+    }
+    assert len(identities) == 3
 
 
 @pytest.mark.asyncio

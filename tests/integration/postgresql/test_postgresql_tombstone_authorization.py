@@ -122,8 +122,27 @@ async def _repository_case(
     adapter: PersistenceAdapter,
     database: PostgreSQLContractDatabase,
     number: int,
+    *,
+    gmail_source: bool = False,
+    scope: tuple[UUID, UUID] | None = None,
+    create_scope: bool = True,
+    gmail_connection_id: UUID | None = None,
+    gmail_mailbox_binding_id: UUID | None = None,
+    gmail_message_id: str | None = None,
+    accepted_generation: int = 1,
+    reuse_qualification_binding: bool = False,
 ):
-    case = await _prepare_lifecycle_case(adapter, number)
+    case = await _prepare_lifecycle_case(
+        adapter,
+        number,
+        gmail_source=gmail_source,
+        scope=scope,
+        create_scope=create_scope,
+        gmail_connection_id=gmail_connection_id,
+        gmail_mailbox_binding_id=gmail_mailbox_binding_id,
+        gmail_message_id=gmail_message_id,
+        accepted_generation=accepted_generation,
+    )
     async with adapter.uow_factory(case.context) as uow:
         await uow.canonical.accept(case.command)
         await uow.commit()
@@ -140,28 +159,29 @@ async def _repository_case(
     )
     try:
         async with migration_engine.begin() as connection:
-            await connection.execute(
-                text(
-                    "INSERT INTO spine.qualification_authority_bindings ("
-                    "binding_id, version, qualification_id, workspace_id, environment_id, "
-                    "principal_kind, principal_id, purpose, operation, expires_at, status, "
-                    "change_id, recorded_by) VALUES ("
-                    ":binding_id, 1, :qualification_id, :workspace_id, :environment_id, "
-                    "'service', :principal_id, :purpose, :operation, :expires_at, 'active', "
-                    ":change_id, 'issue-735-test')"
-                ),
-                {
-                    "binding_id": authority_reference,
-                    "qualification_id": synthetic_uuid(number + 21),
-                    "workspace_id": case.source.workspace_id,
-                    "environment_id": case.source.environment_id,
-                    "principal_id": evidence_context.service_principal_id,
-                    "purpose": evidence_context.purpose.value,
-                    "operation": evidence_context.operation.value,
-                    "expires_at": NOW + timedelta(days=365),
-                    "change_id": synthetic_uuid(number + 22),
-                },
-            )
+            if not reuse_qualification_binding:
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.qualification_authority_bindings ("
+                        "binding_id, version, qualification_id, workspace_id, environment_id, "
+                        "principal_kind, principal_id, purpose, operation, expires_at, status, "
+                        "change_id, recorded_by) VALUES ("
+                        ":binding_id, 1, :qualification_id, :workspace_id, :environment_id, "
+                        "'service', :principal_id, :purpose, :operation, :expires_at, 'active', "
+                        ":change_id, 'issue-735-test')"
+                    ),
+                    {
+                        "binding_id": authority_reference,
+                        "qualification_id": synthetic_uuid(number + 21),
+                        "workspace_id": case.source.workspace_id,
+                        "environment_id": case.source.environment_id,
+                        "principal_id": evidence_context.service_principal_id,
+                        "purpose": evidence_context.purpose.value,
+                        "operation": evidence_context.operation.value,
+                        "expires_at": NOW + timedelta(days=365),
+                        "change_id": synthetic_uuid(number + 22),
+                    },
+                )
             for statement, parameters in (
                 (
                     "INSERT INTO spine.canonical_human_identities "
@@ -582,7 +602,7 @@ async def test_postgresql_authorization_row_is_immutable(
         assert getattr(raised.value.orig, "sqlstate", None) == "23514"
         assert (
             getattr(getattr(raised.value.orig, "diag", None), "constraint_name", None)
-            == "ck_tombstone_authorizations_immutable"
+            == "ck_governed_source_erasure_only"
         )
     finally:
         await migration_engine.dispose()

@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -47,7 +47,12 @@ from spine.infrastructure.db.settings import (
     MigrationDatabaseSettings,
     OperatorDatabaseSettings,
 )
-from spine.infrastructure.db.test_harness import TestDatabaseProvision
+from spine.infrastructure.db.test_harness import (
+    DISPOSABLE_MARKER_PREFIX,
+    TestDatabaseProvision,
+    TestTarget,
+    validate_target_database_name,
+)
 from spine.infrastructure.persistence.contexts import (
     create_initial_workspace_bootstrap_authority,
 )
@@ -628,6 +633,101 @@ async def migrated_database(
     )
 
 
+@pytest_asyncio.fixture(scope="module", loop_scope="session")
+async def reversible_migration_database(
+    postgresql_provision: TestDatabaseProvision,
+) -> AsyncIterator[MigratedDatabase]:
+    """A separate target stopped at the last reversible migration."""
+    database_name = validate_target_database_name(
+        f"spine_test_k0hist_{uuid4().hex[:12]}"
+    )
+    marker = f"{DISPOSABLE_MARKER_PREFIX}k0-history-{uuid4().hex}"
+    base_url = make_url(postgresql_provision.url.get_secret_value())
+    admin_url = base_url.set(database="postgres")
+    admin_engine = create_async_engine(
+        admin_url.render_as_string(hide_password=False),
+        isolation_level="AUTOCOMMIT",
+        hide_parameters=True,
+    )
+    try:
+        async with admin_engine.connect() as connection:
+            quoted_name = connection.dialect.identifier_preparer.quote(database_name)
+            await connection.execute(text(f"CREATE DATABASE {quoted_name}"))
+            quoted_marker = marker.replace("'", "''")
+            await connection.execute(
+                text(f"COMMENT ON DATABASE {quoted_name} IS '{quoted_marker}'")
+            )
+    finally:
+        await admin_engine.dispose()
+
+    target_url = base_url.set(database=database_name)
+    target = TestDatabaseProvision(
+        url=SecretStr(target_url.render_as_string(hide_password=False)),
+        target=TestTarget(
+            database_name=database_name,
+            disposable_marker=SecretStr(marker),
+        ),
+    )
+    operator = OperatorDatabaseSettings(
+        url=target.url,
+        database_name=database_name,
+        migration_role=MIGRATION_ROLE,
+        migration_password=MIGRATION_PASSWORD,
+        runtime_role=RUNTIME_ROLE,
+        runtime_password=RUNTIME_PASSWORD,
+        dispatcher_role=DISPATCHER_ROLE,
+        dispatcher_password=DISPATCHER_PASSWORD,
+    )
+    await bootstrap_database_roles(operator)
+    migration = MigrationDatabaseSettings(
+        url=_role_url(target, MIGRATION_ROLE, MIGRATION_PASSWORD),
+        migration_role=MIGRATION_ROLE,
+        runtime_role=RUNTIME_ROLE,
+        dispatcher_role=DISPATCHER_ROLE,
+    )
+    await asyncio.to_thread(
+        upgrade_database, migration, revision="20270113_112"
+    )
+    historical = MigratedDatabase(
+        operator=operator,
+        migration=migration,
+        runtime_url=_role_url(target, RUNTIME_ROLE, RUNTIME_PASSWORD),
+        retained_revisions=(),
+    )
+    try:
+        yield historical
+    finally:
+        cleanup_engine = create_async_engine(
+            admin_url.render_as_string(hide_password=False),
+            isolation_level="AUTOCOMMIT",
+            hide_parameters=True,
+        )
+        try:
+            async with cleanup_engine.connect() as connection:
+                identity = (
+                    await connection.execute(
+                        text(
+                            "SELECT shobj_description(oid, 'pg_database') AS marker "
+                            "FROM pg_database WHERE datname = :database_name"
+                        ),
+                        {"database_name": database_name},
+                    )
+                ).mappings().one_or_none()
+                if identity is not None:
+                    if identity["marker"] != marker:
+                        raise RuntimeError(
+                            "historical test database ownership marker changed"
+                        )
+                    quoted_name = connection.dialect.identifier_preparer.quote(
+                        database_name
+                    )
+                    await connection.execute(
+                        text(f"DROP DATABASE {quoted_name} WITH (FORCE)")
+                    )
+        finally:
+            await cleanup_engine.dispose()
+
+
 @pytest_asyncio.fixture(loop_scope="session")
 async def tenant_rows(migrated_database: MigratedDatabase) -> AsyncIterator[None]:
     async with _connection(migrated_database.migration.url) as connection:
@@ -904,38 +1004,26 @@ async def test_direct_sql_cannot_bypass_source_canonical_validation(
             workspace_id=WORKSPACE_A,
             environment_id=ENVIRONMENT_A,
         )
-        await connection.execute(insert_source, common)
-        await connection.commit()
-        try:
-            cases = (
-                {"metadata": '{"embedded_title":"Cafe\\u0301"}', "metadata_digest": "c" * 64, "revision_digest": "b" * 64},
-                {"metadata": '{"embedded_title":"Café","document_language":"en-us"}', "metadata_digest": "4220b54f52008ad8e811d63115836744d69106765438ca9d7fa670f0caa9b536", "revision_digest": "b" * 64},
-            )
-            for case in cases:
+        cases = (
+            {"metadata": '{"embedded_title":"Cafe\\u0301"}', "metadata_digest": "c" * 64, "revision_digest": "b" * 64},
+            {"metadata": '{"embedded_title":"Café","document_language":"en-us"}', "metadata_digest": "4220b54f52008ad8e811d63115836744d69106765438ca9d7fa670f0caa9b536", "revision_digest": "b" * 64},
+        )
+        for case in cases:
+            try:
+                await _set_tenant_context(
+                    connection,
+                    workspace_id=WORKSPACE_A,
+                    environment_id=ENVIRONMENT_A,
+                )
+                await connection.execute(insert_source, common)
                 with pytest.raises((IntegrityError, DBAPIError)):
-                    await connection.execute(insert_revision, {**common, "revision_id": revision_id, **case})
+                    await connection.execute(
+                        insert_revision,
+                        {**common, "revision_id": revision_id, **case},
+                    )
                     await connection.commit()
+            finally:
                 await connection.rollback()
-        finally:
-            await connection.rollback()
-    async with _connection(migrated_database.migration.url) as connection:
-        await connection.execute(
-            text(
-                "ALTER TABLE spine.source_objects "
-                "DISABLE TRIGGER trg_source_objects_immutable"
-            )
-        )
-        await connection.execute(
-            text("DELETE FROM spine.source_objects WHERE source_object_id = :source_id"),
-            {"source_id": source_id},
-        )
-        await connection.execute(
-            text(
-                "ALTER TABLE spine.source_objects "
-                "ENABLE TRIGGER trg_source_objects_immutable"
-            )
-        )
-        await connection.commit()
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -1180,6 +1268,9 @@ async def test_source_observation_catalog_and_runtime_security_contract(
             "pol_source_objects_tenant_isolation", "pol_source_objects_migration_maintenance",
             "pol_source_revisions_tenant_isolation", "pol_source_revisions_migration_maintenance",
             "pol_source_revision_provenance_tenant_isolation", "pol_source_revision_provenance_migration_maintenance",
+            "pol_source_objects_erasure_executor",
+            "pol_source_revisions_erasure_executor",
+            "pol_source_revision_provenance_erasure_executor",
         }
         tenant_policies = [
             value for name, value in policies.items() if name.endswith("tenant_isolation")
@@ -1300,26 +1391,6 @@ async def test_runtime_role_cannot_mutate_profile_or_immutable_source_rows(
     source_id = UUID("40000000-0000-0000-0000-000000000021")
     async with _connection(migrated_database.runtime_url) as connection:
         assert await connection.scalar(text("SELECT current_user")) == RUNTIME_ROLE
-        await _set_tenant_context(
-            connection,
-            workspace_id=WORKSPACE_A,
-            environment_id=ENVIRONMENT_A,
-        )
-        await connection.execute(
-            text(
-                "INSERT INTO spine.source_objects "
-                "(source_object_id, workspace_id, environment_id, source_kind, "
-                "identity_mode, upload_identity, created_at) VALUES "
-                "(:source_id, :workspace_id, :environment_id, 'document', "
-                "'upload', 'runtime-security-test', now())"
-            ),
-            {
-                "source_id": source_id,
-                "workspace_id": WORKSPACE_A,
-                "environment_id": ENVIRONMENT_A,
-            },
-        )
-        await connection.commit()
         for statement in (
             "INSERT INTO spine.source_canonical_unicode "
             "(codepoint, combining_class, is_whitespace) VALUES (1, 0, false)",
@@ -1328,22 +1399,29 @@ async def test_runtime_role_cannot_mutate_profile_or_immutable_source_rows(
             "DELETE FROM spine.source_objects WHERE source_object_id = :source_id",
             "TRUNCATE spine.source_objects",
         ):
+            await _set_tenant_context(
+                connection,
+                workspace_id=WORKSPACE_A,
+                environment_id=ENVIRONMENT_A,
+            )
+            if statement.startswith(("UPDATE", "DELETE")):
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.source_objects "
+                        "(source_object_id, workspace_id, environment_id, source_kind, "
+                        "identity_mode, upload_identity, created_at) VALUES "
+                        "(:source_id, :workspace_id, :environment_id, 'document', "
+                        "'upload', 'runtime-security-test', now())"
+                    ),
+                    {
+                        "source_id": source_id,
+                        "workspace_id": WORKSPACE_A,
+                        "environment_id": ENVIRONMENT_A,
+                    },
+                )
             with pytest.raises((ProgrammingError, DBAPIError)):
                 await connection.execute(text(statement), {"source_id": source_id})
             await connection.rollback()
-
-    async with _connection(migrated_database.migration.url) as connection:
-        await connection.execute(
-            text("ALTER TABLE spine.source_objects DISABLE TRIGGER trg_source_objects_immutable")
-        )
-        await connection.execute(
-            text("DELETE FROM spine.source_objects WHERE source_object_id = :source_id"),
-            {"source_id": source_id},
-        )
-        await connection.execute(
-            text("ALTER TABLE spine.source_objects ENABLE TRIGGER trg_source_objects_immutable")
-        )
-        await connection.commit()
 
 
 async def _set_tenant_context(
@@ -1530,6 +1608,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
             row.relname not in policy_tables
             or row.relname.startswith("crm_relationship_")
             or row.relname.startswith("private_asr_corpus_")
+            or row.relname == "source_erasure_execution_contexts"
         )
     }
     policies = {
@@ -1561,6 +1640,8 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         )
         or row.table_name.startswith("crm_relationship_")
         or row.table_name.startswith("private_asr_corpus_")
+        if not row.policy_name.endswith("_erasure_executor")
+        and row.policy_name != "pol_source_erasure_context_executor"
     }
     privilege_names = ("select_ok", "insert_ok", "update_ok", "delete_ok")
     privileges = {
@@ -1665,6 +1746,9 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "source_revisions",
         "source_revision_provenance",
         "source_revision_receipt_associations",
+        "source_disposition_operations",
+        "source_disposition_outbox",
+        "source_erasure_execution_contexts",
         "trusted_content_verification_evidence",
         "ingestion_runs",
         "ingestion_run_sources",
@@ -2515,6 +2599,12 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
     assert indexes == {
         "alembic_version_pkc",
         "ix_environments_workspace_id",
+        "pk_source_disposition_operations",
+        "ix_source_disposition_operations_expiry",
+        "pk_source_disposition_outbox",
+        "uq_source_disposition_outbox_operation_event",
+        "ix_source_disposition_outbox_created",
+        "source_erasure_execution_contexts_pkey",
         "pk_qualified_deletion_evidence",
         "uq_qualified_deletion_evidence_exact",
         "pk_source_deletion_policy_approvals",
@@ -2550,6 +2640,12 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "uq_initial_workspace_bootstrap_workspace_id",
         "uq_outbox_intents_environment_producer",
         "uq_outbox_intents_workspace_producer",
+        "pk_source_disposition_operations",
+        "pk_source_disposition_outbox",
+        "source_erasure_execution_contexts_pkey",
+        "uq_source_disposition_outbox_operation_event",
+        "ix_source_disposition_outbox_created",
+        "ix_source_disposition_operations_expiry",
         "uq_workspaces_slug",
         "pk_drive_snapshot_runs",
         "uq_drive_snapshot_runs_idempotency",
@@ -2818,6 +2914,9 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
     expected_rls = {
         "workspaces": (True, True),
         "environments": (True, True),
+        "source_disposition_operations": (True, True),
+        "source_disposition_outbox": (True, True),
+        "source_erasure_execution_contexts": (True, True),
         "email_sync_attempts": (True, True),
         "email_sync_pages": (True, True),
         "email_sync_effect_receipts": (True, True),
@@ -2826,6 +2925,9 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "email_attachment_artifacts": (True, True),
         "private_asr_corpus_manifests": (True, True),
         "private_asr_corpus_releases": (True, True),
+        "source_disposition_operations": (True, True),
+        "source_disposition_outbox": (True, True),
+        "source_erasure_execution_contexts": (True, True),
         "email_attachment_processing_receipts": (True, True),
         "work_items": (True, True),
         "workflow_runs": (True, True),
@@ -2954,6 +3056,7 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "outbox_deliveries",
         "private_asr_corpus_manifests",
         "private_asr_corpus_releases",
+        "source_erasure_execution_contexts",
     }
     assert set(policies) == {
         (table_name, f"pol_{table_name}_{policy_kind}"[:63])
@@ -2971,7 +3074,39 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         ("private_asr_corpus_manifests", "pol_private_asr_corpus_manifests_migration_maintenance"),
         ("private_asr_corpus_releases", "pol_private_asr_corpus_releases_tenant_isolation"),
         ("private_asr_corpus_releases", "pol_private_asr_corpus_releases_migration_maintenance"),
+        ("email_sync_attempts", "pol_email_sync_attempts_governed_erasure"),
+        ("email_sync_pages", "pol_email_sync_pages_governed_erasure"),
+        ("email_sync_effect_receipts", "pol_email_sync_effect_receipts_governed_erasure"),
+        ("email_sync_state_observations", "pol_email_sync_state_observations_governed_erasure"),
+        ("outbox_intents", "pol_outbox_intents_governed_erasure"),
+        ("outbox_deliveries", "pol_outbox_deliveries_governed_erasure"),
+        ("email_sync_attempts", "pol_email_sync_attempts_governed_erasure"),
+        ("email_sync_pages", "pol_email_sync_pages_governed_erasure"),
+        ("email_sync_effect_receipts", "pol_email_sync_effect_receipts_governed_erasure"),
+        ("email_sync_state_observations", "pol_email_sync_state_observations_governed_erasure"),
+        ("outbox_intents", "pol_outbox_intents_governed_erasure"),
+        ("outbox_deliveries", "pol_outbox_deliveries_governed_erasure"),
     }
+    erasure_policies = (
+        await connection.execute(
+            text(
+                "SELECT relation.relname AS table_name, policy.polname AS policy_name, "
+                "relation.relrowsecurity AS rls_enabled, "
+                "relation.relforcerowsecurity AS rls_forced, "
+                "ARRAY(SELECT role.rolname FROM pg_roles AS role "
+                "WHERE role.oid = ANY(policy.polroles)) AS roles "
+                "FROM pg_policy AS policy "
+                "JOIN pg_class AS relation ON relation.oid = policy.polrelid "
+                "JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
+                "WHERE namespace.nspname = 'spine' AND "
+                "(policy.polname LIKE '%_erasure_executor' OR "
+                "policy.polname = 'pol_source_erasure_context_executor')"
+            )
+        )
+    ).mappings().all()
+    assert erasure_policies
+    assert all(tuple(row.roles) == ("spine_erasure_executor",) for row in erasure_policies)
+    assert all(row.rls_enabled and row.rls_forced for row in erasure_policies)
     for table_name in standard_tenant_rls_tables:
         tenant_policy = policies[
             (table_name, f"pol_{table_name}_tenant_isolation"[:63])
@@ -3022,6 +3157,9 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
     )
     assert privileges == {
         "alembic_version": (True, False, False, False),
+        "source_disposition_operations": (True, True, True, True),
+        "source_disposition_outbox": (True, True, True, True),
+        "source_erasure_execution_contexts": (False, False, False, False),
         "audit_events": (True, True, False, False),
         "workspaces": (True, True, True, True),
         "environments": (True, True, True, True),
@@ -3662,6 +3800,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "email_attachment_processing_receipts",
         "private_asr_corpus_manifests",
         "private_asr_corpus_releases",
+        "source_disposition_operations",
+        "source_disposition_outbox",
+        "source_erasure_execution_contexts",
     }
     assert constraints == {
         "alembic_version_pkc",
@@ -3732,6 +3873,18 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "ck_outbox_intents_payload_object",
         "ck_outbox_intents_producer_deduplication_id_length",
         "pk_outbox_intents",
+        "pk_source_disposition_operations",
+        "fk_source_disposition_operations_environment",
+        "ck_source_disposition_operations_ck_source_disposition__99d4",
+        "ck_source_disposition_operations_ck_source_disposition__5650",
+        "ck_source_disposition_operations_ck_source_disposition__1db3",
+        "ck_source_disposition_operations_ck_source_disposition__4c3a",
+        "pk_source_disposition_outbox",
+        "fk_source_disposition_outbox_operation",
+        "uq_source_disposition_outbox_operation_event",
+        "ck_source_disposition_outbox_ck_source_disposition_outb_cf86",
+        "ck_source_disposition_canonical_erasure_state",
+        "source_erasure_execution_contexts_pkey",
         "pk_workspaces",
         "pk_context_profiles",
         "uq_context_profiles_identity_digest",
@@ -3961,6 +4114,32 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         ("private_asr_corpus_releases", "manifest_sha256"),
         ("private_asr_corpus_releases", "status"),
         ("private_asr_corpus_releases", "updated_at"),
+        ("source_disposition_operations", "workspace_id"),
+        ("source_disposition_operations", "environment_id"),
+        ("source_disposition_operations", "operation_id"),
+        ("source_disposition_operations", "request_digest"),
+        ("source_disposition_operations", "state_version"),
+        ("source_disposition_operations", "status"),
+        ("source_disposition_operations", "fence_active"),
+        ("source_disposition_operations", "operation_data"),
+        ("source_disposition_operations", "completion_ack_expires_at"),
+        ("source_disposition_operations", "created_at"),
+        ("source_disposition_operations", "updated_at"),
+        ("source_disposition_operations", "canonical_erasure_state"),
+        ("source_disposition_operations", "canonical_erasure_completed_at"),
+        ("source_disposition_outbox", "event_id"),
+        ("source_disposition_outbox", "workspace_id"),
+        ("source_disposition_outbox", "environment_id"),
+        ("source_disposition_outbox", "operation_id"),
+        ("source_disposition_outbox", "event_type"),
+        ("source_disposition_outbox", "created_at"),
+        ("source_erasure_execution_contexts", "transaction_id"),
+        ("source_erasure_execution_contexts", "workspace_id"),
+        ("source_erasure_execution_contexts", "environment_id"),
+        ("source_erasure_execution_contexts", "operation_id"),
+        ("source_erasure_execution_contexts", "source_object_id"),
+        ("source_erasure_execution_contexts", "target_table"),
+        ("source_erasure_execution_contexts", "target_record"),
     } | AUTHORIZATION_DIRECTORY_COLUMNS | AUDIT_COLUMNS | DELIVERY_COLUMNS | ADMISSION_COLUMNS
     assert columns[("workspaces", "id")] == ("uuid", "NO", None)
     assert columns[("environments", "id")] == ("uuid", "NO", None)
@@ -4009,6 +4188,12 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "uq_initial_workspace_bootstrap_workspace_id",
         "uq_outbox_intents_environment_producer",
         "uq_outbox_intents_workspace_producer",
+        "pk_source_disposition_operations",
+        "pk_source_disposition_outbox",
+        "source_erasure_execution_contexts_pkey",
+        "uq_source_disposition_outbox_operation_event",
+        "ix_source_disposition_outbox_created",
+        "ix_source_disposition_operations_expiry",
         "uq_workspaces_slug",
         "pk_email_sync_attempts",
         "pk_email_sync_pages",
@@ -4506,7 +4691,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'current_source_deletion_policy_approvals', 'tombstone_authorization_issuers', "
                         "'current_tombstone_authorization_issuers', 'tombstone_authorizations', "
                         "'tombstone_authorization_decisions', 'current_tombstone_authorization_decisions', "
-                        "'email_attachment_processing_receipts')"
+                        "'email_attachment_processing_receipts', "
+                        "'source_disposition_operations', 'source_disposition_outbox', "
+                        "'source_erasure_execution_contexts')"
                     )
                 )
             )
@@ -4539,6 +4726,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
 
     assert tables == {
         "admission_decisions": (True, True),
+        "source_disposition_operations": (True, True),
+        "source_disposition_outbox": (True, True),
+        "source_erasure_execution_contexts": (True, True),
         "workspaces": (True, True),
         "environments": (True, True),
         "work_items": (True, True),
@@ -4713,6 +4903,45 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "crm_relationship_v2_state",
         "private_asr_corpus_manifests",
         "private_asr_corpus_releases",
+        "source_erasure_execution_contexts",
+    }
+    source_erasure_tables = (
+        "current_tombstone_authorization_decisions",
+        "tombstone_authorization_decisions",
+        "qualified_deletion_evidence",
+        "current_trusted_canonical_tombstone_selectors",
+        "trusted_canonical_tombstone_selector_versions",
+        "tombstone_authorizations",
+        "admission_decisions",
+        "access_policy_grants",
+        "policy_proposals",
+        "policy_approvals",
+        "policy_activations",
+        "current_access_policies",
+        "access_policy_versions",
+        "current_lifecycle_authorities",
+        "lifecycle_decisions",
+        "lifecycle_observations",
+        "current_retention_applicabilities",
+        "retention_applicabilities",
+        "gmail_message_label_heads",
+        "gmail_message_label_observations",
+        "gmail_message_relationship_evidence",
+        "source_objects",
+        "source_revisions",
+        "source_revision_provenance",
+        "source_revision_receipt_associations",
+        "canonical_acceptances",
+        "current_source_heads",
+        "source_disposition_operations",
+        "current_source_deletion_policy_approvals",
+        "source_deletion_policy_approvals",
+        "current_tombstone_authorization_issuers",
+        "tombstone_authorization_issuers",
+    )
+    source_erasure_policies = {
+        (table_name, f"pol_{table_name}_erasure_executor"[:63])
+        for table_name in source_erasure_tables
     }
     assert set(policies) == {
         (table_name, f"pol_{table_name}_{policy_kind}"[:63])
@@ -4743,7 +4972,14 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "private_asr_corpus_releases",
             "pol_private_asr_corpus_releases_migration_maintenance",
         ),
-    }
+        ("source_erasure_execution_contexts", "pol_source_erasure_context_executor"),
+        ("email_sync_attempts", "pol_email_sync_attempts_governed_erasure"),
+        ("email_sync_pages", "pol_email_sync_pages_governed_erasure"),
+        ("email_sync_effect_receipts", "pol_email_sync_effect_receipts_governed_erasure"),
+        ("email_sync_state_observations", "pol_email_sync_state_observations_governed_erasure"),
+        ("outbox_intents", "pol_outbox_intents_governed_erasure"),
+        ("outbox_deliveries", "pol_outbox_deliveries_governed_erasure"),
+    } | source_erasure_policies
     for table_name in standard_tables:
         roles, using_expression, check_expression = policies[
             (table_name, f"pol_{table_name}_tenant_isolation"[:63])
@@ -5364,14 +5600,35 @@ async def test_k0_receipt_integrity_objects_are_catalogued_and_restricted(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_k0_migration_downgrades_and_reupgrades_cleanly(
-    migrated_database: MigratedDatabase,
+    reversible_migration_database: MigratedDatabase,
 ) -> None:
     config_path, script_location = locate_migration_assets()
     config = Config(str(config_path))
     config.set_main_option("script_location", str(script_location))
-    config.attributes["migration_settings"] = migrated_database.migration
+    config.attributes["migration_settings"] = reversible_migration_database.migration
+    async with _connection(
+        reversible_migration_database.migration.url
+    ) as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO spine.workspaces (id, slug, display_name) "
+                "VALUES (:workspace_id, 'k0-history', 'K0 History')"
+            ),
+            {"workspace_id": WORKSPACE_A},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO spine.environments "
+                "(id, workspace_id, kind, display_name) "
+                "VALUES (:environment_id, :workspace_id, 'development', 'K0 History')"
+            ),
+            {"environment_id": ENVIRONMENT_A, "workspace_id": WORKSPACE_A},
+        )
+        await connection.commit()
     await asyncio.to_thread(command.downgrade, config, "20261220_88")
-    async with _connection(migrated_database.migration.url) as connection:
+    async with _connection(
+        reversible_migration_database.migration.url
+    ) as connection:
         assert await connection.scalar(text(
             "SELECT enabled FROM spine.crm_relationship_v2_state WHERE singleton"
         )) is False
@@ -5380,7 +5637,7 @@ async def test_k0_migration_downgrades_and_reupgrades_cleanly(
             "WHERE table_schema = 'spine' AND table_name LIKE 'crm_relationship_%'"
         )) == 10
         assert await connection.scalar(text("SELECT version_num FROM spine.alembic_version")) == "20261220_88"
-    async with _connection(migrated_database.runtime_url) as connection:
+    async with _connection(reversible_migration_database.runtime_url) as connection:
         await _set_tenant_context(
             connection, workspace_id=WORKSPACE_A, environment_id=ENVIRONMENT_A,
         )
@@ -5397,12 +5654,20 @@ async def test_k0_migration_downgrades_and_reupgrades_cleanly(
             })
         await connection.rollback()
 
-    await asyncio.to_thread(upgrade_database, migrated_database.migration)
-    async with _connection(migrated_database.migration.url) as connection:
+    await asyncio.to_thread(
+        upgrade_database,
+        reversible_migration_database.migration,
+        revision="20270113_112",
+    )
+    async with _connection(
+        reversible_migration_database.migration.url
+    ) as connection:
         assert await connection.scalar(text(
             "SELECT enabled FROM spine.crm_relationship_v2_state WHERE singleton"
         )) is False
-        assert await connection.scalar(text("SELECT version_num FROM spine.alembic_version")) == HEAD_REVISION
+        assert await connection.scalar(
+            text("SELECT version_num FROM spine.alembic_version")
+        ) == "20270113_112"
 
 
 @pytest_asyncio.fixture
@@ -6179,6 +6444,10 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20270110_109_gmail_message_state.py",
         "20270111_110_tombstone_authorization.py",
         "20270112_111_canonical_tombstone_v3.py",
+        "20270113_112_source_disposition_state.py",
+        "20270114_113_governed_source_erasure.py",
+        "20270115_114_removable_email_sync_lineage.py",
+        "20270116_115_governed_attachment_processing_erasure.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "transactional_failure_probe.py").write_text(

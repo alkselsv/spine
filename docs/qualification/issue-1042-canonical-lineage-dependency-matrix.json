@@ -1,0 +1,4390 @@
+{
+  "foreign_keys": [
+    {
+      "child_table": "access_policy_grants",
+      "constraint_name": "fk_access_policy_grants_policy",
+      "parent_table": "access_policy_versions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, access_policy_version_id) REFERENCES spine.access_policy_versions(workspace_id, environment_id, source_object_id, access_policy_version_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "access_policy_versions",
+      "constraint_name": "fk_access_policy_versions_predecessor",
+      "parent_table": "access_policy_versions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, predecessor_policy_version_id) REFERENCES spine.access_policy_versions(workspace_id, environment_id, source_object_id, access_policy_version_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "access_policy_versions",
+      "constraint_name": "fk_access_policy_versions_source",
+      "parent_table": "source_objects",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id) REFERENCES spine.source_objects(workspace_id, environment_id, source_object_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "admission_decisions",
+      "constraint_name": "fk_admission_decisions_predecessor",
+      "parent_table": "admission_decisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_revision_id, predecessor_decision_id) REFERENCES spine.admission_decisions(workspace_id, environment_id, source_revision_id, admission_decision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "admission_decisions",
+      "constraint_name": "fk_admission_decisions_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "bitrix24_crm_material_acceptances",
+      "constraint_name": "fk_bitrix24_crm_material_acceptance_claim",
+      "parent_table": "bitrix24_crm_material_claims",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, claim_id) REFERENCES spine.bitrix24_crm_material_claims(workspace_id, environment_id, claim_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "bitrix24_crm_material_acceptances",
+      "constraint_name": "fk_bitrix24_crm_material_acceptance_target",
+      "parent_table": "canonical_acceptances",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, target_source_object_id, target_source_revision_id) REFERENCES spine.canonical_acceptances(workspace_id, environment_id, source_object_id, source_revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "bitrix24_crm_material_claims",
+      "constraint_name": "fk_bitrix24_crm_material_claim_target_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, target_source_object_id, target_source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "bitrix24_crm_material_revocations",
+      "constraint_name": "fk_bitrix24_crm_material_revocation_claim",
+      "parent_table": "bitrix24_crm_material_claims",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, claim_id) REFERENCES spine.bitrix24_crm_material_claims(workspace_id, environment_id, claim_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "canonical_acceptances",
+      "constraint_name": "fk_canonical_acceptances_admission",
+      "parent_table": "admission_decisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_revision_id, admission_decision_id) REFERENCES spine.admission_decisions(workspace_id, environment_id, source_revision_id, admission_decision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "canonical_acceptances",
+      "constraint_name": "fk_canonical_acceptances_audit",
+      "parent_table": "audit_events",
+      "definition": "FOREIGN KEY (audit_event_id) REFERENCES spine.audit_events(audit_event_id) DEFERRABLE INITIALLY DEFERRED",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "canonical_acceptances",
+      "constraint_name": "fk_canonical_acceptances_idempotency",
+      "parent_table": "idempotency_receipts",
+      "definition": "FOREIGN KEY (idempotency_receipt_id) REFERENCES spine.idempotency_receipts(receipt_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "canonical_acceptances",
+      "constraint_name": "fk_canonical_acceptances_outbox",
+      "parent_table": "outbox_intents",
+      "definition": "FOREIGN KEY (outbox_event_id) REFERENCES spine.outbox_intents(event_id) DEFERRABLE INITIALLY DEFERRED",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "canonical_acceptances",
+      "constraint_name": "fk_canonical_acceptances_policy",
+      "parent_table": "access_policy_versions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, access_policy_version_id) REFERENCES spine.access_policy_versions(workspace_id, environment_id, source_object_id, access_policy_version_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "canonical_acceptances",
+      "constraint_name": "fk_canonical_acceptances_processing_admission",
+      "parent_table": "source_processing_admissions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id, processing_admission_id) REFERENCES spine.source_processing_admissions(workspace_id, environment_id, source_object_id, source_revision_id, processing_admission_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "canonical_acceptances",
+      "constraint_name": "fk_canonical_acceptances_provenance",
+      "parent_table": "source_revision_provenance",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, provenance_id) REFERENCES spine.source_revision_provenance(workspace_id, environment_id, source_object_id, provenance_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "canonical_acceptances",
+      "constraint_name": "fk_canonical_acceptances_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "canonical_acceptances",
+      "constraint_name": "fk_canonical_acceptances_source",
+      "parent_table": "source_objects",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id) REFERENCES spine.source_objects(workspace_id, environment_id, source_object_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "canonical_acceptances",
+      "constraint_name": "fk_canonical_acceptances_tombstone_authorization",
+      "parent_table": "tombstone_authorizations",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, tombstone_authorization_id, source_object_id, tombstone_authorization_digest, transition_id) REFERENCES spine.tombstone_authorizations(workspace_id, environment_id, authorization_id, source_object_id, command_digest, transition_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "canonical_boundary_members",
+      "constraint_name": "fk_canonical_boundary_members_acceptance",
+      "parent_table": "canonical_acceptances",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, acceptance_id, source_revision_id, accepted_generation) REFERENCES spine.canonical_acceptances(workspace_id, environment_id, source_object_id, canonical_acceptance_id, source_revision_id, accepted_generation)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "canonical_boundary_members",
+      "constraint_name": "fk_canonical_boundary_members_boundary",
+      "parent_table": "canonical_boundaries",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, boundary_id) REFERENCES spine.canonical_boundaries(workspace_id, environment_id, boundary_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "canonical_boundary_members",
+      "constraint_name": "fk_canonical_boundary_members_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "canonical_boundary_members",
+      "constraint_name": "fk_canonical_boundary_members_source",
+      "parent_table": "source_objects",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id) REFERENCES spine.source_objects(workspace_id, environment_id, source_object_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "corrected_transcript_artifacts",
+      "constraint_name": "fk_corrected_transcripts_original_artifact",
+      "parent_table": "transcription_artifacts",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, original_artifact_id) REFERENCES spine.transcription_artifacts(workspace_id, environment_id, artifact_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "corrected_transcript_artifacts",
+      "constraint_name": "fk_corrected_transcripts_review",
+      "parent_table": "transcript_reviews",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, review_id) REFERENCES spine.transcript_reviews(workspace_id, environment_id, review_id) DEFERRABLE INITIALLY DEFERRED",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_authority_heads",
+      "constraint_name": "fk_crm_rel_authority_event",
+      "parent_table": "crm_relationship_lifecycle_events",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, last_event_id) REFERENCES spine.crm_relationship_lifecycle_events(workspace_id, environment_id, event_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_authority_heads",
+      "constraint_name": "fk_crm_rel_authority_identity",
+      "parent_table": "crm_relationship_identities",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, relationship_key) REFERENCES spine.crm_relationship_identities(workspace_id, environment_id, relationship_key)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_claims",
+      "constraint_name": "fk_crm_rel_claim_audit",
+      "parent_table": "audit_events",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, audit_event_id) REFERENCES spine.audit_events(workspace_id, environment_id, audit_event_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_claims",
+      "constraint_name": "fk_crm_rel_claim_connection_version",
+      "parent_table": "provider_connection_versions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, connection_id, connection_version_id) REFERENCES spine.provider_connection_versions(workspace_id, environment_id, connection_id, connection_version_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_claims",
+      "constraint_name": "fk_crm_rel_claim_identity",
+      "parent_table": "crm_relationship_identities",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, relationship_key) REFERENCES spine.crm_relationship_identities(workspace_id, environment_id, relationship_key)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_claims",
+      "constraint_name": "fk_crm_rel_claim_outbox",
+      "parent_table": "outbox_intents",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, outbox_event_id) REFERENCES spine.outbox_intents(workspace_id, environment_id, event_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_claims",
+      "constraint_name": "fk_crm_rel_claim_profile",
+      "parent_table": "crm_relationship_profiles",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, mapping_profile_id, mapping_profile_version) REFERENCES spine.crm_relationship_profiles(workspace_id, environment_id, profile_id, profile_version)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_claims",
+      "constraint_name": "fk_crm_rel_claim_source_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_eligibility",
+      "constraint_name": "fk_crm_rel_eligibility_claim",
+      "parent_table": "crm_relationship_claims",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, claim_id) REFERENCES spine.crm_relationship_claims(workspace_id, environment_id, claim_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_eligibility",
+      "constraint_name": "fk_crm_rel_eligibility_receipt",
+      "parent_table": "crm_relationship_receipts",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, receipt_id) REFERENCES spine.crm_relationship_receipts(workspace_id, environment_id, receipt_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_eligibility_heads",
+      "constraint_name": "fk_crm_rel_head_claim",
+      "parent_table": "crm_relationship_claims",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, claim_id) REFERENCES spine.crm_relationship_claims(workspace_id, environment_id, claim_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_eligibility_heads",
+      "constraint_name": "fk_crm_rel_head_eligibility",
+      "parent_table": "crm_relationship_eligibility",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, claim_id, eligibility_id) REFERENCES spine.crm_relationship_eligibility(workspace_id, environment_id, claim_id, eligibility_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_lifecycle_events",
+      "constraint_name": "fk_crm_rel_lifecycle_audit",
+      "parent_table": "audit_events",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, audit_event_id) REFERENCES spine.audit_events(workspace_id, environment_id, audit_event_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_lifecycle_events",
+      "constraint_name": "fk_crm_rel_lifecycle_claim",
+      "parent_table": "crm_relationship_claims",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, claim_id) REFERENCES spine.crm_relationship_claims(workspace_id, environment_id, claim_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_lifecycle_events",
+      "constraint_name": "fk_crm_rel_lifecycle_eligibility",
+      "parent_table": "crm_relationship_eligibility",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, claim_id, reapproval_eligibility_id) REFERENCES spine.crm_relationship_eligibility(workspace_id, environment_id, claim_id, eligibility_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_lifecycle_events",
+      "constraint_name": "fk_crm_rel_lifecycle_identity",
+      "parent_table": "crm_relationship_identities",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, relationship_key) REFERENCES spine.crm_relationship_identities(workspace_id, environment_id, relationship_key)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_lifecycle_events",
+      "constraint_name": "fk_crm_rel_lifecycle_outbox",
+      "parent_table": "outbox_intents",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, outbox_event_id) REFERENCES spine.outbox_intents(workspace_id, environment_id, event_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_lifecycle_events",
+      "constraint_name": "fk_crm_rel_lifecycle_predecessor",
+      "parent_table": "crm_relationship_lifecycle_events",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, predecessor_event_id) REFERENCES spine.crm_relationship_lifecycle_events(workspace_id, environment_id, event_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_lifecycle_events",
+      "constraint_name": "fk_crm_rel_lifecycle_receipt",
+      "parent_table": "crm_relationship_receipts",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, reapproval_receipt_id) REFERENCES spine.crm_relationship_receipts(workspace_id, environment_id, receipt_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_receipts",
+      "constraint_name": "fk_crm_rel_receipt_audit",
+      "parent_table": "audit_events",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, audit_event_id) REFERENCES spine.audit_events(workspace_id, environment_id, audit_event_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_receipts",
+      "constraint_name": "fk_crm_rel_receipt_claim",
+      "parent_table": "crm_relationship_claims",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, claim_id) REFERENCES spine.crm_relationship_claims(workspace_id, environment_id, claim_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_receipts",
+      "constraint_name": "fk_crm_rel_receipt_connection_version",
+      "parent_table": "provider_connection_versions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, connection_id, connection_version_id) REFERENCES spine.provider_connection_versions(workspace_id, environment_id, connection_id, connection_version_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_receipts",
+      "constraint_name": "fk_crm_rel_receipt_outbox",
+      "parent_table": "outbox_intents",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, outbox_event_id) REFERENCES spine.outbox_intents(workspace_id, environment_id, event_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "crm_relationship_receipts",
+      "constraint_name": "fk_crm_rel_receipt_profile",
+      "parent_table": "crm_relationship_profiles",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, mapping_profile_id, mapping_profile_version) REFERENCES spine.crm_relationship_profiles(workspace_id, environment_id, profile_id, profile_version)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "current_access_policies",
+      "constraint_name": "fk_current_access_policies_activation",
+      "parent_table": "policy_activations",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, policy_activation_id, access_policy_version_id, policy_generation) REFERENCES spine.policy_activations(workspace_id, environment_id, source_object_id, policy_activation_id, new_policy_version_id, policy_generation)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "current_access_policies",
+      "constraint_name": "fk_current_access_policies_source",
+      "parent_table": "source_objects",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id) REFERENCES spine.source_objects(workspace_id, environment_id, source_object_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "current_disclosure_holds",
+      "constraint_name": "fk_current_disclosure_holds_hold",
+      "parent_table": "disclosure_holds",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, hold_id) REFERENCES spine.disclosure_holds(workspace_id, environment_id, source_object_id, hold_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "current_disclosure_holds",
+      "constraint_name": "fk_current_disclosure_holds_release",
+      "parent_table": "disclosure_hold_releases",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, hold_id, current_release_id) REFERENCES spine.disclosure_hold_releases(workspace_id, environment_id, source_object_id, hold_id, release_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "current_lifecycle_authorities",
+      "constraint_name": "fk_current_lifecycle_authorities_decision",
+      "parent_table": "lifecycle_decisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, current_decision_id, generation) REFERENCES spine.lifecycle_decisions(workspace_id, environment_id, source_object_id, decision_id, generation)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "current_lifecycle_authorities",
+      "constraint_name": "fk_current_lifecycle_authorities_source",
+      "parent_table": "source_objects",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id) REFERENCES spine.source_objects(workspace_id, environment_id, source_object_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "current_retention_applicabilities",
+      "constraint_name": "fk_current_retention_applicabilities_binding",
+      "parent_table": "retention_applicabilities",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, target_kind, target_reference, current_applicability_id, generation) REFERENCES spine.retention_applicabilities(workspace_id, environment_id, target_kind, target_reference, applicability_id, generation)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "current_source_heads",
+      "constraint_name": "fk_current_source_heads_acceptance",
+      "parent_table": "canonical_acceptances",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, acceptance_id) REFERENCES spine.canonical_acceptances(workspace_id, environment_id, canonical_acceptance_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "current_source_heads",
+      "constraint_name": "fk_current_source_heads_acceptance_tuple",
+      "parent_table": "canonical_acceptances",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, acceptance_id, current_revision_id, accepted_generation) REFERENCES spine.canonical_acceptances(workspace_id, environment_id, source_object_id, canonical_acceptance_id, source_revision_id, accepted_generation)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "current_source_heads",
+      "constraint_name": "fk_current_source_heads_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, current_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "current_tombstone_authorization_decisions",
+      "constraint_name": "fk_current_tombstone_authorization_decision",
+      "parent_table": "tombstone_authorization_decisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, authorization_id, current_decision_id, generation) REFERENCES spine.tombstone_authorization_decisions(workspace_id, environment_id, authorization_id, decision_id, generation)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "current_trusted_canonical_tombstone_selectors",
+      "constraint_name": "fk_current_trusted_canonical_tombstone_selector",
+      "parent_table": "trusted_canonical_tombstone_selector_versions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, selector_series_id, current_selector_id) REFERENCES spine.trusted_canonical_tombstone_selector_versions(workspace_id, environment_id, selector_series_id, selector_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "current_trusted_canonical_tombstone_selectors",
+      "constraint_name": "fk_current_trusted_canonical_tombstone_selector_environment",
+      "parent_table": "environments",
+      "definition": "FOREIGN KEY (workspace_id, environment_id) REFERENCES spine.environments(workspace_id, id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "disclosure_hold_releases",
+      "constraint_name": "fk_disclosure_hold_releases_audit_event",
+      "parent_table": "audit_events",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, audit_event_id) REFERENCES spine.audit_events(workspace_id, environment_id, audit_event_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "disclosure_hold_releases",
+      "constraint_name": "fk_disclosure_hold_releases_hold",
+      "parent_table": "disclosure_holds",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, hold_id) REFERENCES spine.disclosure_holds(workspace_id, environment_id, source_object_id, hold_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "disclosure_hold_releases",
+      "constraint_name": "fk_disclosure_hold_releases_outbox_event",
+      "parent_table": "outbox_intents",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, outbox_event_id) REFERENCES spine.outbox_intents(workspace_id, environment_id, event_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "disclosure_hold_releases",
+      "constraint_name": "fk_disclosure_hold_releases_successor",
+      "parent_table": "disclosure_holds",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, superseded_by_hold_id) REFERENCES spine.disclosure_holds(workspace_id, environment_id, source_object_id, hold_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "disclosure_hold_source_revisions",
+      "constraint_name": "fk_disclosure_hold_source_revisions_hold",
+      "parent_table": "disclosure_holds",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, hold_id) REFERENCES spine.disclosure_holds(workspace_id, environment_id, source_object_id, hold_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "disclosure_hold_source_revisions",
+      "constraint_name": "fk_disclosure_hold_source_revisions_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "disclosure_hold_targets",
+      "constraint_name": "fk_disclosure_hold_targets_hold",
+      "parent_table": "disclosure_holds",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, hold_id) REFERENCES spine.disclosure_holds(workspace_id, environment_id, source_object_id, hold_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "disclosure_hold_targets",
+      "constraint_name": "fk_disclosure_hold_targets_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "disclosure_holds",
+      "constraint_name": "fk_disclosure_holds_audit_event",
+      "parent_table": "audit_events",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, audit_event_id) REFERENCES spine.audit_events(workspace_id, environment_id, audit_event_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "disclosure_holds",
+      "constraint_name": "fk_disclosure_holds_evidence",
+      "parent_table": "lifecycle_observations",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, evidence_observation_id) REFERENCES spine.lifecycle_observations(workspace_id, environment_id, source_object_id, observation_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "disclosure_holds",
+      "constraint_name": "fk_disclosure_holds_outbox_event",
+      "parent_table": "outbox_intents",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, outbox_event_id) REFERENCES spine.outbox_intents(workspace_id, environment_id, event_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "disclosure_holds",
+      "constraint_name": "fk_disclosure_holds_review_decision",
+      "parent_table": "lifecycle_decisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, review_decision_id) REFERENCES spine.lifecycle_decisions(workspace_id, environment_id, source_object_id, decision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "disclosure_holds",
+      "constraint_name": "fk_disclosure_holds_source",
+      "parent_table": "source_objects",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id) REFERENCES spine.source_objects(workspace_id, environment_id, source_object_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "disclosure_holds",
+      "constraint_name": "fk_disclosure_holds_superseded_hold",
+      "parent_table": "disclosure_holds",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, supersedes_hold_id) REFERENCES spine.disclosure_holds(workspace_id, environment_id, source_object_id, hold_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "email_attachment_artifacts",
+      "constraint_name": "fk_email_attachment_artifacts_acceptance",
+      "parent_table": "canonical_acceptances",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, canonical_acceptance_id, source_object_id, source_revision_id) REFERENCES spine.canonical_acceptances(workspace_id, environment_id, canonical_acceptance_id, source_object_id, source_revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "email_attachment_artifacts",
+      "constraint_name": "fk_email_attachment_artifacts_environment",
+      "parent_table": "environments",
+      "definition": "FOREIGN KEY (workspace_id, environment_id) REFERENCES spine.environments(workspace_id, id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "email_attachment_artifacts",
+      "constraint_name": "fk_email_attachment_artifacts_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "email_attachment_processing_receipts",
+      "constraint_name": "fk_email_attachment_processing_receipts_attachment",
+      "parent_table": "email_attachment_artifacts",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, attachment_artifact_id) REFERENCES spine.email_attachment_artifacts(workspace_id, environment_id, artifact_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "email_attachment_processing_receipts",
+      "constraint_name": "fk_email_attachment_processing_receipts_child_processing",
+      "parent_table": "processing_receipts",
+      "definition": "FOREIGN KEY (child_processing_receipt_id) REFERENCES spine.processing_receipts(processing_receipt_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "email_attachment_processing_receipts",
+      "constraint_name": "fk_email_attachment_processing_receipts_child_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, child_source_object_id, child_source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "email_attachment_processing_receipts",
+      "constraint_name": "fk_email_attachment_processing_receipts_parsed_artifact",
+      "parent_table": "parsed_documents",
+      "definition": "FOREIGN KEY (parsed_artifact_id) REFERENCES spine.parsed_documents(artifact_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "email_message_artifacts",
+      "constraint_name": "fk_email_message_artifacts_acceptance",
+      "parent_table": "canonical_acceptances",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, canonical_acceptance_id, source_object_id, source_revision_id) REFERENCES spine.canonical_acceptances(workspace_id, environment_id, canonical_acceptance_id, source_object_id, source_revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "email_message_artifacts",
+      "constraint_name": "fk_email_message_artifacts_environment",
+      "parent_table": "environments",
+      "definition": "FOREIGN KEY (workspace_id, environment_id) REFERENCES spine.environments(workspace_id, id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "email_message_artifacts",
+      "constraint_name": "fk_email_message_artifacts_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "gmail_message_label_heads",
+      "constraint_name": "fk_gmail_message_label_head_environment",
+      "parent_table": "environments",
+      "definition": "FOREIGN KEY (workspace_id, environment_id) REFERENCES spine.environments(workspace_id, id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "gmail_message_label_heads",
+      "constraint_name": "fk_gmail_message_label_head_observation",
+      "parent_table": "gmail_message_label_observations",
+      "definition": "FOREIGN KEY (observation_id) REFERENCES spine.gmail_message_label_observations(observation_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "gmail_message_label_observations",
+      "constraint_name": "fk_gmail_label_observation_environment",
+      "parent_table": "environments",
+      "definition": "FOREIGN KEY (workspace_id, environment_id) REFERENCES spine.environments(workspace_id, id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "gmail_message_label_observations",
+      "constraint_name": "fk_gmail_label_observation_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "gmail_message_relationship_evidence",
+      "constraint_name": "fk_gmail_relationship_evidence_environment",
+      "parent_table": "environments",
+      "definition": "FOREIGN KEY (workspace_id, environment_id) REFERENCES spine.environments(workspace_id, id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "gmail_message_relationship_evidence",
+      "constraint_name": "fk_gmail_relationship_evidence_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "ingestion_run_source_bindings",
+      "constraint_name": "fk_ingestion_run_source_bindings_item",
+      "parent_table": "ingestion_run_sources",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, ingestion_run_source_id) REFERENCES spine.ingestion_run_sources(workspace_id, environment_id, ingestion_run_source_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "ingestion_run_source_bindings",
+      "constraint_name": "fk_ingestion_run_source_bindings_original_receipt",
+      "parent_table": "idempotency_receipts",
+      "definition": "FOREIGN KEY (original_receipt_id) REFERENCES spine.idempotency_receipts(receipt_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "ingestion_run_source_bindings",
+      "constraint_name": "fk_ingestion_run_source_bindings_receipt",
+      "parent_table": "idempotency_receipts",
+      "definition": "FOREIGN KEY (idempotency_receipt_id) REFERENCES spine.idempotency_receipts(receipt_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "ingestion_run_source_bindings",
+      "constraint_name": "fk_ingestion_run_source_bindings_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "lifecycle_decisions",
+      "constraint_name": "fk_lifecycle_decisions_audit_event",
+      "parent_table": "audit_events",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, audit_event_id) REFERENCES spine.audit_events(workspace_id, environment_id, audit_event_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "lifecycle_decisions",
+      "constraint_name": "fk_lifecycle_decisions_exact_observation_binding",
+      "parent_table": "lifecycle_observations",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, observation_id, connection_id, connection_version_id, scope_reference, scope_version_id, scope_digest) REFERENCES spine.lifecycle_observations(workspace_id, environment_id, source_object_id, observation_id, connection_id, connection_version_id, scope_reference, scope_version_id, scope_digest)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "lifecycle_decisions",
+      "constraint_name": "fk_lifecycle_decisions_observation",
+      "parent_table": "lifecycle_observations",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, observation_id) REFERENCES spine.lifecycle_observations(workspace_id, environment_id, source_object_id, observation_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "lifecycle_decisions",
+      "constraint_name": "fk_lifecycle_decisions_outbox_event",
+      "parent_table": "outbox_intents",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, outbox_event_id) REFERENCES spine.outbox_intents(workspace_id, environment_id, event_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "lifecycle_decisions",
+      "constraint_name": "fk_lifecycle_decisions_source",
+      "parent_table": "source_objects",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id) REFERENCES spine.source_objects(workspace_id, environment_id, source_object_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "lifecycle_observations",
+      "constraint_name": "fk_lifecycle_observations_environment",
+      "parent_table": "environments",
+      "definition": "FOREIGN KEY (workspace_id, environment_id) REFERENCES spine.environments(workspace_id, id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "lifecycle_observations",
+      "constraint_name": "fk_lifecycle_observations_source",
+      "parent_table": "source_objects",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, connection_id) REFERENCES spine.source_objects(workspace_id, environment_id, source_object_id, connection_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "parsed_document_segments",
+      "constraint_name": "fk_parsed_segments_document",
+      "parent_table": "parsed_documents",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, artifact_id) REFERENCES spine.parsed_documents(workspace_id, environment_id, artifact_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "parsed_documents",
+      "constraint_name": "fk_parsed_documents_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "policy_activations",
+      "constraint_name": "fk_policy_activations_approval",
+      "parent_table": "policy_approvals",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, policy_approval_id, policy_proposal_id, policy_proposal_version, policy_proposal_hash, policy_approval_decision) REFERENCES spine.policy_approvals(workspace_id, environment_id, source_object_id, policy_approval_id, policy_proposal_id, proposal_version, proposal_hash, decision)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "policy_activations",
+      "constraint_name": "fk_policy_activations_audit",
+      "parent_table": "audit_events",
+      "definition": "FOREIGN KEY (audit_event_id) REFERENCES spine.audit_events(audit_event_id) DEFERRABLE INITIALLY DEFERRED",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "policy_activations",
+      "constraint_name": "fk_policy_activations_idempotency",
+      "parent_table": "idempotency_receipts",
+      "definition": "FOREIGN KEY (idempotency_receipt_id) REFERENCES spine.idempotency_receipts(receipt_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "policy_activations",
+      "constraint_name": "fk_policy_activations_new_policy",
+      "parent_table": "access_policy_versions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, new_policy_version_id) REFERENCES spine.access_policy_versions(workspace_id, environment_id, source_object_id, access_policy_version_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "policy_activations",
+      "constraint_name": "fk_policy_activations_outbox",
+      "parent_table": "outbox_intents",
+      "definition": "FOREIGN KEY (outbox_event_id) REFERENCES spine.outbox_intents(event_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "policy_activations",
+      "constraint_name": "fk_policy_activations_predecessor",
+      "parent_table": "access_policy_versions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, predecessor_policy_version_id) REFERENCES spine.access_policy_versions(workspace_id, environment_id, source_object_id, access_policy_version_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "policy_activations",
+      "constraint_name": "fk_policy_activations_proposal",
+      "parent_table": "policy_proposals",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, policy_proposal_id, policy_proposal_version, policy_proposal_hash) REFERENCES spine.policy_proposals(workspace_id, environment_id, source_object_id, policy_proposal_id, proposal_version, proposed_policy_hash)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "policy_approvals",
+      "constraint_name": "fk_policy_approvals_exact_proposal",
+      "parent_table": "policy_proposals",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, policy_proposal_id, proposal_version, proposal_hash) REFERENCES spine.policy_proposals(workspace_id, environment_id, source_object_id, policy_proposal_id, proposal_version, proposed_policy_hash)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "policy_proposals",
+      "constraint_name": "fk_policy_proposals_policy",
+      "parent_table": "access_policy_versions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, proposed_policy_version_id) REFERENCES spine.access_policy_versions(workspace_id, environment_id, source_object_id, access_policy_version_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "policy_proposals",
+      "constraint_name": "fk_policy_proposals_predecessor",
+      "parent_table": "policy_proposals",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, predecessor_proposal_id) REFERENCES spine.policy_proposals(workspace_id, environment_id, source_object_id, policy_proposal_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "process_only_operation_lineages",
+      "constraint_name": "fk_process_only_lineages_authorization_audit",
+      "parent_table": "audit_events",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, authorization_audit_event_id) REFERENCES spine.audit_events(workspace_id, environment_id, audit_event_id) DEFERRABLE INITIALLY DEFERRED",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "process_only_operation_lineages",
+      "constraint_name": "fk_process_only_lineages_canonical_acceptance",
+      "parent_table": "canonical_acceptances",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, canonical_acceptance_id, source_revision_id, canonical_accepted_generation, processing_admission_id, processing_policy_version_id) REFERENCES spine.canonical_acceptances(workspace_id, environment_id, source_object_id, canonical_acceptance_id, source_revision_id, accepted_generation, processing_admission_id, access_policy_version_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "process_only_operation_lineages",
+      "constraint_name": "fk_process_only_lineages_item",
+      "parent_table": "ingestion_run_sources",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, ingestion_run_source_id) REFERENCES spine.ingestion_run_sources(workspace_id, environment_id, ingestion_run_source_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "process_only_operation_lineages",
+      "constraint_name": "fk_process_only_lineages_lifecycle",
+      "parent_table": "lifecycle_decisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, lifecycle_eligibility_reference, lifecycle_eligibility_generation) REFERENCES spine.lifecycle_decisions(workspace_id, environment_id, source_object_id, decision_id, generation)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "process_only_operation_lineages",
+      "constraint_name": "fk_process_only_lineages_processing_admission",
+      "parent_table": "source_processing_admissions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id, processing_admission_id, receipt_association_id, original_receipt_digest, verified_byte_length, lifecycle_eligibility_reference, lifecycle_eligibility_generation, retention_applicability_reference, retention_applicability_generation) REFERENCES spine.source_processing_admissions(workspace_id, environment_id, source_object_id, source_revision_id, processing_admission_id, receipt_association_id, verified_sha256, verified_byte_length, lifecycle_eligibility_reference, lifecycle_eligibility_generation, retention_applicability_reference, retention_applicability_generation)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "process_only_operation_lineages",
+      "constraint_name": "fk_process_only_lineages_processing_policy",
+      "parent_table": "access_policy_versions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, processing_policy_version_id) REFERENCES spine.access_policy_versions(workspace_id, environment_id, source_object_id, access_policy_version_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "process_only_operation_lineages",
+      "constraint_name": "fk_process_only_lineages_receipt",
+      "parent_table": "idempotency_receipts",
+      "definition": "FOREIGN KEY (idempotency_receipt_id) REFERENCES spine.idempotency_receipts(receipt_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "process_only_operation_lineages",
+      "constraint_name": "fk_process_only_lineages_receipt_association",
+      "parent_table": "source_revision_receipt_associations",
+      "definition": "FOREIGN KEY (receipt_association_id, workspace_id, environment_id, source_object_id, source_revision_id, original_receipt_id, original_receipt_digest, verified_byte_length) REFERENCES spine.source_revision_receipt_associations(association_id, workspace_id, environment_id, source_object_id, revision_id, original_receipt_id, original_sha256, byte_length)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "process_only_operation_lineages",
+      "constraint_name": "fk_process_only_lineages_retention",
+      "parent_table": "retention_applicabilities",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, retention_applicability_reference, retention_applicability_generation) REFERENCES spine.retention_applicabilities(workspace_id, environment_id, source_object_id, applicability_id, generation)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "process_only_operation_lineages",
+      "constraint_name": "fk_process_only_lineages_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "process_only_operation_lineages",
+      "constraint_name": "fk_process_only_lineages_run",
+      "parent_table": "ingestion_runs",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, ingestion_run_id) REFERENCES spine.ingestion_runs(workspace_id, environment_id, ingestion_run_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "processing_receipts",
+      "constraint_name": "fk_processing_receipts_binding",
+      "parent_table": "ingestion_run_source_bindings",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, binding_id) REFERENCES spine.ingestion_run_source_bindings(workspace_id, environment_id, binding_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "processing_receipts",
+      "constraint_name": "fk_processing_receipts_item",
+      "parent_table": "ingestion_run_sources",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, ingestion_run_source_id) REFERENCES spine.ingestion_run_sources(workspace_id, environment_id, ingestion_run_source_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "processing_receipts",
+      "constraint_name": "fk_processing_receipts_process_only_lineage",
+      "parent_table": "process_only_operation_lineages",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, process_only_operation_id, source_object_id, source_revision_id, ingestion_run_source_id) REFERENCES spine.process_only_operation_lineages(workspace_id, environment_id, operation_id, source_object_id, source_revision_id, ingestion_run_source_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "processing_receipts",
+      "constraint_name": "fk_processing_receipts_receipt",
+      "parent_table": "idempotency_receipts",
+      "definition": "FOREIGN KEY (idempotency_receipt_id) REFERENCES spine.idempotency_receipts(receipt_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "processing_receipts",
+      "constraint_name": "fk_processing_receipts_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "projection_drifts",
+      "constraint_name": "fk_projection_drifts_acceptance",
+      "parent_table": "canonical_acceptances",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, canonical_acceptance_id, source_revision_id, accepted_generation) REFERENCES spine.canonical_acceptances(workspace_id, environment_id, source_object_id, canonical_acceptance_id, source_revision_id, accepted_generation)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "projection_drifts",
+      "constraint_name": "fk_projection_drifts_activation",
+      "parent_table": "projection_activations",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, projection_kind, projection_activation_id, projection_snapshot_id, activation_generation) REFERENCES spine.projection_activations(workspace_id, environment_id, projection_kind, projection_activation_id, projection_snapshot_id, activation_generation)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "projection_snapshot_members",
+      "constraint_name": "fk_projection_snapshot_members_boundary_member",
+      "parent_table": "canonical_boundary_members",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, canonical_boundary_id, canonical_boundary_member_id) REFERENCES spine.canonical_boundary_members(workspace_id, environment_id, boundary_id, source_object_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "projection_snapshot_members",
+      "constraint_name": "fk_projection_snapshot_members_partition",
+      "parent_table": "projection_partitions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, projection_partition_id) REFERENCES spine.projection_partitions(workspace_id, environment_id, projection_partition_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "projection_snapshot_members",
+      "constraint_name": "fk_projection_snapshot_members_receipt",
+      "parent_table": "projection_receipts",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, projection_receipt_id) REFERENCES spine.projection_receipts(workspace_id, environment_id, projection_receipt_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "projection_snapshot_members",
+      "constraint_name": "fk_projection_snapshot_members_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "projection_snapshot_members",
+      "constraint_name": "fk_projection_snapshot_members_snapshot",
+      "parent_table": "projection_snapshots",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, projection_snapshot_id) REFERENCES spine.projection_snapshots(workspace_id, environment_id, projection_snapshot_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "qualified_deletion_evidence",
+      "constraint_name": "fk_qualified_deletion_evidence_qualification_authority",
+      "parent_table": "qualification_authority_bindings",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, qualification_authority_reference, qualification_authority_generation, qualifier_service_principal_id) REFERENCES spine.qualification_authority_bindings(workspace_id, environment_id, binding_id, version, principal_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "qualified_deletion_evidence",
+      "constraint_name": "fk_qualified_deletion_evidence_source",
+      "parent_table": "source_objects",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id) REFERENCES spine.source_objects(workspace_id, environment_id, source_object_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "register_association_acceptances",
+      "constraint_name": "fk_register_association_acceptances_claim",
+      "parent_table": "register_link_claims",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, claim_id) REFERENCES spine.register_link_claims(workspace_id, environment_id, claim_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "register_association_acceptances",
+      "constraint_name": "fk_register_association_acceptances_row_accepted",
+      "parent_table": "canonical_acceptances",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, row_source_object_id, row_source_revision_id) REFERENCES spine.canonical_acceptances(workspace_id, environment_id, source_object_id, source_revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "register_association_acceptances",
+      "constraint_name": "fk_register_association_acceptances_target_accepted",
+      "parent_table": "canonical_acceptances",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, target_source_object_id, target_source_revision_id) REFERENCES spine.canonical_acceptances(workspace_id, environment_id, source_object_id, source_revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "register_link_claims",
+      "constraint_name": "fk_register_link_claims_provenance",
+      "parent_table": "source_revision_provenance",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, row_source_object_id, provenance_id) REFERENCES spine.source_revision_provenance(workspace_id, environment_id, source_object_id, provenance_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "register_link_claims",
+      "constraint_name": "fk_register_link_claims_row_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, row_source_object_id, row_source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "retention_applicabilities",
+      "constraint_name": "fk_retention_applicabilities_audit",
+      "parent_table": "audit_events",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, audit_event_id) REFERENCES spine.audit_events(workspace_id, environment_id, audit_event_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "retention_applicabilities",
+      "constraint_name": "fk_retention_applicabilities_environment",
+      "parent_table": "environments",
+      "definition": "FOREIGN KEY (workspace_id, environment_id) REFERENCES spine.environments(workspace_id, id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "retention_applicabilities",
+      "constraint_name": "fk_retention_applicabilities_outbox",
+      "parent_table": "outbox_intents",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, outbox_event_id) REFERENCES spine.outbox_intents(workspace_id, environment_id, event_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "retention_applicabilities",
+      "constraint_name": "fk_retention_applicabilities_source",
+      "parent_table": "source_objects",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id) REFERENCES spine.source_objects(workspace_id, environment_id, source_object_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_objects",
+      "constraint_name": "fk_source_objects_scope",
+      "parent_table": "environments",
+      "definition": "FOREIGN KEY (workspace_id, environment_id) REFERENCES spine.environments(workspace_id, id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_processing_admissions",
+      "constraint_name": "fk_source_processing_admissions_audit",
+      "parent_table": "audit_events",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, audit_event_id) REFERENCES spine.audit_events(workspace_id, environment_id, audit_event_id) DEFERRABLE INITIALLY DEFERRED",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_processing_admissions",
+      "constraint_name": "fk_source_processing_admissions_connection",
+      "parent_table": "provider_connection_versions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, provider_connection_id, provider_connection_version_id, provider_approval_id) REFERENCES spine.provider_connection_versions(workspace_id, environment_id, connection_id, connection_version_id, approval_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_processing_admissions",
+      "constraint_name": "fk_source_processing_admissions_content_policy",
+      "parent_table": "bitrix24_disk_content_policy_versions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, content_policy_id, content_policy_version, content_policy_digest) REFERENCES spine.bitrix24_disk_content_policy_versions(workspace_id, environment_id, policy_id, version, digest)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_processing_admissions",
+      "constraint_name": "fk_source_processing_admissions_exact_receipt",
+      "parent_table": "source_revision_receipt_associations",
+      "definition": "FOREIGN KEY (receipt_association_id, workspace_id, environment_id, source_object_id, source_revision_id, verified_sha256, verified_byte_length) REFERENCES spine.source_revision_receipt_associations(association_id, workspace_id, environment_id, source_object_id, revision_id, original_sha256, byte_length)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_processing_admissions",
+      "constraint_name": "fk_source_processing_admissions_idempotency",
+      "parent_table": "idempotency_receipts",
+      "definition": "FOREIGN KEY (idempotency_receipt_id) REFERENCES spine.idempotency_receipts(receipt_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_processing_admissions",
+      "constraint_name": "fk_source_processing_admissions_lifecycle",
+      "parent_table": "lifecycle_decisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, lifecycle_eligibility_reference, lifecycle_eligibility_generation) REFERENCES spine.lifecycle_decisions(workspace_id, environment_id, source_object_id, decision_id, generation)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_processing_admissions",
+      "constraint_name": "fk_source_processing_admissions_retention",
+      "parent_table": "retention_applicabilities",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, retention_applicability_reference, retention_applicability_generation) REFERENCES spine.retention_applicabilities(workspace_id, environment_id, source_object_id, applicability_id, generation)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_processing_admissions",
+      "constraint_name": "fk_source_processing_admissions_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_processing_admissions",
+      "constraint_name": "fk_source_processing_admissions_root_policy",
+      "parent_table": "bitrix24_disk_root_policy_versions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, root_policy_id, root_policy_version, root_policy_digest) REFERENCES spine.bitrix24_disk_root_policy_versions(workspace_id, environment_id, policy_id, version, digest)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_processing_admissions",
+      "constraint_name": "fk_source_processing_admissions_selector",
+      "parent_table": "trusted_canonical_acceptance_selector_versions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, selector_id) REFERENCES spine.trusted_canonical_acceptance_selector_versions(workspace_id, environment_id, selector_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_processing_admissions",
+      "constraint_name": "fk_source_processing_admissions_verifier",
+      "parent_table": "trusted_content_verification_evidence",
+      "definition": "FOREIGN KEY (verifier_evidence_id, workspace_id, environment_id, source_object_id, source_revision_id, receipt_association_id, verified_sha256, verified_byte_length, verifier_evidence_digest) REFERENCES spine.trusted_content_verification_evidence(evidence_id, workspace_id, environment_id, source_object_id, source_revision_id, receipt_association_id, original_sha256, byte_length, evidence_digest)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_projection_references",
+      "constraint_name": "fk_source_projection_references_config",
+      "parent_table": "projection_config_versions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, projection_config_version_id) REFERENCES spine.projection_config_versions(workspace_id, environment_id, projection_config_version_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_projection_references",
+      "constraint_name": "fk_source_projection_references_processing_receipt",
+      "parent_table": "processing_receipts",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, processing_receipt_id) REFERENCES spine.processing_receipts(workspace_id, environment_id, processing_receipt_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_projection_references",
+      "constraint_name": "fk_source_projection_references_receipt",
+      "parent_table": "projection_receipts",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, projection_receipt_id) REFERENCES spine.projection_receipts(workspace_id, environment_id, projection_receipt_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_projection_references",
+      "constraint_name": "fk_source_projection_references_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_projection_references",
+      "constraint_name": "fk_source_projection_references_run",
+      "parent_table": "projection_runs",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, projection_run_id, projection_candidate_id) REFERENCES spine.projection_runs(workspace_id, environment_id, projection_run_id, projection_candidate_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_projection_references",
+      "constraint_name": "fk_source_projection_references_source",
+      "parent_table": "source_objects",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id) REFERENCES spine.source_objects(workspace_id, environment_id, source_object_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_revision_provenance",
+      "constraint_name": "fk_source_revision_provenance_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_revision_receipt_associations",
+      "constraint_name": "fk_source_receipt_associations_provenance",
+      "parent_table": "source_revision_provenance",
+      "definition": "FOREIGN KEY (provenance_id) REFERENCES spine.source_revision_provenance(provenance_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_revision_receipt_associations",
+      "constraint_name": "fk_source_receipt_associations_receipt",
+      "parent_table": "idempotency_receipts",
+      "definition": "FOREIGN KEY (original_receipt_id) REFERENCES spine.idempotency_receipts(receipt_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_revision_receipt_associations",
+      "constraint_name": "fk_source_receipt_associations_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_revisions",
+      "constraint_name": "fk_source_revisions_reappearance",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, reappearance_after_tombstone_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_revisions",
+      "constraint_name": "fk_source_revisions_source",
+      "parent_table": "source_objects",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id) REFERENCES spine.source_objects(workspace_id, environment_id, source_object_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_security_domain_bindings",
+      "constraint_name": "fk_source_security_domain_bindings_activation",
+      "parent_table": "policy_activations",
+      "definition": "FOREIGN KEY (policy_activation_id) REFERENCES spine.policy_activations(policy_activation_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_security_domain_bindings",
+      "constraint_name": "fk_source_security_domain_bindings_predecessor",
+      "parent_table": "source_security_domain_bindings",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, predecessor_binding_id) REFERENCES spine.source_security_domain_bindings(workspace_id, environment_id, source_object_id, binding_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "source_security_domain_bindings",
+      "constraint_name": "fk_source_security_domain_bindings_source",
+      "parent_table": "source_objects",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id) REFERENCES spine.source_objects(workspace_id, environment_id, source_object_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "tombstone_authorization_decisions",
+      "constraint_name": "fk_tombstone_authorization_decisions_audit",
+      "parent_table": "audit_events",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, audit_event_id) REFERENCES spine.audit_events(workspace_id, environment_id, audit_event_id) DEFERRABLE INITIALLY DEFERRED",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "tombstone_authorization_decisions",
+      "constraint_name": "fk_tombstone_authorization_decisions_authorization",
+      "parent_table": "tombstone_authorizations",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, authorization_id) REFERENCES spine.tombstone_authorizations(workspace_id, environment_id, authorization_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "tombstone_authorizations",
+      "constraint_name": "fk_tombstone_authorizations_audit",
+      "parent_table": "audit_events",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, audit_event_id) REFERENCES spine.audit_events(workspace_id, environment_id, audit_event_id) DEFERRABLE INITIALLY DEFERRED",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "tombstone_authorizations",
+      "constraint_name": "fk_tombstone_authorizations_evidence",
+      "parent_table": "qualified_deletion_evidence",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, qualified_evidence_id, source_object_id, qualified_evidence_digest) REFERENCES spine.qualified_deletion_evidence(workspace_id, environment_id, evidence_id, source_object_id, evidence_digest)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "tombstone_authorizations",
+      "constraint_name": "fk_tombstone_authorizations_expected_acceptance",
+      "parent_table": "canonical_acceptances",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, expected_current_acceptance_id, source_object_id, expected_current_revision_id) REFERENCES spine.canonical_acceptances(workspace_id, environment_id, canonical_acceptance_id, source_object_id, source_revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "tombstone_authorizations",
+      "constraint_name": "fk_tombstone_authorizations_issuer",
+      "parent_table": "tombstone_authorization_issuers",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, issuer_authority_id, issuer_service_principal_id, issuer_authority_generation) REFERENCES spine.tombstone_authorization_issuers(workspace_id, environment_id, issuer_authority_id, service_principal_id, authority_generation)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "tombstone_authorizations",
+      "constraint_name": "fk_tombstone_authorizations_policy_approval",
+      "parent_table": "source_deletion_policy_approvals",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, deletion_policy_approval_id, deletion_policy_version_id, deletion_policy_digest) REFERENCES spine.source_deletion_policy_approvals(workspace_id, environment_id, approval_id, policy_version_id, policy_digest)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "transcript_publications",
+      "constraint_name": "fk_transcript_publications_source_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "transcript_reviews",
+      "constraint_name": "fk_transcript_reviews_input_artifact",
+      "parent_table": "transcription_artifacts",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, input_artifact_id) REFERENCES spine.transcription_artifacts(workspace_id, environment_id, artifact_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "transcript_segments",
+      "constraint_name": "fk_transcript_segments_artifact",
+      "parent_table": "transcription_artifacts",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, artifact_id) REFERENCES spine.transcription_artifacts(workspace_id, environment_id, artifact_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "transcription_artifacts",
+      "constraint_name": "fk_transcription_artifacts_job",
+      "parent_table": "transcription_jobs",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, processing_job_id) REFERENCES spine.transcription_jobs(workspace_id, environment_id, job_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "transcription_artifacts",
+      "constraint_name": "fk_transcription_artifacts_source_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "transcription_jobs",
+      "constraint_name": "fk_transcription_jobs_artifact",
+      "parent_table": "transcription_artifacts",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, artifact_id) REFERENCES spine.transcription_artifacts(workspace_id, environment_id, artifact_id) DEFERRABLE INITIALLY DEFERRED",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "transcription_jobs",
+      "constraint_name": "fk_transcription_jobs_source_revision",
+      "parent_table": "source_revisions",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id, source_revision_id) REFERENCES spine.source_revisions(workspace_id, environment_id, source_object_id, revision_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "trusted_canonical_tombstone_selector_versions",
+      "constraint_name": "fk_trusted_canonical_tombstone_selector_audit",
+      "parent_table": "audit_events",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, audit_reference) REFERENCES spine.audit_events(workspace_id, environment_id, audit_event_id) DEFERRABLE INITIALLY DEFERRED",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "trusted_canonical_tombstone_selector_versions",
+      "constraint_name": "fk_trusted_canonical_tombstone_selector_source",
+      "parent_table": "source_objects",
+      "definition": "FOREIGN KEY (workspace_id, environment_id, source_object_id) REFERENCES spine.source_objects(workspace_id, environment_id, source_object_id)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    },
+    {
+      "child_table": "trusted_content_verification_evidence",
+      "constraint_name": "fk_trusted_content_evidence_exact_receipt",
+      "parent_table": "source_revision_receipt_associations",
+      "definition": "FOREIGN KEY (receipt_association_id, workspace_id, environment_id, source_object_id, source_revision_id, original_receipt_id, original_upload_id, original_sha256, byte_length) REFERENCES spine.source_revision_receipt_associations(association_id, workspace_id, environment_id, source_object_id, revision_id, original_receipt_id, original_upload_id, original_sha256, byte_length)",
+      "on_delete": "NO ACTION",
+      "depth": 0
+    }
+  ],
+  "identity_columns": [
+    {
+      "table_name": "access_policy_grants",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "access_policy_versions",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "admission_decisions",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "admission_decisions",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "admission_decisions",
+      "column_name": "audit_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "answer_question_runs",
+      "column_name": "idempotency_key",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "audit_events",
+      "column_name": "audit_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "audit_events",
+      "column_name": "correlation_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "audit_events",
+      "column_name": "target_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "authentication_alias_bindings",
+      "column_name": "canonical_human_identity_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "bitrix24_crm_material_acceptances",
+      "column_name": "target_source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "bitrix24_crm_material_acceptances",
+      "column_name": "target_source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "bitrix24_crm_material_claims",
+      "column_name": "target_source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "bitrix24_crm_material_claims",
+      "column_name": "target_source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "bitrix24_oauth_callback_receipts",
+      "column_name": "receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "canonical_acceptances",
+      "column_name": "canonical_acceptance_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "canonical_acceptances",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "canonical_acceptances",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "canonical_acceptances",
+      "column_name": "predecessor_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "canonical_acceptances",
+      "column_name": "provenance_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "canonical_acceptances",
+      "column_name": "idempotency_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "canonical_acceptances",
+      "column_name": "audit_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "canonical_acceptances",
+      "column_name": "outbox_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "canonical_acceptances",
+      "column_name": "canonical_acceptance_schema_version",
+      "data_type": "integer",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "canonical_acceptances",
+      "column_name": "tombstone_authorization_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "canonical_acceptances",
+      "column_name": "tombstone_authorization_digest",
+      "data_type": "character varying",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "canonical_boundaries",
+      "column_name": "idempotency_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "canonical_boundary_members",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "canonical_boundary_members",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "canonical_human_identities",
+      "column_name": "identity_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "canonical_human_identity_states",
+      "column_name": "identity_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "context_bundles",
+      "column_name": "idempotency_key",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "crm_relationship_claims",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "crm_relationship_claims",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "crm_relationship_claims",
+      "column_name": "audit_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "crm_relationship_claims",
+      "column_name": "outbox_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "crm_relationship_claims",
+      "column_name": "idempotency_key",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "crm_relationship_eligibility",
+      "column_name": "receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "crm_relationship_eligibility_heads",
+      "column_name": "receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "crm_relationship_idempotency",
+      "column_name": "idempotency_key",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "crm_relationship_identities",
+      "column_name": "natural_identity",
+      "data_type": "jsonb",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "crm_relationship_lifecycle_events",
+      "column_name": "reapproval_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "crm_relationship_lifecycle_events",
+      "column_name": "idempotency_key",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "crm_relationship_lifecycle_events",
+      "column_name": "audit_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "crm_relationship_lifecycle_events",
+      "column_name": "outbox_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "crm_relationship_receipts",
+      "column_name": "receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "crm_relationship_receipts",
+      "column_name": "idempotency_key",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "crm_relationship_receipts",
+      "column_name": "audit_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "crm_relationship_receipts",
+      "column_name": "outbox_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "current_access_policies",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "current_disclosure_holds",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "current_lifecycle_authorities",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "current_source_heads",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "current_source_heads",
+      "column_name": "current_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "disclosure_hold_releases",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "disclosure_hold_releases",
+      "column_name": "audit_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "disclosure_hold_releases",
+      "column_name": "outbox_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "disclosure_hold_source_revisions",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "disclosure_hold_source_revisions",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "disclosure_hold_targets",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "disclosure_hold_targets",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "disclosure_holds",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "disclosure_holds",
+      "column_name": "source_revision_ids",
+      "data_type": "ARRAY",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "disclosure_holds",
+      "column_name": "audit_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "disclosure_holds",
+      "column_name": "outbox_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "drive_change_runs",
+      "column_name": "idempotency_key",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "drive_lifecycle_decisions",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "drive_snapshot_runs",
+      "column_name": "idempotency_key",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_artifacts",
+      "column_name": "workspace_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_artifacts",
+      "column_name": "environment_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_artifacts",
+      "column_name": "artifact_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_artifacts",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_artifacts",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_artifacts",
+      "column_name": "canonical_acceptance_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_artifacts",
+      "column_name": "mime_part_path",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_artifacts",
+      "column_name": "content_sha256",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_artifacts",
+      "column_name": "extraction_profile",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_artifacts",
+      "column_name": "artifact_digest",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_artifacts",
+      "column_name": "record",
+      "data_type": "jsonb",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_artifacts",
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_processing_receipts",
+      "column_name": "workspace_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_processing_receipts",
+      "column_name": "environment_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_processing_receipts",
+      "column_name": "processing_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_processing_receipts",
+      "column_name": "attachment_artifact_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_processing_receipts",
+      "column_name": "processor_profile",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_processing_receipts",
+      "column_name": "authority_digest",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_processing_receipts",
+      "column_name": "disposition",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_processing_receipts",
+      "column_name": "child_source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "email_attachment_processing_receipts",
+      "column_name": "child_source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "email_attachment_processing_receipts",
+      "column_name": "child_processing_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "email_attachment_processing_receipts",
+      "column_name": "parsed_artifact_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "email_attachment_processing_receipts",
+      "column_name": "parsed_artifact_digest",
+      "data_type": "character varying",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "email_attachment_processing_receipts",
+      "column_name": "receipt_digest",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_processing_receipts",
+      "column_name": "record",
+      "data_type": "jsonb",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_attachment_processing_receipts",
+      "column_name": "completed_at",
+      "data_type": "timestamp with time zone",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_message_artifacts",
+      "column_name": "workspace_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_message_artifacts",
+      "column_name": "environment_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_message_artifacts",
+      "column_name": "artifact_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_message_artifacts",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_message_artifacts",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_message_artifacts",
+      "column_name": "canonical_acceptance_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_message_artifacts",
+      "column_name": "artifact_digest",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_message_artifacts",
+      "column_name": "command_identity",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_message_artifacts",
+      "column_name": "command_digest",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_message_artifacts",
+      "column_name": "record",
+      "data_type": "jsonb",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_message_artifacts",
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_attempts",
+      "column_name": "workspace_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_attempts",
+      "column_name": "environment_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_attempts",
+      "column_name": "attempt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_attempts",
+      "column_name": "attempt_key",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_attempts",
+      "column_name": "revision",
+      "data_type": "integer",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_attempts",
+      "column_name": "authorization_generation",
+      "data_type": "integer",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_attempts",
+      "column_name": "configuration_generation",
+      "data_type": "integer",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_attempts",
+      "column_name": "scope_generation",
+      "data_type": "integer",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_attempts",
+      "column_name": "committed_checkpoint",
+      "data_type": "text",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "email_sync_attempts",
+      "column_name": "record",
+      "data_type": "jsonb",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_attempts",
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_attempts",
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_effect_receipts",
+      "column_name": "workspace_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_effect_receipts",
+      "column_name": "environment_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_effect_receipts",
+      "column_name": "attempt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_effect_receipts",
+      "column_name": "page_id",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_effect_receipts",
+      "column_name": "effect_key",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_effect_receipts",
+      "column_name": "receipt_reference",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_effect_receipts",
+      "column_name": "durable",
+      "data_type": "boolean",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_pages",
+      "column_name": "workspace_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_pages",
+      "column_name": "environment_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_pages",
+      "column_name": "attempt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_pages",
+      "column_name": "page_id",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_pages",
+      "column_name": "page_digest",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_pages",
+      "column_name": "committed",
+      "data_type": "boolean",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_pages",
+      "column_name": "record",
+      "data_type": "jsonb",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_state_observations",
+      "column_name": "workspace_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_state_observations",
+      "column_name": "environment_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_state_observations",
+      "column_name": "observation_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_state_observations",
+      "column_name": "connection_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_state_observations",
+      "column_name": "mailbox_binding_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_state_observations",
+      "column_name": "state_kind",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_state_observations",
+      "column_name": "provider_event_digest",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_state_observations",
+      "column_name": "outbox_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "email_sync_state_observations",
+      "column_name": "record",
+      "data_type": "jsonb",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "environment_memberships",
+      "column_name": "canonical_human_identity_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "environment_role_bindings",
+      "column_name": "canonical_human_identity_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "feedback_records",
+      "column_name": "message_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "feedback_records",
+      "column_name": "target_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "fence_operation_tickets",
+      "column_name": "correlation_id",
+      "data_type": "text",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "gmail_message_label_heads",
+      "column_name": "workspace_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_label_heads",
+      "column_name": "environment_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_label_heads",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_label_heads",
+      "column_name": "label_id",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_label_heads",
+      "column_name": "observation_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_label_heads",
+      "column_name": "history_id",
+      "data_type": "numeric",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_label_heads",
+      "column_name": "event_identity",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_label_heads",
+      "column_name": "state",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_label_observations",
+      "column_name": "observation_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_label_observations",
+      "column_name": "workspace_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_label_observations",
+      "column_name": "environment_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_label_observations",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_label_observations",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_label_observations",
+      "column_name": "history_id",
+      "data_type": "numeric",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_label_observations",
+      "column_name": "event_identity",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_label_observations",
+      "column_name": "label_id",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_label_observations",
+      "column_name": "state",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_label_observations",
+      "column_name": "record",
+      "data_type": "jsonb",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_label_observations",
+      "column_name": "received_at",
+      "data_type": "timestamp with time zone",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_relationship_evidence",
+      "column_name": "evidence_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_relationship_evidence",
+      "column_name": "workspace_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_relationship_evidence",
+      "column_name": "environment_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_relationship_evidence",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_relationship_evidence",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_relationship_evidence",
+      "column_name": "kind",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_relationship_evidence",
+      "column_name": "authority",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_relationship_evidence",
+      "column_name": "record",
+      "data_type": "jsonb",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "gmail_message_relationship_evidence",
+      "column_name": "received_at",
+      "data_type": "timestamp with time zone",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "google_connection_versions",
+      "column_name": "idempotency_key",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "google_connection_versions",
+      "column_name": "audit_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "google_sheets_absence_candidates",
+      "column_name": "scope_identity",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "google_sheets_absence_candidates",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "google_sheets_absence_candidates",
+      "column_name": "expected_current_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "google_sheets_identity_dispositions",
+      "column_name": "scope_identity",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "google_sheets_removal_decisions",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "google_sheets_sync_runs",
+      "column_name": "idempotency_key",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "idempotency_receipts",
+      "column_name": "receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "idempotency_receipts",
+      "column_name": "idempotency_key",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "ingestion_run_source_bindings",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "ingestion_run_source_bindings",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "ingestion_run_source_bindings",
+      "column_name": "binding_command_identity",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "ingestion_run_source_bindings",
+      "column_name": "original_reference",
+      "data_type": "jsonb",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "ingestion_run_source_bindings",
+      "column_name": "original_receipt_kind",
+      "data_type": "text",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "ingestion_run_source_bindings",
+      "column_name": "original_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "ingestion_run_source_bindings",
+      "column_name": "original_receipt_digest",
+      "data_type": "character varying",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "ingestion_run_source_bindings",
+      "column_name": "idempotency_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "ingestion_run_sources",
+      "column_name": "input_identity",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "ingestion_run_sources",
+      "column_name": "command_identity",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "ingestion_runs",
+      "column_name": "command_identity",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "ingestion_runs",
+      "column_name": "idempotency_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "lifecycle_decisions",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "lifecycle_decisions",
+      "column_name": "audit_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "lifecycle_decisions",
+      "column_name": "outbox_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "lifecycle_observations",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "mounted_fs_reconciliation_runs",
+      "column_name": "idempotency_key",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "ontology_versions",
+      "column_name": "audit_event_reference",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "operational_correlation_records",
+      "column_name": "source_identity",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "operational_correlation_records",
+      "column_name": "correlation_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "operational_correlation_records",
+      "column_name": "message_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "operational_metric_events",
+      "column_name": "source_identity",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "operational_metric_events",
+      "column_name": "correlation_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "outbox_deliveries",
+      "column_name": "correlation_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "outbox_intents",
+      "column_name": "correlation_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "parsed_documents",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "parsed_documents",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "parsed_documents",
+      "column_name": "source_revision_digest",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "parsed_documents",
+      "column_name": "command_identity",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "policy_activations",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "policy_activations",
+      "column_name": "idempotency_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "policy_activations",
+      "column_name": "audit_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "policy_activations",
+      "column_name": "outbox_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "policy_approvals",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "policy_approvals",
+      "column_name": "identity_proof_reference",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "policy_proposals",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "private_asr_aggregate_exports",
+      "column_name": "idempotency_key",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "private_asr_aggregate_exports",
+      "column_name": "audit_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "private_asr_artifacts",
+      "column_name": "idempotency_key",
+      "data_type": "text",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "private_asr_artifacts",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "private_asr_artifacts",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "private_asr_artifacts",
+      "column_name": "source_revision_digest",
+      "data_type": "character varying",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "private_asr_artifacts",
+      "column_name": "audit_receipt_ref",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "private_asr_report_sources",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "private_asr_report_sources",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "private_asr_report_sources",
+      "column_name": "source_revision_digest",
+      "data_type": "character varying",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "private_asr_source_fences",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "process_only_operation_lineages",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "process_only_operation_lineages",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "process_only_operation_lineages",
+      "column_name": "original_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "process_only_operation_lineages",
+      "column_name": "original_receipt_digest",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "process_only_operation_lineages",
+      "column_name": "parent_processing_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "process_only_operation_lineages",
+      "column_name": "idempotency_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "process_only_operation_lineages",
+      "column_name": "canonical_acceptance_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "process_only_operation_lineages",
+      "column_name": "receipt_association_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "process_only_operation_lineages",
+      "column_name": "authorization_audit_event_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "processing_receipts",
+      "column_name": "processing_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "processing_receipts",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "processing_receipts",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "processing_receipts",
+      "column_name": "command_identity",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "processing_receipts",
+      "column_name": "idempotency_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "projection_activations",
+      "column_name": "command_identity",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "projection_activations",
+      "column_name": "idempotency_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "projection_activations",
+      "column_name": "audit_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "projection_drifts",
+      "column_name": "canonical_acceptance_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "projection_drifts",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "projection_drifts",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "projection_partitions",
+      "column_name": "partition_identity",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "projection_partitions",
+      "column_name": "expected_command_identity",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "projection_receipts",
+      "column_name": "projection_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "projection_receipts",
+      "column_name": "command_identity",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "projection_receipts",
+      "column_name": "idempotency_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "projection_reconciliation_results",
+      "column_name": "attempt_identity",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "projection_reconciliation_results",
+      "column_name": "idempotency_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "projection_reconciliation_results",
+      "column_name": "audit_event_reference",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "projection_runs",
+      "column_name": "command_identity",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "projection_runs",
+      "column_name": "idempotency_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "projection_snapshot_members",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "projection_snapshot_members",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "projection_snapshot_members",
+      "column_name": "projection_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "provider_connection_versions",
+      "column_name": "receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "provider_connection_versions",
+      "column_name": "idempotency_key",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "qa_message_versions",
+      "column_name": "message_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "qualified_deletion_evidence",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "register_association_acceptances",
+      "column_name": "row_source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "register_association_acceptances",
+      "column_name": "row_source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "register_association_acceptances",
+      "column_name": "target_source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "register_association_acceptances",
+      "column_name": "target_source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "register_link_claims",
+      "column_name": "row_source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "register_link_claims",
+      "column_name": "row_source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "register_link_claims",
+      "column_name": "provenance_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "requirements_acceptance_decisions",
+      "column_name": "receipt",
+      "data_type": "jsonb",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "requirements_artifact_versions",
+      "column_name": "production_identity",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "retention_applicabilities",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "retention_applicabilities",
+      "column_name": "audit_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "retention_applicabilities",
+      "column_name": "outbox_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_deletion_policy_approvals",
+      "column_name": "audit_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_objects",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_objects",
+      "column_name": "identity_mode",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_objects",
+      "column_name": "upload_identity",
+      "data_type": "text",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "source_processing_admissions",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_processing_admissions",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_processing_admissions",
+      "column_name": "receipt_association_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_processing_admissions",
+      "column_name": "idempotency_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_processing_admissions",
+      "column_name": "audit_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_projection_references",
+      "column_name": "projection_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_projection_references",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_projection_references",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_projection_references",
+      "column_name": "processing_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "source_revision_provenance",
+      "column_name": "provenance_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_revision_provenance",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_revision_provenance",
+      "column_name": "revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_revision_provenance",
+      "column_name": "event_identity",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_revision_receipt_associations",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_revision_receipt_associations",
+      "column_name": "revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_revision_receipt_associations",
+      "column_name": "provenance_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_revision_receipt_associations",
+      "column_name": "original_receipt_kind",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_revision_receipt_associations",
+      "column_name": "original_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_revision_receipt_associations",
+      "column_name": "original_reference",
+      "data_type": "jsonb",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_revisions",
+      "column_name": "revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_revisions",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "source_revisions",
+      "column_name": "original_reference",
+      "data_type": "jsonb",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "source_revisions",
+      "column_name": "reappearance_after_tombstone_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "source_revisions",
+      "column_name": "deletion_provenance",
+      "data_type": "text",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "source_security_domain_bindings",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "storage_recovery_manifests",
+      "column_name": "postgres_backup_identity",
+      "data_type": "text",
+      "is_nullable": "YES"
+    },
+    {
+      "table_name": "tombstone_authorization_decisions",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "tombstone_authorization_decisions",
+      "column_name": "audit_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "tombstone_authorization_issuers",
+      "column_name": "audit_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "tombstone_authorizations",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "tombstone_authorizations",
+      "column_name": "expected_current_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "tombstone_authorizations",
+      "column_name": "tombstone_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "tombstone_authorizations",
+      "column_name": "idempotency_key",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "tombstone_authorizations",
+      "column_name": "audit_event_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "transcript_publications",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "transcript_publications",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "transcript_publications",
+      "column_name": "source_revision_digest",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "transcript_reviews",
+      "column_name": "idempotency_key",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "transcript_reviews",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "transcript_reviews",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "transcript_reviews",
+      "column_name": "source_revision_digest",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "transcript_reviews",
+      "column_name": "correlation_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "transcription_artifacts",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "transcription_artifacts",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "transcription_artifacts",
+      "column_name": "source_revision_digest",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "transcription_artifacts",
+      "column_name": "chunk_receipts",
+      "data_type": "jsonb",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "transcription_jobs",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "transcription_jobs",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "transcription_jobs",
+      "column_name": "source_revision_digest",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "transcription_jobs",
+      "column_name": "idempotency_key",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "trusted_canonical_acceptance_selector_versions",
+      "column_name": "idempotency_identity",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "trusted_canonical_tombstone_selector_versions",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "trusted_canonical_tombstone_selector_versions",
+      "column_name": "idempotency_identity",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "trusted_content_verification_evidence",
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "trusted_content_verification_evidence",
+      "column_name": "source_revision_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "trusted_content_verification_evidence",
+      "column_name": "receipt_association_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "trusted_content_verification_evidence",
+      "column_name": "original_receipt_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "work_items",
+      "column_name": "idempotency_key",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "workflow_command_receipts",
+      "column_name": "idempotency_key",
+      "data_type": "text",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "workflow_command_receipts",
+      "column_name": "correlation_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "workflow_run_events",
+      "column_name": "correlation_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "workflow_runs",
+      "column_name": "correlation_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "workspace_memberships",
+      "column_name": "canonical_human_identity_id",
+      "data_type": "uuid",
+      "is_nullable": "NO"
+    },
+    {
+      "table_name": "yandex_disk_reconciliation_runs",
+      "column_name": "idempotency_key",
+      "data_type": "text",
+      "is_nullable": "NO"
+    }
+  ],
+  "triggers": [
+    {
+      "table_name": "access_policy_grants",
+      "trigger_name": "trg_access_policy_grants_immutable",
+      "function_name": "reject_access_policy_history_mutation",
+      "definition": "CREATE TRIGGER trg_access_policy_grants_immutable BEFORE DELETE OR UPDATE ON spine.access_policy_grants FOR EACH ROW EXECUTE FUNCTION spine.reject_access_policy_history_mutation()"
+    },
+    {
+      "table_name": "access_policy_versions",
+      "trigger_name": "trg_access_policy_versions_immutable",
+      "function_name": "reject_access_policy_history_mutation",
+      "definition": "CREATE TRIGGER trg_access_policy_versions_immutable BEFORE DELETE OR UPDATE ON spine.access_policy_versions FOR EACH ROW EXECUTE FUNCTION spine.reject_access_policy_history_mutation()"
+    },
+    {
+      "table_name": "admission_decisions",
+      "trigger_name": "trg_admission_decisions_immutable",
+      "function_name": "reject_admission_decisions_mutation",
+      "definition": "CREATE TRIGGER trg_admission_decisions_immutable BEFORE DELETE OR UPDATE ON spine.admission_decisions FOR EACH ROW EXECUTE FUNCTION spine.reject_admission_decisions_mutation()"
+    },
+    {
+      "table_name": "admission_decisions",
+      "trigger_name": "trg_admission_decisions_validate",
+      "function_name": "validate_admitted_source_revision",
+      "definition": "CREATE TRIGGER trg_admission_decisions_validate BEFORE INSERT ON spine.admission_decisions FOR EACH ROW EXECUTE FUNCTION spine.validate_admitted_source_revision()"
+    },
+    {
+      "table_name": "audit_events",
+      "trigger_name": "trg_audit_events_immutable",
+      "function_name": "reject_audit_event_mutation",
+      "definition": "CREATE TRIGGER trg_audit_events_immutable BEFORE DELETE OR UPDATE ON spine.audit_events FOR EACH ROW EXECUTE FUNCTION spine.reject_audit_event_mutation()"
+    },
+    {
+      "table_name": "authentication_alias_bindings",
+      "trigger_name": "trg_authentication_alias_bindings_immutable",
+      "function_name": "reject_authorization_history_mutation",
+      "definition": "CREATE TRIGGER trg_authentication_alias_bindings_immutable BEFORE DELETE OR UPDATE ON spine.authentication_alias_bindings FOR EACH ROW EXECUTE FUNCTION spine.reject_authorization_history_mutation()"
+    },
+    {
+      "table_name": "bitrix24_crm_material_acceptances",
+      "trigger_name": "trg_bitrix24_crm_material_acceptances_immutable",
+      "function_name": "reject_bitrix24_crm_material_acceptances_mutation",
+      "definition": "CREATE TRIGGER trg_bitrix24_crm_material_acceptances_immutable BEFORE DELETE OR UPDATE ON spine.bitrix24_crm_material_acceptances FOR EACH ROW EXECUTE FUNCTION spine.reject_bitrix24_crm_material_acceptances_mutation()"
+    },
+    {
+      "table_name": "bitrix24_crm_material_claims",
+      "trigger_name": "trg_bitrix24_crm_material_claims_immutable",
+      "function_name": "reject_bitrix24_crm_material_claims_mutation",
+      "definition": "CREATE TRIGGER trg_bitrix24_crm_material_claims_immutable BEFORE DELETE OR UPDATE ON spine.bitrix24_crm_material_claims FOR EACH ROW EXECUTE FUNCTION spine.reject_bitrix24_crm_material_claims_mutation()"
+    },
+    {
+      "table_name": "bitrix24_crm_material_revocations",
+      "trigger_name": "trg_bitrix24_crm_material_revocations_immutable",
+      "function_name": "reject_bitrix24_crm_material_revocations_mutation",
+      "definition": "CREATE TRIGGER trg_bitrix24_crm_material_revocations_immutable BEFORE DELETE OR UPDATE ON spine.bitrix24_crm_material_revocations FOR EACH ROW EXECUTE FUNCTION spine.reject_bitrix24_crm_material_revocations_mutation()"
+    },
+    {
+      "table_name": "bitrix24_disk_content_policy_versions",
+      "trigger_name": "trg_content_policy_immutable",
+      "function_name": "reject_content_policy_mutation",
+      "definition": "CREATE TRIGGER trg_content_policy_immutable BEFORE DELETE OR UPDATE ON spine.bitrix24_disk_content_policy_versions FOR EACH ROW EXECUTE FUNCTION spine.reject_content_policy_mutation()"
+    },
+    {
+      "table_name": "bitrix24_disk_root_policy_versions",
+      "trigger_name": "trg_root_policy_immutable",
+      "function_name": "reject_root_policy_mutation",
+      "definition": "CREATE TRIGGER trg_root_policy_immutable BEFORE DELETE OR UPDATE ON spine.bitrix24_disk_root_policy_versions FOR EACH ROW EXECUTE FUNCTION spine.reject_root_policy_mutation()"
+    },
+    {
+      "table_name": "bitrix24_grant_bindings",
+      "trigger_name": "trg_bitrix24_grant_bindings_immutable",
+      "function_name": "reject_authorization_history_mutation",
+      "definition": "CREATE TRIGGER trg_bitrix24_grant_bindings_immutable BEFORE DELETE OR UPDATE ON spine.bitrix24_grant_bindings FOR EACH ROW EXECUTE FUNCTION spine.reject_authorization_history_mutation()"
+    },
+    {
+      "table_name": "canonical_acceptances",
+      "trigger_name": "trg_canonical_acceptance_v2_disabled",
+      "function_name": "deny_canonical_acceptance_v2_write",
+      "definition": "CREATE TRIGGER trg_canonical_acceptance_v2_disabled BEFORE INSERT ON spine.canonical_acceptances FOR EACH ROW EXECUTE FUNCTION spine.deny_canonical_acceptance_v2_write()"
+    },
+    {
+      "table_name": "canonical_acceptances",
+      "trigger_name": "trg_canonical_acceptances_immutable",
+      "function_name": "reject_canonical_acceptances_mutation",
+      "definition": "CREATE TRIGGER trg_canonical_acceptances_immutable BEFORE DELETE OR UPDATE ON spine.canonical_acceptances FOR EACH ROW EXECUTE FUNCTION spine.reject_canonical_acceptances_mutation()"
+    },
+    {
+      "table_name": "canonical_acceptances",
+      "trigger_name": "trg_canonical_acceptances_predecessor",
+      "function_name": "guard_canonical_acceptance_predecessor",
+      "definition": "CREATE TRIGGER trg_canonical_acceptances_predecessor BEFORE INSERT ON spine.canonical_acceptances FOR EACH ROW EXECUTE FUNCTION spine.guard_canonical_acceptance_predecessor()"
+    },
+    {
+      "table_name": "canonical_acceptances",
+      "trigger_name": "trg_canonical_acceptances_receipt_scope",
+      "function_name": "validate_issue7_receipt_scope",
+      "definition": "CREATE CONSTRAINT TRIGGER trg_canonical_acceptances_receipt_scope AFTER INSERT OR UPDATE OF workspace_id, environment_id, idempotency_receipt_id ON spine.canonical_acceptances DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION spine.validate_issue7_receipt_scope()"
+    },
+    {
+      "table_name": "canonical_boundaries",
+      "trigger_name": "trg_canonical_boundaries_immutable",
+      "function_name": "reject_canonical_boundaries_mutation",
+      "definition": "CREATE TRIGGER trg_canonical_boundaries_immutable BEFORE DELETE OR UPDATE ON spine.canonical_boundaries FOR EACH ROW EXECUTE FUNCTION spine.reject_canonical_boundaries_mutation()"
+    },
+    {
+      "table_name": "canonical_boundary_members",
+      "trigger_name": "trg_canonical_boundary_member_insert",
+      "function_name": "guard_canonical_boundary_member_insert",
+      "definition": "CREATE TRIGGER trg_canonical_boundary_member_insert BEFORE INSERT ON spine.canonical_boundary_members FOR EACH ROW EXECUTE FUNCTION spine.guard_canonical_boundary_member_insert()"
+    },
+    {
+      "table_name": "canonical_boundary_members",
+      "trigger_name": "trg_canonical_boundary_members_immutable",
+      "function_name": "reject_canonical_boundary_members_mutation",
+      "definition": "CREATE TRIGGER trg_canonical_boundary_members_immutable BEFORE DELETE OR UPDATE ON spine.canonical_boundary_members FOR EACH ROW EXECUTE FUNCTION spine.reject_canonical_boundary_members_mutation()"
+    },
+    {
+      "table_name": "canonical_generation_counters",
+      "trigger_name": "trg_canonical_generation_step",
+      "function_name": "guard_canonical_generation_step",
+      "definition": "CREATE TRIGGER trg_canonical_generation_step BEFORE UPDATE ON spine.canonical_generation_counters FOR EACH ROW EXECUTE FUNCTION spine.guard_canonical_generation_step()"
+    },
+    {
+      "table_name": "canonical_human_identities",
+      "trigger_name": "trg_canonical_human_identities_immutable",
+      "function_name": "reject_authorization_history_mutation",
+      "definition": "CREATE TRIGGER trg_canonical_human_identities_immutable BEFORE DELETE OR UPDATE ON spine.canonical_human_identities FOR EACH ROW EXECUTE FUNCTION spine.reject_authorization_history_mutation()"
+    },
+    {
+      "table_name": "canonical_human_identity_states",
+      "trigger_name": "trg_canonical_human_identity_states_immutable",
+      "function_name": "reject_authorization_history_mutation",
+      "definition": "CREATE TRIGGER trg_canonical_human_identity_states_immutable BEFORE DELETE OR UPDATE ON spine.canonical_human_identity_states FOR EACH ROW EXECUTE FUNCTION spine.reject_authorization_history_mutation()"
+    },
+    {
+      "table_name": "context_bundles",
+      "trigger_name": "trg_context_bundles_immutable",
+      "function_name": "reject_context_bundles_mutation",
+      "definition": "CREATE TRIGGER trg_context_bundles_immutable BEFORE DELETE OR UPDATE ON spine.context_bundles FOR EACH ROW EXECUTE FUNCTION spine.reject_context_bundles_mutation()"
+    },
+    {
+      "table_name": "context_profiles",
+      "trigger_name": "trg_context_profiles_immutable",
+      "function_name": "reject_context_profiles_mutation",
+      "definition": "CREATE TRIGGER trg_context_profiles_immutable BEFORE DELETE OR UPDATE ON spine.context_profiles FOR EACH ROW EXECUTE FUNCTION spine.reject_context_profiles_mutation()"
+    },
+    {
+      "table_name": "crm_relationship_claims",
+      "trigger_name": "trg_crm_relationship_claims_immutable",
+      "function_name": "reject_crm_relationship_claims_mutation",
+      "definition": "CREATE TRIGGER trg_crm_relationship_claims_immutable BEFORE DELETE OR UPDATE ON spine.crm_relationship_claims FOR EACH ROW EXECUTE FUNCTION spine.reject_crm_relationship_claims_mutation()"
+    },
+    {
+      "table_name": "crm_relationship_eligibility",
+      "trigger_name": "trg_crm_relationship_eligibility_immutable",
+      "function_name": "reject_crm_relationship_eligibility_mutation",
+      "definition": "CREATE TRIGGER trg_crm_relationship_eligibility_immutable BEFORE DELETE OR UPDATE ON spine.crm_relationship_eligibility FOR EACH ROW EXECUTE FUNCTION spine.reject_crm_relationship_eligibility_mutation()"
+    },
+    {
+      "table_name": "crm_relationship_idempotency",
+      "trigger_name": "trg_crm_relationship_idempotency_immutable",
+      "function_name": "reject_crm_relationship_idempotency_mutation",
+      "definition": "CREATE TRIGGER trg_crm_relationship_idempotency_immutable BEFORE DELETE OR UPDATE ON spine.crm_relationship_idempotency FOR EACH ROW EXECUTE FUNCTION spine.reject_crm_relationship_idempotency_mutation()"
+    },
+    {
+      "table_name": "crm_relationship_identities",
+      "trigger_name": "trg_crm_relationship_identities_immutable",
+      "function_name": "reject_crm_relationship_identities_mutation",
+      "definition": "CREATE TRIGGER trg_crm_relationship_identities_immutable BEFORE DELETE OR UPDATE ON spine.crm_relationship_identities FOR EACH ROW EXECUTE FUNCTION spine.reject_crm_relationship_identities_mutation()"
+    },
+    {
+      "table_name": "crm_relationship_lifecycle_events",
+      "trigger_name": "trg_crm_relationship_lifecycle_events_immutable",
+      "function_name": "reject_crm_relationship_lifecycle_events_mutation",
+      "definition": "CREATE TRIGGER trg_crm_relationship_lifecycle_events_immutable BEFORE DELETE OR UPDATE ON spine.crm_relationship_lifecycle_events FOR EACH ROW EXECUTE FUNCTION spine.reject_crm_relationship_lifecycle_events_mutation()"
+    },
+    {
+      "table_name": "crm_relationship_profiles",
+      "trigger_name": "trg_crm_relationship_profiles_immutable",
+      "function_name": "reject_crm_relationship_profiles_mutation",
+      "definition": "CREATE TRIGGER trg_crm_relationship_profiles_immutable BEFORE DELETE OR UPDATE ON spine.crm_relationship_profiles FOR EACH ROW EXECUTE FUNCTION spine.reject_crm_relationship_profiles_mutation()"
+    },
+    {
+      "table_name": "crm_relationship_receipts",
+      "trigger_name": "trg_crm_relationship_receipts_immutable",
+      "function_name": "reject_crm_relationship_receipts_mutation",
+      "definition": "CREATE TRIGGER trg_crm_relationship_receipts_immutable BEFORE DELETE OR UPDATE ON spine.crm_relationship_receipts FOR EACH ROW EXECUTE FUNCTION spine.reject_crm_relationship_receipts_mutation()"
+    },
+    {
+      "table_name": "current_source_deletion_policy_approvals",
+      "trigger_name": "trg_current_source_deletion_policy_approvals_step",
+      "function_name": "guard_current_source_deletion_policy_approvals_step",
+      "definition": "CREATE TRIGGER trg_current_source_deletion_policy_approvals_step BEFORE INSERT OR UPDATE ON spine.current_source_deletion_policy_approvals FOR EACH ROW EXECUTE FUNCTION spine.guard_current_source_deletion_policy_approvals_step()"
+    },
+    {
+      "table_name": "current_source_heads",
+      "trigger_name": "trg_current_source_head_step",
+      "function_name": "guard_current_source_head_step",
+      "definition": "CREATE TRIGGER trg_current_source_head_step BEFORE UPDATE ON spine.current_source_heads FOR EACH ROW EXECUTE FUNCTION spine.guard_current_source_head_step()"
+    },
+    {
+      "table_name": "current_tombstone_authorization_decisions",
+      "trigger_name": "trg_current_tombstone_authorization_decisions_step",
+      "function_name": "guard_current_tombstone_authorization_decisions_step",
+      "definition": "CREATE TRIGGER trg_current_tombstone_authorization_decisions_step BEFORE INSERT OR UPDATE ON spine.current_tombstone_authorization_decisions FOR EACH ROW EXECUTE FUNCTION spine.guard_current_tombstone_authorization_decisions_step()"
+    },
+    {
+      "table_name": "current_tombstone_authorization_issuers",
+      "trigger_name": "trg_current_tombstone_authorization_issuers_step",
+      "function_name": "guard_current_tombstone_authorization_issuers_step",
+      "definition": "CREATE TRIGGER trg_current_tombstone_authorization_issuers_step BEFORE INSERT OR UPDATE ON spine.current_tombstone_authorization_issuers FOR EACH ROW EXECUTE FUNCTION spine.guard_current_tombstone_authorization_issuers_step()"
+    },
+    {
+      "table_name": "current_trusted_canonical_acceptance_selectors",
+      "trigger_name": "trg_current_trusted_canonical_acceptance_selector_step",
+      "function_name": "guard_current_trusted_canonical_acceptance_selector_step",
+      "definition": "CREATE TRIGGER trg_current_trusted_canonical_acceptance_selector_step BEFORE INSERT OR UPDATE ON spine.current_trusted_canonical_acceptance_selectors FOR EACH ROW EXECUTE FUNCTION spine.guard_current_trusted_canonical_acceptance_selector_step()"
+    },
+    {
+      "table_name": "current_trusted_canonical_tombstone_selectors",
+      "trigger_name": "trg_current_canonical_tombstone_selector_step",
+      "function_name": "guard_current_canonical_tombstone_selector_step",
+      "definition": "CREATE TRIGGER trg_current_canonical_tombstone_selector_step BEFORE INSERT OR UPDATE ON spine.current_trusted_canonical_tombstone_selectors FOR EACH ROW EXECUTE FUNCTION spine.guard_current_canonical_tombstone_selector_step()"
+    },
+    {
+      "table_name": "disclosure_hold_releases",
+      "trigger_name": "trg_disclosure_hold_releases_immutable",
+      "function_name": "reject_disclosure_hold_releases_mutation",
+      "definition": "CREATE TRIGGER trg_disclosure_hold_releases_immutable BEFORE DELETE OR UPDATE ON spine.disclosure_hold_releases FOR EACH ROW EXECUTE FUNCTION spine.reject_disclosure_hold_releases_mutation()"
+    },
+    {
+      "table_name": "disclosure_hold_source_revisions",
+      "trigger_name": "trg_disclosure_hold_source_revisions_immutable",
+      "function_name": "reject_disclosure_hold_source_revisions_mutation",
+      "definition": "CREATE TRIGGER trg_disclosure_hold_source_revisions_immutable BEFORE DELETE OR UPDATE ON spine.disclosure_hold_source_revisions FOR EACH ROW EXECUTE FUNCTION spine.reject_disclosure_hold_source_revisions_mutation()"
+    },
+    {
+      "table_name": "disclosure_hold_targets",
+      "trigger_name": "trg_disclosure_hold_targets_immutable",
+      "function_name": "reject_disclosure_hold_targets_mutation",
+      "definition": "CREATE TRIGGER trg_disclosure_hold_targets_immutable BEFORE DELETE OR UPDATE ON spine.disclosure_hold_targets FOR EACH ROW EXECUTE FUNCTION spine.reject_disclosure_hold_targets_mutation()"
+    },
+    {
+      "table_name": "disclosure_holds",
+      "trigger_name": "trg_disclosure_holds_immutable",
+      "function_name": "reject_disclosure_holds_mutation",
+      "definition": "CREATE TRIGGER trg_disclosure_holds_immutable BEFORE DELETE OR UPDATE ON spine.disclosure_holds FOR EACH ROW EXECUTE FUNCTION spine.reject_disclosure_holds_mutation()"
+    },
+    {
+      "table_name": "email_attachment_artifacts",
+      "trigger_name": "trg_email_attachment_artifact_immutable",
+      "function_name": "reject_email_attachment_artifact_mutation",
+      "definition": "CREATE TRIGGER trg_email_attachment_artifact_immutable BEFORE DELETE OR UPDATE ON spine.email_attachment_artifacts FOR EACH ROW EXECUTE FUNCTION spine.reject_email_attachment_artifact_mutation()"
+    },
+    {
+      "table_name": "email_attachment_processing_receipts",
+      "trigger_name": "trg_email_attachment_processing_receipt_immutable",
+      "function_name": "reject_email_attachment_processing_receipt_mutation",
+      "definition": "CREATE TRIGGER trg_email_attachment_processing_receipt_immutable BEFORE DELETE OR UPDATE ON spine.email_attachment_processing_receipts FOR EACH ROW EXECUTE FUNCTION spine.reject_email_attachment_processing_receipt_mutation()"
+    },
+    {
+      "table_name": "email_message_artifacts",
+      "trigger_name": "trg_email_message_artifact_immutable",
+      "function_name": "reject_email_message_artifact_mutation",
+      "definition": "CREATE TRIGGER trg_email_message_artifact_immutable BEFORE DELETE OR UPDATE ON spine.email_message_artifacts FOR EACH ROW EXECUTE FUNCTION spine.reject_email_message_artifact_mutation()"
+    },
+    {
+      "table_name": "environment_memberships",
+      "trigger_name": "trg_environment_memberships_immutable",
+      "function_name": "reject_authorization_history_mutation",
+      "definition": "CREATE TRIGGER trg_environment_memberships_immutable BEFORE DELETE OR UPDATE ON spine.environment_memberships FOR EACH ROW EXECUTE FUNCTION spine.reject_authorization_history_mutation()"
+    },
+    {
+      "table_name": "environment_role_bindings",
+      "trigger_name": "trg_environment_role_bindings_immutable",
+      "function_name": "reject_authorization_history_mutation",
+      "definition": "CREATE TRIGGER trg_environment_role_bindings_immutable BEFORE DELETE OR UPDATE ON spine.environment_role_bindings FOR EACH ROW EXECUTE FUNCTION spine.reject_authorization_history_mutation()"
+    },
+    {
+      "table_name": "gmail_message_label_observations",
+      "trigger_name": "trg_gmail_message_label_observations_immutable",
+      "function_name": "reject_gmail_message_evidence_mutation",
+      "definition": "CREATE TRIGGER trg_gmail_message_label_observations_immutable BEFORE DELETE OR UPDATE ON spine.gmail_message_label_observations FOR EACH ROW EXECUTE FUNCTION spine.reject_gmail_message_evidence_mutation()"
+    },
+    {
+      "table_name": "gmail_message_relationship_evidence",
+      "trigger_name": "trg_gmail_message_relationship_evidence_immutable",
+      "function_name": "reject_gmail_message_evidence_mutation",
+      "definition": "CREATE TRIGGER trg_gmail_message_relationship_evidence_immutable BEFORE DELETE OR UPDATE ON spine.gmail_message_relationship_evidence FOR EACH ROW EXECUTE FUNCTION spine.reject_gmail_message_evidence_mutation()"
+    },
+    {
+      "table_name": "google_connection_approvals",
+      "trigger_name": "trg_google_connection_approvals_immutable",
+      "function_name": "reject_authorization_history_mutation",
+      "definition": "CREATE TRIGGER trg_google_connection_approvals_immutable BEFORE DELETE OR UPDATE ON spine.google_connection_approvals FOR EACH ROW EXECUTE FUNCTION spine.reject_authorization_history_mutation()"
+    },
+    {
+      "table_name": "google_connection_versions",
+      "trigger_name": "trg_google_connection_versions_immutable",
+      "function_name": "reject_authorization_history_mutation",
+      "definition": "CREATE TRIGGER trg_google_connection_versions_immutable BEFORE DELETE OR UPDATE ON spine.google_connection_versions FOR EACH ROW EXECUTE FUNCTION spine.reject_authorization_history_mutation()"
+    },
+    {
+      "table_name": "idempotency_receipts",
+      "trigger_name": "trg_idempotency_receipts_actor_immutable",
+      "function_name": "enforce_idempotency_receipt_actor_immutable",
+      "definition": "CREATE TRIGGER trg_idempotency_receipts_actor_immutable BEFORE UPDATE OF actor_id ON spine.idempotency_receipts FOR EACH ROW EXECUTE FUNCTION spine.enforce_idempotency_receipt_actor_immutable()"
+    },
+    {
+      "table_name": "idempotency_receipts",
+      "trigger_name": "trg_idempotency_receipts_scope_immutable",
+      "function_name": "reject_idempotency_receipt_scope_update",
+      "definition": "CREATE TRIGGER trg_idempotency_receipts_scope_immutable BEFORE UPDATE OF workspace_id, environment_id ON spine.idempotency_receipts FOR EACH ROW EXECUTE FUNCTION spine.reject_idempotency_receipt_scope_update()"
+    },
+    {
+      "table_name": "idempotency_receipts",
+      "trigger_name": "trg_idempotency_receipts_single_completion",
+      "function_name": "enforce_idempotency_receipt_completion",
+      "definition": "CREATE TRIGGER trg_idempotency_receipts_single_completion BEFORE UPDATE ON spine.idempotency_receipts FOR EACH ROW EXECUTE FUNCTION spine.enforce_idempotency_receipt_completion()"
+    },
+    {
+      "table_name": "ingestion_failures",
+      "trigger_name": "trg_ingestion_failures_immutable",
+      "function_name": "reject_ingestion_failures_mutation",
+      "definition": "CREATE TRIGGER trg_ingestion_failures_immutable BEFORE DELETE OR UPDATE ON spine.ingestion_failures FOR EACH ROW EXECUTE FUNCTION spine.reject_ingestion_failures_mutation()"
+    },
+    {
+      "table_name": "ingestion_run_source_bindings",
+      "trigger_name": "trg_ingestion_run_source_bindings_immutable",
+      "function_name": "reject_ingestion_run_source_bindings_mutation",
+      "definition": "CREATE TRIGGER trg_ingestion_run_source_bindings_immutable BEFORE DELETE OR UPDATE ON spine.ingestion_run_source_bindings FOR EACH ROW EXECUTE FUNCTION spine.reject_ingestion_run_source_bindings_mutation()"
+    },
+    {
+      "table_name": "ingestion_run_source_bindings",
+      "trigger_name": "trg_ingestion_run_source_bindings_original_receipt_tenant",
+      "function_name": "validate_issue86_binding_original_receipt",
+      "definition": "CREATE CONSTRAINT TRIGGER trg_ingestion_run_source_bindings_original_receipt_tenant AFTER INSERT OR UPDATE ON spine.ingestion_run_source_bindings DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION spine.validate_issue86_binding_original_receipt()"
+    },
+    {
+      "table_name": "ingestion_run_source_bindings",
+      "trigger_name": "trg_ingestion_run_source_bindings_receipt_scope",
+      "function_name": "validate_issue7_receipt_scope",
+      "definition": "CREATE CONSTRAINT TRIGGER trg_ingestion_run_source_bindings_receipt_scope AFTER INSERT OR UPDATE ON spine.ingestion_run_source_bindings DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION spine.validate_issue7_receipt_scope()"
+    },
+    {
+      "table_name": "ingestion_run_sources",
+      "trigger_name": "trg_ingestion_run_sources_immutable",
+      "function_name": "reject_ingestion_run_sources_mutation",
+      "definition": "CREATE TRIGGER trg_ingestion_run_sources_immutable BEFORE DELETE OR UPDATE ON spine.ingestion_run_sources FOR EACH ROW EXECUTE FUNCTION spine.reject_ingestion_run_sources_mutation()"
+    },
+    {
+      "table_name": "ingestion_runs",
+      "trigger_name": "trg_ingestion_runs_immutable",
+      "function_name": "reject_ingestion_runs_mutation",
+      "definition": "CREATE TRIGGER trg_ingestion_runs_immutable BEFORE DELETE OR UPDATE ON spine.ingestion_runs FOR EACH ROW EXECUTE FUNCTION spine.reject_ingestion_runs_mutation()"
+    },
+    {
+      "table_name": "ingestion_runs",
+      "trigger_name": "trg_ingestion_runs_receipt_scope",
+      "function_name": "validate_issue7_receipt_scope",
+      "definition": "CREATE CONSTRAINT TRIGGER trg_ingestion_runs_receipt_scope AFTER INSERT OR UPDATE ON spine.ingestion_runs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION spine.validate_issue7_receipt_scope()"
+    },
+    {
+      "table_name": "ingestion_transitions",
+      "trigger_name": "trg_ingestion_transitions_immutable",
+      "function_name": "reject_ingestion_transitions_mutation",
+      "definition": "CREATE TRIGGER trg_ingestion_transitions_immutable BEFORE DELETE OR UPDATE ON spine.ingestion_transitions FOR EACH ROW EXECUTE FUNCTION spine.reject_ingestion_transitions_mutation()"
+    },
+    {
+      "table_name": "ingestion_warnings",
+      "trigger_name": "trg_ingestion_warnings_immutable",
+      "function_name": "reject_ingestion_warnings_mutation",
+      "definition": "CREATE TRIGGER trg_ingestion_warnings_immutable BEFORE DELETE OR UPDATE ON spine.ingestion_warnings FOR EACH ROW EXECUTE FUNCTION spine.reject_ingestion_warnings_mutation()"
+    },
+    {
+      "table_name": "lifecycle_decisions",
+      "trigger_name": "trg_lifecycle_decisions_immutable",
+      "function_name": "reject_lifecycle_decisions_mutation",
+      "definition": "CREATE TRIGGER trg_lifecycle_decisions_immutable BEFORE DELETE OR UPDATE ON spine.lifecycle_decisions FOR EACH ROW EXECUTE FUNCTION spine.reject_lifecycle_decisions_mutation()"
+    },
+    {
+      "table_name": "lifecycle_observations",
+      "trigger_name": "trg_lifecycle_observations_immutable",
+      "function_name": "reject_lifecycle_observations_mutation",
+      "definition": "CREATE TRIGGER trg_lifecycle_observations_immutable BEFORE DELETE OR UPDATE ON spine.lifecycle_observations FOR EACH ROW EXECUTE FUNCTION spine.reject_lifecycle_observations_mutation()"
+    },
+    {
+      "table_name": "ontology_versions",
+      "trigger_name": "trg_ontology_versions_immutable",
+      "function_name": "reject_ontology_versions_mutation",
+      "definition": "CREATE TRIGGER trg_ontology_versions_immutable BEFORE DELETE OR UPDATE ON spine.ontology_versions FOR EACH ROW EXECUTE FUNCTION spine.reject_ontology_versions_mutation()"
+    },
+    {
+      "table_name": "outbox_intents",
+      "trigger_name": "trg_outbox_intents_immutable",
+      "function_name": "reject_outbox_intent_mutation",
+      "definition": "CREATE TRIGGER trg_outbox_intents_immutable BEFORE DELETE OR UPDATE ON spine.outbox_intents FOR EACH ROW EXECUTE FUNCTION spine.reject_outbox_intent_mutation()"
+    },
+    {
+      "table_name": "parsed_document_segments",
+      "trigger_name": "trg_parsed_document_segments_immutable",
+      "function_name": "reject_parsed_document_segments_mutation",
+      "definition": "CREATE TRIGGER trg_parsed_document_segments_immutable BEFORE DELETE OR UPDATE ON spine.parsed_document_segments FOR EACH ROW EXECUTE FUNCTION spine.reject_parsed_document_segments_mutation()"
+    },
+    {
+      "table_name": "parsed_documents",
+      "trigger_name": "trg_parsed_documents_immutable",
+      "function_name": "reject_parsed_documents_mutation",
+      "definition": "CREATE TRIGGER trg_parsed_documents_immutable BEFORE DELETE OR UPDATE ON spine.parsed_documents FOR EACH ROW EXECUTE FUNCTION spine.reject_parsed_documents_mutation()"
+    },
+    {
+      "table_name": "policy_activations",
+      "trigger_name": "trg_policy_activations_immutable",
+      "function_name": "reject_access_policy_history_mutation",
+      "definition": "CREATE TRIGGER trg_policy_activations_immutable BEFORE DELETE OR UPDATE ON spine.policy_activations FOR EACH ROW EXECUTE FUNCTION spine.reject_access_policy_history_mutation()"
+    },
+    {
+      "table_name": "policy_activations",
+      "trigger_name": "trg_policy_activations_receipt_scope",
+      "function_name": "validate_issue7_receipt_scope",
+      "definition": "CREATE CONSTRAINT TRIGGER trg_policy_activations_receipt_scope AFTER INSERT OR UPDATE OF workspace_id, environment_id, idempotency_receipt_id ON spine.policy_activations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION spine.validate_issue7_receipt_scope()"
+    },
+    {
+      "table_name": "policy_approvals",
+      "trigger_name": "trg_policy_approvals_immutable",
+      "function_name": "reject_access_policy_history_mutation",
+      "definition": "CREATE TRIGGER trg_policy_approvals_immutable BEFORE DELETE OR UPDATE ON spine.policy_approvals FOR EACH ROW EXECUTE FUNCTION spine.reject_access_policy_history_mutation()"
+    },
+    {
+      "table_name": "policy_proposals",
+      "trigger_name": "trg_policy_proposals_immutable",
+      "function_name": "reject_access_policy_history_mutation",
+      "definition": "CREATE TRIGGER trg_policy_proposals_immutable BEFORE DELETE OR UPDATE ON spine.policy_proposals FOR EACH ROW EXECUTE FUNCTION spine.reject_access_policy_history_mutation()"
+    },
+    {
+      "table_name": "private_asr_corpus_manifests",
+      "trigger_name": "trg_private_asr_manifest_immutable",
+      "function_name": "reject_private_asr_manifest_mutation",
+      "definition": "CREATE TRIGGER trg_private_asr_manifest_immutable BEFORE DELETE OR UPDATE ON spine.private_asr_corpus_manifests FOR EACH ROW EXECUTE FUNCTION spine.reject_private_asr_manifest_mutation()"
+    },
+    {
+      "table_name": "private_asr_source_fences",
+      "trigger_name": "trg_private_asr_source_fence_monotonic",
+      "function_name": "guard_private_asr_source_fence_update",
+      "definition": "CREATE TRIGGER trg_private_asr_source_fence_monotonic BEFORE UPDATE ON spine.private_asr_source_fences FOR EACH ROW EXECUTE FUNCTION spine.guard_private_asr_source_fence_update()"
+    },
+    {
+      "table_name": "process_only_operation_lineages",
+      "trigger_name": "trg_process_only_operation_lineages_immutable",
+      "function_name": "reject_process_only_operation_lineages_mutation",
+      "definition": "CREATE TRIGGER trg_process_only_operation_lineages_immutable BEFORE DELETE OR UPDATE ON spine.process_only_operation_lineages FOR EACH ROW EXECUTE FUNCTION spine.reject_process_only_operation_lineages_mutation()"
+    },
+    {
+      "table_name": "processing_receipts",
+      "trigger_name": "trg_processing_receipts_immutable",
+      "function_name": "reject_processing_receipts_mutation",
+      "definition": "CREATE TRIGGER trg_processing_receipts_immutable BEFORE DELETE OR UPDATE ON spine.processing_receipts FOR EACH ROW EXECUTE FUNCTION spine.reject_processing_receipts_mutation()"
+    },
+    {
+      "table_name": "processing_receipts",
+      "trigger_name": "trg_processing_receipts_receipt_scope",
+      "function_name": "validate_issue7_receipt_scope",
+      "definition": "CREATE CONSTRAINT TRIGGER trg_processing_receipts_receipt_scope AFTER INSERT OR UPDATE ON spine.processing_receipts DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION spine.validate_issue7_receipt_scope()"
+    },
+    {
+      "table_name": "projection_activations",
+      "trigger_name": "trg_projection_activations_immutable",
+      "function_name": "reject_projection_activations_mutation",
+      "definition": "CREATE TRIGGER trg_projection_activations_immutable BEFORE DELETE OR UPDATE ON spine.projection_activations FOR EACH ROW EXECUTE FUNCTION spine.reject_projection_activations_mutation()"
+    },
+    {
+      "table_name": "projection_activations",
+      "trigger_name": "trg_projection_activations_receipt_scope",
+      "function_name": "validate_issue7_receipt_scope",
+      "definition": "CREATE CONSTRAINT TRIGGER trg_projection_activations_receipt_scope AFTER INSERT OR UPDATE OF workspace_id, environment_id, idempotency_receipt_id ON spine.projection_activations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION spine.validate_issue7_receipt_scope()"
+    },
+    {
+      "table_name": "projection_config_versions",
+      "trigger_name": "trg_projection_config_versions_immutable",
+      "function_name": "reject_projection_config_versions_mutation",
+      "definition": "CREATE TRIGGER trg_projection_config_versions_immutable BEFORE DELETE OR UPDATE ON spine.projection_config_versions FOR EACH ROW EXECUTE FUNCTION spine.reject_projection_config_versions_mutation()"
+    },
+    {
+      "table_name": "projection_drifts",
+      "trigger_name": "trg_projection_drifts_immutable",
+      "function_name": "reject_projection_drifts_mutation",
+      "definition": "CREATE TRIGGER trg_projection_drifts_immutable BEFORE DELETE OR UPDATE ON spine.projection_drifts FOR EACH ROW EXECUTE FUNCTION spine.reject_projection_drifts_mutation()"
+    },
+    {
+      "table_name": "projection_partitions",
+      "trigger_name": "trg_projection_partitions_immutable",
+      "function_name": "reject_projection_partitions_mutation",
+      "definition": "CREATE TRIGGER trg_projection_partitions_immutable BEFORE DELETE OR UPDATE ON spine.projection_partitions FOR EACH ROW EXECUTE FUNCTION spine.reject_projection_partitions_mutation()"
+    },
+    {
+      "table_name": "projection_receipts",
+      "trigger_name": "trg_projection_receipts_immutable",
+      "function_name": "reject_projection_receipts_mutation",
+      "definition": "CREATE TRIGGER trg_projection_receipts_immutable BEFORE DELETE OR UPDATE ON spine.projection_receipts FOR EACH ROW EXECUTE FUNCTION spine.reject_projection_receipts_mutation()"
+    },
+    {
+      "table_name": "projection_receipts",
+      "trigger_name": "trg_projection_receipts_receipt_scope",
+      "function_name": "validate_issue7_receipt_scope",
+      "definition": "CREATE CONSTRAINT TRIGGER trg_projection_receipts_receipt_scope AFTER INSERT OR UPDATE OF workspace_id, environment_id, idempotency_receipt_id ON spine.projection_receipts DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION spine.validate_issue7_receipt_scope()"
+    },
+    {
+      "table_name": "projection_reconciliation_results",
+      "trigger_name": "trg_projection_reconciliation_results_immutable",
+      "function_name": "reject_projection_reconciliation_results_mutation",
+      "definition": "CREATE TRIGGER trg_projection_reconciliation_results_immutable BEFORE DELETE OR UPDATE ON spine.projection_reconciliation_results FOR EACH ROW EXECUTE FUNCTION spine.reject_projection_reconciliation_results_mutation()"
+    },
+    {
+      "table_name": "projection_reconciliation_results",
+      "trigger_name": "trg_projection_reconciliation_results_receipt_scope",
+      "function_name": "validate_issue7_receipt_scope",
+      "definition": "CREATE CONSTRAINT TRIGGER trg_projection_reconciliation_results_receipt_scope AFTER INSERT OR UPDATE OF workspace_id, environment_id, idempotency_receipt_id ON spine.projection_reconciliation_results DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION spine.validate_issue7_receipt_scope()"
+    },
+    {
+      "table_name": "projection_run_transitions",
+      "trigger_name": "trg_projection_run_transitions_immutable",
+      "function_name": "reject_projection_run_transitions_mutation",
+      "definition": "CREATE TRIGGER trg_projection_run_transitions_immutable BEFORE DELETE OR UPDATE ON spine.projection_run_transitions FOR EACH ROW EXECUTE FUNCTION spine.reject_projection_run_transitions_mutation()"
+    },
+    {
+      "table_name": "projection_runs",
+      "trigger_name": "trg_projection_runs_receipt_scope",
+      "function_name": "validate_issue7_receipt_scope",
+      "definition": "CREATE CONSTRAINT TRIGGER trg_projection_runs_receipt_scope AFTER INSERT OR UPDATE OF workspace_id, environment_id, idempotency_receipt_id ON spine.projection_runs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION spine.validate_issue7_receipt_scope()"
+    },
+    {
+      "table_name": "projection_snapshot_members",
+      "trigger_name": "trg_projection_snapshot_members_immutable",
+      "function_name": "reject_projection_snapshot_members_mutation",
+      "definition": "CREATE TRIGGER trg_projection_snapshot_members_immutable BEFORE DELETE OR UPDATE ON spine.projection_snapshot_members FOR EACH ROW EXECUTE FUNCTION spine.reject_projection_snapshot_members_mutation()"
+    },
+    {
+      "table_name": "projection_validations",
+      "trigger_name": "trg_projection_validations_immutable",
+      "function_name": "reject_projection_validations_mutation",
+      "definition": "CREATE TRIGGER trg_projection_validations_immutable BEFORE DELETE OR UPDATE ON spine.projection_validations FOR EACH ROW EXECUTE FUNCTION spine.reject_projection_validations_mutation()"
+    },
+    {
+      "table_name": "provider_connection_approvals",
+      "trigger_name": "trg_provider_connection_approvals_immutable",
+      "function_name": "reject_authorization_history_mutation",
+      "definition": "CREATE TRIGGER trg_provider_connection_approvals_immutable BEFORE DELETE OR UPDATE ON spine.provider_connection_approvals FOR EACH ROW EXECUTE FUNCTION spine.reject_authorization_history_mutation()"
+    },
+    {
+      "table_name": "provider_connection_versions",
+      "trigger_name": "trg_provider_connection_versions_immutable",
+      "function_name": "reject_authorization_history_mutation",
+      "definition": "CREATE TRIGGER trg_provider_connection_versions_immutable BEFORE DELETE OR UPDATE ON spine.provider_connection_versions FOR EACH ROW EXECUTE FUNCTION spine.reject_authorization_history_mutation()"
+    },
+    {
+      "table_name": "qa_message_versions",
+      "trigger_name": "trg_qa_message_versions_append_only",
+      "function_name": "reject_qa_version_mutation",
+      "definition": "CREATE TRIGGER trg_qa_message_versions_append_only BEFORE DELETE OR UPDATE ON spine.qa_message_versions FOR EACH ROW EXECUTE FUNCTION spine.reject_qa_version_mutation()"
+    },
+    {
+      "table_name": "qa_session_versions",
+      "trigger_name": "trg_qa_session_versions_append_only",
+      "function_name": "reject_qa_version_mutation",
+      "definition": "CREATE TRIGGER trg_qa_session_versions_append_only BEFORE DELETE OR UPDATE ON spine.qa_session_versions FOR EACH ROW EXECUTE FUNCTION spine.reject_qa_version_mutation()"
+    },
+    {
+      "table_name": "qualification_authority_bindings",
+      "trigger_name": "trg_qualification_authority_immutable",
+      "function_name": "reject_authorization_history_mutation",
+      "definition": "CREATE TRIGGER trg_qualification_authority_immutable BEFORE DELETE OR UPDATE ON spine.qualification_authority_bindings FOR EACH ROW EXECUTE FUNCTION spine.reject_authorization_history_mutation()"
+    },
+    {
+      "table_name": "qualification_target_bindings",
+      "trigger_name": "trg_qualification_target_immutable",
+      "function_name": "reject_authorization_history_mutation",
+      "definition": "CREATE TRIGGER trg_qualification_target_immutable BEFORE DELETE OR UPDATE ON spine.qualification_target_bindings FOR EACH ROW EXECUTE FUNCTION spine.reject_authorization_history_mutation()"
+    },
+    {
+      "table_name": "qualified_deletion_evidence",
+      "trigger_name": "trg_qualified_deletion_evidence_immutable",
+      "function_name": "reject_qualified_deletion_evidence_mutation",
+      "definition": "CREATE TRIGGER trg_qualified_deletion_evidence_immutable BEFORE DELETE OR UPDATE ON spine.qualified_deletion_evidence FOR EACH ROW EXECUTE FUNCTION spine.reject_qualified_deletion_evidence_mutation()"
+    },
+    {
+      "table_name": "recovery_evidence_invalidations",
+      "trigger_name": "trg_recovery_evidence_invalidations_immutable",
+      "function_name": "reject_recovery_history_mutation",
+      "definition": "CREATE TRIGGER trg_recovery_evidence_invalidations_immutable BEFORE DELETE OR UPDATE ON spine.recovery_evidence_invalidations FOR EACH ROW EXECUTE FUNCTION spine.reject_recovery_history_mutation()"
+    },
+    {
+      "table_name": "recovery_quiescence_evidence",
+      "trigger_name": "trg_recovery_quiescence_evidence_immutable",
+      "function_name": "reject_recovery_history_mutation",
+      "definition": "CREATE TRIGGER trg_recovery_quiescence_evidence_immutable BEFORE DELETE OR UPDATE ON spine.recovery_quiescence_evidence FOR EACH ROW EXECUTE FUNCTION spine.reject_recovery_history_mutation()"
+    },
+    {
+      "table_name": "register_association_acceptances",
+      "trigger_name": "trg_register_association_acceptances_immutable",
+      "function_name": "reject_register_association_acceptances_mutation",
+      "definition": "CREATE TRIGGER trg_register_association_acceptances_immutable BEFORE DELETE OR UPDATE ON spine.register_association_acceptances FOR EACH ROW EXECUTE FUNCTION spine.reject_register_association_acceptances_mutation()"
+    },
+    {
+      "table_name": "register_link_claims",
+      "trigger_name": "trg_register_link_claims_immutable",
+      "function_name": "reject_register_link_claims_mutation",
+      "definition": "CREATE TRIGGER trg_register_link_claims_immutable BEFORE DELETE OR UPDATE ON spine.register_link_claims FOR EACH ROW EXECUTE FUNCTION spine.reject_register_link_claims_mutation()"
+    },
+    {
+      "table_name": "retention_applicabilities",
+      "trigger_name": "trg_retention_applicabilities_immutable",
+      "function_name": "reject_retention_applicabilities_mutation",
+      "definition": "CREATE TRIGGER trg_retention_applicabilities_immutable BEFORE DELETE OR UPDATE ON spine.retention_applicabilities FOR EACH ROW EXECUTE FUNCTION spine.reject_retention_applicabilities_mutation()"
+    },
+    {
+      "table_name": "source_deletion_policy_approvals",
+      "trigger_name": "trg_source_deletion_policy_approvals_immutable",
+      "function_name": "reject_source_deletion_policy_approvals_mutation",
+      "definition": "CREATE TRIGGER trg_source_deletion_policy_approvals_immutable BEFORE DELETE OR UPDATE ON spine.source_deletion_policy_approvals FOR EACH ROW EXECUTE FUNCTION spine.reject_source_deletion_policy_approvals_mutation()"
+    },
+    {
+      "table_name": "source_objects",
+      "trigger_name": "trg_source_objects_immutable",
+      "function_name": "reject_source_objects_mutation",
+      "definition": "CREATE TRIGGER trg_source_objects_immutable BEFORE DELETE OR UPDATE ON spine.source_objects FOR EACH ROW EXECUTE FUNCTION spine.reject_source_objects_mutation()"
+    },
+    {
+      "table_name": "source_processing_admissions",
+      "trigger_name": "trg_source_processing_admissions_immutable",
+      "function_name": "reject_source_processing_admission_mutation",
+      "definition": "CREATE TRIGGER trg_source_processing_admissions_immutable BEFORE DELETE OR UPDATE ON spine.source_processing_admissions FOR EACH ROW EXECUTE FUNCTION spine.reject_source_processing_admission_mutation()"
+    },
+    {
+      "table_name": "source_projection_references",
+      "trigger_name": "trg_source_projection_references_immutable",
+      "function_name": "reject_source_projection_references_mutation",
+      "definition": "CREATE TRIGGER trg_source_projection_references_immutable BEFORE DELETE OR UPDATE ON spine.source_projection_references FOR EACH ROW EXECUTE FUNCTION spine.reject_source_projection_references_mutation()"
+    },
+    {
+      "table_name": "source_revision_provenance",
+      "trigger_name": "trg_source_revision_provenance_immutable",
+      "function_name": "reject_source_revision_provenance_mutation",
+      "definition": "CREATE TRIGGER trg_source_revision_provenance_immutable BEFORE DELETE OR UPDATE ON spine.source_revision_provenance FOR EACH ROW EXECUTE FUNCTION spine.reject_source_revision_provenance_mutation()"
+    },
+    {
+      "table_name": "source_revision_receipt_associations",
+      "trigger_name": "trg_source_receipt_associations_lineage",
+      "function_name": "validate_source_receipt_association",
+      "definition": "CREATE CONSTRAINT TRIGGER trg_source_receipt_associations_lineage AFTER INSERT ON spine.source_revision_receipt_associations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION spine.validate_source_receipt_association()"
+    },
+    {
+      "table_name": "source_revision_receipt_associations",
+      "trigger_name": "trg_source_revision_receipt_associations_immutable",
+      "function_name": "reject_source_revision_receipt_associations_mutation",
+      "definition": "CREATE TRIGGER trg_source_revision_receipt_associations_immutable BEFORE DELETE OR UPDATE ON spine.source_revision_receipt_associations FOR EACH ROW EXECUTE FUNCTION spine.reject_source_revision_receipt_associations_mutation()"
+    },
+    {
+      "table_name": "source_revisions",
+      "trigger_name": "trg_source_reappearance",
+      "function_name": "check_source_reappearance",
+      "definition": "CREATE CONSTRAINT TRIGGER trg_source_reappearance AFTER INSERT ON spine.source_revisions DEFERRABLE INITIALLY IMMEDIATE FOR EACH ROW EXECUTE FUNCTION spine.check_source_reappearance()"
+    },
+    {
+      "table_name": "source_revisions",
+      "trigger_name": "trg_source_revision_canonical_validation",
+      "function_name": "validate_source_revision_canonical",
+      "definition": "CREATE CONSTRAINT TRIGGER trg_source_revision_canonical_validation AFTER INSERT OR UPDATE ON spine.source_revisions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION spine.validate_source_revision_canonical()"
+    },
+    {
+      "table_name": "source_revisions",
+      "trigger_name": "trg_source_revisions_immutable",
+      "function_name": "reject_source_revisions_mutation",
+      "definition": "CREATE TRIGGER trg_source_revisions_immutable BEFORE DELETE OR UPDATE ON spine.source_revisions FOR EACH ROW EXECUTE FUNCTION spine.reject_source_revisions_mutation()"
+    },
+    {
+      "table_name": "source_security_domain_bindings",
+      "trigger_name": "trg_source_security_domain_bindings_immutable",
+      "function_name": "reject_source_security_domain_binding_mutation",
+      "definition": "CREATE TRIGGER trg_source_security_domain_bindings_immutable BEFORE DELETE OR UPDATE ON spine.source_security_domain_bindings FOR EACH ROW EXECUTE FUNCTION spine.reject_source_security_domain_binding_mutation()"
+    },
+    {
+      "table_name": "storage_recovery_manifests",
+      "trigger_name": "trg_storage_recovery_manifests_immutable",
+      "function_name": "reject_recovery_history_mutation",
+      "definition": "CREATE TRIGGER trg_storage_recovery_manifests_immutable BEFORE DELETE OR UPDATE ON spine.storage_recovery_manifests FOR EACH ROW EXECUTE FUNCTION spine.reject_recovery_history_mutation()"
+    },
+    {
+      "table_name": "tombstone_authorization_decisions",
+      "trigger_name": "trg_tombstone_authorization_decisions_immutable",
+      "function_name": "reject_tombstone_authorization_decisions_mutation",
+      "definition": "CREATE TRIGGER trg_tombstone_authorization_decisions_immutable BEFORE DELETE OR UPDATE ON spine.tombstone_authorization_decisions FOR EACH ROW EXECUTE FUNCTION spine.reject_tombstone_authorization_decisions_mutation()"
+    },
+    {
+      "table_name": "tombstone_authorization_issuers",
+      "trigger_name": "trg_tombstone_authorization_issuers_immutable",
+      "function_name": "reject_tombstone_authorization_issuers_mutation",
+      "definition": "CREATE TRIGGER trg_tombstone_authorization_issuers_immutable BEFORE DELETE OR UPDATE ON spine.tombstone_authorization_issuers FOR EACH ROW EXECUTE FUNCTION spine.reject_tombstone_authorization_issuers_mutation()"
+    },
+    {
+      "table_name": "tombstone_authorizations",
+      "trigger_name": "trg_tombstone_authorizations_immutable",
+      "function_name": "reject_tombstone_authorizations_mutation",
+      "definition": "CREATE TRIGGER trg_tombstone_authorizations_immutable BEFORE DELETE OR UPDATE ON spine.tombstone_authorizations FOR EACH ROW EXECUTE FUNCTION spine.reject_tombstone_authorizations_mutation()"
+    },
+    {
+      "table_name": "transcription_artifacts",
+      "trigger_name": "trg_transcription_artifacts_source_lineage",
+      "function_name": "enforce_transcription_source_lineage",
+      "definition": "CREATE TRIGGER trg_transcription_artifacts_source_lineage BEFORE INSERT ON spine.transcription_artifacts FOR EACH ROW EXECUTE FUNCTION spine.enforce_transcription_source_lineage()"
+    },
+    {
+      "table_name": "transcription_jobs",
+      "trigger_name": "trg_transcription_jobs_source_lineage",
+      "function_name": "enforce_transcription_source_lineage",
+      "definition": "CREATE TRIGGER trg_transcription_jobs_source_lineage BEFORE INSERT ON spine.transcription_jobs FOR EACH ROW EXECUTE FUNCTION spine.enforce_transcription_source_lineage()"
+    },
+    {
+      "table_name": "trusted_canonical_acceptance_selector_versions",
+      "trigger_name": "trg_trusted_canonical_acceptance_selector_immutable",
+      "function_name": "reject_trusted_canonical_acceptance_selector_mutation",
+      "definition": "CREATE TRIGGER trg_trusted_canonical_acceptance_selector_immutable BEFORE DELETE OR UPDATE ON spine.trusted_canonical_acceptance_selector_versions FOR EACH ROW EXECUTE FUNCTION spine.reject_trusted_canonical_acceptance_selector_mutation()"
+    },
+    {
+      "table_name": "trusted_canonical_acceptance_selector_versions",
+      "trigger_name": "trg_trusted_canonical_acceptance_selector_issuer",
+      "function_name": "guard_canonical_acceptance_selector_issuer",
+      "definition": "CREATE TRIGGER trg_trusted_canonical_acceptance_selector_issuer BEFORE INSERT ON spine.trusted_canonical_acceptance_selector_versions FOR EACH ROW EXECUTE FUNCTION spine.guard_canonical_acceptance_selector_issuer()"
+    },
+    {
+      "table_name": "trusted_canonical_tombstone_selector_versions",
+      "trigger_name": "trg_canonical_tombstone_selector_issuer",
+      "function_name": "guard_canonical_tombstone_selector_issuer",
+      "definition": "CREATE TRIGGER trg_canonical_tombstone_selector_issuer BEFORE INSERT ON spine.trusted_canonical_tombstone_selector_versions FOR EACH ROW EXECUTE FUNCTION spine.guard_canonical_tombstone_selector_issuer()"
+    },
+    {
+      "table_name": "trusted_canonical_tombstone_selector_versions",
+      "trigger_name": "trg_canonical_tombstone_selectors_immutable",
+      "function_name": "reject_canonical_tombstone_selector_mutation",
+      "definition": "CREATE TRIGGER trg_canonical_tombstone_selectors_immutable BEFORE DELETE OR UPDATE ON spine.trusted_canonical_tombstone_selector_versions FOR EACH ROW EXECUTE FUNCTION spine.reject_canonical_tombstone_selector_mutation()"
+    },
+    {
+      "table_name": "trusted_content_verification_evidence",
+      "trigger_name": "trg_trusted_content_evidence_immutable",
+      "function_name": "reject_trusted_content_evidence_mutation",
+      "definition": "CREATE TRIGGER trg_trusted_content_evidence_immutable BEFORE DELETE OR UPDATE ON spine.trusted_content_verification_evidence FOR EACH ROW EXECUTE FUNCTION spine.reject_trusted_content_evidence_mutation()"
+    },
+    {
+      "table_name": "workspace_memberships",
+      "trigger_name": "trg_workspace_memberships_immutable",
+      "function_name": "reject_authorization_history_mutation",
+      "definition": "CREATE TRIGGER trg_workspace_memberships_immutable BEFORE DELETE OR UPDATE ON spine.workspace_memberships FOR EACH ROW EXECUTE FUNCTION spine.reject_authorization_history_mutation()"
+    }
+  ]
+}

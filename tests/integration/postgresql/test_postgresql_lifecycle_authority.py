@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from dataclasses import replace
 import hashlib
 import json
+from uuid import UUID
 
 import pytest
 from sqlalchemy import insert, select, text
@@ -36,6 +37,7 @@ from spine.domain.sources.lifecycle import (
     LifecycleObservationKind,
     LifecycleReasonCode,
 )
+from spine.domain.sources.gmail import GmailMessageKey, gmail_source_identity
 from spine.infrastructure.persistence.postgresql_lifecycle import (
     PostgreSQLLifecycleAuthorityRepository,
 )
@@ -65,6 +67,7 @@ from tests.contracts.persistence.test_source_observation_contract import (
     NOW,
     connector_source,
     provenance as source_provenance,
+    revision as source_revision,
     tombstone,
 )
 
@@ -297,11 +300,60 @@ def _command_with_lifecycle_query(
     )
 
 
-async def _prepare_lifecycle_case(adapter: PersistenceAdapter, number: int):
-    workspace_id = synthetic_uuid(number)
-    environment_id = synthetic_uuid(number + 1)
+async def _prepare_lifecycle_case(
+    adapter: PersistenceAdapter,
+    number: int,
+    *,
+    gmail_source: bool = False,
+    scope: tuple[UUID, UUID] | None = None,
+    create_scope: bool = True,
+    gmail_connection_id: UUID | None = None,
+    gmail_mailbox_binding_id: UUID | None = None,
+    gmail_message_id: str | None = None,
+    accepted_generation: int = 1,
+):
+    workspace_id, environment_id = scope or (
+        synthetic_uuid(number),
+        synthetic_uuid(number + 1),
+    )
     source = connector_source(workspace_id, environment_id, "provider1")
-    return await prepare_canonical_case(adapter, number, source_object=source)
+    if gmail_source:
+        key = GmailMessageKey(
+            connection_id=gmail_connection_id or synthetic_uuid(number + 2),
+            mailbox_binding_id=gmail_mailbox_binding_id or synthetic_uuid(number + 3),
+            message_id=gmail_message_id or f"synthetic-message-{number}",
+        )
+        identity = gmail_source_identity(key)
+        source = source.model_copy(
+            update={
+                "source_object_id": synthetic_uuid(number + 8_000_000_000),
+                "source_kind": "email_message",
+                "connection_id": key.connection_id,
+                "external_namespace": identity.external_namespace,
+                "external_generation": identity.external_generation,
+                "external_object_id": identity.external_object_id,
+            }
+        )
+        revision = source_revision(
+            source,
+            synthetic_uuid(number + 2),
+            original_object_id=synthetic_uuid(number + 6),
+            original_generation=synthetic_uuid(number + 7),
+        )
+        provenance_event = f"gmail-event-{(number // 10) % 10}"
+    else:
+        revision = None
+        provenance_event = "event-1"
+    return await prepare_canonical_case(
+        adapter,
+        number,
+        scope=(workspace_id, environment_id),
+        source_object=source,
+        source_revision=revision,
+        create_scope=create_scope,
+        accepted_generation=accepted_generation,
+        provenance_event=provenance_event,
+    )
 
 
 async def _prepare_scope_authority(

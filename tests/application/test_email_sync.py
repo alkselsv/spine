@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
 
 from spine.application.email_sync import (
     EMAIL_SYNC_STATE_OBSERVED_CONSUMER_NAME,
@@ -145,6 +146,11 @@ def page(
             for key in effect_keys
         ),
     )
+
+
+def test_provider_page_rejects_system_erasure_identity() -> None:
+    with pytest.raises(ValidationError, match="reserved for erased page lineage"):
+        page(page_id="erased." + "a" * 64)
 
 
 def coordinator(

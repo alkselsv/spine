@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from types import SimpleNamespace
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
+from pydantic import SecretStr
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from spine.application.canonical_tombstone_selectors import (
     CanonicalTombstoneSelectorError,
@@ -28,6 +31,12 @@ from spine.application.persistence.errors import (
     TransactionDeadlockError,
 )
 from spine.application.persistence.idempotency import IdempotencyKey
+from spine.application.persistence.context import (
+    EnvironmentScope,
+    PersistenceOperation,
+    PersistencePurpose,
+    WorkspaceScope,
+)
 from spine.application.persistence.repositories import SourceObservationCommand
 from spine.application.persistence.retry import (
     RetryEligibility,
@@ -48,8 +57,21 @@ from spine.domain.sources.lifecycle import (
 from spine.infrastructure.persistence.postgresql_canonical_tombstone_selectors import (
     PostgreSQLCanonicalTombstoneSelectorRepository,
 )
-from spine.infrastructure.db.migrations import locate_migration_assets, upgrade_database
-from spine.infrastructure.db.settings import MigrationDatabaseSettings
+from spine.infrastructure.db.migrations import locate_migration_assets
+from spine.infrastructure.db.operator import bootstrap_database_roles
+from spine.infrastructure.db.settings import (
+    MigrationDatabaseSettings,
+    OperatorDatabaseSettings,
+)
+from spine.infrastructure.db.test_harness import (
+    DISPOSABLE_MARKER_PREFIX,
+    TestDatabaseProvision,
+    TestTarget,
+    validate_target_database_name,
+)
+from spine.infrastructure.persistence.contexts import TrustedContextBoundary
+from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
+from tests.contracts.persistence.outbox_events import create_outbox_event_registry
 from spine.infrastructure.persistence.postgresql_canonical_tombstone import (
     PostgreSQLCurrentTombstoneAuthorizationAuthority,
 )
@@ -88,11 +110,13 @@ from tests.integration.postgresql.test_postgresql_unit_of_work import (
     MIGRATION_ROLE,
     PersistenceAdapter,
     PostgreSQLContractDatabase,
+    POSTGRESQL_SEARCH_PATH_OPTIONS,
     RUNTIME_ROLE,
     postgresql_adapter,
     postgresql_contract_database,
     synthetic_uuid,
 )
+from tests.integration.postgresql.conftest import postgresql_provision
 
 pytestmark = [pytest.mark.postgresql, pytest.mark.asyncio(loop_scope="session")]
 
@@ -165,8 +189,7 @@ def _selector_audit(registry, context, audit_id: UUID):
     )
 
 
-@pytest_asyncio.fixture(scope="module", loop_scope="session")
-async def v3_rollout_state(
+async def _build_v3_rollout_state(
     postgresql_adapter: PersistenceAdapter,
     postgresql_contract_database: PostgreSQLContractDatabase,
 ):
@@ -463,6 +486,218 @@ async def v3_rollout_state(
     )
 
 
+@pytest_asyncio.fixture(scope="module", loop_scope="session")
+async def historical_v3_database(
+    postgresql_provision: TestDatabaseProvision,
+):
+    """A separate disposable database stopped before the irreversible revision."""
+    database_name = validate_target_database_name(
+        f"spine_test_v3hist_{uuid4().hex[:12]}"
+    )
+    marker = f"{DISPOSABLE_MARKER_PREFIX}v3-history-{uuid4().hex}"
+    base_url = make_url(postgresql_provision.url.get_secret_value())
+    admin_url = base_url.set(database="postgres")
+    admin_engine = create_async_engine(
+        admin_url.render_as_string(hide_password=False),
+        isolation_level="AUTOCOMMIT",
+        hide_parameters=True,
+    )
+    try:
+        async with admin_engine.connect() as connection:
+            quoted_name = connection.dialect.identifier_preparer.quote(database_name)
+            await connection.execute(text(f"CREATE DATABASE {quoted_name}"))
+            await connection.execute(
+                text("SELECT set_config('spine.test_marker', :marker, false)"),
+                {"marker": marker},
+            )
+            quoted_marker = marker.replace("'", "''")
+            await connection.execute(
+                text(f"COMMENT ON DATABASE {quoted_name} IS '{quoted_marker}'")
+            )
+    finally:
+        await admin_engine.dispose()
+
+    target_url = base_url.set(database=database_name)
+    target_provision = TestDatabaseProvision(
+        url=SecretStr(target_url.render_as_string(hide_password=False)),
+        target=TestTarget(
+            database_name=database_name,
+            disposable_marker=SecretStr(marker),
+        ),
+    )
+    operator = OperatorDatabaseSettings(
+        url=target_provision.url,
+        database_name=database_name,
+        migration_role=MIGRATION_ROLE,
+        migration_password=SecretStr("migration-test-secret"),
+        runtime_role=RUNTIME_ROLE,
+        runtime_password=SecretStr("runtime-test-secret"),
+        dispatcher_role=DISPATCHER_ROLE,
+        dispatcher_password=SecretStr("dispatcher-test-secret"),
+    )
+    await bootstrap_database_roles(operator)
+    migration_url = target_url.set(
+        username=MIGRATION_ROLE, password="migration-test-secret"
+    )
+    runtime_url = target_url.set(
+        username=RUNTIME_ROLE, password="runtime-test-secret"
+    )
+    database = PostgreSQLContractDatabase(
+        migration_url=SecretStr(migration_url.render_as_string(hide_password=False)),
+        runtime_url=SecretStr(runtime_url.render_as_string(hide_password=False)),
+    )
+    migration_settings = MigrationDatabaseSettings(
+        url=database.migration_url,
+        migration_role=MIGRATION_ROLE,
+        runtime_role=RUNTIME_ROLE,
+        dispatcher_role=DISPATCHER_ROLE,
+    )
+    config_path, script_location = locate_migration_assets()
+    config = Config(str(config_path))
+    config.set_main_option("script_location", str(script_location))
+    config.attributes["migration_settings"] = migration_settings
+    await asyncio.to_thread(command.upgrade, config, "20270112_111")
+
+    engine = create_async_engine(
+        database.runtime_url.get_secret_value(),
+        pool_size=2,
+        max_overflow=0,
+        pool_reset_on_return="rollback",
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(738900),
+        secret=b"issue-738-historical-migration-boundary-secret",
+    )
+    outbox_events = create_outbox_event_registry()
+    persistence = PostgreSQLPersistence(
+        session_factory=session_factory,
+        context_verifier=boundary,
+        outbox_events=outbox_events,
+    )
+
+    def workspace_context(workspace_id: UUID):
+        return boundary.interactive(
+            scope=WorkspaceScope(workspace_id=workspace_id),
+            acting_subject_id=synthetic_uuid(738901),
+            purpose=PersistencePurpose("contract_test"),
+            operation=PersistenceOperation("workspace_repository"),
+            trace_id=synthetic_uuid(738902),
+        )
+
+    def environment_context(workspace_id: UUID, environment_id: UUID):
+        return boundary.worker(
+            scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id),
+            service_principal_id=synthetic_uuid(738903),
+            purpose=PersistencePurpose("contract_test"),
+            operation=PersistenceOperation("environment_repository"),
+            trace_id=synthetic_uuid(738904),
+        )
+
+    def source_context(workspace_id: UUID, environment_id: UUID):
+        return boundary.worker(
+            scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id),
+            service_principal_id=synthetic_uuid(738905),
+            purpose=PersistencePurpose("contract_test"),
+            operation=PersistenceOperation("source_observation"),
+            trace_id=synthetic_uuid(738906),
+        )
+
+    def ingestion_context(workspace_id: UUID, environment_id: UUID, operation: str):
+        return boundary.worker(
+            scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id),
+            service_principal_id=synthetic_uuid(738907),
+            purpose=PersistencePurpose("contract_test"),
+            operation=PersistenceOperation(operation),
+            trace_id=synthetic_uuid(738908),
+        )
+
+    def governance_context(workspace_id: UUID, environment_id: UUID, actor_id: UUID, operation: str):
+        return boundary.interactive(
+            scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id),
+            acting_subject_id=actor_id,
+            purpose=PersistencePurpose("source_governance"),
+            operation=PersistenceOperation(operation),
+            trace_id=synthetic_uuid(738909),
+        )
+
+    def canonical_selector_context(workspace_id: UUID, environment_id: UUID, actor_id: UUID):
+        return boundary.interactive(
+            scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id),
+            acting_subject_id=actor_id,
+            purpose=PersistencePurpose("canonical_tombstone_selector"),
+            operation=PersistenceOperation("canonical_tombstone_selector.publish"),
+            trace_id=synthetic_uuid(738910),
+        )
+
+    @asynccontextmanager
+    async def hold_transactions():
+        yield
+
+    adapter = PersistenceAdapter(
+        uow_factory=persistence.uow_factory,
+        workspace_context=workspace_context,
+        worker_workspace_context=lambda workspace_id: boundary.worker(
+            scope=WorkspaceScope(workspace_id=workspace_id),
+            service_principal_id=synthetic_uuid(738911),
+            purpose=PersistencePurpose("contract_test"),
+            operation=PersistenceOperation("workspace_repository"),
+            trace_id=synthetic_uuid(738912),
+        ),
+        environment_context=environment_context,
+        hold_transactions=hold_transactions,
+        outbox_events=outbox_events,
+        source_context=source_context,
+        ingestion_context=ingestion_context,
+        governance_context=governance_context,
+        canonical_tombstone_selector_context=canonical_selector_context,
+    )
+    try:
+        yield SimpleNamespace(database=database, adapter=adapter, engine=engine)
+    finally:
+        await engine.dispose()
+        cleanup_engine = create_async_engine(
+            admin_url.render_as_string(hide_password=False),
+            isolation_level="AUTOCOMMIT",
+            hide_parameters=True,
+        )
+        try:
+            async with cleanup_engine.connect() as connection:
+                identity = (
+                    await connection.execute(
+                        text(
+                            "SELECT datname, shobj_description(oid, 'pg_database') AS marker "
+                            "FROM pg_database WHERE datname = :database_name"
+                        ),
+                        {"database_name": database_name},
+                    )
+                ).mappings().one_or_none()
+                if identity is not None:
+                    if identity["marker"] != marker:
+                        raise RuntimeError("historical test database ownership marker changed")
+                    quoted_name = connection.dialect.identifier_preparer.quote(database_name)
+                    await connection.execute(text(f"DROP DATABASE {quoted_name} WITH (FORCE)"))
+        finally:
+            await cleanup_engine.dispose()
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="session")
+async def v3_rollout_state(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+):
+    return await _build_v3_rollout_state(postgresql_adapter, postgresql_contract_database)
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="session")
+async def v3_historical_rollout_state(historical_v3_database):
+    return await _build_v3_rollout_state(
+        historical_v3_database.adapter, historical_v3_database.database
+    )
+
+
 async def test_v3_reader_first_rollout_reads_legacy_before_writer_activation(
     v3_rollout_state,
 ) -> None:
@@ -472,12 +707,13 @@ async def test_v3_reader_first_rollout_reads_legacy_before_writer_activation(
 
 
 async def test_v3_migration_rollback_preserves_history_and_restores_constraints(
-    v3_rollout_state,
-    postgresql_contract_database: PostgreSQLContractDatabase,
+    v3_historical_rollout_state,
+    historical_v3_database,
 ) -> None:
-    authorization = v3_rollout_state.authorization
-    v3_selector = v3_rollout_state.v3_selector
-    acceptance_id = v3_rollout_state.acceptance_id
+    authorization = v3_historical_rollout_state.authorization
+    v3_selector = v3_historical_rollout_state.v3_selector
+    acceptance_id = v3_historical_rollout_state.acceptance_id
+    postgresql_contract_database = historical_v3_database.database
 
     migration_settings = MigrationDatabaseSettings(
         url=postgresql_contract_database.migration_url,
@@ -576,7 +812,7 @@ async def test_v3_migration_rollback_preserves_history_and_restores_constraints(
         await engine.dispose()
 
     try:
-        await asyncio.to_thread(upgrade_database, migration_settings)
+        await asyncio.to_thread(command.upgrade, config, "20270112_111")
     except BaseException as cleanup_error:
         if migration_failure is not None:
             raise cleanup_error from migration_failure
@@ -637,8 +873,9 @@ async def test_v3_migration_rollback_preserves_history_and_restores_constraints(
 
 
 async def test_v3_migration_rollback_disables_new_writer(
-    postgresql_contract_database: PostgreSQLContractDatabase,
+    historical_v3_database,
 ) -> None:
+    postgresql_contract_database = historical_v3_database.database
     migration_settings = MigrationDatabaseSettings(
         url=postgresql_contract_database.migration_url,
         migration_role=MIGRATION_ROLE,
@@ -678,13 +915,50 @@ async def test_v3_migration_rollback_disables_new_writer(
     finally:
         await engine.dispose()
     try:
-        await asyncio.to_thread(upgrade_database, migration_settings)
+        await asyncio.to_thread(command.upgrade, config, "20270112_111")
     except BaseException as cleanup_error:
         if rollback_failure is not None:
             raise cleanup_error from rollback_failure
         raise
     if rollback_failure is not None:
         raise rollback_failure
+
+
+async def test_governed_erasure_migration_downgrade_fails_without_schema_change(
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    migration_settings = MigrationDatabaseSettings(
+        url=postgresql_contract_database.migration_url,
+        migration_role=MIGRATION_ROLE,
+        runtime_role=RUNTIME_ROLE,
+        dispatcher_role=DISPATCHER_ROLE,
+    )
+    config_path, script_location = locate_migration_assets()
+    config = Config(str(config_path))
+    config.set_main_option("script_location", str(script_location))
+    config.attributes["migration_settings"] = migration_settings
+    engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        with pytest.raises(
+            RuntimeError,
+            match="attachment and processing lineage erasure migration is irreversible",
+        ):
+            await asyncio.to_thread(command.downgrade, config, "20270113_112")
+        async with engine.connect() as connection:
+            assert await connection.scalar(
+                text("SELECT version_num FROM spine.alembic_version")
+            ) == "20270116_115"
+            assert await connection.scalar(
+                text("SELECT to_regprocedure('spine.execute_source_disposition_erasure(uuid,uuid,uuid,integer)')")
+            ) is not None
+            assert await connection.scalar(
+                text("SELECT to_regprocedure('spine.email_sync_page_digest_v2(jsonb)')")
+            ) is not None
+    finally:
+        await engine.dispose()
 
 
 async def test_postgresql_deadlock_is_translated_and_retried_within_bound(

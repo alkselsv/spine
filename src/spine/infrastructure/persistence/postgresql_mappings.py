@@ -475,6 +475,56 @@ outbox_deliveries = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
+source_disposition_operations = Table(
+    "source_disposition_operations",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("operation_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("request_digest", String(64), nullable=False),
+    Column("state_version", Integer, nullable=False),
+    Column("status", String(32), nullable=False),
+    Column("fence_active", Boolean, nullable=False),
+    Column("operation_data", JSONB, nullable=False),
+    Column("completion_ack_expires_at", DateTime(timezone=True)),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "operation_id",
+        name="pk_source_disposition_operations",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id"],
+        ["spine.environments.workspace_id", "spine.environments.id"],
+        name="fk_source_disposition_operations_environment",
+    ),
+)
+
+source_disposition_outbox = Table(
+    "source_disposition_outbox",
+    metadata,
+    Column("event_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("operation_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("event_type", String(64), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id", "operation_id"],
+        [
+            "spine.source_disposition_operations.workspace_id",
+            "spine.source_disposition_operations.environment_id",
+            "spine.source_disposition_operations.operation_id",
+        ],
+        name="fk_source_disposition_outbox_operation",
+        ondelete="CASCADE",
+    ),
+    UniqueConstraint(
+        "workspace_id", "environment_id", "operation_id", "event_type",
+        name="uq_source_disposition_outbox_operation_event",
+    ),
+)
+
 audit_events = Table(
     "audit_events",
     metadata,
@@ -3277,6 +3327,8 @@ __all__ = [
     "metadata",
     "outbox_intents",
     "outbox_deliveries",
+    "source_disposition_operations",
+    "source_disposition_outbox",
     "workspaces",
     "work_items",
     "workflow_runs",
