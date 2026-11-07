@@ -4,7 +4,7 @@
 **Decision date:** 2026-11-07.
 **Role attribution:** the human owner explicitly confirmed acting separately as Architecture Owner. Conversational evidence is role-scoped and not an independent signature. Exact prompt wording was not supplied and is not reconstructed.
 **Revision 1 decision:** `ACCEPT_WITH_CHANGES` for ADR-0062 at 2026-11-07 15:58:04 UTC, bound to SHA-256 `498cd09b67f88c627f4b6d2307267e2ca5e4b686fc5623899e2aba6730c653f8`.
-**Revision 2 exact-text decision:** PENDING_ARCHITECTURE_ACCEPTANCE; [ADR-0062 revision 2](../adr/0062-canonical-pricing-authority-and-estimate-commit-v2.md), SHA-256 `160b6f9de631e85849a0d962139fc1a8af59caf8782c793a16185342c6b50e3a`.
+**Revision 2 exact-text decision:** PENDING_ARCHITECTURE_ACCEPTANCE; [ADR-0062 revision 2](../adr/0062-canonical-pricing-authority-and-estimate-commit-v2.md), SHA-256 `be602522f54ad5e8b9913e7bf4e2743739cd8302c99fad57e107facfe76c12b2`.
 
 
 The supplied conversational confirmations describe the Architecture decisions below but do not bind them to a separate package or document digest. This record transcribes only that supplied scope; it does not imply approval of later profile, ADR, implementation or configuration text.
@@ -57,7 +57,7 @@ The six changes are incorporated as proposals in revision 2. Their exact impleme
 
 - **Role-scoped principles:** ACCEPT, the three confirmations/time points above.
 - **ADR-0062 revision 1:** `ACCEPT_WITH_CHANGES`, 2026-11-07 15:58:04 UTC, original digest above.
-- **Exact ADR-0062 revision 2 text/version/digest:** PENDING_ARCHITECTURE_ACCEPTANCE; SHA-256 `160b6f9de631e85849a0d962139fc1a8af59caf8782c793a16185342c6b50e3a`.
+- **Exact ADR-0062 revision 2 text/version/digest:** PENDING_ARCHITECTURE_ACCEPTANCE; SHA-256 `be602522f54ad5e8b9913e7bf4e2743739cd8302c99fad57e107facfe76c12b2`.
 - **Concrete source and Estimate contract/version:** pending implementation specification after ADR acceptance.
 - **Concurrency, revocation, idempotency and lost-response tests:** specified as required qualification; not run and not claimed passed.
 - **Production authorization / implementation:** NOT GRANTED.

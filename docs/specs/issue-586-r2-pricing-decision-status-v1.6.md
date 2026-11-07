@@ -13,7 +13,7 @@
 - Finance successor v2: SHA-256 `506a314621aeda3b02f731a8befd8b0813844ef45c2eaf00a623da86b35eda08`, retained historical candidate; its additive residual proposal is superseded by F9-T1.
 - CalculationProfile v3: SHA-256 `208016dc497570cb0406ae6f92c8a4a402c24b18ff2ca1223f894804ef88a900`; exact payload ACCEPT by Finance/Tax Owner at 15:55:55 UTC for the calculation contract; not activated.
 - ADR-0062 revision 1: SHA-256 `498cd09b67f88c627f4b6d2307267e2ca5e4b686fc5623899e2aba6730c653f8`; `ACCEPT_WITH_CHANGES` at 15:58:04 UTC. The approved amendments are recorded in Architecture record v3.
-- ADR-0062 revision 2: SHA-256 `160b6f9de631e85849a0d962139fc1a8af59caf8782c793a16185342c6b50e3a`; PROPOSED / PENDING_ARCHITECTURE_ACCEPTANCE.
+- ADR-0062 revision 2: SHA-256 `be602522f54ad5e8b9913e7bf4e2743739cd8302c99fad57e107facfe76c12b2`; PROPOSED / PENDING_ARCHITECTURE_ACCEPTANCE.
 
 ## Five independently attributed governance capacities
 
@@ -49,7 +49,7 @@ All confirmations are reported conversational evidence. Exact original prompt wo
 **Exact owner decisions still required:**
 
 1. Architecture Owner ACCEPT / ACCEPT_WITH_CHANGES / REJECT against the exact ADR-0062 revision 2 digest recorded in this overlay. The revision 1 decision accepted required changes, not the successor's exact text.
-3. Any material change requested in either review must be issued as a new version/digest and approved in its role-scoped capacity before implementation authorization.
+2. Any material change requested in either review must be issued as a new version/digest and approved in its role-scoped capacity before implementation authorization.
 
 ## Issue acceptance-criteria assessment
 
