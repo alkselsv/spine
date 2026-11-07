@@ -169,6 +169,7 @@ class CrmRelationshipClaim(DefinitionModel):
     mapping_profile_id: UUID
     mapping_profile_version: int = Field(ge=1)
     acting_human_id: UUID
+    human_authorization_generation: int | None = Field(default=None, ge=1)
     authorization_generation: int = Field(ge=1)
     configuration_generation: int = Field(ge=1)
     idempotency_key: UUID
@@ -226,6 +227,7 @@ class CrmRelationshipObservationReceipt(DefinitionModel):
     source_object_id: UUID
     source_revision_id: UUID
     acting_human_id: UUID
+    human_authorization_generation: int | None = Field(default=None, ge=1)
     authorization_generation: int = Field(ge=1)
     configuration_generation: int = Field(ge=1)
     verification_generation: int = Field(ge=1)

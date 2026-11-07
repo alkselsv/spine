@@ -23,8 +23,18 @@ from spine.application.persistence.context import (
     EnvironmentScope,
 )
 from spine.application.persistence.outbox import OutboxEventRegistry, OutboxIntent
-from spine.application.persistence.errors import IdempotencyConflictError, OptimisticConflictError
-from spine.domain.audit.models import AuditEvent, ContextOrigin
+from spine.application.persistence.errors import (
+    IdempotencyConflictError,
+    OptimisticConflictError,
+    TransactionDeadlockError,
+    TransactionSerializationError,
+    UnknownCommitOutcomeError,
+)
+from spine.domain.audit.models import (
+    AuditEvent,
+    CommandAuditPayload,
+    ContextOrigin,
+)
 from spine.domain.sources.crm_relationship_v2 import (
     CrmEligibilityOutcome,
     CrmRelationshipClaim,
@@ -270,6 +280,39 @@ class CrmRelationshipV2Store:
             or context.scope != EnvironmentScope(workspace_id, environment_id)
         ):
             raise OptimisticConflictError("CRM v2 writes require the exact current interactive human scope.")
+
+    async def assert_verified_handoff_authority(
+        self,
+        *,
+        claim: CrmRelationshipClaim,
+        receipt: CrmRelationshipObservationReceipt,
+    ) -> None:
+        """Fence the acting human generation retained by the T1 admission."""
+        if (
+            claim.human_authorization_generation is None
+            or receipt.human_authorization_generation
+            != claim.human_authorization_generation
+            or receipt.acting_human_id != claim.acting_human_id
+            or receipt.workspace_id != claim.workspace_id
+            or receipt.environment_id != claim.environment_id
+        ):
+            raise OptimisticConflictError(
+                "CRM verified handoff requires one exact acting-human generation."
+            )
+        current = await self._scalar(
+            text(
+                "SELECT spine.resolve_current_human_authority("
+                ":human_id, :workspace_id, :environment_id)"
+            ).bindparams(
+                human_id=claim.acting_human_id,
+                workspace_id=claim.workspace_id,
+                environment_id=claim.environment_id,
+            )
+        )
+        if current != claim.human_authorization_generation:
+            raise OptimisticConflictError(
+                "CRM verified handoff acting-human authority is stale or unavailable."
+            )
 
     async def _persist_audit_outbox(
         self, *, audit_event: AuditEvent, outbox_intent: OutboxIntent,
@@ -1272,6 +1315,83 @@ class PostgreSQLCrmRelationshipV2Repository:
             )
             await uow.commit()
             return result
+
+    async def persist_verified_handoff(
+        self, handoff: Any
+    ) -> CrmRelationshipEligibilityHead:
+        """Persist T1-T5 evidence atomically and reconcile an unknown commit by replay."""
+        from spine.application.crm_relationship_v2_persistence import (
+            CrmRelationshipV2VerifiedHandoff,
+        )
+
+        if not isinstance(handoff, CrmRelationshipV2VerifiedHandoff):
+            raise TypeError("CRM v2 persistence requires a verified typed handoff.")
+        audit_registry = AuditEventRegistry.with_default_families()
+        outbox_registry = OutboxEventRegistry()
+        outbox_registry.register(
+            event_type="crm.relationship.evidence",
+            schema_version=1,
+            payload_type=CommandAuditPayload,
+        )
+        retry_failure: BaseException | None = None
+        for attempt in range(3):
+            try:
+                async with self._uow(
+                    "crm_relationship_v2_write",
+                    handoff.claim.idempotency_key,
+                    actor_id=handoff.claim.acting_human_id,
+                    workspace_id=handoff.claim.workspace_id,
+                    environment_id=handoff.claim.environment_id,
+                ) as uow:
+                    store = CrmRelationshipV2Store(uow)
+                    await store.assert_verified_handoff_authority(
+                        claim=handoff.claim,
+                        receipt=handoff.receipt,
+                    )
+                    await store.register_identity(
+                        handoff.identity, actor_id=handoff.claim.acting_human_id
+                    )
+                    await store.append_claim(
+                        handoff.claim,
+                        audit_event=handoff.claim_audit_event,
+                        outbox_intent=handoff.claim_outbox_intent,
+                        audit_registry=audit_registry,
+                        outbox_registry=outbox_registry,
+                    )
+                    await store.append_receipt(
+                        handoff.receipt,
+                        eligibility=handoff.eligibility,
+                        audit_event=handoff.receipt_audit_event,
+                        outbox_intent=handoff.receipt_outbox_intent,
+                        audit_registry=audit_registry,
+                        outbox_registry=outbox_registry,
+                        expected_verification_generation=(
+                            handoff.expected_verification_generation
+                        ),
+                        lifecycle_generation=handoff.lifecycle_generation,
+                    )
+                    result = await store.current_eligibility(
+                        workspace_id=handoff.claim.workspace_id,
+                        environment_id=handoff.claim.environment_id,
+                        claim_id=handoff.claim.claim_id,
+                        actor_id=handoff.claim.acting_human_id,
+                    )
+                    if result is None:
+                        raise OptimisticConflictError(
+                            "CRM verified handoff did not produce an eligibility head."
+                        )
+                    await uow.commit()
+                    return result
+            except (
+                TransactionDeadlockError,
+                TransactionSerializationError,
+                UnknownCommitOutcomeError,
+            ) as failure:
+                retry_failure = failure
+                if attempt == 2:
+                    raise
+        assert retry_failure is not None
+        raise retry_failure
 
     async def append_receipt(
         self, receipt: CrmRelationshipObservationReceipt, *,
