@@ -3,7 +3,7 @@
 **Status:** ROLE POLICY DECISIONS RECORDED; CalculationProfile v3 exact Finance/Tax payload approved; ADR-0062 revision 1 accepted with changes and revision 2 exact-text acceptance pending; NOT IMPLEMENTATION-APPROVED.
 **Issue:** [#586](https://github.com/alkselsv/spine/issues/586), remains OPEN.
 **Existing PR:** [#1062](https://github.com/alkselsv/spine/pull/1062), documentation-only, remains Draft.
-**Current main verified:** `27fd8539284a2b1c5c6674662aef5cd402685ea3`.
+**Current main verified:** `e4b7bc02fb63c728f2ba33679d4ee18dd509d3e9`.
 
 ## Historical decision identities
 
