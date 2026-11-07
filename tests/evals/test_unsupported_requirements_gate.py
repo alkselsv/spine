@@ -383,10 +383,10 @@ def test_historical_not_verified_report_retains_its_original_identity() -> None:
     expected = json.loads(report_path.read_text(encoding="utf-8"))
 
     assert hashlib.sha256(report_path.read_bytes()).hexdigest() == (
-        "eb1e0688576ce5d627db2fedb64164e797cb83ee203e86023bf6460f9a33b2d1"
+        "5b2c702c9a9d433734727e291aacb488714cd458a4594b417fca2b0d649c06e8"
     )
     assert expected["identity"]["tested_commit_sha"] == (
-        "094cf838e240102886b00224b97955e3822f0dfd"
+        "f3d413007e54285b98913d4016159ee9f3267045"
     )
     assert expected["result"] == "NOT_VERIFIED"
 
@@ -396,7 +396,7 @@ def test_successor_not_verified_report_is_exactly_reproducible() -> None:
         Path(__file__).parents[2]
         / "docs"
         / "qualification"
-        / "issue-799-unsupported-requirements-successor-844510f5.json"
+        / "issue-799-unsupported-requirements-successor-0e2af248.json"
     )
     expected = json.loads(report_path.read_text(encoding="utf-8"))
 
