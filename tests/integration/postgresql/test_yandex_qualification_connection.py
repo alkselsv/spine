@@ -585,10 +585,15 @@ async def test_runtime_control_plane_provisions_binary_read_successor(
         trace_id=_id(41),
     )
 
+    with pytest.raises(ProviderReadDeniedError):
+        await read_repository.current_database_time(read_context)
+
     async with read_repository.admit_read(command, read_context) as admitted:
+        database_time = await read_repository.current_database_time(read_context)
         assert admitted.supports(ProviderCapabilityKind.BINARY_READ)
         assert admitted.valid_until == binary_config.expires_at
         assert admitted.approved_manifest_digest == binary_config.manifest_digest
+        assert binary_config.approved_at <= database_time < binary_config.expires_at
 
     foreign_context = boundary.interactive(
         scope=EnvironmentScope(

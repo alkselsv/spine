@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -118,6 +117,10 @@ class ProviderConnectionRepository(Protocol):
         context: TrustedPersistenceContext,
     ) -> AbstractAsyncContextManager[ProviderConnection]: ...
 
+    async def current_database_time(
+        self, context: TrustedPersistenceContext
+    ) -> datetime: ...
+
 
 class ProviderObservationReader(Protocol):
     async def read(
@@ -147,13 +150,11 @@ class ProviderReadAdmission:
         provider: ProviderObservationReader,
         lifecycle_reader: CurrentLifecycleEligibilityReader | None = None,
         source_identity_resolvers: tuple[ProviderSourceIdentityResolver, ...] = (),
-        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self._repository = repository
         self._provider = provider
         self._lifecycle_reader = lifecycle_reader
         self._source_identity_resolvers = source_identity_resolvers
-        self._clock = clock
 
     async def read(
         self,
@@ -161,12 +162,12 @@ class ProviderReadAdmission:
         context: TrustedPersistenceContext,
     ) -> NormalizedExternalObservationV2:
         async with self._repository.admit_read(command, context) as connection:
-            self._validate_connection(command, connection, evaluated_at=self._clock())
+            await self._validate_connection(command, connection, context)
             self._require_capabilities(connection, command.required_capabilities)
             await self._require_lifecycle_eligibility(command, context)
             self._validate_requested_source_identity(command, connection)
             observation = await self._provider.read(connection, command)
-            self._validate_connection(command, connection, evaluated_at=self._clock())
+            await self._validate_connection(command, connection, context)
             self._validate_observation(command, connection, observation)
             self._require_capabilities(connection, observation.required_capabilities())
             await self._require_lifecycle_eligibility(command, context)
@@ -193,17 +194,23 @@ class ProviderReadAdmission:
         except LifecycleAuthorityError:
             raise ProviderReadDeniedError() from None
 
-    @staticmethod
-    def _validate_connection(
+    async def _validate_connection(
+        self,
         command: ProviderReadCommand,
         connection: ProviderConnection,
-        *,
-        evaluated_at: datetime,
+        context: TrustedPersistenceContext,
     ) -> None:
         if connection.status is not ProviderConnectionStatus.ACTIVE:
             raise ProviderReadDeniedError()
-        if connection.valid_until is not None and evaluated_at >= connection.valid_until:
-            raise ProviderReadDeniedError()
+        if connection.valid_until is not None:
+            try:
+                evaluated_at = await self._repository.current_database_time(context)
+            except ProviderReadDeniedError:
+                raise
+            except Exception:
+                raise ProviderReadDeniedError() from None
+            if evaluated_at.tzinfo is None or evaluated_at >= connection.valid_until:
+                raise ProviderReadDeniedError()
         if (
             connection.connection_id,
             connection.connection_version_id,

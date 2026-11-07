@@ -166,10 +166,11 @@ every content read must present the same digest and a mismatch is rejected befor
 provider access. An identical, still-current replay returns version 2 without a
 second logical effect. An expired replay, stale
 predecessor, conflicting approval/audit/version, cross-tenant context or altered
-generation fails closed. At expiry both PostgreSQL admission and application
-admission reject the authority; if expiry crosses during a download, the
-observation is discarded. Consequently #787 remains `NOT_VERIFIED` and performs
-no subsequent content read when provisioning or admission is rejected.
+generation fails closed. Admission uses PostgreSQL database time before and after
+the provider call rather than the worker process clock; if expiry crosses during
+a download, the observation is discarded. Consequently #787 remains
+`NOT_VERIFIED` and performs no subsequent content read when provisioning or
+admission is rejected.
 
 The ten-run campaign budget, one-run-per-target rule, transient-only repeat and
 terminal PASS/cleanup state are consumed and durably enforced by #787's live-run
@@ -179,10 +180,17 @@ live-execution permit.
 
 Rollback is append-only: revoke/expire version 2 or create a separately approved
 successor; never reactivate or edit version 1 or delete audit history. Cleanup is
-owned by `alkselsv`: remove the local token and private reports within 24 hours
-after the campaign, while retaining only sanitized refs-only evidence for 90
-days. There is no backup cleanup owner, so the campaign must not begin unless
-the named owner can complete cleanup.
+owned by `alkselsv` and must complete within 24 hours after campaign termination:
+remove downloaded bytes, private manifests/snapshots, the local token and working
+reports; destroy the disposable qualification database including synthetic
+originals and SourceRevisions after terminal evidence is verified; complete
+Fixture Owner cleanup of provider-side synthetic resources; and revoke and verify
+the OAuth grant. Record a sanitized cleanup receipt and retain it with refs-only
+terminal evidence, safe audit metadata, versions, counts and digests for 90 days.
+The retained set contains no content, protected paths/names, credentials or raw
+provider payloads. Incomplete cleanup blocks another live execution and prevents
+PASS. There is no backup cleanup owner, so the campaign must not begin unless the
+named owner can complete cleanup.
 
 ### Recursive metadata inventory
 

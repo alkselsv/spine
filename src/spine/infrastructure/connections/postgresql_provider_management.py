@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import replace
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import (
@@ -24,6 +26,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID as PostgreSQLUUID
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from spine.application.connections.management import (
     MailboxConnectionSyncStatus,
@@ -359,6 +362,9 @@ class PostgreSQLProviderConnectionRepository:
     ) -> None:
         self._session_factory = session_factory
         self._context_verifier = context_verifier
+        self._admission_session: ContextVar[AsyncSession | None] = ContextVar(
+            "provider_read_admission_session", default=None
+        )
 
     @asynccontextmanager
     async def admit_read(
@@ -465,7 +471,32 @@ class PostgreSQLProviderConnectionRepository:
                     raise
                 except Exception:
                     raise ProviderReadDeniedError() from None
-                yield admitted
+                token = self._admission_session.set(session)
+                try:
+                    yield admitted
+                finally:
+                    self._admission_session.reset(token)
+
+    async def current_database_time(
+        self, context: TrustedPersistenceContext
+    ) -> datetime:
+        try:
+            trusted = self._context_verifier.verify(context)
+            if not isinstance(trusted.scope, EnvironmentScope):
+                raise ProviderReadDeniedError()
+            session = self._admission_session.get()
+            if session is None:
+                raise ProviderReadDeniedError()
+            database_time = await session.scalar(text("SELECT clock_timestamp()"))
+            if not isinstance(database_time, datetime) or database_time.tzinfo is None:
+                raise ProviderReadDeniedError()
+            return database_time
+        except asyncio.CancelledError:
+            raise
+        except ProviderReadDeniedError:
+            raise
+        except Exception:
+            raise ProviderReadDeniedError() from None
 
 
 def _allows_context(
