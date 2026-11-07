@@ -10,7 +10,7 @@ import json
 from typing import Literal, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from pydantic import Field, ValidationInfo, model_validator
+from pydantic import Field, model_validator
 
 from spine.application.diagnostics import DiagnosticContext
 from spine.application.outbox import OutboxConsumerSuccess
@@ -200,11 +200,8 @@ class EmailSyncPage(DefinitionModel):
     lifecycle_receipts: tuple[EmailLifecycleReceipt, ...] = ()
 
     @model_validator(mode="after")
-    def validate_effects(self, info: ValidationInfo) -> EmailSyncPage:
-        if (
-            self.page_id.startswith("erased.")
-            and not (info.context or {}).get("allow_erased_page_identity")
-        ):
+    def validate_effects(self) -> EmailSyncPage:
+        if self.page_id.startswith("erased."):
             raise ValueError(
                 "page identities prefixed with 'erased.' are reserved for erased page lineage"
             )
@@ -228,6 +225,25 @@ class EmailSyncPage(DefinitionModel):
         ):
             raise ValueError("a nonterminal page must advance its opaque checkpoint")
         return self
+
+    @classmethod
+    def from_persisted_state(cls, state: EmailSyncPageState) -> EmailSyncPage:
+        """Rebuild an already validated page state, including erased lineage IDs."""
+        return cls.model_construct(
+            workspace_id=state.workspace_id,
+            environment_id=state.environment_id,
+            page_kind=state.page_kind,
+            page_id=state.page_id,
+            requested_checkpoint=state.requested_checkpoint,
+            next_checkpoint=state.next_checkpoint,
+            terminal=state.terminal,
+            publish_checkpoint=state.publish_checkpoint,
+            coverage_terminal=state.coverage_terminal,
+            evidence_digest=state.evidence_digest,
+            evidence_cursor=state.evidence_cursor,
+            effects=state.effects,
+            lifecycle_receipts=state.lifecycle_receipts,
+        )
 
 
 class EmailSyncPageState(DefinitionModel):
@@ -264,7 +280,6 @@ class EmailSyncPageState(DefinitionModel):
             self.lifecycle_receipts,
         )
         return self
-
 
 class EmailSyncAttempt(DefinitionModel):
     attempt_id: UUID
@@ -1163,20 +1178,7 @@ class EmailSyncCoordinator:
 
     @staticmethod
     def _page_from_state(state: EmailSyncPageState) -> EmailSyncPage:
-        return EmailSyncPage.model_validate(
-            state.model_dump(
-                mode="python",
-                exclude={
-                    "page_digest",
-                    "page_digest_contract",
-                    "page_schema_version",
-                    "covered_checkpoint",
-                    "effect_receipts",
-                    "committed",
-                },
-            ),
-            context={"allow_erased_page_identity": True},
-        )
+        return EmailSyncPage.from_persisted_state(state)
 
     @staticmethod
     def _records_unusable_coverage(page: EmailSyncPage) -> bool:
