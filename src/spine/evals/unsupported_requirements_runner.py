@@ -55,12 +55,9 @@ from spine.evaluations.unsupported_requirements import (
 )
 
 _QUALIFIED_PATHS = (
-    "src/spine/application/extract_requirements.py",
-    "src/spine/domain/capabilities/extract_requirements.py",
-    "src/spine/evals/data/russian_transcription_v1.json",
-    "src/spine/evals/transcription_russian_v1.py",
-    "src/spine/evals/unsupported_requirements_runner.py",
-    "src/spine/evaluations/unsupported_requirements.py",
+    "pyproject.toml",
+    "uv.lock",
+    "src/spine",
 )
 ISSUE_674_DATASET_SHA256 = (
     "0f2c70d2663a6bfb69afc13e34d65683e04d7ddfb1914520b8a1174646a290e7"

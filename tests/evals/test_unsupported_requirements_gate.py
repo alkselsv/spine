@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 import json
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -11,6 +12,7 @@ from spine.evals.unsupported_requirements_runner import (
     _candidate_class,
     run_unsupported_requirements_qualification,
     unsupported_requirements_evaluation_identity,
+    verify_qualified_commit,
 )
 from spine.domain.capabilities import RequirementsExtractionOutcome
 from spine.domain.workflows import RequirementState
@@ -214,6 +216,24 @@ def test_unverifiable_tested_commit_produces_not_verified_report() -> None:
     assert report.observed_item_count == 0
     assert report.execution_failures == ("qualification_execution_failed",)
     assert "incomplete_execution" in report.not_verified_reasons
+
+
+def test_existing_ancestor_with_changed_qualified_tree_is_rejected() -> None:
+    root = Path(__file__).parents[2]
+    baseline = subprocess.run(
+        ["git", "rev-parse", "origin/main"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    try:
+        verify_qualified_commit(baseline)
+    except subprocess.CalledProcessError:
+        pass
+    else:
+        raise AssertionError("changed qualified tree must reject a stale ancestor")
 
 
 def test_committed_not_verified_report_is_exactly_reproducible() -> None:
