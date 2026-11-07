@@ -1,8 +1,8 @@
 # Issue #586 — Pricing Policy and CalculationProfile Qualification v1
 
 **Status:** deterministic specification for future offline qualification; no runtime pricing engine is implemented or tested here.
-**Policy source:** Finance decision record v4.
-**Candidate under qualification:** `r2-commercial-v3`, version 3, SHA-256 `afd16fb8806508a7a288f004994f6f446c06c03c7223a9cd31b70884a1e5765e` (candidate only; exact digest acceptance pending).
+**Policy source:** [Finance decision record v5](issue-586-finance-decision-record-v5.md).
+**Candidate under qualification:** `r2-commercial-v3`, version 3, SHA-256 `208016dc497570cb0406ae6f92c8a4a402c24b18ff2ca1223f894804ef88a900` (exact payload approved by Finance/Tax Owner for the calculation contract at 2026-11-07 15:55:55 UTC; not activated).
 **Fixture constraints:** every price, rate, tax percentage, exchange observation and date example below is synthetic. Nothing is a current commercial price, official FX observation, real tax rate or approved tax position.
 
 ## Deterministic mathematical vectors
