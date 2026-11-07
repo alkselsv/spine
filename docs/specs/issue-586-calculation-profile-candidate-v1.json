@@ -7,17 +7,23 @@
     "quantum_table_ref": null
   },
   "decimal": {
+    "clamp": 0,
+    "emax": 999999,
+    "emin": -999999,
     "finite_values_only": true,
     "inexact_rounded_signals": "permitted-and-rounded-by-context-at-34-significant-digits",
     "input_encoding": "decimal-string-only",
     "input_scale_policy": null,
     "precision_significant_digits": 34,
-    "range_policy": "context-overflow-and-output-quantized-coefficient-over-34-digits-fail-as-CALCULATION_RANGE_EXCEEDED; output-quantizer-preflights-coefficient-width-before-emitting",
+    "range_policy": "context-overflow-underflow-subnormal-or-clamped-signal-and-output-quantized-coefficient-over-34-digits-fail-as-CALCULATION_RANGE_EXCEEDED; output-quantizer-preflights-coefficient-width-before-emitting",
     "rounding_mode": "ROUND_HALF_UP",
     "traps": [
       "InvalidOperation",
       "DivisionByZero",
       "Overflow",
+      "Underflow",
+      "Subnormal",
+      "Clamped",
       "FloatOperation"
     ]
   },
