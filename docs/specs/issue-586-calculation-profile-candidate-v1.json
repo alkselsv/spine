@@ -8,10 +8,11 @@
   },
   "decimal": {
     "finite_values_only": true,
+    "inexact_rounded_signals": "permitted-and-rounded-by-context-at-34-significant-digits",
     "input_encoding": "decimal-string-only",
     "input_scale_policy": null,
     "precision_significant_digits": 34,
-    "range_policy": "any-intermediate-or-quantized-result-requiring-more-than-34-significant-digits-fails-as-CALCULATION_RANGE_EXCEEDED",
+    "range_policy": "context-overflow-and-output-quantized-coefficient-over-34-digits-fail-as-CALCULATION_RANGE_EXCEEDED; output-quantizer-preflights-coefficient-width-before-emitting",
     "rounding_mode": "ROUND_HALF_UP",
     "traps": [
       "InvalidOperation",
@@ -22,11 +23,13 @@
   },
   "discount": {
     "allowed_discount_types": null,
+    "approval_policy_ref": null,
     "basis": "pre-discount-tax-exclusive-base",
     "limits": null,
     "maximum_selected_rules_per_line": 1,
     "missing_or_ambiguous_policy": "DISCOUNT_POLICY_UNRESOLVED",
     "order": "before-tax",
+    "policy_ref": null,
     "stacking": "disabled"
   },
   "estimate_aggregation": {
@@ -38,10 +41,15 @@
   },
   "fx": {
     "authority_ref": null,
+    "effective_period_policy_ref": null,
     "intermediate_quantization": "none",
     "missing_stale_or_ambiguous_rate": "FX_RATE_UNAVAILABLE",
+    "observation_as_of_policy_ref": null,
+    "policy_ref": null,
     "rate_direction": "estimate-currency-units-per-one-source-currency-unit",
-    "stage": "after-all-discount-and-tax-calculation-before-output-quantization"
+    "rate_domain": "finite-positive-decimal",
+    "stage": "after-all-discount-and-tax-calculation-before-output-quantization",
+    "staleness_policy_ref": null
   },
   "line_calculation": {
     "discount_then_tax": true,
@@ -64,7 +72,8 @@
     "output_line_total_quantization": "once-after-fx-to-approved-estimate-currency-quantum",
     "output_rounding_mode": "ROUND_HALF_UP",
     "source_final": "post-discount-base-plus-all-applicable-tax-components",
-    "tax_component_order": "explicit-ascending-tax_order"
+    "tax_component_order": "explicit-ascending-tax_order",
+    "unit_price_policy": "finite-nonnegative-candidate; credit-or-negative-price-requires-explicit-approved-successor-policy"
   },
   "profile_id": "r2-commercial-v1",
   "required_unset_policy_refs": [
@@ -74,9 +83,18 @@
     "currency_quantum_table_ref",
     "allowed_discount_types",
     "discount_limits",
+    "discount_approval_policy_ref",
+    "discount_policy_ref",
+    "fx_effective_period_policy_ref",
+    "fx_observation_as_of_policy_ref",
+    "fx_policy_ref",
+    "fx_staleness_policy_ref",
     "jurisdiction_policy_ref",
     "category_mapping_ref",
     "tax_source_authority_ref",
+    "tax_effective_period_policy_ref",
+    "tax_exemption_policy_ref",
+    "tax_inclusion_formula_policy_ref",
     "fx_authority_ref"
   ],
   "schema": "spine.calculation_profile_candidate.v1",
@@ -92,7 +110,10 @@
     "category_mapping_ref": null,
     "component_formula_required": true,
     "component_order_required": true,
+    "effective_period_policy_ref": null,
+    "exemption_policy_ref": null,
     "explicit_approved_non_taxable_basis_required": true,
+    "inclusion_formula_policy_ref": null,
     "inclusive_equation": "gross_source=base_before_discount+sum(included_tax_i_before_discount)",
     "inclusive_extraction": "solve-tax-exclusive-base-from-exact-ordered-inclusive-components",
     "jurisdiction_policy_ref": null,
