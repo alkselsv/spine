@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -47,7 +47,12 @@ from spine.infrastructure.db.settings import (
     MigrationDatabaseSettings,
     OperatorDatabaseSettings,
 )
-from spine.infrastructure.db.test_harness import TestDatabaseProvision
+from spine.infrastructure.db.test_harness import (
+    DISPOSABLE_MARKER_PREFIX,
+    TestDatabaseProvision,
+    TestTarget,
+    validate_target_database_name,
+)
 from spine.infrastructure.persistence.contexts import (
     create_initial_workspace_bootstrap_authority,
 )
@@ -626,6 +631,101 @@ async def migrated_database(
         ),
         retained_revisions=tuple(retained_revisions),
     )
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="session")
+async def reversible_migration_database(
+    postgresql_provision: TestDatabaseProvision,
+) -> AsyncIterator[MigratedDatabase]:
+    """A separate target stopped at the last reversible migration."""
+    database_name = validate_target_database_name(
+        f"spine_test_k0hist_{uuid4().hex[:12]}"
+    )
+    marker = f"{DISPOSABLE_MARKER_PREFIX}k0-history-{uuid4().hex}"
+    base_url = make_url(postgresql_provision.url.get_secret_value())
+    admin_url = base_url.set(database="postgres")
+    admin_engine = create_async_engine(
+        admin_url.render_as_string(hide_password=False),
+        isolation_level="AUTOCOMMIT",
+        hide_parameters=True,
+    )
+    try:
+        async with admin_engine.connect() as connection:
+            quoted_name = connection.dialect.identifier_preparer.quote(database_name)
+            await connection.execute(text(f"CREATE DATABASE {quoted_name}"))
+            quoted_marker = marker.replace("'", "''")
+            await connection.execute(
+                text(f"COMMENT ON DATABASE {quoted_name} IS '{quoted_marker}'")
+            )
+    finally:
+        await admin_engine.dispose()
+
+    target_url = base_url.set(database=database_name)
+    target = TestDatabaseProvision(
+        url=SecretStr(target_url.render_as_string(hide_password=False)),
+        target=TestTarget(
+            database_name=database_name,
+            disposable_marker=SecretStr(marker),
+        ),
+    )
+    operator = OperatorDatabaseSettings(
+        url=target.url,
+        database_name=database_name,
+        migration_role=MIGRATION_ROLE,
+        migration_password=MIGRATION_PASSWORD,
+        runtime_role=RUNTIME_ROLE,
+        runtime_password=RUNTIME_PASSWORD,
+        dispatcher_role=DISPATCHER_ROLE,
+        dispatcher_password=DISPATCHER_PASSWORD,
+    )
+    await bootstrap_database_roles(operator)
+    migration = MigrationDatabaseSettings(
+        url=_role_url(target, MIGRATION_ROLE, MIGRATION_PASSWORD),
+        migration_role=MIGRATION_ROLE,
+        runtime_role=RUNTIME_ROLE,
+        dispatcher_role=DISPATCHER_ROLE,
+    )
+    await asyncio.to_thread(
+        upgrade_database, migration, revision="20270113_112"
+    )
+    historical = MigratedDatabase(
+        operator=operator,
+        migration=migration,
+        runtime_url=_role_url(target, RUNTIME_ROLE, RUNTIME_PASSWORD),
+        retained_revisions=(),
+    )
+    try:
+        yield historical
+    finally:
+        cleanup_engine = create_async_engine(
+            admin_url.render_as_string(hide_password=False),
+            isolation_level="AUTOCOMMIT",
+            hide_parameters=True,
+        )
+        try:
+            async with cleanup_engine.connect() as connection:
+                identity = (
+                    await connection.execute(
+                        text(
+                            "SELECT shobj_description(oid, 'pg_database') AS marker "
+                            "FROM pg_database WHERE datname = :database_name"
+                        ),
+                        {"database_name": database_name},
+                    )
+                ).mappings().one_or_none()
+                if identity is not None:
+                    if identity["marker"] != marker:
+                        raise RuntimeError(
+                            "historical test database ownership marker changed"
+                        )
+                    quoted_name = connection.dialect.identifier_preparer.quote(
+                        database_name
+                    )
+                    await connection.execute(
+                        text(f"DROP DATABASE {quoted_name} WITH (FORCE)")
+                    )
+        finally:
+            await cleanup_engine.dispose()
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -5409,14 +5509,35 @@ async def test_k0_receipt_integrity_objects_are_catalogued_and_restricted(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_k0_migration_downgrades_and_reupgrades_cleanly(
-    migrated_database: MigratedDatabase,
+    reversible_migration_database: MigratedDatabase,
 ) -> None:
     config_path, script_location = locate_migration_assets()
     config = Config(str(config_path))
     config.set_main_option("script_location", str(script_location))
-    config.attributes["migration_settings"] = migrated_database.migration
+    config.attributes["migration_settings"] = reversible_migration_database.migration
+    async with _connection(
+        reversible_migration_database.migration.url
+    ) as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO spine.workspaces (id, slug, display_name) "
+                "VALUES (:workspace_id, 'k0-history', 'K0 History')"
+            ),
+            {"workspace_id": WORKSPACE_A},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO spine.environments "
+                "(id, workspace_id, kind, display_name) "
+                "VALUES (:environment_id, :workspace_id, 'development', 'K0 History')"
+            ),
+            {"environment_id": ENVIRONMENT_A, "workspace_id": WORKSPACE_A},
+        )
+        await connection.commit()
     await asyncio.to_thread(command.downgrade, config, "20261220_88")
-    async with _connection(migrated_database.migration.url) as connection:
+    async with _connection(
+        reversible_migration_database.migration.url
+    ) as connection:
         assert await connection.scalar(text(
             "SELECT enabled FROM spine.crm_relationship_v2_state WHERE singleton"
         )) is False
@@ -5425,7 +5546,7 @@ async def test_k0_migration_downgrades_and_reupgrades_cleanly(
             "WHERE table_schema = 'spine' AND table_name LIKE 'crm_relationship_%'"
         )) == 10
         assert await connection.scalar(text("SELECT version_num FROM spine.alembic_version")) == "20261220_88"
-    async with _connection(migrated_database.runtime_url) as connection:
+    async with _connection(reversible_migration_database.runtime_url) as connection:
         await _set_tenant_context(
             connection, workspace_id=WORKSPACE_A, environment_id=ENVIRONMENT_A,
         )
@@ -5442,12 +5563,20 @@ async def test_k0_migration_downgrades_and_reupgrades_cleanly(
             })
         await connection.rollback()
 
-    await asyncio.to_thread(upgrade_database, migrated_database.migration)
-    async with _connection(migrated_database.migration.url) as connection:
+    await asyncio.to_thread(
+        upgrade_database,
+        reversible_migration_database.migration,
+        revision="20270113_112",
+    )
+    async with _connection(
+        reversible_migration_database.migration.url
+    ) as connection:
         assert await connection.scalar(text(
             "SELECT enabled FROM spine.crm_relationship_v2_state WHERE singleton"
         )) is False
-        assert await connection.scalar(text("SELECT version_num FROM spine.alembic_version")) == HEAD_REVISION
+        assert await connection.scalar(
+            text("SELECT version_num FROM spine.alembic_version")
+        ) == "20270113_112"
 
 
 @pytest_asyncio.fixture
