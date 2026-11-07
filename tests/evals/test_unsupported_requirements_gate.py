@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import json
+from pathlib import Path
 
 from spine.evals.unsupported_requirements_runner import (
     ISSUE_674_DATASET_SHA256,
@@ -170,3 +172,19 @@ def test_unverifiable_tested_commit_produces_not_verified_report() -> None:
     assert report.observed_item_count == 0
     assert report.execution_failures == ("qualification_execution_failed",)
     assert "incomplete_execution" in report.not_verified_reasons
+
+
+def test_committed_not_verified_report_is_exactly_reproducible() -> None:
+    report_path = (
+        Path(__file__).parents[2]
+        / "docs"
+        / "qualification"
+        / "issue-799-unsupported-requirements.json"
+    )
+    expected = json.loads(report_path.read_text(encoding="utf-8"))
+
+    report = run_unsupported_requirements_qualification(
+        tested_commit_sha=expected["identity"]["tested_commit_sha"]
+    )
+
+    assert report.model_dump(mode="json") == expected

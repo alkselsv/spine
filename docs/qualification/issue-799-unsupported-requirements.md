@@ -1,50 +1,56 @@
 # Issue #799 — unsupported-requirements quality gate
 
-The approved deterministic offline gate is **PASS** for the exact implementation
-commit `9bc5c39c20478b01cfc38405d830e3f6d5837398`.
+The approved gate was measured against the accepted #674 dataset and deterministic
+runner. The result is **NOT_VERIFIED**, not PASS.
 
 The Product/Project Owner approved
-`unsupported-requirements-quality-gate:v1` in Issue #799 before measurement.
-The immutable synthetic dataset is
-`unsupported-requirements-synthetic:v1`, SHA-256
-`a62131c37564e5e6d0cfb95890bb3b530598604b08e9672fb2b6f6940b444746`.
-All 40 atomic cases ran through the existing `extract_requirements` v2 capability,
-agent version `e5550bfb-3b0e-5a95-98b6-65231a3c1cf9`, and deterministic
-implementation `requirements.extract.deterministic` with the default bounded
-configuration.
+`unsupported-requirements-quality-gate:v1` before measurement. The run is bound to
+implementation commit `74870353e12508bd9eb0aad342c9ae833fb014af`, #674 dataset
+`russian-meeting-transcription-synthetic@1.0.0`, and canonical dataset SHA-256
+`0f2c70d2663a6bfb69afc13e34d65683e04d7ddfb1914520b8a1174646a290e7`.
 
-## Result
+## Measured result
 
+- execution: `12 / 12` labelled atomic observations, no exclusions or failures;
 - unsafe-supported count: `0`;
-- unsafe-supported rate: `0 / 30 = 0%`;
-- unsupported safe-handling recall: `10 / 10 = 100%`;
-- supported precision: `10 / 10 = 100%`;
-- supported recall: `10 / 10 = 100%`;
-- clarification-needed recall: `10 / 10 = 100%`;
-- complete execution: `40 / 40`;
-- mandatory strata: contradiction `4 / 4`, missing/fabricated evidence `6 / 6`,
-  stale/denied/missing authority `10 / 10`, weak/unknown recognition `4 / 4`,
-  malicious instruction `3 / 3`.
+- unsafe-supported rate: `0 / 4 = 0%`;
+- unsupported safe-handling recall: `1 / 1 = 100%`;
+- supported precision: `7 / 7 = 100%`;
+- supported recall: `7 / 8 = 87.5%`;
+- clarification-needed recall: `2 / 2 = 100%`;
+- inconclusive/abstention recall: `1 / 1 = 100%`.
 
-The full confusion matrix and exact identities are recorded in
-`issue-799-unsupported-requirements.json`.
+The observed values do not permit PASS because the pre-approved coverage minimum is
+40 atomic items with at least 10 supported, 10 unsupported, 10
+clarification-needed and 5 inconclusive/abstention examples. #674 currently supplies
+8, 1, 2 and 1 respectively. It also lacks the required three-example contradiction
+and stale/denied/missing-authority strata; the other mandatory strata have only one
+example each. These are `insufficient_labelled_coverage` and
+`missing_mandatory_stratum`, so the aggregate must remain `NOT_VERIFIED` even though
+the observed safety metrics did not miss a numerical threshold.
+
+The full confusion matrix, per-class results, exact strata membership, empty
+exclusions/failures and pinned runtime identities are in the adjacent JSON report.
 
 ## Reproduction
 
 ```bash
 uv sync --extra dev
 uv run python -m spine.evals.unsupported_requirements_runner \
-  --tested-commit 9bc5c39c20478b01cfc38405d830e3f6d5837398
+  --tested-commit 74870353e12508bd9eb0aad342c9ae833fb014af
 uv run pytest -q tests/evals/test_unsupported_requirements_gate.py
 ```
 
-The committed-artifact regression test regenerates the report and requires exact
-equality with the JSON evidence.
+The runner verifies that the supplied SHA is an ancestor of the current checkout
+and that every qualified implementation/dataset file is byte-identical to that
+commit. An unrelated or stale SHA produces a fail-closed `NOT_VERIFIED` report.
 
-## Scope and linkage
+## Scope and #646 follow-up
 
-This closes only the deterministic synthetic unsupported-requirements gate left
-`NOT_VERIFIED` by #646. It does not rewrite the historical #646 functional report.
-ASR WER/CER remains separate and cannot satisfy this gate. No customer recording,
-production identity, private payload, external provider, model training, live
-deployment, or production approval was used or qualified.
+This report updates the outstanding #646 quality-gate status to a measured
+`NOT_VERIFIED`; it does not rewrite #646's historical offline functional PASS.
+Closing #799 requires an additive, independently reviewed #674 dataset release that
+meets the already approved coverage without tuning on these results, followed by a
+new pinned execution. ASR WER/CER remains separate. No customer recording, private
+payload, external provider, model training, live deployment or production approval
+was used or qualified.
