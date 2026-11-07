@@ -2,9 +2,10 @@
 
 Status: **PARTIAL / NOT_VERIFIED**. The disposition/email-sync behavior tests
 below ran against code commit `e949b79c1c99392cfe71e013bc7b6eed9c974a03`;
-migration/readiness follow-up tests ran against `7880ed2d` on PR #1057. This
-report does not qualify complete PostgreSQL lineage erasure and does not
-authorize merge or Gmail activation.
+migration/readiness follow-up tests ran against `7880ed2d`, and the page
+reconstruction follow-up ran against `99fc73d1` on PR #1057. This report does
+not qualify complete PostgreSQL lineage erasure and does not authorize merge or
+Gmail activation.
 
 ## Tested boundary and commands
 
@@ -18,6 +19,7 @@ records. No Gmail API, live mailbox, or customer data was used.
 | `.venv/bin/pytest -q tests/application/test_email_sync.py` | 18 passed |
 | `.venv/bin/pytest -q tests/infrastructure/db/test_readiness.py::test_committed_migration_inventory_has_one_linear_head` | 1 passed |
 | `.venv/bin/pytest -q --tb=short tests/integration/postgresql/test_initial_tenancy_migration.py::test_k0_migration_downgrades_and_reupgrades_cleanly` | 1 passed |
+| `.venv/bin/pytest -q --tb=short tests/integration/postgresql/test_postgresql_source_disposition.py::test_governed_erasure_preserves_canonical_message_b_on_shared_email_sync_page` | 1 passed on `99fc73d1` |
 | `.venv/bin/alembic heads` | `20270115_114` (one head) |
 | `python3 -m compileall -q src tests` | passed |
 | `git diff --check` | passed |
@@ -121,8 +123,9 @@ NOT_VERIFIED. Unknown foreign-key dependencies must continue to fail closed.
   has not been rerun at the latest PR head.
 - Latest completed GitHub CI belongs to prior head `81399da6`: Python 3.10–3.14
   and web passed; R1 regression gate was still running. CI for the later
-  `7880ed2d` follow-up and report commits is NOT_VERIFIED until their exact-head
-  checks finish.
+  `7880ed2d`, `99fc73d1`, and this report follow-up is NOT_VERIFIED until the
+  final exact-head checks finish. At `99fc73d1`, Python 3.10–3.14, web, and R1
+  checks had just been queued.
 - External object storage/staging (T6), projections/indexes/caches (T7), keys,
   WAL, replicas, backups and restore (T8–T11) are NOT_VERIFIED here and must not
   be represented as PostgreSQL PASS.
