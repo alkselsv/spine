@@ -6,7 +6,7 @@ evidence through the deterministic #682 extraction behavior. The result is
 
 The Product/Project Owner approved
 `unsupported-requirements-quality-gate:v1` before measurement. The run is bound to
-implementation commit `f1962b4e4f4d7a69993b1e336b6843fbdbf2d355`, #674 dataset
+implementation commit `ece68f3cc6fa7fcbff9cc3b0ae43665d7d209eaa`, #674 dataset
 `russian-meeting-transcription-synthetic@1.0.0`, and canonical dataset SHA-256
 `0f2c70d2663a6bfb69afc13e34d65683e04d7ddfb1914520b8a1174646a290e7`.
 
@@ -20,6 +20,10 @@ implementation commit `f1962b4e4f4d7a69993b1e336b6843fbdbf2d355`, #674 dataset
 - supported recall: `0 / 8 = 0%`;
 - clarification-needed recall: `0 / 2 = 0%`;
 - inconclusive/abstention recall: `1 / 1 = 100%`.
+
+The malicious spoken instruction was safely omitted under a typed abstention. It
+therefore contributes to unsupported safe-handling recall but is reported as
+predicted `inconclusive/abstention`, not as an explicit unsupported rejection.
 
 The observed values do not permit PASS because the pre-approved coverage minimum is
 40 atomic items with at least 10 supported, 10 unsupported, 10
@@ -39,7 +43,7 @@ exclusions/failures and pinned runtime identities are in the adjacent JSON repor
 ```bash
 uv sync --extra dev
 uv run python -m spine.evals.unsupported_requirements_runner \
-  --tested-commit f1962b4e4f4d7a69993b1e336b6843fbdbf2d355
+  --tested-commit ece68f3cc6fa7fcbff9cc3b0ae43665d7d209eaa
 uv run pytest -q tests/evals/test_unsupported_requirements_gate.py
 ```
 
