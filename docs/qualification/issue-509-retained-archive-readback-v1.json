@@ -1,0 +1,58 @@
+{
+  "schema_version": "r1-retained-archive-readback:v1",
+  "ticket": 509,
+  "observed_at": "2026-11-07T12:45:55Z",
+  "observation_scope": "retained_synthetic_recovery_volumes",
+  "immutable": true,
+  "content_free": true,
+  "network_isolated": true,
+  "source_volumes_mutated": false,
+  "diagnostic_clone_removed": true,
+  "manifest": {
+    "recovery_set_id": "recovery:issue509-005",
+    "deployment_scope_id": "deployment:issue509-recovery-003",
+    "profile": "coordinated",
+    "status": "coherent",
+    "fence_epoch": 1,
+    "cutoff_ticket_sequence": 0,
+    "postgres_boundary": "artifact:06c39b94d123a65483d7efd49cbd7c24ca049767873e04361e96fad8fe26c7cb",
+    "postgres_recovery_watermark": "pg:0/35218C8",
+    "object_volume_generation": "volume:issue509-source-originals",
+    "postgres_component_state": "verified",
+    "object_component_state": "verified",
+    "postgres_backup_identity": "postgres-backup:45a25a94b2930b66e4b327453d19512540e87f7f282fa62b5024cb492e23ea62",
+    "postgres_verification_reference": "pg_restore-list:45a25a94b2930b66e4b327453d19512540e87f7f282fa62b5024cb492e23ea62",
+    "object_verification_reference": "filesystem-tar-content:171541a5c0c4ef8c629d40710a5be3b3a45d42e138bd630cf375e0b571db121e",
+    "drained_operation_count": 0,
+    "orphaned_operation_count": 0,
+    "indeterminate_operation_count": 0,
+    "integrity_algorithm": "sha256",
+    "manifest_digest": "7e54fceb281507c98435dc23fc1b505eb1d993f68dad9688b390fef53dea220f"
+  },
+  "artifacts": {
+    "postgres_archive_sha256": "45a25a94b2930b66e4b327453d19512540e87f7f282fa62b5024cb492e23ea62",
+    "postgres_archive_size_bytes": 897152,
+    "original_archive_sha256": "171541a5c0c4ef8c629d40710a5be3b3a45d42e138bd630cf375e0b571db121e",
+    "original_archive_size_bytes": 10240,
+    "manifest_operator_evidence_sha256": "f9996d32483b395021a21aee2bbd4c7ad0bc49e5228eaf3c0326b54d53473990",
+    "restore_operator_evidence_sha256": "b207b511e5e3c6fb3ef42ca94be6daa43462ba3daeedb71d15cced09437ea20f"
+  },
+  "archive_inventory": {
+    "source_object_count": 2,
+    "source_revision_count": 1,
+    "finalized_original_record_count": 1,
+    "outbox_intent_count": 4,
+    "outbox_delivery_count": 4,
+    "quiescence_evidence_count": 2,
+    "original_archive_entry_count": 2
+  },
+  "finalized_original": {
+    "state": "finalized",
+    "storage_status": "finalized_verified",
+    "verification_status": "verified",
+    "digest_algorithm": "sha256",
+    "observed_digest_matches_object_reference": true,
+    "observed_length_matches_object_reference": true,
+    "object_identity_count": 1
+  }
+}

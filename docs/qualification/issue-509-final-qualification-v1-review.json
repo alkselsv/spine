@@ -1,0 +1,29 @@
+{
+  "schema_version": "r1-backup-recovery-final-qualification-review:v1",
+  "ticket": 509,
+  "completed_at": "2026-11-07T13:14:02Z",
+  "immutable": true,
+  "content_free": true,
+  "reviewed_record": {
+    "path": "docs/qualification/issue-509-final-qualification-v1.json",
+    "schema_version": "r1-backup-recovery-final-qualification:v1",
+    "sha256": "a47059b2c3dd0aba20e6f94c678af438803add69f3f3edc3970228ab68788366"
+  },
+  "standards_review": {
+    "decision": "approved",
+    "hard_violation_count": 0,
+    "judgement_call_smell_count": 0
+  },
+  "spec_review": {
+    "decision": "approved",
+    "finding_count": 0
+  },
+  "status": "passed",
+  "decision": "verified",
+  "production_qualified": true,
+  "qualification_scope": "synthetic_disposable_recovery_profile",
+  "cutover_authorized": false,
+  "remaining_conditions": [
+    "provider_usage_independent_metering_not_verified"
+  ]
+}
