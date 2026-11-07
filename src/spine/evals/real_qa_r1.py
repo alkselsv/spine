@@ -312,16 +312,42 @@ class RealCaseObservationInput(DefinitionModel):
     ) -> "RealCaseObservationInput":
         if type(case) is not RealQACase or case.synthetic is not False:
             raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.INVALID_CASE)
+        return cls.from_gold_blind_fields(
+            dataset_version=dataset_version,
+            dataset_sha256=dataset_sha256,
+            case_id=case.case_id,
+            question=case.question,
+            language=case.language,
+            source_ids=case.source_ids,
+            source_revision_ids=case.source_revision_ids,
+            available_source_revision_ids=case.available_source_revision_ids,
+        )
+
+    @classmethod
+    def from_gold_blind_fields(
+        cls,
+        *,
+        dataset_version: str,
+        dataset_sha256: str,
+        case_id: str,
+        question: str,
+        language: str,
+        source_ids: tuple[str, ...],
+        source_revision_ids: tuple[str, ...],
+        available_source_revision_ids: tuple[str, ...],
+    ) -> "RealCaseObservationInput":
+        """Validate fields released by an approved gold-blind dataset adapter."""
+
         try:
             validated_input = cls(
                 dataset_version=dataset_version,
                 dataset_sha256=dataset_sha256,
-                case_id=case.case_id,
-                question=case.question,
-                language=case.language,
-                source_ids=case.source_ids,
-                source_revision_ids=case.source_revision_ids,
-                available_source_revision_ids=case.available_source_revision_ids,
+                case_id=case_id,
+                question=question,
+                language=language,
+                source_ids=source_ids,
+                source_revision_ids=source_revision_ids,
+                available_source_revision_ids=available_source_revision_ids,
             )
             object.__setattr__(
                 validated_input,
@@ -330,7 +356,9 @@ class RealCaseObservationInput(DefinitionModel):
             )
             return validated_input
         except ValidationError:
-            raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.INVALID_CASE) from None
+            raise RealRuntimeResolutionError(
+                RealRuntimeResolutionCategory.INVALID_CASE
+            ) from None
 
     @property
     def is_validated_real_case(self) -> bool:

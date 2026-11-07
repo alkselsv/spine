@@ -82,6 +82,7 @@ if TYPE_CHECKING:
     from spine.evals.real_benchmark_qualification import (
         RealBenchmarkQualificationRuntime,
     )
+    from spine.evals.answer_quality_benchmark_runner import AnswerQualityBenchmarkRunner
     from spine.evals.real_benchmark_runner import RealBenchmarkRunner
     from temporalio.client import Client
     from temporalio.worker import Worker
@@ -279,7 +280,7 @@ class DurableAskComposition:
         *,
         profile: ProductionRuntimeProfile,
         inspector: ProductionRuntimeInspector,
-        runner: RealBenchmarkRunner,
+        runner: RealBenchmarkRunner | AnswerQualityBenchmarkRunner,
     ) -> RealBenchmarkQualificationRuntime:
         """Create the CLI runtime only when its observer shares this graph."""
 

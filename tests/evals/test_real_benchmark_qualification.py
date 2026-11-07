@@ -269,3 +269,51 @@ def test_qualification_record_contains_only_safe_codes_and_separate_statuses() -
     assert result.release_qualification_status == "not_run"
     for forbidden in ("question", "answer", "evidence", "filename", "case_id", "source_id"):
         assert forbidden not in serialized
+
+
+def test_complete_observations_with_incomplete_evaluation_are_not_qualified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = _issue_production_qa_composition_evidence(object(), object())  # type: ignore[arg-type]
+
+    class ProductionPreflight:
+        is_fake = False
+
+        async def inspect(self):
+            return _ready_preflight()
+
+    trusted_preflight = _issue_trusted_real_benchmark_preflight(
+        inspector=ProductionPreflight(),
+        production_evidence=evidence,
+    )
+    runner = _runner()
+    monkeypatch.setattr(
+        RealBenchmarkRunner,
+        "supports_real_qualification",
+        property(lambda _runner: True),
+    )
+    monkeypatch.setattr(
+        RealBenchmarkRunner,
+        "production_qualification_evidence",
+        property(lambda _runner: evidence),
+    )
+
+    async def run_incomplete_evaluation(self, **_kwargs):
+        return SimpleNamespace(
+            production_observation_status="completed",
+            evaluation_status="partial",
+        )
+
+    monkeypatch.setattr(RealBenchmarkRunner, "run", run_incomplete_evaluation)
+
+    result, report = asyncio.run(
+        RealBenchmarkQualificationRuntime(
+            runner=runner,
+            preflight=trusted_preflight,
+        ).run(loaded=object(), manifest=object())
+    )
+
+    assert report is not None
+    assert result.outcome == "unavailable"
+    assert result.real_qualification_status == "not_qualified"
+    assert result.reason_codes == ("evaluation_incomplete",)

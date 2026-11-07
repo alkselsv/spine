@@ -88,6 +88,36 @@ versioned qualification status и bounded reason codes. `production_observation`
 повторной проверки всех prerequisites. Команда не переключается на synthetic
 dataset при ошибке real selection или validation.
 
+### Answer-quality dataset `0.4.0`
+
+Подтверждённый answer-only профиль запускается отдельной командой и не меняет
+evidence-разметку пакета `0.3.9-user-approved`:
+
+```bash
+uv run spine-eval-answer-quality \
+  --dataset /approved/local/golden_dataset.json \
+  --source-root /approved/local/source-root \
+  --source-manifest /approved/local/answer-quality-source-manifest.json \
+  --mapping-manifest /approved/local/runtime-mapping.json \
+  --workspace-id "$R1_WORKSPACE_SELECTOR" \
+  --environment-id "$R1_ENVIRONMENT_SELECTOR" \
+  --composition local_r1_runtime:build_answer_quality_runtime \
+  --output /approved/local/reports/answer-quality-qualification.json
+```
+
+Профиль pin'ит dataset и private source manifest отдельными SHA-256. Observer
+получает только вопрос и разрешённые opaque revision identities; эталонный ответ
+присоединяется после authenticated same-execution terminal observation.
+Измеряются correctness, completeness и answered-outcome rate. Document citation
+coverage, locator-level citation recall и claim-level groundedness имеют статус
+`unavailable`: answer-only gold не содержит достаточной evidence-разметки для
+этих метрик. Их нельзя трактовать как ноль или восстанавливать автоматически.
+
+Для вопросов без document references production request использует полный
+утверждённый corpus scope из private source manifest. Все остальные preflight,
+mapping, readiness, authorization, capture и bounded-provider требования этого
+runbook сохраняются.
+
 ## Статусы и восстановление
 
 Qualification record связывает trusted `workspace_id`/`environment_id` и
