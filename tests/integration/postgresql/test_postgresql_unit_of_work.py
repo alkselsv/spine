@@ -12269,7 +12269,7 @@ async def test_trusted_source_context_reader_requires_current_bitrix_authority_a
     )
     assert await reader.get_source_context(**arguments) is None
 
-async def test_selector_migration_rollback_preserves_existing_v1_acceptance(
+async def test_irreversible_disposition_migration_rejects_downgrade_without_changing_v1_acceptance(
     postgresql_adapter: PersistenceAdapter,
     postgresql_contract_database: PostgreSQLContractDatabase,
 ) -> None:
