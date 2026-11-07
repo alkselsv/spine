@@ -180,7 +180,7 @@ recovery и recovered-application canary имеют связанный физи�
 - #511 — current-commit aggregate всех обязательных R0/R1 evidence, repository
   gates, legacy disposition и финальное воспроизводимое решение GO/NO-GO.
 - #16 — родительский end-to-end release gate остаётся открытым до завершения
-  #510, #511 и #634; закрытые component tickets сами по себе не означают
+  #509, #510 и #511; закрытые component tickets сами по себе не означают
   готовность R1.
 
 ### Текущий release verdict
