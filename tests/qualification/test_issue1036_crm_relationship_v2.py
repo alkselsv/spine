@@ -127,6 +127,9 @@ def test_issue1036_report_records_exact_offline_verification() -> None:
     assert report["status"] == "offline_pass"
     assert re.fullmatch(r"[0-9a-f]{40}", report["tested_sha"])
     assert report["tested_sha"] == "0970131f482edf627d7e5cf3a598d7ea41a72f51"
+    assert report["qualification_harness_sha"] == (
+        "db06251815a9c51885e0d16d490fb8bbe4b9884f"
+    )
     assert report["verification"]["focused"]["passed"] > 0
     assert report["verification"]["postgresql"] == {
         "command": "uv run pytest -q tests/integration/postgresql/test_postgresql_crm_relationship_v2_handoff.py",
@@ -144,15 +147,12 @@ def test_issue1036_report_records_exact_offline_verification() -> None:
         "command": "uv run python -m compileall -q src tests",
         "status": "passed",
     }
-    assert report["verification"]["repository_excluding_baseline_failures"] == {
-        "command": "uv run pytest -q --deselect=tests/evals/test_unsupported_requirements_gate.py::test_existing_ancestor_with_changed_qualified_tree_is_rejected --deselect=tests/evals/test_unsupported_requirements_gate.py::test_committed_not_verified_report_is_exactly_reproducible",
-        "passed": 7671,
+    assert report["verification"]["repository"] == {
+        "command": "uv run pytest -q",
+        "passed": 7677,
         "skipped": 7,
-        "deselected": 2,
         "failed": 0,
     }
-    assert report["baseline_failures"]["reproduced_on_tested_sha"] is True
-    assert len(report["baseline_failures"]["test_node_ids"]) == 2
     assert report["live_provider_status"] == "not_verified"
     assert report["production_activation_status"] == "not_approved"
     assert report["atomic_provider_snapshot_status"] == "not_claimed"

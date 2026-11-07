@@ -4,6 +4,7 @@
   "parent_ticket": 717,
   "status": "offline_pass",
   "tested_sha": "0970131f482edf627d7e5cf3a598d7ea41a72f51",
+  "qualification_harness_sha": "db06251815a9c51885e0d16d490fb8bbe4b9884f",
   "qualified_at": "2026-11-07",
   "environment": {
     "operating_system": "Darwin 27.2.0 arm64",
@@ -133,26 +134,16 @@
       "skipped": 0,
       "failed": 0
     },
-    "repository_excluding_baseline_failures": {
-      "command": "uv run pytest -q --deselect=tests/evals/test_unsupported_requirements_gate.py::test_existing_ancestor_with_changed_qualified_tree_is_rejected --deselect=tests/evals/test_unsupported_requirements_gate.py::test_committed_not_verified_report_is_exactly_reproducible",
-      "passed": 7671,
+    "repository": {
+      "command": "uv run pytest -q",
+      "passed": 7677,
       "skipped": 7,
-      "deselected": 2,
       "failed": 0
     },
     "compileall": {
       "command": "uv run python -m compileall -q src tests",
       "status": "passed"
     }
-  },
-  "baseline_failures": {
-    "reproduced_on_tested_sha": true,
-    "tested_sha": "0970131f482edf627d7e5cf3a598d7ea41a72f51",
-    "test_node_ids": [
-      "tests/evals/test_unsupported_requirements_gate.py::test_existing_ancestor_with_changed_qualified_tree_is_rejected",
-      "tests/evals/test_unsupported_requirements_gate.py::test_committed_not_verified_report_is_exactly_reproducible"
-    ],
-    "qualification_impact": "outside CRM v2 matrix; no broad repository-pass claim"
   },
   "privacy": {
     "synthetic_fakes_only": true,
