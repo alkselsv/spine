@@ -116,6 +116,7 @@
     "inclusion_formula_policy_ref": null,
     "inclusive_equation": "gross_source=base_before_discount+sum(included_tax_i_before_discount)",
     "inclusive_extraction": "solve-tax-exclusive-base-from-exact-ordered-inclusive-components",
+    "inclusive_reconciliation": "require-context-result-equal-to-gross_source; otherwise-TAX_RULE_UNRESOLVED; no-residual-allocation",
     "jurisdiction_policy_ref": null,
     "mixed_inclusion_modes_on_one_line": "BLOCK_TAX_RULE_UNRESOLVED",
     "multiple_non_compound_inclusive_base": "gross_source/(1+sum(included_component_rates))",

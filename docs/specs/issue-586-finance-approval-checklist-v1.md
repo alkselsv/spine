@@ -3,7 +3,7 @@
 **Status:** FINANCE_DECISION_READY / HUMAN_FINANCE_APPROVAL_PENDING
 **Decision package for this Finance request:** `issue-586-r2-pricing-decision-package-v1` v1.3, SHA-256 `ae8916b72b6f8c2ffb9811262ac484415efb44f074586a49d52563e868828041`.
 **Accepted Product Owner basis:** package v1.1, SHA-256 `73c04fc138dcb36c34fff57169085ddbd87ada19b15d8be31dc4eae54b4e8325`; Product Owner approval remains limited to product scope.
-**CalculationProfile candidate:** [`r2-commercial-v1` v1](issue-586-calculation-profile-candidate-v1.json), SHA-256 `66a53f37ec0dbebefbaeff72bfabd5b31191ffb90b580f9bcdd64eff4128a6c4` (exact canonical UTF-8 JSON bytes).
+**CalculationProfile candidate:** [`r2-commercial-v1` v1](issue-586-calculation-profile-candidate-v1.json), SHA-256 `b46ce7b298b7776b20696c3eebcd09848dc7634626a4e66bcc9ddfb85fcaea05` (exact canonical UTF-8 JSON bytes).
 **Decision record version:** v2. No Finance/Tax approval is asserted.
 
 This document requests attributable Finance and, where a separate Tax authority exists, Tax decisions. Candidate values are not approved values. Security permissions, Data source mappings and Architecture acceptance remain separate decisions.
@@ -63,7 +63,7 @@ This is the unrounded line price in source currency, before discount and tax.
 **Operation 3 — resolve tax mode and pre-discount base.** Tax mode and complete ordered component set are required before discount calculation. This order is deliberate: for tax-inclusive input, extracting the pre-tax base is necessary to apply the candidate discount-before-tax rule consistently.
 
 - For a wholly tax-exclusive line: `base_before_discount = gross_source`.
-- For a wholly tax-inclusive line, compute `base_before_discount` by solving the exact approved extraction formula for the declared inclusive tax components. For each ordered component `i`, the approved formula defines `tax_i = rate_i × (base + sum(named prior included tax components))`. Then `gross_source = base + sum(all included tax_i)`. Components must be linear in `base` under this profile; resolve with Decimal context and retain the exact context result. A missing/ambiguous/nonlinear formula returns `TAX_RULE_UNRESOLVED`.
+- For a wholly tax-inclusive line, compute `base_before_discount` by solving the exact approved extraction formula for the declared inclusive tax components. For each ordered component `i`, the approved formula defines `tax_i = rate_i × (base + sum(named prior included tax components))`. Then `gross_source = base + sum(all included tax_i)`. Components must be linear in `base` under this profile; resolve with Decimal context and retain the exact context result. Re-evaluate the equation under the same context and require the result to equal `gross_source`; otherwise block `TAX_RULE_UNRESOLVED`. Do not allocate any source-currency residual to a tax or base component.
 - If components mix inclusive and exclusive modes, categories disagree with PriceItem metadata, jurisdiction is unsupported, order is duplicated, or an exemption cannot be established, block. This v1 candidate does not define mixed-mode algebra.
 
 For one non-compound inclusive tax at rate `r`: `base_before_discount = gross_source / (1 + r)` and `included_tax_before_discount = gross_source − base_before_discount` (equivalently `base × r`). For multiple non-compound inclusive components with rates `r_i`: `base = gross_source / (1 + Σr_i)`; each component is `base × r_i`. For ordered compound components, use the exact approved component recurrence above; example below.
@@ -85,7 +85,7 @@ For exclusive prices every applicable component is added on top. For inclusive p
 
 `net_source = taxable_base + Σ(tax_i)`
 
-The inclusive identity is `gross_source = base_before_discount + Σ(included_tax_before_discount_i)` before discount, and `net_source = taxable_base + Σ(post-discount tax_i)` after discount. No tax is added twice.
+The inclusive identity is `gross_source = base_before_discount + Σ(included_tax_before_discount_i)` before discount, and the candidate requires exact equality under the pinned Decimal context or blocks `TAX_RULE_UNRESOLVED`; there is no residual allocation. After discount, `net_source = taxable_base + Σ(post-discount tax_i)`. No tax is added twice.
 
 **Operation 6 — source-currency result.** Preserve exact contextual Decimal fields: `gross_source`, `base_before_discount`, `discount_source`, `taxable_base`, each pre-discount included-tax extraction value when applicable, each post-discount `tax_i`, `net_source`, currency and exact rule references. No currency quantum is applied at this stage.
 
@@ -201,7 +201,7 @@ Record one attributable answer per section against the exact package and candida
 | F8 Missing/unsupported/conflict behavior | Fail closed: typed price/FX/tax/discount/currency/range/input outcomes; no historic fallback. | Define a different explicit blocked/draft policy without silent defaults. | Avoids false totals or approval. | Accept `CURRENCY_POLICY_UNRESOLVED`, `CALCULATION_RANGE_EXCEEDED`, `ESTIMATE_INPUT_INVALID`, `DISCOUNT_POLICY_UNRESOLVED`, `TAX_JURISDICTION_UNSUPPORTED`, `TAX_RULE_UNRESOLVED` and existing D8 outcomes; draft/display behavior allowed to authorized roles. | ACCEPT / ACCEPT_WITH_CHANGES / REJECT: PENDING |
 | F9 CalculationProfile | Accept candidate JSON v1 digest above or accept with a versioned successor. | Reject profile and supply exact replacement payload/digest. | Activates one deterministic math contract only after parameters resolved. | Exact successor ID/version/digest if changed; rationale. | ACCEPT / ACCEPT_WITH_CHANGES / REJECT: PENDING |
 
-**Role-scoped attribution fields:** Finance/Tax decision `PENDING`; decision-maker name/identity `PENDING`; Finance/Tax role authority reference `PENDING`; decision time UTC `PENDING`; exact package v1.3 SHA-256 `ae8916b72b6f8c2ffb9811262ac484415efb44f074586a49d52563e868828041`; profile ID/version/digest `r2-commercial-v1` v1 / `66a53f37ec0dbebefbaeff72bfabd5b31191ffb90b580f9bcdd64eff4128a6c4`; accepted changes and rationale `PENDING`. A person acting in another role must record a separate decision for that role.
+**Role-scoped attribution fields:** Finance/Tax decision `PENDING`; decision-maker name/identity `PENDING`; Finance/Tax role authority reference `PENDING`; decision time UTC `PENDING`; exact package v1.3 SHA-256 `ae8916b72b6f8c2ffb9811262ac484415efb44f074586a49d52563e868828041`; profile ID/version/digest `r2-commercial-v1` v1 / `b46ce7b298b7776b20696c3eebcd09848dc7634626a4e66bcc9ddfb85fcaea05`; accepted changes and rationale `PENDING`. A person acting in another role must record a separate decision for that role.
 
 ## 8. Policy decisions now vs governed data later
 
@@ -223,7 +223,7 @@ Finance/Tax decision-maker and role: [name + role]
 Finance/Tax authority reference: [delegation or accountable-role evidence]
 Decision time: [UTC timestamp]
 Exact decision package: v1.3, SHA-256 `ae8916b72b6f8c2ffb9811262ac484415efb44f074586a49d52563e868828041`
-CalculationProfile candidate: `r2-commercial-v1` v1, SHA-256 `66a53f37ec0dbebefbaeff72bfabd5b31191ffb90b580f9bcdd64eff4128a6c4`
+CalculationProfile candidate: `r2-commercial-v1` v1, SHA-256 `b46ce7b298b7776b20696c3eebcd09848dc7634626a4e66bcc9ddfb85fcaea05`
 
 | Section | Decision | Accepted values / exact changes | Rationale |
 |---|---|---|---|
