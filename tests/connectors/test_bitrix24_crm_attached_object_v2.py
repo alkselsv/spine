@@ -5,6 +5,7 @@ import pytest
 from spine.application.connections.bitrix24_oauth import Bitrix24PinnedGrant, SecretTokenPair
 from spine.application.crm_relationship_v2_contracts import (
     Bitrix24CrmRelationshipV2ReadCommand,
+    CrmRelationshipBindingOperationsProfile,
 )
 from spine.connectors.bitrix24_crm_attached_object_v2 import (
     Bitrix24AttachedObjectGetCommand,
@@ -73,6 +74,15 @@ def command(*, selected_profile=None) -> Bitrix24CrmRelationshipV2ReadCommand:
         entity_namespace="bitrix24-crm-entity",
         entity_id="deal-7",
         mapping_profile=selected_profile or profile(),
+        operations_profile=CrmRelationshipBindingOperationsProfile(
+            profile_id="synthetic.crm-binding",
+            profile_version="v1",
+            profile_kind="synthetic",
+            page_size=2,
+            max_pages=3,
+            max_response_bytes=100,
+            max_attempts=6,
+        ),
         pinned_grant=Bitrix24PinnedGrant(
             binding_id=ident(40),
             acting_user_id="provider-user-20",
