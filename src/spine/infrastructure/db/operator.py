@@ -64,10 +64,25 @@ async def bootstrap_database_roles(settings: OperatorDatabaseSettings) -> None:
                 role=settings.dispatcher_role,
                 password=settings.dispatcher_password.get_secret_value(),
             )
+            if settings.control_password is not None:
+                await _ensure_role(
+                    connection,
+                    role=settings.control_role,
+                    password=settings.control_password.get_secret_value(),
+                )
+            else:
+                await _ensure_no_login_role(
+                    connection,
+                    role=settings.control_role,
+                )
             await _revoke_role_memberships(connection, role=settings.runtime_role)
             await _revoke_role_memberships(
                 connection,
                 role=settings.dispatcher_role,
+            )
+            await _revoke_role_memberships(
+                connection,
+                role=settings.control_role,
             )
             await _ensure_database(connection, settings)
             await connection.execute(
@@ -89,6 +104,13 @@ async def bootstrap_database_roles(settings: OperatorDatabaseSettings) -> None:
                     sql.Identifier(settings.dispatcher_role),
                 )
             )
+            if settings.control_password is not None:
+                await connection.execute(
+                    sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+                        sql.Identifier(settings.database_name),
+                        sql.Identifier(settings.control_role),
+                    )
+                )
     except OperatorBootstrapError:
         raise
     except Exception:
@@ -113,6 +135,22 @@ async def _ensure_role(
             "ALTER ROLE {} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
             "NOINHERIT NOBYPASSRLS PASSWORD {}"
         ).format(sql.Identifier(role), sql.Literal(password))
+    )
+
+
+async def _ensure_no_login_role(connection: _Connection, *, role: str) -> None:
+    existing = await (
+        await connection.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,))
+    ).fetchone()
+    if existing is None:
+        await connection.execute(
+            sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(role))
+        )
+    await connection.execute(
+        sql.SQL(
+            "ALTER ROLE {} WITH NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+            "NOINHERIT NOBYPASSRLS"
+        ).format(sql.Identifier(role))
     )
 
 

@@ -328,6 +328,8 @@ class ProviderConnectionManager:
             authorization_generation=approval.authorization_generation,
             configuration_generation=approval.configuration_generation,
             status=approval.status,
+            valid_until=approval.valid_until,
+            approved_manifest_digest=approval.approved_manifest_digest,
             capabilities=observation.capabilities,
         )
         audit = build_provider_connection_audit(

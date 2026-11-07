@@ -365,11 +365,14 @@ source/transcript evidence; assertion и assumption сохраняют собс�
 revocation или конкурентный terminal transition не меняют canonical outcome.
 См. ADR-0048 и ADR-0058.
 
-PostgreSQL использует три раздельных credential surface: migration owner,
-tenant-scoped runtime и узкий cross-tenant dispatcher. Dispatcher может читать
+PostgreSQL использует четыре раздельных credential surface: migration owner,
+tenant-scoped runtime, узкий cross-tenant dispatcher и bounded control plane.
+Dispatcher может читать
 неизменяемые outbox intents и изменять только operational delivery state; у
-него нет доступа к canonical business/content или audit tables. Все три роли
-разделены, а runtime и dispatcher работают с `NOBYPASSRLS` и без memberships.
+него нет доступа к canonical business/content или audit tables. `spine_control`
+имеет только exact-ID tenant reads и `EXECUTE` точных control-plane functions;
+прямые записи canonical/audit tables запрещены. Все четыре роли разделены, а
+runtime, dispatcher и control работают с `NOBYPASSRLS` и без memberships.
 
 Outbox dispatcher предоставляет один bounded `dispatch_batch` seam. Claim
 коммитится до вызова consumer; handler получает валидированный typed intent и
@@ -448,10 +451,15 @@ state; недоступность или mismatch любого reference при�
 Provider Connection является отдельной версионируемой границей delegated read
 authority для connector-worker. PostgreSQL хранит только opaque credential/grant
 references, approved resource-scope references, trusted service principal,
-authorization/configuration generations и lifecycle status. Каждый provider
+authorization/configuration generations, lifecycle status и опциональный общий
+hard `valid_until` approval/version. Manifest-bound qualification authority
+дополнительно хранит approved SHA-256 manifest digest в approval и version;
+read command обязан предъявить тот же digest. Каждый provider
 read допускается только по текущей active версии с точным совпадением
-Workspace/Environment, service principal, scope и generations; отказ происходит
-до provider request. Provider Connection не создаёт `AccessPolicy`, не даёт
+Workspace/Environment, service principal, scope и generations и до истечения
+authority; manifest mismatch и expiry проверяются до provider request, а expiry
+повторно проверяется после provider request, поэтому результат
+скачивания через границу срока отбрасывается. Provider Connection не создаёт `AccessPolicy`, не даёт
 `read_content`/`process_content` и не назначает `PricingBasis` authority.
 
 Роль `administrator` даёт доступ к Control Plane, operational lifecycle, safe

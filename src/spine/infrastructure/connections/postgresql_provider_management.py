@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import replace
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import (
@@ -24,6 +26,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID as PostgreSQLUUID
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from spine.application.connections.management import (
     MailboxConnectionSyncStatus,
@@ -100,6 +103,8 @@ provider_connection_approvals = Table(
     Column("authorization_generation", BigInteger, nullable=False),
     Column("configuration_generation", BigInteger, nullable=False),
     Column("status", String(32), nullable=False),
+    Column("valid_until", DateTime(timezone=True), nullable=True),
+    Column("approved_manifest_digest", String(64), nullable=True),
     Column("recorded_at", DateTime(timezone=True), nullable=False),
     ForeignKeyConstraint(
         ["workspace_id", "environment_id"],
@@ -136,6 +141,8 @@ provider_connection_versions = Table(
     Column("authorization_generation", BigInteger, nullable=False),
     Column("configuration_generation", BigInteger, nullable=False),
     Column("status", String(32), nullable=False),
+    Column("valid_until", DateTime(timezone=True), nullable=True),
+    Column("approved_manifest_digest", String(64), nullable=True),
     Column("capabilities", JSONB, nullable=False),
     Column("health", String(32), nullable=False),
     Column("diagnostic_codes", ARRAY(String(64)), nullable=False),
@@ -355,6 +362,9 @@ class PostgreSQLProviderConnectionRepository:
     ) -> None:
         self._session_factory = session_factory
         self._context_verifier = context_verifier
+        self._admission_session: ContextVar[AsyncSession | None] = ContextVar(
+            "provider_read_admission_session", default=None
+        )
 
     @asynccontextmanager
     async def admit_read(
@@ -414,8 +424,19 @@ class PostgreSQLProviderConnectionRepository:
                                 == command.authorization_generation,
                                 provider_connection_versions.c.configuration_generation
                                 == command.configuration_generation,
+                                provider_connection_versions.c.approved_manifest_digest
+                                == command.manifest_digest,
                                 provider_connection_versions.c.status
                                 == ProviderConnectionStatus.ACTIVE.value,
+                                (
+                                    provider_connection_versions.c.valid_until.is_(
+                                        None
+                                    )
+                                    | (
+                                        provider_connection_versions.c.valid_until
+                                        > func.current_timestamp()
+                                    )
+                                ),
                                 provider_connection_versions.c[
                                     "approved_resource_scope_references"
                                 ].any(
@@ -450,7 +471,32 @@ class PostgreSQLProviderConnectionRepository:
                     raise
                 except Exception:
                     raise ProviderReadDeniedError() from None
-                yield admitted
+                token = self._admission_session.set(session)
+                try:
+                    yield admitted
+                finally:
+                    self._admission_session.reset(token)
+
+    async def current_database_time(
+        self, context: TrustedPersistenceContext
+    ) -> datetime:
+        try:
+            trusted = self._context_verifier.verify(context)
+            if not isinstance(trusted.scope, EnvironmentScope):
+                raise ProviderReadDeniedError()
+            session = self._admission_session.get()
+            if session is None:
+                raise ProviderReadDeniedError()
+            database_time = await session.scalar(text("SELECT clock_timestamp()"))
+            if not isinstance(database_time, datetime) or database_time.tzinfo is None:
+                raise ProviderReadDeniedError()
+            return database_time
+        except asyncio.CancelledError:
+            raise
+        except ProviderReadDeniedError:
+            raise
+        except Exception:
+            raise ProviderReadDeniedError() from None
 
 
 def _allows_context(
@@ -560,6 +606,8 @@ def _version_values(
         "authorization_generation": connection.authorization_generation,
         "configuration_generation": connection.configuration_generation,
         "status": connection.status.value,
+        "valid_until": connection.valid_until,
+        "approved_manifest_digest": connection.approved_manifest_digest,
         "capabilities": [
             capability.model_dump(mode="json") for capability in connection.capabilities
         ],
@@ -624,6 +672,8 @@ def _approval_from_row(row) -> ProviderConnectionApproval:
         authorization_generation=row.authorization_generation,
         configuration_generation=row.configuration_generation,
         status=ProviderConnectionStatus(row.status),
+        valid_until=row.valid_until,
+        approved_manifest_digest=row.approved_manifest_digest,
     )
 
 
@@ -650,6 +700,8 @@ def _inspection_from_row(row) -> ProviderConnectionInspection:
         authorization_generation=row.authorization_generation,
         configuration_generation=row.configuration_generation,
         status=ProviderConnectionStatus(row.status),
+        valid_until=row.valid_until,
+        approved_manifest_digest=row.approved_manifest_digest,
         capabilities=tuple(
             ProviderCapability.model_validate(value) for value in row.capabilities
         ),

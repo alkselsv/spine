@@ -133,6 +133,65 @@ authority has a database-time hard expiry; refresh it through the normal
 disposable qualification provisioning flow before bootstrap instead of editing
 history or bypassing the resolver with SQL.
 
+### Manifest-bound binary-read successor
+
+Issue #789 authorizes one immutable successor of the metadata-only connection.
+The operator runs `spine-yandex-binary-read-authority` with a strict
+`yandex-qualification-binary-read-config:v1` private document and a private
+`--report` path. The config pins owner decision
+`issue-789-comment-6687500665`, manifest digest
+`487360a49df37aa6fd3dac3b78750b0d991a8a7de44f5fc405a85f304befedc7`,
+the single allowed redirect host `mds.storage.yandex.net`, ten live runs and an
+exact UTC expiry no more than seven days after approval. It accepts no caller
+selected approval, connection, principal, credential, grant, scope or
+qualification reference.
+
+The command uses `SPINE_CONTROL_DATABASE_URL` authenticated as the dedicated
+`spine_control` role and the
+existing `SPINE_QUALIFICATION_*` runtime verification inputs. It never loads
+migration-owner credentials and makes no Yandex request. Migration 112 grants
+the control role, never `spine_runtime`, `EXECUTE` on the exact
+`SECURITY DEFINER` provisioning capability plus only the tenant-scoped
+exact-ID read privileges needed for predecessor and replay checks. The role has
+no direct table-write grant: the function alone appends the approval, exact
+version and both Audit Events atomically;
+the function rejects public callers, a different tenant session, any non-v1 or
+non-metadata predecessor, changed references/capabilities, an expired deadline
+or a window longer than seven days. Approval, two content-free Audit Events and
+connection version 2 commit atomically. The refs-only mode-`0600` report records
+the immutable lineage and expiry without credentials, paths or file content.
+
+The approved manifest digest is stored on both canonical approval and version;
+every content read must present the same digest and a mismatch is rejected before
+provider access. An identical, still-current replay returns version 2 without a
+second logical effect. An expired replay, stale
+predecessor, conflicting approval/audit/version, cross-tenant context or altered
+generation fails closed. Admission uses PostgreSQL database time before and after
+the provider call rather than the worker process clock; if expiry crosses during
+a download, the observation is discarded. Consequently #787 remains
+`NOT_VERIFIED` and performs no subsequent content read when provisioning or
+admission is rejected.
+
+The ten-run campaign budget, one-run-per-target rule, transient-only repeat and
+terminal PASS/cleanup state are consumed and durably enforced by #787's live-run
+orchestrator; #789 provisions no connector and starts no campaign run. Until that
+separate run-admission contract exists, this canonical authority alone is not a
+live-execution permit.
+
+Rollback is append-only: revoke/expire version 2 or create a separately approved
+successor; never reactivate or edit version 1 or delete audit history. Cleanup is
+owned by `alkselsv` and must complete within 24 hours after campaign termination:
+remove downloaded bytes, private manifests/snapshots, the local token and working
+reports; destroy the disposable qualification database including synthetic
+originals and SourceRevisions after terminal evidence is verified; complete
+Fixture Owner cleanup of provider-side synthetic resources; and revoke and verify
+the OAuth grant. Record a sanitized cleanup receipt and retain it with refs-only
+terminal evidence, safe audit metadata, versions, counts and digests for 90 days.
+The retained set contains no content, protected paths/names, credentials or raw
+provider payloads. Incomplete cleanup blocks another live execution and prevents
+PASS. There is no backup cleanup owner, so the campaign must not begin unless the
+named owner can complete cleanup.
+
 ### Recursive metadata inventory
 
 After the acting identity is approved, the recursive inventory runner is the

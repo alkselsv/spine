@@ -28,7 +28,7 @@ and Psycopg connection timeout are set explicitly. Startup opens a connection
 and rejects an unreachable server or a PostgreSQL major other than 17; any
 startup failure disposes the new engine before returning a sanitized error.
 
-Runtime, dispatcher, and migration credentials have separate configuration
+Runtime, dispatcher, control-plane, and migration credentials have separate configuration
 surfaces:
 
 ```dotenv
@@ -44,10 +44,14 @@ SPINE_DATABASE_TRANSACTION_RETRY_LIMIT=3
 SPINE_DISPATCHER_DATABASE_URL=postgresql+psycopg://spine_dispatcher:secret@db/spine
 SPINE_DISPATCHER_DATABASE_DISPATCHER_ROLE=spine_dispatcher
 
+SPINE_CONTROL_DATABASE_URL=postgresql+psycopg://spine_control:secret@db/spine
+SPINE_CONTROL_DATABASE_CONTROL_ROLE=spine_control
+
 SPINE_MIGRATION_DATABASE_URL=postgresql+psycopg://migration_owner:secret@db/spine
 SPINE_MIGRATION_DATABASE_MIGRATION_ROLE=spine_migration
 SPINE_MIGRATION_DATABASE_RUNTIME_ROLE=spine_runtime
 SPINE_MIGRATION_DATABASE_DISPATCHER_ROLE=spine_dispatcher
+SPINE_MIGRATION_DATABASE_CONTROL_ROLE=spine_control
 ```
 
 Importing settings or persistence modules does not load any surface and does
@@ -145,7 +149,7 @@ after append, during statement flush, before commit, and during commit.
 
 ## Operator bootstrap and migration
 
-Provisioning has three separate authorities:
+Provisioning has four separate authorities:
 
 - the operator identity can create the database and login roles;
 - `spine_migration` owns the application database and `spine` schema and applies
@@ -159,6 +163,14 @@ Provisioning has three separate authorities:
   business or audit tables. Atomic delivery finalization is exposed through one
   fixed-shape `SECURITY DEFINER` function with a controlled search path; the role
   receives `EXECUTE`, not general Audit Event table privileges.
+- `spine_control` is a non-owner `NOINHERIT`, `NOBYPASSRLS` login for explicit
+  operational control-plane commands. Migration 112 gives it only the
+  exact-ID tenant-scoped read privileges and exact `SECURITY DEFINER` function
+  needed to materialize the approved Yandex #789 authority; ordinary runtime
+  credentials cannot invoke that function, and the control role cannot write
+  the backing tables directly. Operator bootstrap creates this role as `NOLOGIN`
+  unless an explicit control password is supplied; migration 112 fails if the
+  bootstrap prerequisite is missing.
 
 Set the operator-only values in the environment of a trusted deployment step,
 not in an application runtime:
@@ -172,6 +184,8 @@ SPINE_OPERATOR_DATABASE_RUNTIME_ROLE=spine_runtime
 SPINE_OPERATOR_DATABASE_RUNTIME_PASSWORD=generated-runtime-secret
 SPINE_OPERATOR_DATABASE_DISPATCHER_ROLE=spine_dispatcher
 SPINE_OPERATOR_DATABASE_DISPATCHER_PASSWORD=generated-dispatcher-secret
+SPINE_OPERATOR_DATABASE_CONTROL_ROLE=spine_control
+SPINE_OPERATOR_DATABASE_CONTROL_PASSWORD=generated-control-secret
 ```
 
 Then run the phases explicitly:
@@ -185,16 +199,18 @@ uv run spine-db-bootstrap-workspace \
   --display-name "Initial Workspace"
 ```
 
-`spine-db-bootstrap` creates or reconciles only the database and the three login
-roles. Reconciliation removes runtime and dispatcher role memberships and
-direct database authority before granting back `CONNECT` only.
+`spine-db-bootstrap` creates or reconciles only the database and four separated
+roles. The control role remains `NOLOGIN` unless an explicit campaign credential
+is configured. Reconciliation removes runtime, dispatcher, and control role
+memberships and direct database authority before granting back only the required
+`CONNECT` privileges.
 `spine-db-migrate` verifies the current user, database owner, role separation,
 runtime and dispatcher privileges, memberships, unsafe database/schema/table
 access, forced RLS protection, and existing schema owner before it changes the
-schema. Runtime, dispatcher, and migration connections use the controlled
+schema. Runtime, dispatcher, control, and migration connections use the controlled
 search path `pg_catalog,spine`. The Alembic version table is
 `spine.alembic_version`, and the committed history has one linear head:
-`20261021_24`. The source-observation migrations add the source ledger tables,
+`20270113_112`. The source-observation migrations add the source ledger tables,
 integrity constraints, persisted canonicalization profile identity, and
 database-side canonical validation. The admission migration adds the
 environment-scoped append-only `admission_decisions` CAS ledger, including
@@ -373,8 +389,9 @@ for release or ticket completion.
 ## Deployment prerequisites and recovery
 
 The deployment must provide PostgreSQL 17, operator authority for the one-time
-database/role bootstrap, separately stored migration, runtime, and dispatcher
-credentials,
+database/role bootstrap, separately stored migration, runtime, dispatcher, and
+campaign-scoped control credentials. The control role may remain `NOLOGIN` when
+no approved control-plane campaign is active,
 and durable backup/restore appropriate to its environment. Spine does not
 provision the server, network policy, TLS certificates, secret manager, backup
 backend, or container runtime. Production rollout must run operator bootstrap

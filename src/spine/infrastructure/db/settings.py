@@ -168,6 +168,43 @@ class DispatcherDatabaseSettings(_DatabaseSettings):
         return self
 
 
+class ControlDatabaseSettings(_DatabaseSettings):
+    """Dedicated credentials for narrow operational control-plane commands."""
+
+    model_config = SettingsConfigDict(
+        frozen=True,
+        extra="forbid",
+        env_file=None,
+        env_prefix="SPINE_CONTROL_DATABASE_",
+        case_sensitive=False,
+        hide_input_in_errors=True,
+    )
+
+    url: SecretStr = Field(repr=False)
+    control_role: str = "spine_control"
+    pool_size: int = Field(default=1, ge=1, le=10)
+    max_overflow: int = Field(default=0, ge=0, le=10)
+    pool_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    connect_timeout_seconds: int = Field(default=10, gt=0, le=300)
+    pool_pre_ping: bool = True
+
+    _supported_url = field_validator("url")(_validate_postgresql_url)
+
+    @field_validator("control_role")
+    @classmethod
+    def _safe_control_role(cls, value: str) -> str:
+        if not POSTGRESQL_IDENTIFIER.fullmatch(value):
+            raise ValueError("control role must be a safe lowercase identifier")
+        return value
+
+    @model_validator(mode="after")
+    def _control_url_uses_control_role(self) -> ControlDatabaseSettings:
+        username = urlsplit(self.url.get_secret_value()).username
+        if username is None or unquote(username) != self.control_role:
+            raise ValueError("control database URL must authenticate as control role")
+        return self
+
+
 class MigrationDatabaseSettings(_DatabaseSettings):
     """Credentials exposed only to explicit migration composition roots."""
 
@@ -184,10 +221,13 @@ class MigrationDatabaseSettings(_DatabaseSettings):
     migration_role: str = "spine_migration"
     runtime_role: str = "spine_runtime"
     dispatcher_role: str = "spine_dispatcher"
+    control_role: str = "spine_control"
 
     _supported_url = field_validator("url")(_validate_postgresql_url)
 
-    @field_validator("migration_role", "runtime_role", "dispatcher_role")
+    @field_validator(
+        "migration_role", "runtime_role", "dispatcher_role", "control_role"
+    )
     @classmethod
     def _safe_role_identifier(cls, value: str) -> str:
         if not POSTGRESQL_IDENTIFIER.fullmatch(value):
@@ -196,8 +236,17 @@ class MigrationDatabaseSettings(_DatabaseSettings):
 
     @model_validator(mode="after")
     def _migration_roles_are_distinct(self) -> MigrationDatabaseSettings:
-        if len({self.migration_role, self.runtime_role, self.dispatcher_role}) != 3:
-            raise ValueError("migration, runtime and dispatcher roles must be distinct")
+        if len(
+            {
+                self.migration_role,
+                self.runtime_role,
+                self.dispatcher_role,
+                self.control_role,
+            }
+        ) != 4:
+            raise ValueError(
+                "migration, runtime, dispatcher and control roles must be distinct"
+            )
         return self
 
 
@@ -221,6 +270,8 @@ class OperatorDatabaseSettings(_DatabaseSettings):
     runtime_password: SecretStr = Field(repr=False)
     dispatcher_role: str
     dispatcher_password: SecretStr = Field(repr=False)
+    control_role: str = "spine_control"
+    control_password: SecretStr | None = Field(default=None, repr=False)
 
     _supported_url = field_validator("url")(_validate_postgresql_url)
 
@@ -229,6 +280,7 @@ class OperatorDatabaseSettings(_DatabaseSettings):
         "migration_role",
         "runtime_role",
         "dispatcher_role",
+        "control_role",
     )
     @classmethod
     def _safe_identifier(cls, value: str) -> str:
@@ -240,7 +292,13 @@ class OperatorDatabaseSettings(_DatabaseSettings):
 
     @model_validator(mode="after")
     def _roles_are_distinct(self) -> OperatorDatabaseSettings:
-        if len({self.migration_role, self.runtime_role, self.dispatcher_role}) != 3:
+        roles = {
+            self.migration_role,
+            self.runtime_role,
+            self.dispatcher_role,
+            self.control_role,
+        }
+        if len(roles) != 4:
             raise ValueError("database roles must be distinct")
         return self
 

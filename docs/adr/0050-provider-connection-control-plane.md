@@ -15,7 +15,11 @@ capability claims or Security/Data Owner approval.
 PostgreSQL stores provider-neutral approvals separately from append-only
 connection versions. A version contains only opaque credential/grant/resource
 references, explicit capability statements, generations and allowlisted safe
-health observations. Tenant RLS protects both tables. A unique predecessor and
+health observations. An approval and its derived version may carry the same
+hard `valid_until`; provider-read admission rejects it at or after that database
+time. A manifest-bound approval and version also carry the exact approved digest;
+read admission requires the command to present the same digest before provider
+access. Tenant RLS protects both tables. A unique predecessor and
 optimistic expected-version check make concurrent successors explicit conflicts;
 the scope-bound command receipt makes a repeated command return the original
 version without another provider call. The version and its allowlisted
@@ -51,3 +55,16 @@ configuration and current health. The management module owns replay, versioning,
 scope checks and safe projection for all providers. Connecting material still
 does not publish an AccessPolicy, make content proposal-eligible or create a
 `PricingBasis`; those remain separate decisions and canonical paths.
+
+An isolated qualification may need to materialize a previously recorded owner
+decision without granting the runtime role general approval-write authority. In
+that case a migration may install one `SECURITY DEFINER` capability whose inputs,
+predecessor, tenant session scope, references, generations and expiry are all
+closed over the exact approved decision. Public execution is revoked and only
+the dedicated `spine_control` login receives `EXECUTE`. The ordinary runtime role
+cannot invoke it. The control login is non-owner, `NOINHERIT`, `NOBYPASSRLS`, has
+only exact-ID tenant-scoped read privileges needed for predecessor/replay checks;
+the `SECURITY DEFINER` function alone appends the approval, connection version
+and Audit Events atomically. The credential is loaded only by explicit
+control-plane commands. This is a bounded fourth credential surface, not a
+general approval API.

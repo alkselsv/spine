@@ -17,6 +17,7 @@ from spine.domain.audit.models import (
     RequestAccessDecisionAuditPayload,
     StorageOutcomeAuditPayload,
     YandexQualificationAuthorityAuditPayload,
+    YandexQualificationBinaryReadAuthorityAuditPayload,
 )
 
 __all__ = [
@@ -36,4 +37,5 @@ __all__ = [
     "RequestAccessDecisionAuditPayload",
     "StorageOutcomeAuditPayload",
     "YandexQualificationAuthorityAuditPayload",
+    "YandexQualificationBinaryReadAuthorityAuditPayload",
 ]

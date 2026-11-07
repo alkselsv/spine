@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -52,6 +53,7 @@ class ProviderReadCommand:
     resource_scope_reference: OpaqueProviderReference
     authorization_generation: int
     configuration_generation: int
+    manifest_digest: str | None = None
     required_capabilities: tuple[ProviderCapabilityKind, ...] = ()
     resource_object_reference: str | None = None
     acting_subject_id: UUID | None = None
@@ -75,6 +77,11 @@ class ProviderReadCommand:
             raise ValueError("connection generations must be positive")
         if len(set(self.required_capabilities)) != len(self.required_capabilities):
             raise ValueError("required provider capabilities must be unique")
+        if self.manifest_digest is not None and (
+            len(self.manifest_digest) != 64
+            or any(character not in "0123456789abcdef" for character in self.manifest_digest)
+        ):
+            raise ValueError("manifest_digest must be lowercase sha256")
         if self.resource_object_reference is not None and not (
             1 <= len(self.resource_object_reference) <= 1024
         ):
@@ -109,6 +116,10 @@ class ProviderConnectionRepository(Protocol):
         command: ProviderReadCommand,
         context: TrustedPersistenceContext,
     ) -> AbstractAsyncContextManager[ProviderConnection]: ...
+
+    async def current_database_time(
+        self, context: TrustedPersistenceContext
+    ) -> datetime: ...
 
 
 class ProviderObservationReader(Protocol):
@@ -151,11 +162,12 @@ class ProviderReadAdmission:
         context: TrustedPersistenceContext,
     ) -> NormalizedExternalObservationV2:
         async with self._repository.admit_read(command, context) as connection:
-            self._validate_connection(command, connection)
+            await self._validate_connection(command, connection, context)
             self._require_capabilities(connection, command.required_capabilities)
             await self._require_lifecycle_eligibility(command, context)
             self._validate_requested_source_identity(command, connection)
             observation = await self._provider.read(connection, command)
+            await self._validate_connection(command, connection, context)
             self._validate_observation(command, connection, observation)
             self._require_capabilities(connection, observation.required_capabilities())
             await self._require_lifecycle_eligibility(command, context)
@@ -182,12 +194,23 @@ class ProviderReadAdmission:
         except LifecycleAuthorityError:
             raise ProviderReadDeniedError() from None
 
-    @staticmethod
-    def _validate_connection(
-        command: ProviderReadCommand, connection: ProviderConnection
+    async def _validate_connection(
+        self,
+        command: ProviderReadCommand,
+        connection: ProviderConnection,
+        context: TrustedPersistenceContext,
     ) -> None:
         if connection.status is not ProviderConnectionStatus.ACTIVE:
             raise ProviderReadDeniedError()
+        if connection.valid_until is not None:
+            try:
+                evaluated_at = await self._repository.current_database_time(context)
+            except ProviderReadDeniedError:
+                raise
+            except Exception:
+                raise ProviderReadDeniedError() from None
+            if evaluated_at.tzinfo is None or evaluated_at >= connection.valid_until:
+                raise ProviderReadDeniedError()
         if (
             connection.connection_id,
             connection.connection_version_id,
@@ -203,6 +226,8 @@ class ProviderReadAdmission:
             command.authorization_generation,
             command.configuration_generation,
         ):
+            raise ProviderReadDeniedError()
+        if connection.approved_manifest_digest != command.manifest_digest:
             raise ProviderReadDeniedError()
         if (
             command.lifecycle_query is not None

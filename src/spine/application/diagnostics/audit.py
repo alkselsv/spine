@@ -56,6 +56,7 @@ from spine.domain.audit import (
     RequestAccessDecisionAuditPayload,
     StorageOutcomeAuditPayload,
     YandexQualificationAuthorityAuditPayload,
+    YandexQualificationBinaryReadAuthorityAuditPayload,
 )
 from spine.domain.audit.models import AUDIT_IDENTIFIER_PATTERN
 from spine.domain.common import VERSION_IDENTIFIER_PATTERN
@@ -402,6 +403,12 @@ class AuditEventRegistry:
             (
                 "yandex.qualification_authority",
                 YandexQualificationAuthorityAuditPayload,
+                frozenset({AuditOutcome.ACCEPTED, AuditOutcome.REPLAYED}),
+                True,
+            ),
+            (
+                "yandex.qualification_binary_read_authority",
+                YandexQualificationBinaryReadAuthorityAuditPayload,
                 frozenset({AuditOutcome.ACCEPTED, AuditOutcome.REPLAYED}),
                 True,
             ),

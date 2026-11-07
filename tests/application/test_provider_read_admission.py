@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 from uuid import UUID
 
 import pytest
+
+import spine.application.connections.provider as provider_read_module
 
 from spine.application.connections.provider import (
     ProviderCapabilityUnavailableError,
@@ -100,6 +102,8 @@ def _connection(
     environment_id: UUID = _id(5),
     provider_kind: ProviderKind = ProviderKind.GOOGLE,
     status: ProviderConnectionStatus = ProviderConnectionStatus.ACTIVE,
+    valid_until: datetime | None = None,
+    approved_manifest_digest: str | None = None,
 ) -> ProviderConnection:
     return ProviderConnection(
         connection_version_id=_id(1),
@@ -117,13 +121,22 @@ def _connection(
         configuration_generation=3,
         status=status,
         capabilities=capabilities,
+        valid_until=valid_until,
+        approved_manifest_digest=approved_manifest_digest,
     )
 
 
 class _Repository:
-    def __init__(self, connection: ProviderConnection) -> None:
+    def __init__(
+        self,
+        connection: ProviderConnection,
+        *,
+        database_times: tuple[datetime, ...] = (),
+    ) -> None:
         self.connection = connection
         self.calls = []
+        self.database_times = iter(database_times)
+        self.database_time_calls = 0
 
     @asynccontextmanager
     async def admit_read(self, command, context):
@@ -133,6 +146,11 @@ class _Repository:
         assert context.scope.environment_id == command.environment_id
         self.calls.append((command, context))
         yield self.connection
+
+    async def current_database_time(self, context):
+        assert isinstance(context, TrustedPersistenceContext)
+        self.database_time_calls += 1
+        return next(self.database_times)
 
 
 class _Provider:
@@ -240,6 +258,100 @@ async def test_active_scoped_connection_allows_qualified_binary_read() -> None:
     result = await admission.read(command, context)
 
     assert result == observation
+
+
+@pytest.mark.asyncio
+async def test_expired_connection_is_denied_before_provider_read() -> None:
+    connection = _connection(
+        _capability(
+            ProviderCapabilityKind.BINARY_READ, ProviderCapabilityStatus.SUPPORTED
+        ),
+        valid_until=NOW,
+    )
+    provider = _Provider(_observation(assurance=ExternalIdentityAssurance.UNPROVEN))
+    admission = ProviderReadAdmission(
+        repository=_Repository(connection, database_times=(NOW,)), provider=provider
+    )
+
+    with pytest.raises(ProviderReadDeniedError):
+        await admission.read(_command(ProviderCapabilityKind.BINARY_READ), _context())
+
+    assert provider.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_database_expiry_overrides_a_skewed_process_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _connection(
+        _capability(
+            ProviderCapabilityKind.BINARY_READ, ProviderCapabilityStatus.SUPPORTED
+        ),
+        valid_until=NOW,
+    )
+    provider = _Provider(_observation(assurance=ExternalIdentityAssurance.UNPROVEN))
+    repository = _Repository(connection, database_times=(NOW,))
+
+    class SkewedProcessDateTime:
+        @classmethod
+        def now(cls, _timezone):
+            return NOW - timedelta(minutes=5)
+
+    monkeypatch.setattr(provider_read_module, "datetime", SkewedProcessDateTime)
+    admission = ProviderReadAdmission(repository=repository, provider=provider)
+
+    with pytest.raises(ProviderReadDeniedError):
+        await admission.read(_command(ProviderCapabilityKind.BINARY_READ), _context())
+
+    assert provider.calls == 0
+    assert repository.database_time_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_manifest_mismatch_is_denied_before_provider_read() -> None:
+    connection = _connection(
+        _capability(
+            ProviderCapabilityKind.BINARY_READ, ProviderCapabilityStatus.SUPPORTED
+        ),
+        approved_manifest_digest="a" * 64,
+    )
+    provider = _Provider(_observation(assurance=ExternalIdentityAssurance.UNPROVEN))
+    admission = ProviderReadAdmission(
+        repository=_Repository(connection), provider=provider
+    )
+
+    with pytest.raises(ProviderReadDeniedError):
+        await admission.read(
+            replace(
+                _command(ProviderCapabilityKind.BINARY_READ),
+                manifest_digest="b" * 64,
+            ),
+            _context(),
+        )
+
+    assert provider.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_authority_expiring_during_download_discards_observation() -> None:
+    connection = _connection(
+        _capability(
+            ProviderCapabilityKind.BINARY_READ, ProviderCapabilityStatus.SUPPORTED
+        ),
+        valid_until=NOW.replace(minute=1),
+    )
+    provider = _Provider(_observation(assurance=ExternalIdentityAssurance.UNPROVEN))
+    admission = ProviderReadAdmission(
+        repository=_Repository(
+            connection, database_times=(NOW, NOW.replace(minute=1))
+        ),
+        provider=provider,
+    )
+
+    with pytest.raises(ProviderReadDeniedError):
+        await admission.read(_command(ProviderCapabilityKind.BINARY_READ), _context())
+
+    assert provider.calls == 1
 
 
 @pytest.mark.asyncio
