@@ -1004,38 +1004,26 @@ async def test_direct_sql_cannot_bypass_source_canonical_validation(
             workspace_id=WORKSPACE_A,
             environment_id=ENVIRONMENT_A,
         )
-        await connection.execute(insert_source, common)
-        await connection.commit()
-        try:
-            cases = (
-                {"metadata": '{"embedded_title":"Cafe\\u0301"}', "metadata_digest": "c" * 64, "revision_digest": "b" * 64},
-                {"metadata": '{"embedded_title":"Café","document_language":"en-us"}', "metadata_digest": "4220b54f52008ad8e811d63115836744d69106765438ca9d7fa670f0caa9b536", "revision_digest": "b" * 64},
-            )
-            for case in cases:
+        cases = (
+            {"metadata": '{"embedded_title":"Cafe\\u0301"}', "metadata_digest": "c" * 64, "revision_digest": "b" * 64},
+            {"metadata": '{"embedded_title":"Café","document_language":"en-us"}', "metadata_digest": "4220b54f52008ad8e811d63115836744d69106765438ca9d7fa670f0caa9b536", "revision_digest": "b" * 64},
+        )
+        for case in cases:
+            try:
+                await _set_tenant_context(
+                    connection,
+                    workspace_id=WORKSPACE_A,
+                    environment_id=ENVIRONMENT_A,
+                )
+                await connection.execute(insert_source, common)
                 with pytest.raises((IntegrityError, DBAPIError)):
-                    await connection.execute(insert_revision, {**common, "revision_id": revision_id, **case})
+                    await connection.execute(
+                        insert_revision,
+                        {**common, "revision_id": revision_id, **case},
+                    )
                     await connection.commit()
+            finally:
                 await connection.rollback()
-        finally:
-            await connection.rollback()
-    async with _connection(migrated_database.migration.url) as connection:
-        await connection.execute(
-            text(
-                "ALTER TABLE spine.source_objects "
-                "DISABLE TRIGGER trg_source_objects_immutable"
-            )
-        )
-        await connection.execute(
-            text("DELETE FROM spine.source_objects WHERE source_object_id = :source_id"),
-            {"source_id": source_id},
-        )
-        await connection.execute(
-            text(
-                "ALTER TABLE spine.source_objects "
-                "ENABLE TRIGGER trg_source_objects_immutable"
-            )
-        )
-        await connection.commit()
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -1280,6 +1268,9 @@ async def test_source_observation_catalog_and_runtime_security_contract(
             "pol_source_objects_tenant_isolation", "pol_source_objects_migration_maintenance",
             "pol_source_revisions_tenant_isolation", "pol_source_revisions_migration_maintenance",
             "pol_source_revision_provenance_tenant_isolation", "pol_source_revision_provenance_migration_maintenance",
+            "pol_source_objects_erasure_executor",
+            "pol_source_revisions_erasure_executor",
+            "pol_source_revision_provenance_erasure_executor",
         }
         tenant_policies = [
             value for name, value in policies.items() if name.endswith("tenant_isolation")
@@ -1519,6 +1510,9 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "private_asr_aggregate_exports",
         "private_asr_corpus_manifests",
         "private_asr_corpus_releases",
+        "source_disposition_operations",
+        "source_disposition_outbox",
+        "source_erasure_execution_contexts",
         "gmail_message_label_observations",
         "gmail_message_label_heads",
         "gmail_message_relationship_evidence",
@@ -2662,6 +2656,12 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "uq_initial_workspace_bootstrap_workspace_id",
         "uq_outbox_intents_environment_producer",
         "uq_outbox_intents_workspace_producer",
+        "pk_source_disposition_operations",
+        "pk_source_disposition_outbox",
+        "source_erasure_execution_contexts_pkey",
+        "uq_source_disposition_outbox_operation_event",
+        "ix_source_disposition_outbox_created",
+        "ix_source_disposition_operations_expiry",
         "uq_workspaces_slug",
         "pk_drive_snapshot_runs",
         "uq_drive_snapshot_runs_idempotency",
@@ -2941,6 +2941,9 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "email_attachment_artifacts": (True, True),
         "private_asr_corpus_manifests": (True, True),
         "private_asr_corpus_releases": (True, True),
+        "source_disposition_operations": (True, True),
+        "source_disposition_outbox": (True, True),
+        "source_erasure_execution_contexts": (True, True),
         "email_attachment_processing_receipts": (True, True),
         "work_items": (True, True),
         "workflow_runs": (True, True),
@@ -3087,6 +3090,48 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         ("private_asr_corpus_manifests", "pol_private_asr_corpus_manifests_migration_maintenance"),
         ("private_asr_corpus_releases", "pol_private_asr_corpus_releases_tenant_isolation"),
         ("private_asr_corpus_releases", "pol_private_asr_corpus_releases_migration_maintenance"),
+        ("email_sync_attempts", "pol_email_sync_attempts_governed_erasure"),
+        ("email_sync_pages", "pol_email_sync_pages_governed_erasure"),
+        ("email_sync_effect_receipts", "pol_email_sync_effect_receipts_governed_erasure"),
+        ("email_sync_state_observations", "pol_email_sync_state_observations_governed_erasure"),
+        ("outbox_intents", "pol_outbox_intents_governed_erasure"),
+        ("outbox_deliveries", "pol_outbox_deliveries_governed_erasure"),
+        ("policy_approvals", "pol_policy_approvals_erasure_executor"),
+        ("gmail_message_label_heads", "pol_gmail_message_label_heads_erasure_executor"),
+        ("gmail_message_relationship_evidence", "pol_gmail_message_relationship_evidence_erasure_executor"),
+        ("lifecycle_observations", "pol_lifecycle_observations_erasure_executor"),
+        ("source_objects", "pol_source_objects_erasure_executor"),
+        ("tombstone_authorizations", "pol_tombstone_authorizations_erasure_executor"),
+        ("source_revisions", "pol_source_revisions_erasure_executor"),
+        ("source_revision_receipt_associations", "pol_source_revision_receipt_associations_erasure_executor"),
+        ("current_lifecycle_authorities", "pol_current_lifecycle_authorities_erasure_executor"),
+        ("current_access_policies", "pol_current_access_policies_erasure_executor"),
+        ("access_policy_grants", "pol_access_policy_grants_erasure_executor"),
+        ("access_policy_versions", "pol_access_policy_versions_erasure_executor"),
+        ("policy_activations", "pol_policy_activations_erasure_executor"),
+        ("current_source_deletion_policy_approvals", "pol_current_source_deletion_policy_approvals_erasure_executor"),
+        ("current_tombstone_authorization_issuers", "pol_current_tombstone_authorization_issuers_erasure_executor"),
+        ("lifecycle_decisions", "pol_lifecycle_decisions_erasure_executor"),
+        ("tombstone_authorization_issuers", "pol_tombstone_authorization_issuers_erasure_executor"),
+        ("source_erasure_execution_contexts", "pol_source_erasure_context_executor"),
+        ("tombstone_authorization_decisions", "pol_tombstone_authorization_decisions_erasure_executor"),
+        ("source_revision_provenance", "pol_source_revision_provenance_erasure_executor"),
+        ("current_trusted_canonical_tombstone_selectors", "pol_current_trusted_canonical_tombstone_selectors_erasure_execu"),
+        ("source_deletion_policy_approvals", "pol_source_deletion_policy_approvals_erasure_executor"),
+        ("admission_decisions", "pol_admission_decisions_erasure_executor"),
+        ("current_tombstone_authorization_decisions", "pol_current_tombstone_authorization_decisions_erasure_executor"),
+        ("current_retention_applicabilities", "pol_current_retention_applicabilities_erasure_executor"),
+        ("qualified_deletion_evidence", "pol_qualified_deletion_evidence_erasure_executor"),
+        ("canonical_acceptances", "pol_canonical_acceptances_erasure_executor"),
+        ("gmail_message_label_observations", "pol_gmail_message_label_observations_erasure_executor"),
+        ("policy_proposals", "pol_policy_proposals_erasure_executor"),
+        ("current_source_heads", "pol_current_source_heads_erasure_executor"),
+        ("retention_applicabilities", "pol_retention_applicabilities_erasure_executor"),
+        ("source_disposition_operations", "pol_source_disposition_operations_erasure_executor"),
+        ("source_disposition_operations", "pol_source_disposition_operations_migration_maintenance"),
+        ("source_disposition_operations", "pol_source_disposition_operations_tenant_isolation"),
+        ("source_disposition_outbox", "pol_source_disposition_outbox_migration_maintenance"),
+        ("source_disposition_outbox", "pol_source_disposition_outbox_tenant_isolation"),
         ("email_sync_attempts", "pol_email_sync_attempts_governed_erasure"),
         ("email_sync_pages", "pol_email_sync_pages_governed_erasure"),
         ("email_sync_effect_receipts", "pol_email_sync_effect_receipts_governed_erasure"),
@@ -3807,6 +3852,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "email_attachment_processing_receipts",
         "private_asr_corpus_manifests",
         "private_asr_corpus_releases",
+        "source_disposition_operations",
+        "source_disposition_outbox",
+        "source_erasure_execution_contexts",
     }
     assert constraints == {
         "alembic_version_pkc",
@@ -3877,6 +3925,18 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "ck_outbox_intents_payload_object",
         "ck_outbox_intents_producer_deduplication_id_length",
         "pk_outbox_intents",
+        "pk_source_disposition_operations",
+        "fk_source_disposition_operations_environment",
+        "ck_source_disposition_operations_ck_source_disposition__99d4",
+        "ck_source_disposition_operations_ck_source_disposition__5650",
+        "ck_source_disposition_operations_ck_source_disposition__1db3",
+        "ck_source_disposition_operations_ck_source_disposition__4c3a",
+        "pk_source_disposition_outbox",
+        "fk_source_disposition_outbox_operation",
+        "uq_source_disposition_outbox_operation_event",
+        "ck_source_disposition_outbox_ck_source_disposition_outb_cf86",
+        "ck_source_disposition_canonical_erasure_state",
+        "source_erasure_execution_contexts_pkey",
         "pk_workspaces",
         "pk_context_profiles",
         "uq_context_profiles_identity_digest",
@@ -4106,6 +4166,32 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         ("private_asr_corpus_releases", "manifest_sha256"),
         ("private_asr_corpus_releases", "status"),
         ("private_asr_corpus_releases", "updated_at"),
+        ("source_disposition_operations", "workspace_id"),
+        ("source_disposition_operations", "environment_id"),
+        ("source_disposition_operations", "operation_id"),
+        ("source_disposition_operations", "request_digest"),
+        ("source_disposition_operations", "state_version"),
+        ("source_disposition_operations", "status"),
+        ("source_disposition_operations", "fence_active"),
+        ("source_disposition_operations", "operation_data"),
+        ("source_disposition_operations", "completion_ack_expires_at"),
+        ("source_disposition_operations", "created_at"),
+        ("source_disposition_operations", "updated_at"),
+        ("source_disposition_operations", "canonical_erasure_state"),
+        ("source_disposition_operations", "canonical_erasure_completed_at"),
+        ("source_disposition_outbox", "event_id"),
+        ("source_disposition_outbox", "workspace_id"),
+        ("source_disposition_outbox", "environment_id"),
+        ("source_disposition_outbox", "operation_id"),
+        ("source_disposition_outbox", "event_type"),
+        ("source_disposition_outbox", "created_at"),
+        ("source_erasure_execution_contexts", "transaction_id"),
+        ("source_erasure_execution_contexts", "workspace_id"),
+        ("source_erasure_execution_contexts", "environment_id"),
+        ("source_erasure_execution_contexts", "operation_id"),
+        ("source_erasure_execution_contexts", "source_object_id"),
+        ("source_erasure_execution_contexts", "target_table"),
+        ("source_erasure_execution_contexts", "target_record"),
     } | AUTHORIZATION_DIRECTORY_COLUMNS | AUDIT_COLUMNS | DELIVERY_COLUMNS | ADMISSION_COLUMNS
     assert columns[("workspaces", "id")] == ("uuid", "NO", None)
     assert columns[("environments", "id")] == ("uuid", "NO", None)
@@ -4154,6 +4240,12 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "uq_initial_workspace_bootstrap_workspace_id",
         "uq_outbox_intents_environment_producer",
         "uq_outbox_intents_workspace_producer",
+        "pk_source_disposition_operations",
+        "pk_source_disposition_outbox",
+        "source_erasure_execution_contexts_pkey",
+        "uq_source_disposition_outbox_operation_event",
+        "ix_source_disposition_outbox_created",
+        "ix_source_disposition_operations_expiry",
         "uq_workspaces_slug",
         "pk_email_sync_attempts",
         "pk_email_sync_pages",
@@ -4651,7 +4743,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'current_source_deletion_policy_approvals', 'tombstone_authorization_issuers', "
                         "'current_tombstone_authorization_issuers', 'tombstone_authorizations', "
                         "'tombstone_authorization_decisions', 'current_tombstone_authorization_decisions', "
-                        "'email_attachment_processing_receipts')"
+                        "'email_attachment_processing_receipts', "
+                        "'source_disposition_operations', 'source_disposition_outbox', "
+                        "'source_erasure_execution_contexts')"
                     )
                 )
             )
@@ -4684,6 +4778,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
 
     assert tables == {
         "admission_decisions": (True, True),
+        "source_disposition_operations": (True, True),
+        "source_disposition_outbox": (True, True),
+        "source_erasure_execution_contexts": (True, True),
         "workspaces": (True, True),
         "environments": (True, True),
         "work_items": (True, True),
@@ -4858,6 +4955,45 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "crm_relationship_v2_state",
         "private_asr_corpus_manifests",
         "private_asr_corpus_releases",
+        "source_erasure_execution_contexts",
+    }
+    source_erasure_tables = (
+        "current_tombstone_authorization_decisions",
+        "tombstone_authorization_decisions",
+        "qualified_deletion_evidence",
+        "current_trusted_canonical_tombstone_selectors",
+        "trusted_canonical_tombstone_selector_versions",
+        "tombstone_authorizations",
+        "admission_decisions",
+        "access_policy_grants",
+        "policy_proposals",
+        "policy_approvals",
+        "policy_activations",
+        "current_access_policies",
+        "access_policy_versions",
+        "current_lifecycle_authorities",
+        "lifecycle_decisions",
+        "lifecycle_observations",
+        "current_retention_applicabilities",
+        "retention_applicabilities",
+        "gmail_message_label_heads",
+        "gmail_message_label_observations",
+        "gmail_message_relationship_evidence",
+        "source_objects",
+        "source_revisions",
+        "source_revision_provenance",
+        "source_revision_receipt_associations",
+        "canonical_acceptances",
+        "current_source_heads",
+        "source_disposition_operations",
+        "current_source_deletion_policy_approvals",
+        "source_deletion_policy_approvals",
+        "current_tombstone_authorization_issuers",
+        "tombstone_authorization_issuers",
+    )
+    source_erasure_policies = {
+        (table_name, f"pol_{table_name}_erasure_executor"[:63])
+        for table_name in source_erasure_tables
     }
     assert set(policies) == {
         (table_name, f"pol_{table_name}_{policy_kind}"[:63])
@@ -4888,7 +5024,14 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "private_asr_corpus_releases",
             "pol_private_asr_corpus_releases_migration_maintenance",
         ),
-    }
+        ("source_erasure_execution_contexts", "pol_source_erasure_context_executor"),
+        ("email_sync_attempts", "pol_email_sync_attempts_governed_erasure"),
+        ("email_sync_pages", "pol_email_sync_pages_governed_erasure"),
+        ("email_sync_effect_receipts", "pol_email_sync_effect_receipts_governed_erasure"),
+        ("email_sync_state_observations", "pol_email_sync_state_observations_governed_erasure"),
+        ("outbox_intents", "pol_outbox_intents_governed_erasure"),
+        ("outbox_deliveries", "pol_outbox_deliveries_governed_erasure"),
+    } | source_erasure_policies
     for table_name in standard_tables:
         roles, using_expression, check_expression = policies[
             (table_name, f"pol_{table_name}_tenant_isolation"[:63])
@@ -6353,6 +6496,9 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20270110_109_gmail_message_state.py",
         "20270111_110_tombstone_authorization.py",
         "20270112_111_canonical_tombstone_v3.py",
+        "20270113_112_source_disposition_state.py",
+        "20270114_113_governed_source_erasure.py",
+        "20270115_114_removable_email_sync_lineage.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "transactional_failure_probe.py").write_text(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -372,12 +373,30 @@ def test_dirty_qualified_tree_is_rejected(tmp_path: Path, dirty_kind: str) -> No
         verify_qualified_commit(tested_commit, root=tmp_path)
 
 
-def test_committed_not_verified_report_is_exactly_reproducible() -> None:
+def test_historical_not_verified_report_retains_its_original_identity() -> None:
     report_path = (
         Path(__file__).parents[2]
         / "docs"
         / "qualification"
         / "issue-799-unsupported-requirements.json"
+    )
+    expected = json.loads(report_path.read_text(encoding="utf-8"))
+
+    assert hashlib.sha256(report_path.read_bytes()).hexdigest() == (
+        "eb1e0688576ce5d627db2fedb64164e797cb83ee203e86023bf6460f9a33b2d1"
+    )
+    assert expected["identity"]["tested_commit_sha"] == (
+        "094cf838e240102886b00224b97955e3822f0dfd"
+    )
+    assert expected["result"] == "NOT_VERIFIED"
+
+
+def test_successor_not_verified_report_is_exactly_reproducible() -> None:
+    report_path = (
+        Path(__file__).parents[2]
+        / "docs"
+        / "qualification"
+        / "issue-799-unsupported-requirements-successor-844510f5.json"
     )
     expected = json.loads(report_path.read_text(encoding="utf-8"))
 
