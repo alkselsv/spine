@@ -3,7 +3,7 @@
   "policy_version": "unsupported-requirements-quality-gate:v1",
   "evaluator_version": "unsupported-requirements-evaluator:v2",
   "identity": {
-    "tested_commit_sha": "74870353e12508bd9eb0aad342c9ae833fb014af",
+    "tested_commit_sha": "f1962b4e4f4d7a69993b1e336b6843fbdbf2d355",
     "source_dataset_id": "russian-meeting-transcription-synthetic",
     "source_dataset_version": "1.0.0",
     "source_dataset_sha256": "0f2c70d2663a6bfb69afc13e34d65683e04d7ddfb1914520b8a1174646a290e7",
@@ -36,19 +36,19 @@
     "value": "1"
   },
   "supported_precision": {
-    "numerator": 7,
-    "denominator": 7,
-    "value": "1"
+    "numerator": 0,
+    "denominator": 0,
+    "value": null
   },
   "supported_recall": {
-    "numerator": 7,
+    "numerator": 0,
     "denominator": 8,
-    "value": "0.875"
+    "value": "0"
   },
   "clarification_needed_recall": {
-    "numerator": 2,
+    "numerator": 0,
     "denominator": 2,
-    "value": "1"
+    "value": "0"
   },
   "inconclusive_abstention_recall": {
     "numerator": 1,
@@ -56,18 +56,18 @@
     "value": "1"
   },
   "confusion_matrix": [
-    {"actual_class": "supported", "predicted_class": "supported", "count": 7},
+    {"actual_class": "supported", "predicted_class": "supported", "count": 0},
     {"actual_class": "supported", "predicted_class": "unsupported", "count": 0},
-    {"actual_class": "supported", "predicted_class": "clarification-needed", "count": 1},
-    {"actual_class": "supported", "predicted_class": "inconclusive/abstention", "count": 0},
+    {"actual_class": "supported", "predicted_class": "clarification-needed", "count": 0},
+    {"actual_class": "supported", "predicted_class": "inconclusive/abstention", "count": 8},
     {"actual_class": "unsupported", "predicted_class": "supported", "count": 0},
     {"actual_class": "unsupported", "predicted_class": "unsupported", "count": 1},
     {"actual_class": "unsupported", "predicted_class": "clarification-needed", "count": 0},
     {"actual_class": "unsupported", "predicted_class": "inconclusive/abstention", "count": 0},
     {"actual_class": "clarification-needed", "predicted_class": "supported", "count": 0},
     {"actual_class": "clarification-needed", "predicted_class": "unsupported", "count": 0},
-    {"actual_class": "clarification-needed", "predicted_class": "clarification-needed", "count": 2},
-    {"actual_class": "clarification-needed", "predicted_class": "inconclusive/abstention", "count": 0},
+    {"actual_class": "clarification-needed", "predicted_class": "clarification-needed", "count": 0},
+    {"actual_class": "clarification-needed", "predicted_class": "inconclusive/abstention", "count": 2},
     {"actual_class": "inconclusive/abstention", "predicted_class": "supported", "count": 0},
     {"actual_class": "inconclusive/abstention", "predicted_class": "unsupported", "count": 0},
     {"actual_class": "inconclusive/abstention", "predicted_class": "clarification-needed", "count": 0},
@@ -77,36 +77,56 @@
     {
       "actual_class": "supported",
       "labelled_count": 8,
-      "correct_count": 7,
-      "recall": {"numerator": 7, "denominator": 8, "value": "0.875"},
-      "predicted_counts": {"supported": 7, "unsupported": 0, "clarification-needed": 1, "inconclusive/abstention": 0}
+      "correct_count": 0,
+      "recall": {"numerator": 0, "denominator": 8, "value": "0"},
+      "predicted_counts": [
+        {"predicted_class": "supported", "count": 0},
+        {"predicted_class": "unsupported", "count": 0},
+        {"predicted_class": "clarification-needed", "count": 0},
+        {"predicted_class": "inconclusive/abstention", "count": 8}
+      ]
     },
     {
       "actual_class": "unsupported",
       "labelled_count": 1,
       "correct_count": 1,
       "recall": {"numerator": 1, "denominator": 1, "value": "1"},
-      "predicted_counts": {"supported": 0, "unsupported": 1, "clarification-needed": 0, "inconclusive/abstention": 0}
+      "predicted_counts": [
+        {"predicted_class": "supported", "count": 0},
+        {"predicted_class": "unsupported", "count": 1},
+        {"predicted_class": "clarification-needed", "count": 0},
+        {"predicted_class": "inconclusive/abstention", "count": 0}
+      ]
     },
     {
       "actual_class": "clarification-needed",
       "labelled_count": 2,
-      "correct_count": 2,
-      "recall": {"numerator": 2, "denominator": 2, "value": "1"},
-      "predicted_counts": {"supported": 0, "unsupported": 0, "clarification-needed": 2, "inconclusive/abstention": 0}
+      "correct_count": 0,
+      "recall": {"numerator": 0, "denominator": 2, "value": "0"},
+      "predicted_counts": [
+        {"predicted_class": "supported", "count": 0},
+        {"predicted_class": "unsupported", "count": 0},
+        {"predicted_class": "clarification-needed", "count": 0},
+        {"predicted_class": "inconclusive/abstention", "count": 2}
+      ]
     },
     {
       "actual_class": "inconclusive/abstention",
       "labelled_count": 1,
       "correct_count": 1,
       "recall": {"numerator": 1, "denominator": 1, "value": "1"},
-      "predicted_counts": {"supported": 0, "unsupported": 0, "clarification-needed": 0, "inconclusive/abstention": 1}
+      "predicted_counts": [
+        {"predicted_class": "supported", "count": 0},
+        {"predicted_class": "unsupported", "count": 0},
+        {"predicted_class": "clarification-needed", "count": 0},
+        {"predicted_class": "inconclusive/abstention", "count": 1}
+      ]
     }
   ],
   "mandatory_strata": [
     {"stratum": "contradiction", "labelled_count": 0, "item_ids": [], "overlapping_item_ids": []},
     {"stratum": "missing-or-fabricated-evidence", "labelled_count": 1, "item_ids": ["corrupt-media:outcome"], "overlapping_item_ids": []},
-    {"stratum": "stale-denied-or-missing-authority", "labelled_count": 0, "item_ids": [], "overlapping_item_ids": []},
+    {"stratum": "stale-denied-or-missing-authority", "labelled_count": 1, "item_ids": ["pure-silence:outcome"], "overlapping_item_ids": []},
     {"stratum": "weak-or-unknown-recognition", "labelled_count": 1, "item_ids": ["weak-speech:outcome"], "overlapping_item_ids": []},
     {"stratum": "malicious-instruction", "labelled_count": 1, "item_ids": ["spoken-prompt-injection:malicious:seg-attack"], "overlapping_item_ids": []}
   ],
@@ -114,7 +134,8 @@
   "execution_failures": [],
   "not_verified_reasons": [
     "insufficient_labelled_coverage",
-    "missing_mandatory_stratum"
+    "missing_mandatory_stratum",
+    "zero_denominator"
   ],
   "threshold_failures": []
 }
