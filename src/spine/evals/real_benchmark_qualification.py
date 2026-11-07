@@ -193,9 +193,15 @@ class RealBenchmarkQualificationRuntime:
         runner: _BenchmarkRunner,
         preflight: RealBenchmarkPreflightPort,
     ) -> None:
+        from spine.evals.answer_quality_benchmark_runner import (
+            AnswerQualityBenchmarkRunner,
+        )
         from spine.evals.real_benchmark_runner import RealBenchmarkRunner
 
-        if type(runner) is not RealBenchmarkRunner:
+        if type(runner) not in {
+            RealBenchmarkRunner,
+            AnswerQualityBenchmarkRunner,
+        }:
             raise TypeError("qualification runtime requires the integrated benchmark runner")
         self._runner = runner
         self._preflight = preflight
@@ -252,16 +258,27 @@ class RealBenchmarkQualificationRuntime:
                 None,
             )
         observation_status = getattr(report, "production_observation_status", "failed")
-        completed = observation_status == "completed"
+        evaluation_status = getattr(report, "evaluation_status", "not_run")
+        completed = (
+            observation_status == "completed" and evaluation_status == "completed"
+        )
         return (
             decision.model_copy(
                 update={
                     "outcome": "qualified" if completed else "unavailable",
                     "structural_validation_status": "passed",
                     "production_observation_status": observation_status,
-                    "evaluation_status": getattr(report, "evaluation_status", "not_run"),
+                    "evaluation_status": evaluation_status,
                     "real_qualification_status": "qualified" if completed else "not_qualified",
-                    "reason_codes": () if completed else ("observation_incomplete",),
+                    "reason_codes": (
+                        ()
+                        if completed
+                        else (
+                            "observation_incomplete"
+                            if observation_status != "completed"
+                            else "evaluation_incomplete",
+                        )
+                    ),
                 }
             ),
             report,

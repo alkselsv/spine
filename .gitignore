@@ -12,6 +12,7 @@ __pycache__/
 .spine/
 data/incoming/**
 !data/incoming/.gitkeep
+data/golden_dataset/**
 data/private/**
 dist/
 build/
