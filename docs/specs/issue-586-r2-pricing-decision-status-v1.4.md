@@ -4,7 +4,7 @@
 **Decision request basis:** package v1.3, SHA-256 `ae8916b72b6f8c2ffb9811262ac484415efb44f074586a49d52563e868828041`.
 **Product Owner approval basis:** package v1.1, SHA-256 `73c04fc138dcb36c34fff57169085ddbd87ada19b15d8be31dc4eae54b4e8325`.
 **Finance/Tax record:** [decision record v3](issue-586-finance-decision-record-v3.md).
-**Successor profile candidate:** [`r2-commercial-v2` v2](issue-586-calculation-profile-candidate-v2.json), SHA-256 `497afb60d1df45596c34db52ac4d6127ab069696101685948ac301cb218bac08`.
+**Successor profile candidate:** [`r2-commercial-v2` v2](issue-586-calculation-profile-candidate-v2.json), SHA-256 `506a314621aeda3b02f731a8befd8b0813844ef45c2eaf00a623da86b35eda08`.
 
 This is a status overlay. It does not alter the frozen v1.3 request or the package v1.1 Product Owner decision basis.
 

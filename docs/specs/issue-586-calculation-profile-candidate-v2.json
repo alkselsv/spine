@@ -70,6 +70,9 @@
   },
   "estimate_aggregation": {
     "display_components": "convert-then-quantize-per-line-component-then-sum",
+    "display_reconciliation_bound_candidate": "absolute(display_reconciliation) <= (m + 1) * Q/2; m is count of signed displayed components (subtotal, discount, tax components, and accepted inclusive delta); Q is Estimate currency quantum; exceed => TAX_RULE_UNRESOLVED pending typed outcome confirmation",
+    "display_reconciliation_identity": "quantized_line_total = displayed_subtotal - displayed_discount + sum(displayed_post_discount_tax_components) + displayed_inclusive_delta_if_accepted + display_reconciliation",
+    "display_reconciliation_role": "display quantization only; cannot correct tax/source formula; extraction precision delta is independently validated and separately represented",
     "estimate_total_requantization": "none",
     "immutable_estimate": "every material change creates successor version and exact-version reapproval; prior approval does not transfer",
     "line_order": "stable-line-id-ascending",

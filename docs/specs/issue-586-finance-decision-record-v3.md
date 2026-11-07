@@ -4,7 +4,7 @@
 **Evidence basis:** Finance decision request package v1.3, SHA-256 `ae8916b72b6f8c2ffb9811262ac484415efb44f074586a49d52563e868828041`.
 **Product Owner basis:** package v1.1, SHA-256 `73c04fc138dcb36c34fff57169085ddbd87ada19b15d8be31dc4eae54b4e8325`; unchanged.
 **Original candidate:** [`r2-commercial-v1` v1](issue-586-calculation-profile-candidate-v1.json), SHA-256 `8452636abbf6f7a653b593583b9cb835e5ebb2636be09d3a59f9bcddd2312724`; preserved unchanged.
-**Successor candidate:** [`r2-commercial-v2` v2](issue-586-calculation-profile-candidate-v2.json), SHA-256 `497afb60d1df45596c34db52ac4d6127ab069696101685948ac301cb218bac08`; proposed technical translation only, not approved or activated.
+**Successor candidate:** [`r2-commercial-v2` v2](issue-586-calculation-profile-candidate-v2.json), SHA-256 `506a314621aeda3b02f731a8befd8b0813844ef45c2eaf00a623da86b35eda08`; proposed technical translation only, not approved or activated.
 **Decision date:** 2026-11-07. **Decision-maker attribution:** the human owner explicitly confirmed they also act as Finance/Tax Owner for #586. This record reports conversational confirmations; it is not a GitHub-authored owner comment or an independent electronic signature.
 
 ## 1. Attributable role-scoped decisions
@@ -70,6 +70,12 @@ The approved v1 rule's unconditional exact equality of context-rounded inclusive
 | CHANGE | Finance/Tax supplies another exact deterministic rule and test vectors. |
 
 Status: `PENDING_FINANCE_TAX_CONFIRMATION`. No residual tolerance or allocation is currently approved.
+
+### Display and reconciliation identities (v2 candidate; exact delta treatment pending F9-T1)
+
+For a tax-exclusive source line, `gross_source = base_before_discount`. For a tax-inclusive source line, `gross_source = base_before_discount + sum(included_tax_before_discount_i) + tax_extraction_precision_delta`. The extracted pre-discount taxes explain the input price only; after discount, recomputed tax components replace them in the payable amount and must never be added a second time.
+
+Candidate source-currency payable identity is `net_source = taxable_base + sum(post_discount_tax_i) + tax_extraction_precision_delta` only if the pending F9-T1 choice accepts additive delta treatment. Otherwise any nonzero delta blocks. After FX, quantize each final displayed component at the output currency quantum `Q`; define `display_reconciliation = quantized_line_total - (quantized_subtotal - quantized_discount + sum(quantized_post_discount_tax_components) + quantized_delta_if_accepted)`. Then `line_total = displayed_subtotal - displayed_discount + displayed_tax_components + displayed_delta + display_reconciliation`. `display_reconciliation` is solely a display rounding reconciliation, never a formula repair. Candidate absolute bound is `(m + 1) × Q/2`, where `m` is the number of signed displayed components (subtotal, discount, tax components and accepted delta); if exceeded, block with `TAX_RULE_UNRESOLVED` pending a dedicated typed output decision. The exact field exposure/error mapping remains part of the successor profile review.
 
 ## 4. Deterministic synthetic qualification vectors
 
