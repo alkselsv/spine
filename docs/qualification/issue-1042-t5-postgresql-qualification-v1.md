@@ -1,9 +1,10 @@
 # Issue #1042 T5 PostgreSQL qualification v1
 
-Status: **PARTIAL / NOT_VERIFIED**. This report records the evidence available
-for code commit `e949b79c1c99392cfe71e013bc7b6eed9c974a03` on PR #1057. It does
-not qualify complete PostgreSQL lineage erasure and does not authorize merge or
-Gmail activation.
+Status: **PARTIAL / NOT_VERIFIED**. The disposition/email-sync behavior tests
+below ran against code commit `e949b79c1c99392cfe71e013bc7b6eed9c974a03`;
+migration/readiness follow-up tests ran against `7880ed2d` on PR #1057. This
+report does not qualify complete PostgreSQL lineage erasure and does not
+authorize merge or Gmail activation.
 
 ## Tested boundary and commands
 
@@ -15,6 +16,8 @@ records. No Gmail API, live mailbox, or customer data was used.
 | `.venv/bin/pytest -q tests/integration/postgresql/test_postgresql_source_disposition.py` | 19 passed |
 | `.venv/bin/pytest -q tests/integration/postgresql/test_email_sync_durability.py` | 38 passed |
 | `.venv/bin/pytest -q tests/application/test_email_sync.py` | 18 passed |
+| `.venv/bin/pytest -q tests/infrastructure/db/test_readiness.py::test_committed_migration_inventory_has_one_linear_head` | 1 passed |
+| `.venv/bin/pytest -q --tb=short tests/integration/postgresql/test_initial_tenancy_migration.py::test_k0_migration_downgrades_and_reupgrades_cleanly` | 1 passed |
 | `.venv/bin/alembic heads` | `20270115_114` (one head) |
 | `python3 -m compileall -q src tests` | passed |
 | `git diff --check` | passed |
@@ -104,10 +107,22 @@ NOT_VERIFIED. Unknown foreign-key dependencies must continue to fail closed.
   findings**.
 - Spec review: **PARTIAL / NOT_VERIFIED** for the gaps above.
 - Independent Security approval: **NOT_VERIFIED**; no approval is recorded.
-- Exact-head CI for `e949b79c1c99392cfe71e013bc7b6eed9c974a03`: pending at report
-  time. Prior-head CI is not evidence for this commit.
-- Historical reversible downgrade and irreversible 113/114 checks were
-  previously qualified before this rebase; exact-head rerun is NOT_VERIFIED.
+- Full `.venv/bin/pytest -q` was interrupted after 7:16 at 78%: its partial
+  summary was 5,994 passed, 10 failed, 6 skipped, and 23 errors. It is not a
+  green full-suite result. The run exposed the stale migration inventory and a
+  K0 downgrade that crossed irreversible migration 114; the inventory was
+  updated and the K0 rollback now runs in a separate disposable database
+  through reversible head 112. Other failures in that partial run, including
+  the committed #799 report's now-unreachable historical tested SHA, remain
+  unresolved or need a clean-tree rerun.
+- The isolated 112→88 downgrade and upgrade to 112 pass on PostgreSQL 17.6.
+  The separate direct 114 downgrade refusal test is covered by the disposition
+  integration suite. The complete clean-chain and historical migration matrix
+  has not been rerun at the latest PR head.
+- Latest completed GitHub CI belongs to prior head `81399da6`: Python 3.10–3.14
+  and web passed; R1 regression gate was still running. CI for the later
+  `7880ed2d` follow-up and report commits is NOT_VERIFIED until their exact-head
+  checks finish.
 - External object storage/staging (T6), projections/indexes/caches (T7), keys,
   WAL, replicas, backups and restore (T8–T11) are NOT_VERIFIED here and must not
   be represented as PostgreSQL PASS.
