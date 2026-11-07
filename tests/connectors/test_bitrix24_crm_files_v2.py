@@ -1,5 +1,7 @@
 from uuid import UUID
 
+import pytest
+
 from spine.connectors.bitrix24_crm_files_v2 import (
     Bitrix24CrmFilesItemResult,
     bind_direct_disk_revision_evidence,
@@ -68,22 +70,21 @@ def test_direct_mapping_preserves_each_exact_files_identity() -> None:
 
 
 def test_t3_mapping_adapts_to_exact_source_match_evidence() -> None:
+    scoped_profile = _profile(disk_namespace="bitrix24-disk-object")
     result = map_bitrix24_crm_files(
         {
             "FILES": [
                 {"namespace": "bitrix.activity.files", "value": "disk-17"},
             ]
         },
-        profile=_profile(disk_namespace="bitrix24-disk-object"),
+        profile=scoped_profile,
     )
     mapping = result.items[0].mapping
     assert mapping is not None
 
     evidence = bind_direct_disk_revision_evidence(
         mapping,
-        workspace_id=UUID(int=2),
-        environment_id=UUID(int=3),
-        connection_id=UUID(int=4),
+        profile=scoped_profile,
         connection_version_id=UUID(int=8),
         provider_revision="17",
     )
@@ -91,6 +92,34 @@ def test_t3_mapping_adapts_to_exact_source_match_evidence() -> None:
     assert evidence.files_item.value == "disk-17"
     assert evidence.disk_revision.object_id == "disk-17"
     assert evidence.disk_revision.provider_revision == "17"
+
+
+def test_t3_mapping_cannot_be_rebound_to_another_tenant_profile() -> None:
+    original_profile = _profile(disk_namespace="bitrix24-disk-object")
+    result = map_bitrix24_crm_files(
+        {
+            "FILES": [
+                {"namespace": "bitrix.activity.files", "value": "disk-17"},
+            ]
+        },
+        profile=original_profile,
+    )
+    mapping = result.items[0].mapping
+    assert mapping is not None
+    foreign_profile = _profile(
+        profile_id=UUID(int=99),
+        workspace_id=UUID(int=98),
+        connection_id=UUID(int=97),
+        disk_namespace="bitrix24-disk-object",
+    )
+
+    with pytest.raises(ValueError, match="scoped profile"):
+        bind_direct_disk_revision_evidence(
+            mapping,
+            profile=foreign_profile,
+            connection_version_id=UUID(int=8),
+            provider_revision="17",
+        )
 
 
 def test_malformed_item_becomes_uncertain_without_contaminating_valid_sibling() -> None:

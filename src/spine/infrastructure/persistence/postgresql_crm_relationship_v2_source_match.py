@@ -16,6 +16,9 @@ from spine.application.crm_relationship_v2_source_match import (
     ExistingCanonicalDiskSourceAuthority,
 )
 from spine.domain.sources import CurrentLifecycleEligibility, LifecycleDecision
+from spine.domain.sources.bitrix24_disk_identity import (
+    canonical_bitrix24_disk_external_object_id,
+)
 from spine.infrastructure.persistence.postgresql_mappings import (
     current_lifecycle_authorities,
     current_source_heads,
@@ -114,7 +117,9 @@ class PostgreSQLCanonicalDiskSourceFinder:
                         source_objects.c.external_generation
                         == BITRIX24_DISK_SOURCE_GENERATION,
                         source_objects.c.external_object_id
-                        == query.disk_revision.object_id,
+                        == canonical_bitrix24_disk_external_object_id(
+                            query.connection_id, query.disk_revision.object_id
+                        ),
                         current_source_heads.c.current_revision_kind == "content",
                     )
                 )

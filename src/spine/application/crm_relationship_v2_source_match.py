@@ -43,6 +43,7 @@ from spine.domain.sources.bitrix24_disk_identity import (
     BITRIX24_DISK_OBJECT_NAMESPACE,
     BITRIX24_DISK_SOURCE_GENERATION,
     BITRIX24_DISK_SOURCE_NAMESPACE,
+    canonical_bitrix24_disk_external_object_id,
 )
 from spine.domain.sources.trusted_content import assert_exact_revision_receipt_binding
 
@@ -431,7 +432,10 @@ def _candidate_matches(
     lifecycle = candidate.lifecycle
     if (
         source.connection_id != query.connection_id
-        or source.external_object_id != query.disk_revision.object_id
+        or source.external_object_id
+        != canonical_bitrix24_disk_external_object_id(
+            query.connection_id, query.disk_revision.object_id
+        )
         or revision.source_object_id != source.source_object_id
         or provenance.source_object_id != source.source_object_id
         or provenance.revision_id != revision.revision_id
@@ -530,9 +534,9 @@ def _usage_request(
     return SourceUsageRequest(
         workspace_id=query.workspace_id,
         environment_id=query.environment_id,
-        usage=SourceUsageKind.PROJECTION_BUILD,
+        usage=SourceUsageKind.CRM_RELATIONSHIP_MATCH,
         artifact=SourceUsageArtifact(
-            artifact_class=RetentionArtifactClass.PROJECTION,
+            artifact_class=RetentionArtifactClass.CRM_RELATIONSHIP_EVIDENCE,
             artifact_id=query.mapping_profile_id,
             artifact_version=query.mapping_profile_version,
             artifact_digest=digest,

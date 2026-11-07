@@ -47,6 +47,9 @@ from spine.domain.connections.provider import (
     ProviderConnectionStatus,
     ProviderKind,
 )
+from spine.domain.sources.bitrix24_disk_identity import (
+    canonical_bitrix24_disk_external_object_id,
+)
 from spine.domain.connections.bitrix24_disk_scope import (
     Bitrix24DiskMembershipEvidence,
     Bitrix24DiskStorageClass,
@@ -212,6 +215,9 @@ async def test_reader_preserves_disk_object_version_exact_bytes_and_omits_signed
     assert observation.original_bytes == CONTENT
     assert observation.external_identity.assurance is ExternalIdentityAssurance.PROVIDER_STABLE
     assert observation.external_identity.provider_key.provider_object_id == "9043"
+    assert observation.external_identity.external_object_id == (
+        canonical_bitrix24_disk_external_object_id(_id(2), "9043")
+    )
     assert observation.discovery is ProviderObservationDiscovery.SNAPSHOT
     assert observation.provider_version_before == "42"
     evidence = observation.representation.revision_evidence

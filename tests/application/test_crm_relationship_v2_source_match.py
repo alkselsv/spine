@@ -20,6 +20,7 @@ from spine.application.crm_relationship_v2_source_match import (
 from spine.application.persistence.canonical import CanonicalAcceptanceReadResult
 from spine.application.source_usage_guard import (
     CurrentSourceUsageDecision,
+    SourceUsageKind,
     SourceUsageReason,
 )
 from spine.domain.connections.bitrix24_disk_scope import (
@@ -37,6 +38,7 @@ from spine.domain.sources import (
     LifecycleEligibilityStatus,
     ProcessingAdmissionMode,
     QualifiedProcessorReference,
+    RetentionArtifactClass,
     RevisionKind,
     RevisionMetadata,
     SourceObject,
@@ -46,6 +48,9 @@ from spine.domain.sources import (
     canonical_revision_metadata_digest,
 )
 from spine.domain.sources.canonicalization import content_revision
+from spine.domain.sources.bitrix24_disk_identity import (
+    canonical_bitrix24_disk_external_object_id,
+)
 from spine.domain.sources.crm_relationship_v2 import CrmEligibilityOutcome
 from spine.infrastructure.object_storage.contracts import ObjectReference
 
@@ -131,7 +136,9 @@ def source_candidate(
         connection_id=connection_id,
         external_namespace="bitrix24-disk",
         external_generation="bitrix24-disk-object:v1",
-        external_object_id=object_id,
+        external_object_id=canonical_bitrix24_disk_external_object_id(
+            connection_id, object_id
+        ),
         created_at=NOW,
     )
     metadata = RevisionMetadata(
@@ -461,6 +468,11 @@ async def test_exact_disk_revision_returns_fenced_current_source(strategy: str) 
     assert (
         usage.requests[0].dependencies[0].source_revision_id
         == result.source_revision_id
+    )
+    assert usage.requests[0].usage is SourceUsageKind.CRM_RELATIONSHIP_MATCH
+    assert (
+        usage.requests[0].artifact.artifact_class
+        is RetentionArtifactClass.CRM_RELATIONSHIP_EVIDENCE
     )
     assert usage.transaction_was_active is True
     assert uow.active is False
