@@ -1,6 +1,8 @@
-# Issue #586 — Finance/Tax pricing decision and CalculationProfile v2
+# Issue #586 — Finance/Tax pricing decision and CalculationProfile v2 (historical proposal)
 
-**Status:** FINANCE_DECISION_READY / HUMAN_FINANCE_APPROVAL_PENDING
+> **Current decision record:** [Finance/Tax decision record v3](issue-586-finance-decision-record-v3.md). F1–F8 are recorded ACCEPT and F9 ACCEPT_WITH_CHANGES from role-scoped conversational evidence on 2026-11-07. The successor `r2-commercial-v2` is a candidate only; F9-T1 and policy bindings remain pending. This v2 checklist is retained as the original request/proposal and is not the current approval status.
+
+**Historical proposal status:** SUPERSEDED AS THE ACTIVE FINANCE RECORD by v3; its candidate values were pending at publication time. See the current Finance/Tax decision record linked above.
 **Decision package for this Finance request:** `issue-586-r2-pricing-decision-package-v1` v1.3, SHA-256 `ae8916b72b6f8c2ffb9811262ac484415efb44f074586a49d52563e868828041`.
 **Accepted Product Owner basis:** package v1.1, SHA-256 `73c04fc138dcb36c34fff57169085ddbd87ada19b15d8be31dc4eae54b4e8325`; Product Owner approval remains limited to product scope.
 **CalculationProfile candidate:** [`r2-commercial-v1` v1](issue-586-calculation-profile-candidate-v1.json), SHA-256 `8452636abbf6f7a653b593583b9cb835e5ebb2636be09d3a59f9bcddd2312724` (exact canonical UTF-8 JSON bytes).
