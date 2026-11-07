@@ -3,7 +3,7 @@
 **Status:** DESIGN PROPOSAL / NOT IMPLEMENTATION-APPROVED
 **Decision basis:** [Issue #586 decision package v1](issue-586-r2-pricing-decision-package-v1.md)
 **Parent:** [R2 map #584](https://github.com/alkselsv/spine/issues/584)
-**Current main reverified:** `2092f2b132efc647ce3112da63ba26556f73fd5f` (2026-11-07)
+**Current main reverified:** `27fd8539284a2b1c5c6674662aef5cd402685ea3` (2026-11-07)
 
 Separate decisions are recorded in the [Product Owner record](issue-586-product-owner-decision-v1.md), [Finance decision record v4](issue-586-finance-decision-record-v4.md), [Security record v2](issue-586-security-approval-record-v2.md), [Data record v2](issue-586-data-approval-record-v2.md), and [Architecture record v2](issue-586-architecture-acceptance-record-v2.md). Product Owner scope is accepted. Finance/Tax F1–F8 are ACCEPT and F9 ACCEPT_WITH_CHANGES against package v1.3, with subsequent Finance decisions F9-T1 and F10–F16 recorded; profile v3 digest approval remains pending. Data-1..4 and Security-1..4 are accepted. Architecture-1..3 principles are accepted, while exact ADR-0062 acceptance remains pending.
 

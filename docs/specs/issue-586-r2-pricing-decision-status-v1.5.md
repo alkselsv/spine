@@ -3,7 +3,7 @@
 **Status:** ROLE POLICY DECISIONS RECORDED; exact CalculationProfile v3 and ADR-0062 acceptance pending; NOT IMPLEMENTATION-APPROVED.
 **Issue:** [#586](https://github.com/alkselsv/spine/issues/586), remains OPEN.
 **Existing PR:** [#1062](https://github.com/alkselsv/spine/pull/1062), documentation-only, remains Draft.
-**Current main verified:** `2092f2b132efc647ce3112da63ba26556f73fd5f`.
+**Current main verified:** `27fd8539284a2b1c5c6674662aef5cd402685ea3`.
 
 ## Historical decision identities
 
