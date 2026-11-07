@@ -67,6 +67,10 @@ class Bitrix24CrmDirectDiskObject(DefinitionModel):
     """One exact FILES item mapped to a distinct Disk namespace."""
 
     mapping_strategy: Literal["direct_disk_object"] = "direct_disk_object"
+    workspace_id: UUID
+    environment_id: UUID
+    connection_id: UUID
+    connection_version_id: UUID
     profile_id: UUID
     profile_version: int = Field(ge=1)
     files_item: Bitrix24CrmFilesItem
@@ -137,6 +141,7 @@ def map_bitrix24_crm_files(
     payload: Mapping[str, object],
     *,
     profile: CrmRelationshipMappingProfile,
+    connection_version_id: UUID,
 ) -> Bitrix24CrmFilesMappingResult:
     """Parse the exact ``FILES`` field and map each item independently.
 
@@ -194,6 +199,10 @@ def map_bitrix24_crm_files(
             )
         else:
             mapping = Bitrix24CrmDirectDiskObject(
+                workspace_id=profile.workspace_id,
+                environment_id=profile.environment_id,
+                connection_id=profile.connection_id,
+                connection_version_id=connection_version_id,
                 profile_id=profile.profile_id,
                 profile_version=profile.profile_version,
                 files_item=item,
@@ -222,25 +231,15 @@ def _parse_item(raw_item: object) -> Bitrix24CrmFilesItem | None:
 def bind_direct_disk_revision_evidence(
     mapping: Bitrix24CrmDirectDiskObject,
     *,
-    profile: CrmRelationshipMappingProfile,
-    connection_version_id: UUID,
     provider_revision: str,
 ) -> CrmMappedDiskRevisionEvidence:
     """Adapt one qualified T3 mapping to the inward source-match contract."""
 
-    if (
-        profile.mapping_strategy != "direct_disk_object"
-        or mapping.profile_id != profile.profile_id
-        or mapping.profile_version != profile.profile_version
-        or mapping.files_item.namespace != profile.files_namespace
-        or mapping.disk_namespace != profile.disk_namespace
-    ):
-        raise ValueError("direct Disk mapping does not match its scoped profile")
     return CrmMappedDiskRevisionEvidence(
-        workspace_id=profile.workspace_id,
-        environment_id=profile.environment_id,
-        connection_id=profile.connection_id,
-        connection_version_id=connection_version_id,
+        workspace_id=mapping.workspace_id,
+        environment_id=mapping.environment_id,
+        connection_id=mapping.connection_id,
+        connection_version_id=mapping.connection_version_id,
         mapping_strategy=mapping.mapping_strategy,
         mapping_profile_id=mapping.profile_id,
         mapping_profile_version=mapping.profile_version,

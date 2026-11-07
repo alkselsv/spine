@@ -5,9 +5,12 @@ import pytest
 from spine.connectors.bitrix24_crm_files_v2 import (
     Bitrix24CrmFilesItemResult,
     bind_direct_disk_revision_evidence,
-    map_bitrix24_crm_files,
+    map_bitrix24_crm_files as _map_bitrix24_crm_files,
 )
 from spine.domain.sources.crm_relationship_v2 import CrmRelationshipMappingProfile
+
+
+CONNECTION_VERSION_ID = UUID(int=8)
 
 
 def _profile(**updates: object) -> CrmRelationshipMappingProfile:
@@ -36,6 +39,16 @@ def _profile(**updates: object) -> CrmRelationshipMappingProfile:
     }
     values.update(updates)
     return CrmRelationshipMappingProfile(**values)
+
+
+def map_bitrix24_crm_files(
+    payload: dict[str, object], *, profile: CrmRelationshipMappingProfile
+):
+    return _map_bitrix24_crm_files(
+        payload,
+        profile=profile,
+        connection_version_id=CONNECTION_VERSION_ID,
+    )
 
 
 def test_direct_mapping_preserves_each_exact_files_identity() -> None:
@@ -84,8 +97,6 @@ def test_t3_mapping_adapts_to_exact_source_match_evidence() -> None:
 
     evidence = bind_direct_disk_revision_evidence(
         mapping,
-        profile=scoped_profile,
-        connection_version_id=UUID(int=8),
         provider_revision="17",
     )
 
@@ -94,32 +105,53 @@ def test_t3_mapping_adapts_to_exact_source_match_evidence() -> None:
     assert evidence.disk_revision.provider_revision == "17"
 
 
-def test_t3_mapping_cannot_be_rebound_to_another_tenant_profile() -> None:
+def test_t3_mapping_same_profile_identity_stays_bound_to_mapping_scope() -> None:
     original_profile = _profile(disk_namespace="bitrix24-disk-object")
-    result = map_bitrix24_crm_files(
+    original_result = _map_bitrix24_crm_files(
         {
             "FILES": [
                 {"namespace": "bitrix.activity.files", "value": "disk-17"},
             ]
         },
         profile=original_profile,
+        connection_version_id=UUID(int=8),
     )
-    mapping = result.items[0].mapping
-    assert mapping is not None
     foreign_profile = _profile(
-        profile_id=UUID(int=99),
         workspace_id=UUID(int=98),
+        environment_id=UUID(int=96),
         connection_id=UUID(int=97),
         disk_namespace="bitrix24-disk-object",
     )
+    foreign_result = _map_bitrix24_crm_files(
+        {
+            "FILES": [
+                {"namespace": "bitrix.activity.files", "value": "disk-17"},
+            ]
+        },
+        profile=foreign_profile,
+        connection_version_id=UUID(int=9),
+    )
+    original_mapping = original_result.items[0].mapping
+    foreign_mapping = foreign_result.items[0].mapping
+    assert original_mapping is not None
+    assert foreign_mapping is not None
 
-    with pytest.raises(ValueError, match="scoped profile"):
-        bind_direct_disk_revision_evidence(
-            mapping,
-            profile=foreign_profile,
-            connection_version_id=UUID(int=8),
-            provider_revision="17",
-        )
+    original = bind_direct_disk_revision_evidence(
+        original_mapping,
+        provider_revision="17",
+    )
+    foreign = bind_direct_disk_revision_evidence(
+        foreign_mapping,
+        provider_revision="17",
+    )
+
+    assert original.workspace_id == original_profile.workspace_id
+    assert original.connection_id == original_profile.connection_id
+    assert original.connection_version_id == UUID(int=8)
+    assert foreign.workspace_id == foreign_profile.workspace_id
+    assert foreign.connection_id == foreign_profile.connection_id
+    assert foreign.connection_version_id == UUID(int=9)
+    assert original != foreign
 
 
 def test_malformed_item_becomes_uncertain_without_contaminating_valid_sibling() -> None:
