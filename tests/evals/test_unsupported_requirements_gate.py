@@ -295,22 +295,45 @@ def test_unverifiable_tested_commit_produces_not_verified_report() -> None:
     assert "incomplete_execution" in report.not_verified_reasons
 
 
-def test_existing_ancestor_with_changed_qualified_tree_is_rejected() -> None:
-    root = Path(__file__).parents[2]
+def test_existing_ancestor_with_changed_qualified_tree_is_rejected(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "src" / "spine"
+    source.mkdir(parents=True)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='eval-fixture'\n")
+    (tmp_path / "uv.lock").write_text("version = 1\n")
+    runtime = source / "runtime.py"
+    runtime.write_text("VALUE = 1\n")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(
+        [
+            "git", "-c", "user.name=Eval", "-c", "user.email=eval@example.invalid",
+            "commit", "-qm", "baseline",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
     baseline = subprocess.run(
-        ["git", "rev-parse", "origin/main"],
-        cwd=root,
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
         check=True,
         capture_output=True,
         text=True,
     ).stdout.strip()
+    runtime.write_text("VALUE = 2\n")
+    subprocess.run(["git", "add", str(runtime)], cwd=tmp_path, check=True)
+    subprocess.run(
+        [
+            "git", "-c", "user.name=Eval", "-c", "user.email=eval@example.invalid",
+            "commit", "-qm", "change qualified tree",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
 
-    try:
-        verify_qualified_commit(baseline)
-    except subprocess.CalledProcessError:
-        pass
-    else:
-        raise AssertionError("changed qualified tree must reject a stale ancestor")
+    with pytest.raises(subprocess.CalledProcessError):
+        verify_qualified_commit(baseline, root=tmp_path)
 
 
 @pytest.mark.parametrize("dirty_kind", ["modified", "staged", "untracked"])
