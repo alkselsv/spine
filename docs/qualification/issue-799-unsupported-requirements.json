@@ -3,7 +3,7 @@
   "policy_version": "unsupported-requirements-quality-gate:v1",
   "evaluator_version": "unsupported-requirements-evaluator:v2",
   "identity": {
-    "tested_commit_sha": "9725da77bfbbfbc4ca6708a3bdc5bf72a3054d9c",
+    "tested_commit_sha": "0f790078be1b44c7b603b9157864e477a98b6dea",
     "source_dataset_id": "russian-meeting-transcription-synthetic",
     "source_dataset_version": "1.0.0",
     "source_dataset_sha256": "0f2c70d2663a6bfb69afc13e34d65683e04d7ddfb1914520b8a1174646a290e7",
