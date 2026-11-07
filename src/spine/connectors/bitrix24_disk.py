@@ -40,9 +40,12 @@ from spine.domain.connections.provider import (
     ProviderKind,
 )
 from spine.domain.connections.bitrix24_disk_scope import Bitrix24DiskMembershipEvidence
+from spine.domain.sources.bitrix24_disk_identity import (
+    BITRIX24_DISK_SOURCE_GENERATION as BITRIX24_DISK_EXTERNAL_GENERATION,
+    BITRIX24_DISK_SOURCE_NAMESPACE as BITRIX24_DISK_EXTERNAL_NAMESPACE,
+    canonical_bitrix24_disk_external_object_id,
+)
 
-BITRIX24_DISK_EXTERNAL_NAMESPACE = "bitrix24-disk"
-BITRIX24_DISK_EXTERNAL_GENERATION = "bitrix24-disk-object:v1"
 BITRIX24_DISK_EXTRACTION_PROFILE = "bitrix24-disk-binary:v1"
 BITRIX24_DISK_LOCATOR_CONTRACT = "locator:bitrix24-disk-object:v1"
 BITRIX24_DISK_REQUIRED_CAPABILITIES = (
@@ -575,9 +578,6 @@ class Bitrix24DiskProviderAdapter:
         event_digest = hashlib.sha256(
             json.dumps(event_evidence, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
-        identity_digest = hashlib.sha256(
-            f"{connection.connection_id}|{metadata.id}".encode()
-        ).hexdigest()
         object_digest = hashlib.sha256(metadata.id.encode()).hexdigest()
         return NormalizedExternalObservationV2(
             workspace_id=connection.workspace_id,
@@ -592,7 +592,9 @@ class Bitrix24DiskProviderAdapter:
             external_identity=ProviderExternalIdentity(
                 external_namespace=BITRIX24_DISK_EXTERNAL_NAMESPACE,
                 external_generation=BITRIX24_DISK_EXTERNAL_GENERATION,
-                external_object_id=f"b24:{identity_digest[:60]}",
+                external_object_id=canonical_bitrix24_disk_external_object_id(
+                    connection.connection_id, metadata.id
+                ),
                 provider_key=ProviderFileKey(
                     connection_id=connection.connection_id,
                     provider_object_id=metadata.id,

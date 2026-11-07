@@ -42,6 +42,7 @@ class RetentionArtifactClass(str, Enum):
     PROJECTION = "projection"
     CACHED_ANSWER = "cached_answer"
     CITATION = "citation"
+    CRM_RELATIONSHIP_EVIDENCE = "crm_relationship_evidence"
     PRIVATE_ASR_SOURCE_ORIGINAL = "private_asr_source_original"
     PRIVATE_ASR_STAGING = "private_asr_staging"
     PRIVATE_ASR_ANNOTATION = "private_asr_annotation"

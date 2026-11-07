@@ -14,6 +14,11 @@ from uuid import UUID
 
 from pydantic import Field, StrictStr, model_validator
 
+from spine.application.crm_relationship_v2_source_match import (
+    CrmFilesItemIdentity,
+    CrmMappedDiskRevisionEvidence,
+    DiskRevisionIdentity,
+)
 from spine.domain.common import DefinitionModel
 from spine.domain.sources.crm_relationship_v2 import CrmRelationshipMappingProfile
 
@@ -62,6 +67,10 @@ class Bitrix24CrmDirectDiskObject(DefinitionModel):
     """One exact FILES item mapped to a distinct Disk namespace."""
 
     mapping_strategy: Literal["direct_disk_object"] = "direct_disk_object"
+    workspace_id: UUID
+    environment_id: UUID
+    connection_id: UUID
+    connection_version_id: UUID
     profile_id: UUID
     profile_version: int = Field(ge=1)
     files_item: Bitrix24CrmFilesItem
@@ -97,7 +106,11 @@ class Bitrix24CrmFilesItemResult(DefinitionModel):
 
     @classmethod
     def mapped(
-        cls, *, index: int, item: Bitrix24CrmFilesItem, mapping: Bitrix24CrmDirectDiskObject
+        cls,
+        *,
+        index: int,
+        item: Bitrix24CrmFilesItem,
+        mapping: Bitrix24CrmDirectDiskObject,
     ) -> "Bitrix24CrmFilesItemResult":
         return cls(index=index, status="mapped", item=item, mapping=mapping)
 
@@ -116,15 +129,19 @@ class Bitrix24CrmFilesMappingResult(DefinitionModel):
     """Per-item direct mapping results with only bounded error codes."""
 
     items: tuple[Bitrix24CrmFilesItemResult, ...] = ()
-    error_code: Literal[
-        "malformed_files_payload", "missing_files_field", "malformed_files_field"
-    ] | None = None
+    error_code: (
+        Literal[
+            "malformed_files_payload", "missing_files_field", "malformed_files_field"
+        ]
+        | None
+    ) = None
 
 
 def map_bitrix24_crm_files(
     payload: Mapping[str, object],
     *,
     profile: CrmRelationshipMappingProfile,
+    connection_version_id: UUID,
 ) -> Bitrix24CrmFilesMappingResult:
     """Parse the exact ``FILES`` field and map each item independently.
 
@@ -182,6 +199,10 @@ def map_bitrix24_crm_files(
             )
         else:
             mapping = Bitrix24CrmDirectDiskObject(
+                workspace_id=profile.workspace_id,
+                environment_id=profile.environment_id,
+                connection_id=profile.connection_id,
+                connection_version_id=connection_version_id,
                 profile_id=profile.profile_id,
                 profile_version=profile.profile_version,
                 files_item=item,
@@ -207,16 +228,45 @@ def _parse_item(raw_item: object) -> Bitrix24CrmFilesItem | None:
         return None
 
 
+def bind_direct_disk_revision_evidence(
+    mapping: Bitrix24CrmDirectDiskObject,
+    *,
+    provider_revision: str,
+) -> CrmMappedDiskRevisionEvidence:
+    """Adapt one qualified T3 mapping to the inward source-match contract."""
+
+    return CrmMappedDiskRevisionEvidence(
+        workspace_id=mapping.workspace_id,
+        environment_id=mapping.environment_id,
+        connection_id=mapping.connection_id,
+        connection_version_id=mapping.connection_version_id,
+        mapping_strategy=mapping.mapping_strategy,
+        mapping_profile_id=mapping.profile_id,
+        mapping_profile_version=mapping.profile_version,
+        files_item=CrmFilesItemIdentity(
+            namespace=mapping.files_item.namespace,
+            value=mapping.files_item.value,
+        ),
+        disk_revision=DiskRevisionIdentity(
+            namespace=mapping.disk_namespace,
+            object_id=mapping.disk_object_id,
+            provider_revision=provider_revision,
+        ),
+    )
+
+
 def _mark_valid_items_uncertain(
     results: list[Bitrix24CrmFilesItemResult],
     code: Bitrix24CrmFilesErrorCode,
 ) -> Bitrix24CrmFilesMappingResult:
     return Bitrix24CrmFilesMappingResult(
         items=tuple(
-            result
-            if result.item is None
-            else Bitrix24CrmFilesItemResult.uncertain(
-                index=result.index, item=result.item, code=code
+            (
+                result
+                if result.item is None
+                else Bitrix24CrmFilesItemResult.uncertain(
+                    index=result.index, item=result.item, code=code
+                )
             )
             for result in results
         )
@@ -230,5 +280,6 @@ __all__ = [
     "Bitrix24CrmFilesItem",
     "Bitrix24CrmFilesItemResult",
     "Bitrix24CrmFilesMappingResult",
+    "bind_direct_disk_revision_evidence",
     "map_bitrix24_crm_files",
 ]

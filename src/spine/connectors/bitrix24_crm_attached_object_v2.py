@@ -15,6 +15,11 @@ from uuid import UUID
 
 from pydantic import Field, StrictStr, model_validator
 
+from spine.application.crm_relationship_v2_source_match import (
+    CrmFilesItemIdentity,
+    CrmMappedDiskRevisionEvidence,
+    DiskRevisionIdentity,
+)
 from spine.application.crm_relationship_v2_contracts import (
     Bitrix24CrmRelationshipV2ReadCommand,
 )
@@ -111,7 +116,9 @@ class Bitrix24CrmAttachedObjectResult(DefinitionModel):
     def validate_outcome(self) -> "Bitrix24CrmAttachedObjectResult":
         if self.status == "resolved":
             if self.proof is None or self.error_code is not None:
-                raise ValueError("resolved attached object requires only an ownership proof")
+                raise ValueError(
+                    "resolved attached object requires only an ownership proof"
+                )
         elif self.proof is not None or self.error_code is None:
             raise ValueError("uncertain attached object requires only a bounded error")
         return self
@@ -129,9 +136,7 @@ class Bitrix24CrmAttachedObjectResult(DefinitionModel):
         return cls(status="uncertain", error_code=code)
 
 
-AuthorityCheck = Callable[
-    [Bitrix24CrmRelationshipV2ReadCommand], Awaitable[bool]
-]
+AuthorityCheck = Callable[[Bitrix24CrmRelationshipV2ReadCommand], Awaitable[bool]]
 
 
 async def resolve_bitrix24_crm_attached_object(
@@ -150,9 +155,7 @@ async def resolve_bitrix24_crm_attached_object(
 
     profile = command.mapping_profile
     if profile.mapping_strategy != "attached_object":
-        return Bitrix24CrmAttachedObjectResult.uncertain(
-            "profile_strategy_mismatch"
-        )
+        return Bitrix24CrmAttachedObjectResult.uncertain("profile_strategy_mismatch")
     if not _profile_matches_command(command):
         return Bitrix24CrmAttachedObjectResult.uncertain("profile_scope_mismatch")
     if files_item.namespace != profile.files_namespace:
@@ -162,9 +165,7 @@ async def resolve_bitrix24_crm_attached_object(
 
     try:
         if not await authority_is_current(command):
-            return Bitrix24CrmAttachedObjectResult.uncertain(
-                "authority_unavailable"
-            )
+            return Bitrix24CrmAttachedObjectResult.uncertain("authority_unavailable")
     except Exception:
         return Bitrix24CrmAttachedObjectResult.uncertain("authority_unavailable")
 
@@ -195,9 +196,7 @@ async def resolve_bitrix24_crm_attached_object(
 
     try:
         if not await authority_is_current(command):
-            return Bitrix24CrmAttachedObjectResult.uncertain(
-                "authority_unavailable"
-            )
+            return Bitrix24CrmAttachedObjectResult.uncertain("authority_unavailable")
     except Exception:
         return Bitrix24CrmAttachedObjectResult.uncertain("authority_unavailable")
 
@@ -210,9 +209,7 @@ async def resolve_bitrix24_crm_attached_object(
     entity_id = _required_string(record, "ENTITY_ID")
     disk_object_id = _required_string(record, "OBJECT_ID")
     if None in (module_id, entity_type, entity_id, disk_object_id):
-        return Bitrix24CrmAttachedObjectResult.uncertain(
-            "malformed_provider_result"
-        )
+        return Bitrix24CrmAttachedObjectResult.uncertain("malformed_provider_result")
 
     # Bitrix CRM attachment ownership is represented by this exact tuple in
     # the synthetic port contract. Live provider semantics remain unqualified.
@@ -293,6 +290,35 @@ def _profile_matches_command(
     )
 
 
+def bind_attached_disk_revision_evidence(
+    proof: Bitrix24CrmAttachedObjectOwnershipProof,
+    *,
+    provider_revision: str,
+) -> CrmMappedDiskRevisionEvidence:
+    """Adapt one qualified T4 ownership proof to the inward match contract."""
+
+    return CrmMappedDiskRevisionEvidence(
+        workspace_id=proof.workspace_id,
+        environment_id=proof.environment_id,
+        connection_id=proof.connection_id,
+        connection_version_id=proof.connection_version_id,
+        mapping_strategy=proof.mapping_strategy,
+        mapping_profile_id=proof.profile_id,
+        mapping_profile_version=proof.profile_version,
+        files_item=CrmFilesItemIdentity(
+            namespace=proof.files_item.namespace,
+            value=proof.files_item.value,
+        ),
+        disk_revision=DiskRevisionIdentity(
+            namespace=proof.disk_namespace,
+            object_id=proof.disk_object_id,
+            provider_revision=provider_revision,
+        ),
+        ownership_proof_reference=proof.evidence_reference,
+        ownership_proof_digest=proof.evidence_digest,
+    )
+
+
 def _single_record(
     value: object,
 ) -> tuple[Mapping[str, object] | None, Bitrix24CrmAttachedObjectErrorCode | None]:
@@ -318,5 +344,6 @@ __all__ = [
     "Bitrix24CrmAttachedObjectOwnershipProof",
     "Bitrix24CrmAttachedObjectProviderPort",
     "Bitrix24CrmAttachedObjectResult",
+    "bind_attached_disk_revision_evidence",
     "resolve_bitrix24_crm_attached_object",
 ]

@@ -27,6 +27,7 @@ class SourceUsageKind(str, Enum):
     CITATION = "citation"
     CACHE_REUSE = "cache_reuse"
     FINAL_DISCLOSURE = "final_disclosure"
+    CRM_RELATIONSHIP_MATCH = "crm_relationship_match"
 
 
 class SourceUsageReason(str, Enum):
