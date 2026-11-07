@@ -51,6 +51,9 @@ NEO4J_RUNTIME_COMPATIBILITY_REPORT_PATH = (
 FINAL_QUALIFICATION_REPORT_PATH = (
     PROJECT_ROOT / "docs/qualification/issue-509-final-qualification-v1.json"
 )
+FINAL_QUALIFICATION_REVIEW_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-final-qualification-v1-review.json"
+)
 RETAINED_ARCHIVE_READBACK_PATH = (
     PROJECT_ROOT / "docs/qualification/issue-509-retained-archive-readback-v1.json"
 )
@@ -131,6 +134,10 @@ def _load_neo4j_runtime_compatibility_report() -> dict[str, Any]:
 
 def _load_final_qualification_report() -> dict[str, Any]:
     return json.loads(FINAL_QUALIFICATION_REPORT_PATH.read_text(encoding="utf-8"))
+
+
+def _load_final_qualification_review() -> dict[str, Any]:
+    return json.loads(FINAL_QUALIFICATION_REVIEW_PATH.read_text(encoding="utf-8"))
 
 
 def _load_retained_archive_readback() -> dict[str, Any]:
@@ -256,6 +263,50 @@ def test_issue509_final_report_preserves_bounded_claim_and_safety() -> None:
         "temporary_resources_removed": True,
         "target_stopped_after_capture": True,
     }
+
+
+def test_issue509_independent_review_approves_exact_immutable_aggregate() -> None:
+    review = _load_final_qualification_review()
+    reviewed_record = review["reviewed_record"]
+
+    assert review["schema_version"] == (
+        "r1-backup-recovery-final-qualification-review:v1"
+    )
+    assert review["ticket"] == 509
+    assert review["immutable"] is True
+    assert review["content_free"] is True
+    assert reviewed_record == {
+        "path": "docs/qualification/issue-509-final-qualification-v1.json",
+        "schema_version": "r1-backup-recovery-final-qualification:v1",
+        "sha256": (
+            "a47059b2c3dd0aba20e6f94c678af438803add69f3f3edc3970228ab68788366"
+        ),
+    }
+    assert hashlib.sha256(FINAL_QUALIFICATION_REPORT_PATH.read_bytes()).hexdigest() == (
+        reviewed_record["sha256"]
+    )
+    assert review["standards_review"] == {
+        "decision": "approved",
+        "hard_violation_count": 0,
+        "judgement_call_smell_count": 0,
+    }
+    assert review["spec_review"] == {
+        "decision": "approved",
+        "finding_count": 0,
+    }
+
+
+def test_issue509_independent_review_keeps_qualification_bounded() -> None:
+    review = _load_final_qualification_review()
+
+    assert review["status"] == "passed"
+    assert review["decision"] == "verified"
+    assert review["production_qualified"] is True
+    assert review["qualification_scope"] == "synthetic_disposable_recovery_profile"
+    assert review["cutover_authorized"] is False
+    assert review["remaining_conditions"] == [
+        "provider_usage_independent_metering_not_verified"
+    ]
 
 
 def test_issue509_retained_archive_readback_closes_component_detail_gaps() -> None:
