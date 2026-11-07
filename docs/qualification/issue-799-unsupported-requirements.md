@@ -6,7 +6,7 @@ evidence through the deterministic #682 extraction behavior. The result is
 
 The Product/Project Owner approved
 `unsupported-requirements-quality-gate:v1` before measurement. The run is bound to
-implementation commit `ae3d9ec1865136e25d6cbe1dd379ace6ebecc0df`, #674 dataset
+implementation commit `bdf013d6c34c3fd2bd2ce6d0e2c6200b9a7829f5`, #674 dataset
 `russian-meeting-transcription-synthetic@1.0.0`, and canonical dataset SHA-256
 `0f2c70d2663a6bfb69afc13e34d65683e04d7ddfb1914520b8a1174646a290e7`.
 
@@ -43,7 +43,7 @@ exclusions/failures and pinned runtime identities are in the adjacent JSON repor
 ```bash
 uv sync --extra dev
 uv run python -m spine.evals.unsupported_requirements_runner \
-  --tested-commit ae3d9ec1865136e25d6cbe1dd379ace6ebecc0df
+  --tested-commit bdf013d6c34c3fd2bd2ce6d0e2c6200b9a7829f5
 uv run pytest -q tests/evals/test_unsupported_requirements_gate.py
 ```
 
