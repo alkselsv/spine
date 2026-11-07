@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 from uuid import UUID
 
 import pytest
+
+import spine.application.connections.provider as provider_read_module
 
 from spine.application.connections.provider import (
     ProviderCapabilityUnavailableError,
@@ -134,6 +136,7 @@ class _Repository:
         self.connection = connection
         self.calls = []
         self.database_times = iter(database_times)
+        self.database_time_calls = 0
 
     @asynccontextmanager
     async def admit_read(self, command, context):
@@ -146,6 +149,7 @@ class _Repository:
 
     async def current_database_time(self, context):
         assert isinstance(context, TrustedPersistenceContext)
+        self.database_time_calls += 1
         return next(self.database_times)
 
 
@@ -276,7 +280,9 @@ async def test_expired_connection_is_denied_before_provider_read() -> None:
 
 
 @pytest.mark.asyncio
-async def test_database_expiry_overrides_a_skewed_process_clock() -> None:
+async def test_database_expiry_overrides_a_skewed_process_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     connection = _connection(
         _capability(
             ProviderCapabilityKind.BINARY_READ, ProviderCapabilityStatus.SUPPORTED
@@ -284,15 +290,21 @@ async def test_database_expiry_overrides_a_skewed_process_clock() -> None:
         valid_until=NOW,
     )
     provider = _Provider(_observation(assurance=ExternalIdentityAssurance.UNPROVEN))
-    admission = ProviderReadAdmission(
-        repository=_Repository(connection, database_times=(NOW,)),
-        provider=provider,
-    )
+    repository = _Repository(connection, database_times=(NOW,))
+
+    class SkewedProcessDateTime:
+        @classmethod
+        def now(cls, _timezone):
+            return NOW - timedelta(minutes=5)
+
+    monkeypatch.setattr(provider_read_module, "datetime", SkewedProcessDateTime)
+    admission = ProviderReadAdmission(repository=repository, provider=provider)
 
     with pytest.raises(ProviderReadDeniedError):
         await admission.read(_command(ProviderCapabilityKind.BINARY_READ), _context())
 
     assert provider.calls == 0
+    assert repository.database_time_calls == 1
 
 
 @pytest.mark.asyncio
