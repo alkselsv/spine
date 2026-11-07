@@ -7,13 +7,14 @@ from dataclasses import dataclass
 
 import pytest
 import pytest_asyncio
+from alembic.script import ScriptDirectory
 from pydantic import SecretStr
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 from spine.infrastructure.db.engine import DatabaseRuntime, DatabaseStartupError
-from spine.infrastructure.db.migrations import upgrade_database
+from spine.infrastructure.db.migrations import locate_migration_assets, upgrade_database
 from spine.infrastructure.db.operator import bootstrap_database_roles
 from spine.infrastructure.db.settings import (
     MigrationDatabaseSettings,
@@ -30,7 +31,11 @@ DISPATCHER_ROLE = "spine_dispatcher"
 MIGRATION_PASSWORD = "migration-readiness-secret"
 RUNTIME_PASSWORD = "runtime-readiness-secret"
 DISPATCHER_PASSWORD = "dispatcher-readiness-secret"
-HEAD_REVISION = "20270115_114"
+_, _MIGRATION_SCRIPT_LOCATION = locate_migration_assets()
+_MIGRATION_HEADS = tuple(ScriptDirectory(str(_MIGRATION_SCRIPT_LOCATION)).get_heads())
+if len(_MIGRATION_HEADS) != 1:
+    raise RuntimeError("PostgreSQL readiness tests require one Alembic head")
+HEAD_REVISION = _MIGRATION_HEADS[0]
 
 
 @dataclass(frozen=True, slots=True)

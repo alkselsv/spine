@@ -2274,7 +2274,10 @@ async def test_email_sync_erasure_migration_downgrade_is_irreversible(
     config.set_main_option("script_location", str(script_location))
     config.attributes["migration_settings"] = settings
 
-    with pytest.raises(RuntimeError, match="erasure migration is irreversible"):
+    with pytest.raises(
+        RuntimeError,
+        match="attachment and processing lineage erasure migration is irreversible",
+    ):
         await asyncio.to_thread(command.downgrade, config, "20270114_113")
     async with migration_engine.connect() as connection:
         revision = await connection.scalar(
@@ -2283,7 +2286,7 @@ async def test_email_sync_erasure_migration_downgrade_is_irreversible(
         function_present = await connection.scalar(
             text("SELECT to_regprocedure('spine.email_sync_page_digest_v2(jsonb)') IS NOT NULL")
         )
-    assert revision == "20270115_114"
+    assert revision == "20270116_115"
     assert function_present is True
 
 

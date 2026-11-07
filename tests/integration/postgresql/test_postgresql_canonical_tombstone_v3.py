@@ -944,13 +944,13 @@ async def test_governed_erasure_migration_downgrade_fails_without_schema_change(
     try:
         with pytest.raises(
             RuntimeError,
-            match="Gmail email-sync lineage erasure migration is irreversible",
+            match="attachment and processing lineage erasure migration is irreversible",
         ):
             await asyncio.to_thread(command.downgrade, config, "20270113_112")
         async with engine.connect() as connection:
             assert await connection.scalar(
                 text("SELECT version_num FROM spine.alembic_version")
-            ) == "20270115_114"
+            ) == "20270116_115"
             assert await connection.scalar(
                 text("SELECT to_regprocedure('spine.execute_source_disposition_erasure(uuid,uuid,uuid,integer)')")
             ) is not None

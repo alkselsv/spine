@@ -6447,6 +6447,7 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20270113_112_source_disposition_state.py",
         "20270114_113_governed_source_erasure.py",
         "20270115_114_removable_email_sync_lineage.py",
+        "20270116_115_governed_attachment_processing_erasure.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "transactional_failure_probe.py").write_text(

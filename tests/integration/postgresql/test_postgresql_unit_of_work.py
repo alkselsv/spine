@@ -12306,7 +12306,7 @@ async def test_irreversible_disposition_migration_rejects_downgrade_without_chan
     config.attributes["migration_settings"] = migration_settings
     with pytest.raises(
         RuntimeError,
-        match="Gmail email-sync lineage erasure migration is irreversible",
+        match="attachment and processing lineage erasure migration is irreversible",
     ):
         await asyncio.to_thread(command.downgrade, config, "20261224_92")
 
