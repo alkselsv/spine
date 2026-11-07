@@ -215,7 +215,7 @@ class CrmRelationshipObservationReceipt(DefinitionModel):
     mapping_profile_id: UUID
     mapping_profile_version: int = Field(ge=1)
     binding_method: Literal["crm.activity.binding.list"]
-    binding_page_count: int = Field(ge=1, le=100)
+    binding_page_count: int = Field(ge=0, le=100)
     binding_evidence_reference: str = Field(min_length=1, max_length=255)
     binding_evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     positive_pair_observed: bool
@@ -250,6 +250,8 @@ class CrmRelationshipObservationReceipt(DefinitionModel):
             raise ValueError("observed_at must be timezone-aware")
         if (self.ownership_proof_reference is None) != (self.ownership_proof_digest is None):
             raise ValueError("ownership proof reference and digest must be provided together")
+        if self.positive_pair_observed and self.binding_page_count == 0:
+            raise ValueError("positive binding evidence requires an observed page")
         if self.outcome is CrmEligibilityOutcome.ELIGIBLE_VERIFIED and not self.positive_pair_observed:
             raise ValueError("positive eligibility requires exact binding-pair evidence")
         return self
