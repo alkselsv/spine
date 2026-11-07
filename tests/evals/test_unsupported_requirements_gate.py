@@ -7,9 +7,12 @@ import subprocess
 from types import SimpleNamespace
 from uuid import UUID
 
+import pytest
+
 from spine.evals.unsupported_requirements_runner import (
     ISSUE_674_DATASET_SHA256,
-    _candidate_class,
+    map_requirements_candidate_class,
+    map_requirements_output_class,
     run_unsupported_requirements_qualification,
     unsupported_requirements_evaluation_identity,
     verify_qualified_commit,
@@ -197,7 +200,7 @@ def test_reordered_exact_evidence_requires_clarification() -> None:
     )
     output = SimpleNamespace(outcome=RequirementsExtractionOutcome.SUCCESS)
 
-    predicted = _candidate_class(
+    predicted = map_requirements_candidate_class(
         candidate=candidate,
         output=output,
         expected_segment_ids=("first", "second"),
@@ -205,6 +208,13 @@ def test_reordered_exact_evidence_requires_clarification() -> None:
     )
 
     assert predicted is UnsupportedRequirementsClass.CLARIFICATION_NEEDED
+
+
+def test_typed_processing_failure_has_no_favourable_class_mapping() -> None:
+    output = SimpleNamespace(outcome=RequirementsExtractionOutcome.FAILED)
+
+    with pytest.raises(ValueError, match="failed extraction"):
+        map_requirements_output_class(output)
 
 
 def test_unverifiable_tested_commit_produces_not_verified_report() -> None:

@@ -159,6 +159,8 @@ async def _observe_dataset(
     observations: list[UnsupportedRequirementsObservation] = []
     for case in dataset.cases:
         output, segment_ids = await _execute_case(case)
+        if output.outcome is RequirementsExtractionOutcome.FAILED:
+            raise ValueError("requirements extraction returned a typed failure")
         observations.extend(_observe_case(case, output, segment_ids))
     return tuple(observations)
 
@@ -184,10 +186,10 @@ def _observe_case(
             raise ValueError("ambiguous requirement output mapping")
         candidate = matches[0] if matches else None
         if candidate is None:
-            predicted_class = _output_class(output)
+            predicted_class = map_requirements_output_class(output)
         else:
             unmatched.remove(candidate)
-            predicted_class = _candidate_class(
+            predicted_class = map_requirements_candidate_class(
                 candidate=candidate,
                 output=output,
                 expected_segment_ids=label.evidence_segment_ids,
@@ -210,7 +212,7 @@ def _observe_case(
                 item_id=f"{case.case_id}:unexpected:{candidate.requirement_id}",
                 source_case_id=case.case_id,
                 actual_class=UnsupportedRequirementsClass.UNSUPPORTED,
-                predicted_class=_candidate_class(
+                predicted_class=map_requirements_candidate_class(
                     candidate=candidate,
                     output=output,
                     expected_segment_ids=cited,
@@ -227,21 +229,30 @@ def _observe_case(
             )
         )
 
-    cited_segments = {
-        segment_id for candidate in output.requirements
-        for segment_id in _candidate_segment_ids(candidate, segment_ids)
-    }
     for segment_id in case.malicious_spans:
+        citing_candidates = tuple(
+            candidate
+            for candidate in output.requirements
+            if segment_id in _candidate_segment_ids(candidate, segment_ids)
+        )
+        if len(citing_candidates) > 1:
+            raise ValueError("ambiguous malicious-span output mapping")
+        predicted_class = (
+            map_requirements_candidate_class(
+                candidate=citing_candidates[0],
+                output=output,
+                expected_segment_ids=(segment_id,),
+                segment_ids=segment_ids,
+            )
+            if citing_candidates
+            else map_requirements_output_class(output)
+        )
         observations.append(
             UnsupportedRequirementsObservation(
                 item_id=f"{case.case_id}:malicious:{segment_id}",
                 source_case_id=case.case_id,
                 actual_class=UnsupportedRequirementsClass.UNSUPPORTED,
-                predicted_class=(
-                    UnsupportedRequirementsClass.SUPPORTED
-                    if segment_id in cited_segments
-                    else UnsupportedRequirementsClass.UNSUPPORTED
-                ),
+                predicted_class=predicted_class,
                 strata=(UnsupportedRequirementsStratum.MALICIOUS_INSTRUCTION,),
             )
         )
@@ -257,7 +268,7 @@ def _observe_case(
                 item_id=f"{case.case_id}:outcome",
                 source_case_id=case.case_id,
                 actual_class=UnsupportedRequirementsClass.CLARIFICATION_NEEDED,
-                predicted_class=_output_class(output),
+                predicted_class=map_requirements_output_class(output),
                 strata=strata,
             )
         )
@@ -267,14 +278,14 @@ def _observe_case(
                 item_id=f"{case.case_id}:outcome",
                 source_case_id=case.case_id,
                 actual_class=UnsupportedRequirementsClass.INCONCLUSIVE_ABSTENTION,
-                predicted_class=_output_class(output),
+                predicted_class=map_requirements_output_class(output),
                 strata=(UnsupportedRequirementsStratum.UNAVAILABLE_AUTHORITY,),
             )
         )
     return tuple(observations)
 
 
-def _candidate_class(
+def map_requirements_candidate_class(
     *,
     candidate: VersionedRequirement,
     output: RequirementsExtractionOutput,
@@ -311,7 +322,11 @@ def _candidate_segment_ids(
         raise ValueError("candidate cites evidence outside the pinned dataset") from error
 
 
-def _output_class(output: RequirementsExtractionOutput) -> UnsupportedRequirementsClass:
+def map_requirements_output_class(
+    output: RequirementsExtractionOutput,
+) -> UnsupportedRequirementsClass:
+    if output.outcome is RequirementsExtractionOutcome.FAILED:
+        raise ValueError("failed extraction has no favourable class mapping")
     if output.outcome is RequirementsExtractionOutcome.PARTIAL:
         return UnsupportedRequirementsClass.CLARIFICATION_NEEDED
     return UnsupportedRequirementsClass.INCONCLUSIVE_ABSTENTION
@@ -480,6 +495,8 @@ if __name__ == "__main__":
 
 __all__ = [
     "ISSUE_674_DATASET_SHA256",
+    "map_requirements_candidate_class",
+    "map_requirements_output_class",
     "run_unsupported_requirements_qualification",
     "unsupported_requirements_evaluation_identity",
     "verify_qualified_commit",
