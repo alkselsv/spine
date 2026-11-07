@@ -167,6 +167,8 @@ resolve(request, trusted_context):
     unit, currency, and all mandatory policy dimensions
   rank eligible official sources using the pinned rule-set policy:
     exact customer+service contract > class rule set > workspace base
+    within class tier: exact service+project > exact service-only > exact project-only
+  treat missing class fields as non-matches, never as wildcards
   if none: PRICE_NOT_FOUND (or stale/revoked typed reason where known safely)
   if equal top rank has non-equivalent candidates: PRICE_CONFLICT
   if equal candidates are equivalent only under an approved equivalence rule,
