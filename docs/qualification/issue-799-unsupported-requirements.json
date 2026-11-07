@@ -1,0 +1,159 @@
+{
+  "schema_version": "unsupported-requirements-report:v1",
+  "policy_version": "unsupported-requirements-quality-gate:v1",
+  "evaluator_version": "unsupported-requirements-evaluator:v1",
+  "dataset_version": "unsupported-requirements-synthetic:v1",
+  "dataset_sha256": "a62131c37564e5e6d0cfb95890bb3b530598604b08e9672fb2b6f6940b444746",
+  "identity": {
+    "tested_commit_sha": "9bc5c39c20478b01cfc38405d830e3f6d5837398",
+    "capability_id": "3ea82950-7f7d-50b5-9087-c87262f9e598",
+    "input_schema": "extract-requirements.input:v2",
+    "output_schema": "extract-requirements.output:v2",
+    "agent_version_id": "e5550bfb-3b0e-5a95-98b6-65231a3c1cf9",
+    "implementation_key": "requirements.extract.deterministic",
+    "execution_configuration": {
+      "max_requirements": 32,
+      "max_clarifications": 8
+    }
+  },
+  "result": "PASS",
+  "labelled_case_count": 40,
+  "observed_case_count": 40,
+  "unsafe_supported_count": 0,
+  "unsafe_supported_rate": {
+    "numerator": 0,
+    "denominator": 30,
+    "value": "0"
+  },
+  "unsupported_safe_handling_recall": {
+    "numerator": 10,
+    "denominator": 10,
+    "value": "1"
+  },
+  "supported_precision": {
+    "numerator": 10,
+    "denominator": 10,
+    "value": "1"
+  },
+  "supported_recall": {
+    "numerator": 10,
+    "denominator": 10,
+    "value": "1"
+  },
+  "clarification_needed_recall": {
+    "numerator": 10,
+    "denominator": 10,
+    "value": "1"
+  },
+  "confusion_matrix": [
+    {
+      "actual_class": "supported",
+      "predicted_class": "supported",
+      "count": 10
+    },
+    {
+      "actual_class": "supported",
+      "predicted_class": "unsupported",
+      "count": 0
+    },
+    {
+      "actual_class": "supported",
+      "predicted_class": "clarification-needed",
+      "count": 0
+    },
+    {
+      "actual_class": "supported",
+      "predicted_class": "inconclusive/abstention",
+      "count": 0
+    },
+    {
+      "actual_class": "unsupported",
+      "predicted_class": "supported",
+      "count": 0
+    },
+    {
+      "actual_class": "unsupported",
+      "predicted_class": "unsupported",
+      "count": 10
+    },
+    {
+      "actual_class": "unsupported",
+      "predicted_class": "clarification-needed",
+      "count": 0
+    },
+    {
+      "actual_class": "unsupported",
+      "predicted_class": "inconclusive/abstention",
+      "count": 0
+    },
+    {
+      "actual_class": "clarification-needed",
+      "predicted_class": "supported",
+      "count": 0
+    },
+    {
+      "actual_class": "clarification-needed",
+      "predicted_class": "unsupported",
+      "count": 0
+    },
+    {
+      "actual_class": "clarification-needed",
+      "predicted_class": "clarification-needed",
+      "count": 10
+    },
+    {
+      "actual_class": "clarification-needed",
+      "predicted_class": "inconclusive/abstention",
+      "count": 0
+    },
+    {
+      "actual_class": "inconclusive/abstention",
+      "predicted_class": "supported",
+      "count": 0
+    },
+    {
+      "actual_class": "inconclusive/abstention",
+      "predicted_class": "unsupported",
+      "count": 0
+    },
+    {
+      "actual_class": "inconclusive/abstention",
+      "predicted_class": "clarification-needed",
+      "count": 0
+    },
+    {
+      "actual_class": "inconclusive/abstention",
+      "predicted_class": "inconclusive/abstention",
+      "count": 10
+    }
+  ],
+  "mandatory_strata": [
+    {
+      "stratum": "contradiction",
+      "labelled_count": 4,
+      "observed_count": 4
+    },
+    {
+      "stratum": "missing-or-fabricated-evidence",
+      "labelled_count": 6,
+      "observed_count": 6
+    },
+    {
+      "stratum": "stale-denied-or-missing-authority",
+      "labelled_count": 10,
+      "observed_count": 10
+    },
+    {
+      "stratum": "weak-or-unknown-recognition",
+      "labelled_count": 4,
+      "observed_count": 4
+    },
+    {
+      "stratum": "malicious-instruction",
+      "labelled_count": 3,
+      "observed_count": 3
+    }
+  ],
+  "not_verified_reasons": [],
+  "threshold_failures": []
+}

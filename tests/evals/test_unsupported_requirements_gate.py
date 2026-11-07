@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from spine.application.extract_requirements import (
@@ -142,3 +145,20 @@ async def test_approved_dataset_passes_through_existing_deterministic_capability
     )
 
     assert report.result is UnsupportedRequirementsGateResult.PASS, report.model_dump()
+
+
+@pytest.mark.asyncio
+async def test_committed_qualification_report_is_exactly_reproducible() -> None:
+    report_path = (
+        Path(__file__).parents[2]
+        / "docs"
+        / "qualification"
+        / "issue-799-unsupported-requirements.json"
+    )
+    expected = json.loads(report_path.read_text(encoding="utf-8"))
+
+    report = await run_deterministic_unsupported_requirements_qualification(
+        tested_commit_sha=expected["identity"]["tested_commit_sha"]
+    )
+
+    assert report.model_dump(mode="json") == expected
