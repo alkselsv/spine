@@ -26,14 +26,30 @@ resolution denies A and still resolves B. Parent/child cross-source attachment
 receipts are removed without deleting the child's independent artifact. This
 is selected-store evidence, not a complete catalog absence proof.
 
-At this addendum, migration 115 and the focused integration tests are being
-qualified on local rebased PR branch `feat/1042-postgresql-canonical-disposition`.
-The exact implementation SHA and test command/results must be filled from the
-committed, pushed PR head before this addendum is used as published evidence.
-The result remains **PARTIAL / NOT_VERIFIED**: executor membership, a current
-catalog snapshot and selected physical-absence tests do not establish complete
-T5 coverage. `ingestion_run_source_bindings` and per-item ingestion records,
-several source-keyed policy/projection/provider records, audit/outbox families,
+Exact executable code tested: `5c14d96f` (`feat: govern attachment lineage
+erasure for issue 1042`), on the local rebased PR branch. Tests ran against
+disposable PostgreSQL 17.6 with synthetic data only.
+
+| Command | Result |
+|---|---:|
+| `uv run pytest -q --tb=short --log-level=ERROR tests/integration/postgresql/test_postgresql_source_disposition.py` | 20 passed |
+| `uv run pytest -q --tb=short --log-level=ERROR tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head tests/integration/postgresql/test_initial_tenancy_migration.py::test_gmail_message_state_catalog_is_tenant_scoped_and_evidence_is_immutable tests/integration/postgresql/test_initial_tenancy_migration.py::test_runtime_role_is_restricted_non_owner_with_rls_guarded_dml tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_email_attachment_replay_is_tenant_scoped_and_immutable tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_parsed_artifacts_use_transaction_local_tenant_scope` | 5 passed |
+| `uv run python scripts/qualification/issue1042_postgresql_catalog.py --output /tmp/issue1042-postgresql-catalog-115.json` | Clean disposable migration to `20270116_115`; catalog captured |
+| `uv run alembic heads` | `20270116_115` (one head) |
+| `uv run python -m compileall -q src tests scripts/qualification` | passed |
+| `git diff --check` | passed |
+
+The migration-history test took 12:04 and upgraded from every retained
+revision to one final head. The current catalog command ran after the FK-safe
+executor target ordering was finalized. GitHub CI is not yet run on this
+rebased/new PR head; the prior CI at `cef6678c` failed its R1 job and is stale.
+
+The result remains **PARTIAL / NOT_VERIFIED**: executor membership, current
+catalog evidence and selected physical-absence tests do not establish complete
+T5 coverage. `processing_receipts`, `process_only_operation_lineages` and
+`source_processing_admissions` still lack populated-row absence tests;
+`ingestion_run_source_bindings` and per-item ingestion records, other
+source-keyed policy/projection/provider records, audit/outbox families,
 replay/audit expiry and deterministic concurrency remain unqualified.
 
 Status: **PARTIAL / NOT_VERIFIED**. The disposition/email-sync behavior tests
