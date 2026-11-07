@@ -335,6 +335,7 @@ class CrmRelationshipV2SourceMatchResult(DefinitionModel):
     source_object_id: UUID | None = None
     source_revision_id: UUID | None = None
     authority: CanonicalSourceAuthorityFence | None = None
+    mapping_evidence: CrmMappedDiskRevisionEvidence | None = None
 
     @property
     def eligible(self) -> bool:
@@ -342,7 +343,12 @@ class CrmRelationshipV2SourceMatchResult(DefinitionModel):
 
     @model_validator(mode="after")
     def validate_handoff(self) -> "CrmRelationshipV2SourceMatchResult":
-        handoff = (self.source_object_id, self.source_revision_id, self.authority)
+        handoff = (
+            self.source_object_id,
+            self.source_revision_id,
+            self.authority,
+            self.mapping_evidence,
+        )
         if self.eligible:
             if any(value is None for value in handoff):
                 raise ValueError("positive source match requires a complete handoff")
@@ -380,6 +386,7 @@ class CrmRelationshipV2SourceMatcher:
             source_object_id=resolution.source_object_id,
             source_revision_id=resolution.source_revision_id,
             authority=resolution.authority,
+            mapping_evidence=requested.mapping_evidence,
         )
 
 
