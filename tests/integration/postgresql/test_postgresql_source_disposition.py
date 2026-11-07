@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import timedelta
+import asyncio
 import hashlib
 import json
 import pytest
@@ -93,6 +94,8 @@ from tests.integration.postgresql.test_postgresql_retention_applicability import
 from tests.integration.postgresql.test_postgresql_unit_of_work import (
     PersistenceAdapter,
     PostgreSQLContractDatabase,
+    POSTGRESQL_SEARCH_PATH_OPTIONS,
+    TrustedContextBoundary,
     postgresql_adapter,
     postgresql_contract_database,
     synthetic_uuid,
@@ -797,6 +800,517 @@ async def test_authorized_erasure_executor_physically_removes_supported_source_g
             assert replay.scalar_one() == "CANONICAL_ERASED"
     finally:
         await engine.dispose()
+
+
+async def test_disposition_removes_attachment_and_parsed_lineage_without_cross_source_deletion(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    from datetime import datetime, timezone
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from spine.application.email_attachment_ingestion import PROCESSOR_PROFILE
+    from spine.application.email_attachments import EmailAttachmentPersistenceResult
+    from spine.application.persistence.context import (
+        EnvironmentScope,
+        PersistenceOperation,
+        PersistencePurpose,
+    )
+    from spine.domain.artifacts.email_attachment import (
+        EmailAttachmentArtifact,
+        EmailAttachmentProcessingDisposition,
+        EmailAttachmentProcessingReceipt,
+        EmailAttachmentWriteReceipt,
+        email_attachment_artifact_digest,
+        email_attachment_id,
+        email_attachment_processing_receipt_digest,
+    )
+    from spine.domain.sources.original_reference import ObjectReference
+    from spine.infrastructure.persistence.email_attachment_processing import (
+        PostgreSQLEmailAttachmentProcessingRepository,
+    )
+    from spine.infrastructure.persistence.email_attachments import (
+        PostgreSQLEmailAttachmentRepository,
+    )
+
+    prepared_a = await _repository_case(
+        postgresql_adapter,
+        postgresql_contract_database,
+        763900,
+        gmail_source=True,
+        gmail_connection_id=synthetic_uuid(763902),
+        gmail_mailbox_binding_id=synthetic_uuid(763903),
+        gmail_message_id="synthetic-attachment-message-A",
+    )
+    case_a = prepared_a[0]
+    case_b = await _prepare_lifecycle_case(
+        postgresql_adapter,
+        763920,
+        gmail_source=True,
+        scope=(case_a.source.workspace_id, case_a.source.environment_id),
+        create_scope=False,
+        gmail_connection_id=case_a.source.connection_id,
+        gmail_mailbox_binding_id=synthetic_uuid(763903),
+        gmail_message_id="synthetic-attachment-message-B",
+        accepted_generation=2,
+    )
+    async with postgresql_adapter.uow_factory(case_a.context) as uow:
+        acceptance_a = await uow.canonical.accept(case_a.command)
+        await uow.commit()
+    async with postgresql_adapter.uow_factory(case_b.context) as uow:
+        acceptance_b = await uow.canonical.accept(case_b.command)
+        await uow.commit()
+    assert acceptance_a.acceptance is not None
+    assert acceptance_b.acceptance is not None
+    case_a, authorization = await _issued_authorization(
+        postgresql_adapter,
+        postgresql_contract_database,
+        763900,
+        gmail_source=True,
+        gmail_connection_id=case_a.source.connection_id,
+        gmail_mailbox_binding_id=synthetic_uuid(763903),
+        gmail_message_id="synthetic-attachment-message-A",
+        prepared_case=prepared_a,
+    )
+    case_c, authorization_c = await _issued_authorization(
+        postgresql_adapter,
+        postgresql_contract_database,
+        763930,
+        gmail_source=True,
+        gmail_message_id="synthetic-attachment-message-C",
+    )
+    assert case_a.source.workspace_id == case_b.source.workspace_id
+    assert case_a.source.environment_id == case_b.source.environment_id
+    assert case_a.source.connection_id == case_b.source.connection_id
+    assert case_c.source.workspace_id != case_a.source.workspace_id
+    assert case_c.source.environment_id != case_a.source.environment_id
+    async with postgresql_adapter.uow_factory(case_c.context) as uow:
+        acceptance_c = await uow.canonical.accept(case_c.command)
+        await uow.commit()
+    assert acceptance_c.acceptance is not None
+
+    operation_id = synthetic_uuid(763901)
+    binding = binding_from_tombstone_authorization(
+        authorization, operation_id=operation_id
+    )
+    operation = _operation(binding)
+    assert await _repository(postgresql_adapter).admit_if_current(operation, binding)
+
+    runtime_engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    session_factory = async_sessionmaker(
+        runtime_engine, expire_on_commit=False, autoflush=False
+    )
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(763940),
+        secret=b"issue1042-attachment-disposition-test-context",
+    )
+
+    def context_factory(workspace_id, environment_id):
+        return boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id, environment_id=environment_id
+            ),
+            service_principal_id=synthetic_uuid(763941),
+            purpose=PersistencePurpose("email_attachment_test"),
+            operation=PersistenceOperation("email_attachment.persist"),
+            trace_id=synthetic_uuid(763942),
+        )
+
+    artifact_repository = PostgreSQLEmailAttachmentRepository(
+        session_factory, context_factory=context_factory, context_verifier=boundary
+    )
+    processing_repository = PostgreSQLEmailAttachmentProcessingRepository(
+        session_factory, context_factory=context_factory, context_verifier=boundary
+    )
+    timestamp = datetime(2026, 10, 1, tzinfo=timezone.utc)
+
+    def build_artifact(case, acceptance, number: int) -> EmailAttachmentArtifact:
+        content = f"synthetic attachment {number}".encode()
+        digest = hashlib.sha256(content).hexdigest()
+        profile = f"email-attachment-extractor:v1:{number:064x}"[:128]
+        write_receipt = EmailAttachmentWriteReceipt(
+            upload_id=synthetic_uuid(number + 1),
+            object_reference=ObjectReference(
+                schema_version=1,
+                object_id=synthetic_uuid(number + 2),
+                storage_generation=synthetic_uuid(number + 3),
+                digest_algorithm="sha256",
+                digest_hex=digest,
+                byte_length=len(content),
+            ),
+            observed_sha256=digest,
+            observed_byte_length=len(content),
+            verification_status="verified",
+            storage_status="finalized_verified",
+            finalized_at=timestamp,
+        )
+        provisional = EmailAttachmentArtifact.model_construct(
+            artifact_id=email_attachment_id(
+                workspace_id=case.source.workspace_id,
+                environment_id=case.source.environment_id,
+                source_revision_id=case.revision.revision_id,
+                mime_part_path="1.2",
+                extraction_profile=profile,
+            ),
+            workspace_id=case.source.workspace_id,
+            environment_id=case.source.environment_id,
+            source_object_id=case.source.source_object_id,
+            source_revision_id=case.revision.revision_id,
+            canonical_acceptance_id=acceptance.acceptance.canonical_acceptance_id,
+            source_revision_digest=case.revision.revision_digest,
+            mime_part_path="1.2",
+            content_sha256=digest,
+            byte_length=len(content),
+            media_type="application/octet-stream",
+            extraction_profile=profile,
+            disposition="attachment",
+            filename=f"synthetic-{number}.bin",
+            content_id=None,
+            write_receipt=write_receipt,
+            artifact_sha256="0" * 64,
+        )
+        return EmailAttachmentArtifact.model_validate(
+            provisional.model_copy(
+                update={
+                    "artifact_sha256": email_attachment_artifact_digest(provisional)
+                }
+            ).model_dump()
+        )
+
+    async def persist_processing(
+        artifact: EmailAttachmentArtifact,
+        *,
+        number: int,
+        child_case=None,
+    ) -> EmailAttachmentProcessingReceipt:
+        provisional = EmailAttachmentProcessingReceipt.model_construct(
+            processing_receipt_id=synthetic_uuid(number),
+            workspace_id=artifact.workspace_id,
+            environment_id=artifact.environment_id,
+            parent_source_object_id=artifact.source_object_id,
+            parent_source_revision_id=artifact.source_revision_id,
+            parent_source_revision_digest=artifact.source_revision_digest,
+            parent_canonical_acceptance_id=artifact.canonical_acceptance_id,
+            attachment_artifact_id=artifact.artifact_id,
+            attachment_artifact_digest=artifact.artifact_sha256,
+            mime_part_path=artifact.mime_part_path,
+            attachment_content_sha256=artifact.content_sha256,
+            attachment_byte_length=artifact.byte_length,
+            media_type=artifact.media_type,
+            policy_version="email-attachment-policy:v1",
+            authority_digest=f"{number:064x}"[-64:],
+            processor_profile=f"{PROCESSOR_PROFILE[:96]}",
+            disposition=EmailAttachmentProcessingDisposition.UNSUPPORTED,
+            original_disposition="retained_fenced",
+            child_source_object_id=(
+                child_case.source.source_object_id if child_case is not None else None
+            ),
+            child_source_revision_id=(
+                child_case.revision.revision_id if child_case is not None else None
+            ),
+            child_processing_receipt_id=None,
+            parsed_artifact_id=None,
+            parsed_artifact_digest=None,
+            completed_at=timestamp,
+            receipt_sha256="0" * 64,
+        )
+        receipt = EmailAttachmentProcessingReceipt.model_validate(
+            provisional.model_copy(
+                update={
+                    "receipt_sha256": email_attachment_processing_receipt_digest(
+                        provisional
+                    )
+                }
+            ).model_dump()
+        )
+        await processing_repository.persist(receipt)
+        return receipt
+
+    artifact_a = build_artifact(case_a, acceptance_a, 764000)
+    artifact_b = build_artifact(case_b, acceptance_b, 764100)
+    artifact_c = build_artifact(case_c, acceptance_c, 764200)
+    try:
+        stored_a, stored_b, stored_c = await asyncio.gather(
+            artifact_repository.persist(artifact_a),
+            artifact_repository.persist(artifact_b),
+            artifact_repository.persist(artifact_c),
+        )
+        assert all(
+            isinstance(result, EmailAttachmentPersistenceResult)
+            for result in (stored_a, stored_b, stored_c)
+        )
+        assert await persist_processing(
+            artifact_a, number=764300, child_case=case_b
+        )
+        await persist_processing(artifact_a, number=764301)
+        await persist_processing(artifact_b, number=764302)
+        await persist_processing(
+            artifact_b, number=764303, child_case=case_a
+        )
+        await persist_processing(artifact_c, number=764304)
+        assert await artifact_repository.get(
+            workspace_id=case_a.source.workspace_id,
+            environment_id=case_a.source.environment_id,
+            artifact_id=artifact_a.artifact_id,
+        ) == artifact_a
+
+        # Seed parent message artifacts and parsed content/segments with exact
+        # source-owned relational bindings; these rows are intentionally synthetic.
+        direct_engine = create_async_engine(
+            postgresql_contract_database.migration_url.get_secret_value(),
+            hide_parameters=True,
+            connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+        )
+        parsed_ids = {
+            case_a.source.source_object_id: synthetic_uuid(764400),
+            case_b.source.source_object_id: synthetic_uuid(764401),
+            case_c.source.source_object_id: synthetic_uuid(764402),
+        }
+        source_cases = (
+            (case_a, acceptance_a, artifact_a, 764500),
+            (case_b, acceptance_b, artifact_b, 764501),
+            (case_c, acceptance_c, artifact_c, 764502),
+        )
+        try:
+            async with direct_engine.begin() as connection:
+                for source_case, accepted, artifact, number in source_cases:
+                    message_artifact_id = synthetic_uuid(number)
+                    message_digest = hashlib.sha256(str(number).encode()).hexdigest()
+                    await connection.execute(
+                        text(
+                            "INSERT INTO spine.email_message_artifacts "
+                            "(workspace_id, environment_id, artifact_id, source_object_id, "
+                            "source_revision_id, canonical_acceptance_id, artifact_digest, "
+                            "command_identity, command_digest, record, created_at) "
+                            "VALUES (:workspace_id, :environment_id, :artifact_id, "
+                            ":source_id, :revision_id, :acceptance_id, :digest, :identity, "
+                            ":command_digest, CAST(:record AS jsonb), :created_at)"
+                        ),
+                        {
+                            "workspace_id": source_case.source.workspace_id,
+                            "environment_id": source_case.source.environment_id,
+                            "artifact_id": message_artifact_id,
+                            "source_id": source_case.source.source_object_id,
+                            "revision_id": source_case.revision.revision_id,
+                            "acceptance_id": accepted.acceptance.canonical_acceptance_id,
+                            "digest": message_digest,
+                            "identity": f"synthetic-email-message-artifact:{number}",
+                            "command_digest": hashlib.sha256(
+                                f"command:{number}".encode()
+                            ).hexdigest(),
+                            "record": json.dumps(
+                                {
+                                    "message_id": f"synthetic-message-{number}",
+                                    "payload_digest": message_digest,
+                                }
+                            ),
+                            "created_at": timestamp,
+                        },
+                    )
+                    parsed_id = parsed_ids[source_case.source.source_object_id]
+                    parsed_digest = hashlib.sha256(
+                        f"parsed:{number}".encode()
+                    ).hexdigest()
+                    await connection.execute(
+                        text(
+                            "INSERT INTO spine.parsed_documents "
+                            "(artifact_id, workspace_id, environment_id, source_object_id, "
+                            "source_revision_id, source_revision_digest, original_sha256, "
+                            "artifact_digest, schema_version, parser_name, parser_version, "
+                            "parser_config_reference, locator_contract_version, media_type, "
+                            "coverage, exclusions, source_byte_length, source_codepoint_length, "
+                            "command_identity, command_digest, created_at) VALUES "
+                            "(:artifact_id, :workspace_id, :environment_id, :source_id, "
+                            ":revision_id, :revision_digest, :original_digest, :artifact_digest, "
+                            "'parsed-document:v1', 'synthetic_parser', 'v1', 'synthetic-config:v1', "
+                            "'locator:v1', 'text/plain', 'complete', '[]'::jsonb, 21, 21, "
+                            ":command_identity, :command_digest, :created_at)"
+                        ),
+                        {
+                            "artifact_id": parsed_id,
+                            "workspace_id": source_case.source.workspace_id,
+                            "environment_id": source_case.source.environment_id,
+                            "source_id": source_case.source.source_object_id,
+                            "revision_id": source_case.revision.revision_id,
+                            "revision_digest": source_case.revision.revision_digest,
+                            "original_digest": hashlib.sha256(
+                                f"original:{number}".encode()
+                            ).hexdigest(),
+                            "artifact_digest": parsed_digest,
+                            "command_identity": f"synthetic-parse:{number}",
+                            "command_digest": hashlib.sha256(
+                                f"parse-command:{number}".encode()
+                            ).hexdigest(),
+                            "created_at": timestamp,
+                        },
+                    )
+                    await connection.execute(
+                        text(
+                            "INSERT INTO spine.parsed_document_segments "
+                            "(segment_id, artifact_id, workspace_id, environment_id, "
+                            "segment_ordinal, schema_version, segment_digest, text, text_digest, "
+                            "locator, heading_path) VALUES (:segment_id, :artifact_id, "
+                            ":workspace_id, :environment_id, 0, 'parsed-segment:v1', "
+                            ":digest, :content, :digest, '{}'::jsonb, '[]'::jsonb)"
+                        ),
+                        {
+                            "segment_id": synthetic_uuid(number + 1_000),
+                            "artifact_id": parsed_id,
+                            "workspace_id": source_case.source.workspace_id,
+                            "environment_id": source_case.source.environment_id,
+                            "digest": hashlib.sha256(
+                                f"segment:{number}".encode()
+                            ).hexdigest(),
+                            "content": f"synthetic parsed body {number}",
+                        },
+                    )
+        finally:
+            await direct_engine.dispose()
+
+        # Runtime role has no direct DELETE grant, and a caller without a
+        # persisted operation/current authority cannot use the SECURITY DEFINER
+        # entrypoint to erase arbitrary targets.
+        with pytest.raises(DBAPIError):
+            async with runtime_engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "DELETE FROM spine.email_attachment_artifacts "
+                        "WHERE artifact_id = :artifact_id"
+                    ),
+                    {"artifact_id": artifact_b.artifact_id},
+                )
+        async with runtime_engine.begin() as connection:
+            denied = await connection.scalar(
+                text(
+                    "SELECT spine.execute_source_disposition_erasure("
+                    ":workspace_id, :environment_id, :operation_id, 1)"
+                ),
+                {
+                    "workspace_id": case_b.source.workspace_id,
+                    "environment_id": case_b.source.environment_id,
+                    "operation_id": synthetic_uuid(761999),
+                },
+            )
+        assert denied == "DENIED"
+
+        executor_engine = create_async_engine(
+            postgresql_contract_database.runtime_url.get_secret_value(),
+            hide_parameters=True,
+            connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+        )
+        try:
+            async with executor_engine.begin() as connection:
+                result = await connection.execute(
+                    text(
+                        "SELECT spine.execute_source_disposition_erasure("
+                        ":workspace_id, :environment_id, :operation_id, :state_version)"
+                    ),
+                    {
+                        "workspace_id": binding.workspace_id,
+                        "environment_id": binding.environment_id,
+                        "operation_id": operation_id,
+                        "state_version": operation.state_version,
+                    },
+                )
+                assert result.scalar_one() == "CANONICAL_ERASED"
+        finally:
+            await executor_engine.dispose()
+
+        async with postgresql_adapter.uow_factory(
+            postgresql_adapter.environment_context(
+                case_a.source.workspace_id, case_a.source.environment_id
+            )
+        ) as uow:
+            assert await uow.sources.resolve_source(case_a.source.source_object_id) is None
+            assert await uow.sources.resolve_source(case_b.source.source_object_id) is not None
+            await uow.rollback()
+        assert await artifact_repository.get(
+            workspace_id=case_a.source.workspace_id,
+            environment_id=case_a.source.environment_id,
+            artifact_id=artifact_a.artifact_id,
+        ) is None
+        assert await artifact_repository.get(
+            workspace_id=case_b.source.workspace_id,
+            environment_id=case_b.source.environment_id,
+            artifact_id=artifact_b.artifact_id,
+        ) == artifact_b
+        assert await processing_repository.resolve_by_id(
+            workspace_id=case_a.source.workspace_id,
+            environment_id=case_a.source.environment_id,
+            processing_receipt_id=synthetic_uuid(764300),
+        ) is None
+        assert await processing_repository.resolve_by_id(
+            workspace_id=case_b.source.workspace_id,
+            environment_id=case_b.source.environment_id,
+            processing_receipt_id=synthetic_uuid(764302),
+        ) is not None
+
+        direct_engine = create_async_engine(
+            postgresql_contract_database.migration_url.get_secret_value(),
+            hide_parameters=True,
+            connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+        )
+        try:
+            async with direct_engine.connect() as connection:
+                counts = (
+                    await connection.execute(
+                    text(
+                        "SELECT "
+                        "(SELECT count(*) FROM spine.email_message_artifacts "
+                        "WHERE source_object_id = :source_a) AS message_a, "
+                        "(SELECT count(*) FROM spine.email_attachment_artifacts "
+                        "WHERE source_object_id = :source_a) AS attachment_a, "
+                        "(SELECT count(*) FROM spine.email_attachment_processing_receipts t "
+                        "LEFT JOIN spine.email_attachment_artifacts a "
+                        "ON a.workspace_id=t.workspace_id AND a.environment_id=t.environment_id "
+                        "AND a.artifact_id=t.attachment_artifact_id "
+                        "WHERE a.source_object_id=:source_a OR t.child_source_object_id=:source_a) "
+                        "AS attachment_receipt_a, "
+                        "(SELECT count(*) FROM spine.parsed_documents "
+                        "WHERE source_object_id=:source_a) AS parsed_a, "
+                        "(SELECT count(*) FROM spine.parsed_document_segments "
+                        "WHERE artifact_id=:parsed_a) AS segment_a, "
+                        "(SELECT count(*) FROM spine.email_attachment_artifacts "
+                        "WHERE source_object_id=:source_b) AS attachment_b, "
+                        "(SELECT count(*) FROM spine.email_attachment_processing_receipts t "
+                        "JOIN spine.email_attachment_artifacts a "
+                        "ON a.workspace_id=t.workspace_id AND a.environment_id=t.environment_id "
+                        "AND a.artifact_id=t.attachment_artifact_id "
+                        "WHERE a.source_object_id=:source_b) AS receipt_b, "
+                        "(SELECT count(*) FROM spine.parsed_documents "
+                        "WHERE source_object_id=:source_b) AS parsed_b, "
+                        "(SELECT count(*) FROM spine.email_attachment_artifacts "
+                        "WHERE source_object_id=:source_c) AS attachment_c"
+                    ),
+                    {
+                        "source_a": case_a.source.source_object_id,
+                        "source_b": case_b.source.source_object_id,
+                        "source_c": case_c.source.source_object_id,
+                        "parsed_a": parsed_ids[case_a.source.source_object_id],
+                        "parsed_b": parsed_ids[case_b.source.source_object_id],
+                    },
+                    )
+                ).mappings().one()
+                assert dict(counts) == {
+                    "message_a": 0,
+                    "attachment_a": 0,
+                    "attachment_receipt_a": 0,
+                    "parsed_a": 0,
+                    "segment_a": 0,
+                    "attachment_b": 1,
+                    "receipt_b": 1,
+                    "parsed_b": 1,
+                    "attachment_c": 1,
+                }
+        finally:
+            await direct_engine.dispose()
+    finally:
+        await runtime_engine.dispose()
 
 
 async def test_erasure_executor_rolls_back_all_rows_when_final_source_delete_fails(

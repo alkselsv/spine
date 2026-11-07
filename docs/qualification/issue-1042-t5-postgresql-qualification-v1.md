@@ -1,5 +1,41 @@
 # Issue #1042 T5 PostgreSQL qualification v1
 
+## Current-head addendum — bounded attachment/processing slice
+
+Current inventory: [migration-115 lineage matrix](issue-1042-canonical-lineage-dependency-matrix-115.md)
+and [catalog evidence](issue-1042-canonical-lineage-dependency-matrix-115.json).
+The catalog was captured from a newly provisioned PostgreSQL 17.6 database
+migrated from zero to `20270116_115`; it supersedes migration 112 as current
+structural evidence without rewriting that historical snapshot. It enumerates
+175 tables, 2,240 columns, 1,237 constraints, 176 triggers and 381 RLS policies.
+
+Migration 115 adds governed deletion for message artifacts, attachment
+artifacts and receipts, parsed documents and segments, source-processing
+admissions, processing receipts and process-only operation lineage. It keeps
+the existing authority/fence/CAS executor contract, adds executor-scoped RLS
+and exact transaction-bound immutable-trigger exceptions, and denies runtime
+DELETE on the added stores. It does not authorize new attachment-derived
+structured artifacts, and it does not complete PostgreSQL ingestion-run
+binding/item cleanup.
+
+The new synthetic PostgreSQL A/B/C test directly checks persisted rows after
+disposing A: message artifacts, attachment artifacts and receipts, parsed
+documents and segments for A are absent; B's independent attachment, receipt
+and parsed document remain; C in another workspace remains; application source
+resolution denies A and still resolves B. Parent/child cross-source attachment
+receipts are removed without deleting the child's independent artifact. This
+is selected-store evidence, not a complete catalog absence proof.
+
+At this addendum, migration 115 and the focused integration tests are being
+qualified on local rebased PR branch `feat/1042-postgresql-canonical-disposition`.
+The exact implementation SHA and test command/results must be filled from the
+committed, pushed PR head before this addendum is used as published evidence.
+The result remains **PARTIAL / NOT_VERIFIED**: executor membership, a current
+catalog snapshot and selected physical-absence tests do not establish complete
+T5 coverage. `ingestion_run_source_bindings` and per-item ingestion records,
+several source-keyed policy/projection/provider records, audit/outbox families,
+replay/audit expiry and deterministic concurrency remain unqualified.
+
 Status: **PARTIAL / NOT_VERIFIED**. The disposition/email-sync behavior tests
 below ran against code commit `e949b79c1c99392cfe71e013bc7b6eed9c974a03`;
 migration/readiness follow-up tests ran against `7880ed2d`, and the page
@@ -38,19 +74,20 @@ an incoming provider page cannot use the reserved `erased.` prefix.
 | Tombstone authorization, deletion approval, retention applicability, lifecycle and Gmail label/relationship evidence | PARTIAL | Current/revoked authorization and selected exact-source evidence are tested; the complete stale-generation and lifecycle race matrix is not. |
 | `email_sync_attempts`, `email_sync_pages`, `email_sync_effect_receipts` | PARTIAL | Migration 114 selectively rewrites a committed shared page, removes A's effect receipt and preserves B. Pending/leased and unknown historical schema variants are not fully qualified. |
 | `email_sync_state_observations`, linked outbox intent/delivery | PARTIAL | A/B observation and selected outbox cleanup are checked. General delivery, consumer-acknowledgement and concurrent delivery coverage is incomplete. |
-| `email_message_artifacts`, `email_attachment_artifacts`, `email_attachment_processing_receipts` | NOT_VERIFIED | These artifact and processing rows are not in migration 113's direct deletion set; no physical-absence scenario qualifies them. |
-| `parsed_documents`, `processing_receipts`, `source_processing_admissions`, process-only lineage | NOT_VERIFIED | No complete cleanup/absence test. |
+| `email_message_artifacts`, `email_attachment_artifacts`, `email_attachment_processing_receipts` | PARTIAL | Migration 115 adds source-scoped deletion. A synthetic PostgreSQL A/B/C case directly verifies A absence, B attachment/receipt preservation, C cross-workspace preservation, and removal of cross-source parent/child receipts. Other-field and full-reader absence are not proved. |
+| `parsed_documents`, `parsed_document_segments` | PARTIAL | Migration 115 deletes source-owned documents and segments; direct SQL absence for A and preservation of B are tested. |
+| `processing_receipts`, `source_processing_admissions`, process-only lineage | NOT_VERIFIED | Migration 115 includes these executor targets, but this integration fixture does not populate and prove physical absence for them; ingestion-run binding/item lineage is also unresolved. |
 | `source_projection_references`, projection receipts/runs, snapshot members, current projection pointers, citation/context evidence | NOT_VERIFIED | PostgreSQL publication and retrieval lineage cleanup is not implemented/qualified. External projection/index/cache cleanup belongs to T7. |
 | `audit_events`, `operational_correlation_records`, `operational_metric_events`, diagnostics | NOT_VERIFIED | Exact persisted-field allowlist, source-linked removal, and 365-day audit expiry are not qualified. |
 | General `outbox_intents`, `outbox_deliveries`, idempotency receipts, ingestion command/retry records | NOT_VERIFIED | Selected email state-observation outbox events are covered; source-bound general producer/consumer identities and leased deliveries are not. |
 | Other source-keyed tables in the catalog snapshot | NOT_VERIFIED | The minimum uncovered list is below; ownership and exact Gmail reachability require current catalog and payload-contract review. |
 
-The reused matrix, `issue-1042-canonical-lineage-dependency-matrix.json`, is a
-catalog snapshot from PostgreSQL 17.6 at migration `20270113_112`, not the
-current head. Its 348 selected fields and 193 FK edges are an inventory input,
-not evidence for migrations 113–114 or an exhaustive arbitrary-JSONB review.
-Comparing its source-object/revision-keyed tables with migration 113's direct
-target list identifies at least these uncovered tables:
+The historical matrix, `issue-1042-canonical-lineage-dependency-matrix.json`,
+is a PostgreSQL 17.6 catalog snapshot at migration `20270113_112`; it retains
+348 selected fields and 193 FK edges for historical reference. Current schema
+evidence is `issue-1042-canonical-lineage-dependency-matrix-115.json` and its
+Markdown classification. The following current direct source-keyed tables are
+not in the executor target set:
 
 ```text
 canonical_boundary_members
@@ -61,21 +98,14 @@ disclosure_hold_source_revisions
 disclosure_hold_targets
 disclosure_holds
 drive_lifecycle_decisions
-email_attachment_artifacts
-email_attachment_processing_receipts
-email_message_artifacts
 google_sheets_absence_candidates
 google_sheets_removal_decisions
 ingestion_run_source_bindings
-parsed_documents
 private_asr_artifacts
 private_asr_report_sources
 private_asr_source_fences
-process_only_operation_lineages
-processing_receipts
 projection_drifts
 projection_snapshot_members
-source_processing_admissions
 source_projection_references
 source_security_domain_bindings
 transcript_publications
