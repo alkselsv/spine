@@ -5,6 +5,8 @@
 **Parent:** [R2 map #584](https://github.com/alkselsv/spine/issues/584)
 **Baseline:** `main` `a272e982db26cb92170cd633c279c5857ab112f1` (2026-11-07)
 
+Separate decisions are recorded in the [Product Owner record](issue-586-product-owner-decision-v1.md), [Finance checklist](issue-586-finance-approval-checklist-v1.md), [Security record](issue-586-security-approval-record-v1.md), [Data record](issue-586-data-approval-record-v1.md), and [Architecture record](issue-586-architecture-acceptance-v1.md). They are all pending.
+
 This handoff makes the proposed Option 2 reviewable as implementation contracts. It does not authorize schemas, database tables, migrations or runtime code before the role decisions and unresolved parameters listed here are approved. These are contract sketches; use existing canonical source, artifact, authorization, WorkflowRun and audit boundaries.
 
 ## 1. Target boundary
@@ -186,15 +188,17 @@ calculate(estimate_input_snapshot, approved_profile):
   for each line in stable input order:
     gross_exact = quantity * unit_price
     discount_exact = apply_approved_discount(gross_exact, approved_policy)
-    taxable_base_exact = tax_policy_base(gross_exact, discount_exact, ...)
-    tax_exact = apply_pinned_tax_rule(taxable_base_exact, exact_tax_basis)
-    converted = apply_exact_FX_if_required(... exact FXBasis ...)
-    line amounts = quantize only at profile-declared stages/modes
-  totals = deterministic aggregation in canonical line identity order
+    tax_components = apply_ordered_tax_rules(gross_exact, discount_exact, exact_tax_basis)
+    net_source = compute_net_source_amount(gross_exact, discount_exact, tax_components)
+    converted_line = apply_exact_FX_after_tax(net_source, exact FXBasis)
+    line_total = quantize_once(converted_line, output_currency_quantum, output_rounding)
+  Estimate.total = exact_sum(line_total in stable line identity order) # no second rounding
+  summary components = aggregate exact converted components, then quantize once
+  rounding_adjustment = Estimate.total - reconciled_display_components
   emit Estimate successor, exact provenance, calculation trace and outcome
 ```
 
-Formula order must match the separately approved Finance policy. The sketch states an explicit pipeline and does not settle tax-vs-FX order or whether tax rounds per line until Finance signs those parameters. Stable ordering and canonical serialization are required even if Decimal addition is mathematically order independent, so digest/replay remains stable.
+This is one concrete proposed CalculationProfile for Finance review: candidate context precision 34 significant digits; approved discount before tax; explicit ordered tax components and compound flags; approved inclusive extraction formula; FX after tax and before output rounding; one output-quantum rounding per line total; Estimate total as the sum of rounded lines; and explicit rounded summary components plus a visible rounding adjustment. Candidate output mode is `ROUND_HALF_UP`. The exact proposal and Finance approval fields are in the [Finance checklist](issue-586-finance-approval-checklist-v1.md). Precision, source currencies, FX provider/rate policy, tax rules and discounts remain unapproved values. Stable ordering and canonical serialization are required for replay and digest stability.
 
 ### Idempotency identity
 
@@ -235,7 +239,7 @@ Reapproval gate: any changed unit price, quantity, unit, scope, PricingBasis, cu
 | Retention | `RetentionApplicability` and source/artifact lineage | Only map pricing evidence into approved existing classes; retention is not freshness/authority. |
 | Financial arithmetic | Decimal serialization/metrics exist but no commercial model | Implement calculator and Finance-approved policies from scratch; unrelated Decimal modes are not defaults. |
 
-No direct accepted ADR conflict found. Potential ADR trigger before production implementation: define canonical ownership/approval of price facts and rule-set selection if this decision changes the architecture's generic source and artifact boundary. A separate ADR may also be needed for transactional exact-version Estimate approval if ADR-0047/0058 patterns are insufficient. Architecture Owner decides after approved policy; do not change any ADR here.
+No direct accepted ADR conflict found. The [Architecture acceptance record](issue-586-architecture-acceptance-v1.md) recommends a new ADR before implementation approval to settle canonical ownership and activation of approved price facts/rule sets and the atomic CAS boundary joining current source authorization, exact Estimate version, approval, audit and idempotency. The ADR must not create another workflow or authority for source content. This is a proposed requirement, not an accepted ADR; do not amend existing ADRs here.
 
 ## 7. Future implementation decomposition (do not create issues in this task)
 

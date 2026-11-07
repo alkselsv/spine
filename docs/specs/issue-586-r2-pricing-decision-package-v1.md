@@ -6,6 +6,8 @@
 **Issue:** [#586](https://github.com/alkselsv/spine/issues/586)
 **Parent:** [#584](https://github.com/alkselsv/spine/issues/584)
 
+Separate role-scoped decision records: [Product Owner](issue-586-product-owner-decision-v1.md), [Finance](issue-586-finance-approval-checklist-v1.md), [Security](issue-586-security-approval-record-v1.md), [Data](issue-586-data-approval-record-v1.md), and [Architecture](issue-586-architecture-acceptance-v1.md). All remain pending until an authorized human records a decision.
+
 This is a human decision package, not an approval record or runtime implementation. Recommendations below do not establish a source's price authority, a user's role, a tax/FX rule, or implementation readiness. Record each approval as an attributable, role-scoped decision against this exact package version. A single person's approval in one role does not imply approval in another role.
 
 ## 1. Decision requested
@@ -89,7 +91,7 @@ Select **Option 2: versioned rule-set selection by service/project class with ex
 - **Question:** Which currency and conversion evidence determines the quote?
 - **Alternatives:** (a) one currency per workspace; (b) explicit estimate currency and optional approved FX conversions; (c) implicit provider/current online conversion.
 - **Recommendation:** (b). Every price and Estimate declares ISO currency. The Estimate declares its output currency. Same-currency pricing needs no FX. Cross-currency conversion is allowed only under one Finance-approved source policy and exact pinned rate record.
-- **Normative rules:** Persist exact decimal rate, base/quote currencies, direction, as-of date/time, provider/source identity and version/digest, authority approval, retrieval/source revision and calculation stage. Do not perform ad hoc online lookup or infer missing rates. Reject ambiguous direction, unsupported pair, expired/unapproved source policy or missing as-of evidence as `FX_RATE_UNAVAILABLE`. Intermediate conversion precision and rounding stage are explicit rule-set inputs and part of calculation version.
+- **Normative rules:** Persist exact decimal rate, base/quote currencies, direction, as-of date/time, provider/source identity and version/digest, authority approval, retrieval/source revision and calculation stage. The proposed Finance profile converts the fully discounted and taxed line amount from source currency to Estimate currency after tax calculation and before final line quantization; Finance must explicitly approve or replace this stage. Do not perform ad hoc online lookup or infer missing rates. Reject ambiguous direction, unsupported pair, expired/unapproved source policy or missing as-of evidence as `FX_RATE_UNAVAILABLE`. Intermediate conversion precision and rounding stage are explicit rule-set inputs and part of calculation version.
 - **Parameters to approve:** estimate base currency by workspace/environment or permitted set; one FX authority/source; pair coverage; as-of convention; permitted rate age from source policy; conversion/rounding stage.
 - **Accountable roles:** Finance Owner (currency and FX authority); Data Owner (rate provenance); Security Owner (read policy); Product Owner (quote currency); Architecture.
 - **Implementation impact:** New FX basis contract and calculator operation. No provider, bank, rate or numerical example is selected by this package.
@@ -101,16 +103,8 @@ Select **Option 2: versioned rule-set selection by service/project class with ex
 - **Question:** What arithmetic and rounding order is normative?
 - **Alternatives:** (a) binary float/framework default; (b) Decimal with explicit per-currency versioned policy; (c) round each intermediate without recorded policy.
 - **Recommendation:** (b); propose `ROUND_HALF_UP` and currency minor-unit precision as an initial candidate for Finance review only. It is not approved here.
-- **Normative sequence:**
-  1. Validate finite Decimal quantity and unit price, unit compatibility and signs.
-  2. `line_gross_exact = quantity × unit_price`.
-  3. Apply only approved discount representation/policy to the line gross; retain discount amount and basis.
-  4. `taxable_base_exact = line_gross_exact − approved_discount_exact`, adjusted only by explicit tax policy.
-  5. Apply the exact tax rule/rate and inclusive/exclusive extraction rule.
-  6. Round line components and line total only at the explicitly configured stages/quantums.
-  7. Sum persisted rounded line totals (or other explicitly approved total rule) and apply estimate-total rounding once as declared.
-
-  Internal precision/scale, permitted input scale, quantization stage, currency precision and tie-breaking mode are versioned in `CalculationProfile`. No `float`, implicit locale conversion, or LLM arithmetic is permitted. Preserve unrounded intermediate values when required for exact replay and audit.
+- **Recommended CalculationProfile for Finance approval:** use finite `Decimal` values under a versioned decimal context (candidate precision 34 significant digits); calculate gross in the PricingBasis currency; apply one approved line discount before tax; resolve tax components in explicit `tax_order`, compounding only where that component says the preceding tax is in its base; calculate inclusive tax using the exact approved extraction formula and exclusive tax on the approved taxable base; convert the completed line amount to Estimate currency using the exact pinned FX basis **after tax and before output rounding**; quantize each final line total once to the approved Estimate-currency quantum; define Estimate `total` as the sum of those quantized line totals with no second rounding. Aggregate subtotal/discount/tax reporting components from exact converted components and quantize each aggregate once; persist a `rounding_adjustment` so displayed components reconcile to the sum-of-lines total. Candidate output mode is `ROUND_HALF_UP`; both precision and mode remain pending Finance approval. This order is fully versioned and replayable, but is not an approved financial policy until Finance accepts it.
+- **Normative safeguards:** Validate finite Decimal quantity/unit price, unit compatibility and signs before calculation. Currency quantum, tax extraction formulas, component order, compound behavior, context precision, overflow/traps, quantization and reconciliation are explicit CalculationProfile inputs. No `float`, implicit locale conversion, or LLM arithmetic is permitted. Preserve exact/intermediate Decimal inputs and outputs needed for replay and audit.
 - **Parameters to approve:** Decimal precision/scale/overflow behavior; currency exponent table/version; rounding mode; line-vs-total quantization stages; treatment of cash increments; negative/zero values.
 - **Accountable roles:** Finance Owner (all arithmetic policy); Data Owner (input representation/locale); Architecture (deterministic implementation).
 - **Implementation impact:** Pure Decimal calculator and immutable calculation profile; calculator cannot fetch sources or call models.
@@ -122,7 +116,7 @@ Select **Option 2: versioned rule-set selection by service/project class with ex
 - **Question:** Which tax rule applies, and in what order?
 - **Alternatives:** (a) tax omitted from system estimate; (b) approved versioned jurisdiction/category rules; (c) model or client document chooses current rate.
 - **Recommendation:** (b). Store whether source unit prices are tax-inclusive or tax-exclusive; resolve jurisdiction and service category from approved typed inputs and an approved rule version.
-- **Normative rules:** Tax rates/exemptions/special regimes come only from a Finance-/tax-authorized versioned source. The rule defines taxable base, discount interaction, inclusion/exclusion, compound/order behavior, line/estimate rounding and effective period. The system does not infer jurisdiction or applicability from an address/document through an LLM. Unknown jurisdiction, category, inclusion semantics, exemption evidence or current rule returns `TAX_RULE_UNRESOLVED` and blocks calculation completion/approval. This package selects no country, regime or rate.
+- **Normative rules:** Tax rates/exemptions/special regimes come only from a Finance-/tax-authorized versioned source. The proposed order is discount first, then tax components sorted by explicit `tax_order`; a component includes prior tax in its base only when its pinned rule explicitly declares compound treatment. Tax-inclusive amounts use the pinned rule's extraction formula; tax-exclusive amounts use its taxable-base formula. FX conversion follows tax calculation in the proposed CalculationProfile. Unknown jurisdiction, category, inclusion semantics, exemption evidence, component order or current rule returns `TAX_RULE_UNRESOLVED` and blocks calculation completion/approval. This package selects no country, regime or rate.
 - **Parameters to approve:** jurisdiction resolution owner and source; service tax categories; tax authority source/version; inclusive/exclusive policy; exemption/special-regime evidence; order and rounding.
 - **Accountable roles:** Finance/Tax Owner (rules and rates); Data Owner (jurisdiction/category source); Product Owner (required user inputs); Security Owner (sensitive tax data access); Architecture.
 - **Implementation impact:** New tax rule/basis contract and typed unresolved outcome; do not embed country assumptions in the calculator.
@@ -193,7 +187,7 @@ No status falls back silently to an old estimate, adjacent row, LLM-generated pr
 
 ## 4. Formal contract summary
 
-Detailed contract sketches and mapping to existing types are in the companion [implementation handoff](issue-586-pricing-implementation-handoff-v1.md). The expected graph is:
+Detailed contract sketches and mapping to existing types are in the companion [implementation handoff](issue-586-pricing-implementation-handoff-v1.md). Finance's proposed operation order and required decisions are in the [Finance approval checklist](issue-586-finance-approval-checklist-v1.md). The expected graph is:
 
 ```text
 authorized SourceRevision + explicit authority approval
@@ -219,7 +213,7 @@ No second workflow, price store, registry, or authorization system is recommende
 | Audit/outbox/idempotency | Append-only canonical audit, diagnostics separation, transactional outbox and command digests/replay patterns exist. | Reuse for pricing decisions, override and approval. Add event schemas/registry fields; do not create parallel audit trail. |
 | Retention | `RetentionApplicability` is a versioned source/artifact retention-policy binding, not an access or pricing authority. | Reuse only if pricing evidence falls within its approved classes; do not reuse retention policy as price freshness or approval policy. |
 | Decimal/money | No commercial `Money`, `PricingBasis`, tax, rounding or Estimate implementation found. Decimal exists in unrelated telemetry/provider cost paths. | New contract and pure engine required. Existing Decimal usage is not a financial policy precedent. |
-| ADRs | ADR-0011/0018/0020/0029/0047/0048/0058 and source/provider ADRs define access, lineage, audit, context handoff and exact human decision boundaries. No accepted ADR defines pricing authority. | No direct conflict found. Future canonical price authority, approval transaction, tax/FX policy may warrant a new ADR after role decisions. Do not modify accepted ADRs in this decision task. |
+| ADRs | ADR-0011/0018/0020/0029/0047/0048/0058 and source/provider ADRs define access, lineage, audit, context handoff and exact human decision boundaries. No accepted ADR defines pricing authority. | No direct conflict found. The proposed Architecture record requires a new ADR before implementation approval for canonical ownership/activation of pricing authority and atomic exact-version approval/CAS. This is not an accepted ADR. Do not modify accepted ADRs. |
 | Roadmap/product case | R2 calls for deterministic money, per-line pricing evidence, human review/edit/approve; #584 says pricing implementation waits for #586. | Directly aligned. This package does not change roadmap checkboxes or unblock implementation until approvals and follow-up specification exit criteria pass. |
 
 ### Explicit blockers / gaps
@@ -247,6 +241,8 @@ Keep #586 **OPEN / PENDING_APPROVAL** until an attributable resolution records t
 Implementation readiness additionally requires approved parameter values and an approved detailed implementation specification with test vectors. No issue is closed and no `IMPLEMENTATION_APPROVED` status is implied by this proposal or documentation PR.
 
 ## 7. Human approvals required and unresolved parameters
+
+Use the role-specific forms; do not infer approvals across roles: [Product Owner](issue-586-product-owner-decision-v1.md), [Finance](issue-586-finance-approval-checklist-v1.md), [Security](issue-586-security-approval-record-v1.md), [Data](issue-586-data-approval-record-v1.md), [Architecture](issue-586-architecture-acceptance-v1.md).
 
 | Owner | Must explicitly approve | Cannot be supplied by this package |
 |---|---|---|
@@ -313,3 +309,4 @@ Record each decision against `issue-586-r2-pricing-decision-package-v1` and iden
 | Version | Date | Change | Approval |
 |---|---|---|---|
 | v1 | 2026-11-07 | Initial recommendation and D1–D10 review package based on main `a272e982`. | None; all decisions pending. |
+| v1.1 | 2026-11-07 | Added a single concrete proposed Finance CalculationProfile, FX-after-tax stage, separate role-scoped approval records and an explicit pre-implementation ADR question after Standards/Spec review. | None; all decisions pending. |
