@@ -1,0 +1,107 @@
+{
+  "currency": {
+    "allowed_estimate_currencies": null,
+    "allowed_source_currencies": null,
+    "identity": "ISO-4217-code-explicit; no implicit default",
+    "missing_or_unsupported_currency_or_quantum": "CURRENCY_POLICY_UNRESOLVED",
+    "quantum_table_ref": null
+  },
+  "decimal": {
+    "finite_values_only": true,
+    "input_encoding": "decimal-string-only",
+    "input_scale_policy": null,
+    "precision_significant_digits": 34,
+    "range_policy": "any-intermediate-or-quantized-result-requiring-more-than-34-significant-digits-fails-as-CALCULATION_RANGE_EXCEEDED",
+    "rounding_mode": "ROUND_HALF_UP",
+    "traps": [
+      "InvalidOperation",
+      "DivisionByZero",
+      "Overflow",
+      "FloatOperation"
+    ]
+  },
+  "discount": {
+    "allowed_discount_types": null,
+    "basis": "pre-discount-tax-exclusive-base",
+    "limits": null,
+    "maximum_selected_rules_per_line": 1,
+    "missing_or_ambiguous_policy": "DISCOUNT_POLICY_UNRESOLVED",
+    "order": "before-tax",
+    "stacking": "disabled"
+  },
+  "estimate_aggregation": {
+    "display_components": "convert-then-quantize-per-line-component-then-sum",
+    "estimate_total_requantization": "none",
+    "line_order": "stable-line-id-ascending",
+    "rounding_adjustment": "sum-of-line-total-minus-reconciled-rounded-components",
+    "total": "exact-sum-of-quantized-line-totals"
+  },
+  "fx": {
+    "authority_ref": null,
+    "intermediate_quantization": "none",
+    "missing_stale_or_ambiguous_rate": "FX_RATE_UNAVAILABLE",
+    "rate_direction": "estimate-currency-units-per-one-source-currency-unit",
+    "stage": "after-all-discount-and-tax-calculation-before-output-quantization"
+  },
+  "line_calculation": {
+    "discount_then_tax": true,
+    "gross": "quantity-times-unit-price-in-source-currency",
+    "inclusive_price_discount_base": "extract-pre-discount-tax-exclusive-base-before-discount",
+    "invalid_input_outcome": "ESTIMATE_INPUT_INVALID",
+    "invalid_quantity_policy": "positive-only-candidate; zero-or-negative-requires-explicit-approved-successor-policy",
+    "operation_order": [
+      "validate-exact-basis-quantity-uom-currencies-and-policy-refs",
+      "gross_source=quantity*unit_price",
+      "resolve-tax-mode-and-pre-discount-base",
+      "apply-one-discount-to-pre-tax-base",
+      "calculate-explicitly-ordered-tax-components",
+      "net_source=taxable_base+sum(post-discount-tax-components)",
+      "apply-pinned-FX-after-tax",
+      "quantize-line-total-once-to-estimate-currency-quantum",
+      "quantize-display-components-per-line-and-calculate-bounded-rounding-adjustment",
+      "sum-quantized-line-totals-without-estimate-requantization"
+    ],
+    "output_line_total_quantization": "once-after-fx-to-approved-estimate-currency-quantum",
+    "output_rounding_mode": "ROUND_HALF_UP",
+    "source_final": "post-discount-base-plus-all-applicable-tax-components",
+    "tax_component_order": "explicit-ascending-tax_order"
+  },
+  "profile_id": "r2-commercial-v1",
+  "required_unset_policy_refs": [
+    "input_scale_policy",
+    "allowed_source_currencies",
+    "allowed_estimate_currencies",
+    "currency_quantum_table_ref",
+    "allowed_discount_types",
+    "discount_limits",
+    "jurisdiction_policy_ref",
+    "category_mapping_ref",
+    "tax_source_authority_ref",
+    "fx_authority_ref"
+  ],
+  "schema": "spine.calculation_profile_candidate.v1",
+  "serialization": {
+    "arrays": "schema-defined order; lines by stable line_id; taxes by tax_order then stable tax_id",
+    "decimal": "finite-base-10-fixed-point-string; strip insignificant trailing zeroes; canonical zero is 0; no exponent notation",
+    "digest": "SHA-256 over canonical payload bytes; exclude approval metadata and digest field",
+    "encoding": "UTF-8",
+    "object_keys": "lexicographic"
+  },
+  "status": "PROPOSED_PENDING_FINANCE_TAX_APPROVAL",
+  "tax": {
+    "category_mapping_ref": null,
+    "component_formula_required": true,
+    "component_order_required": true,
+    "explicit_approved_non_taxable_basis_required": true,
+    "inclusive_equation": "gross_source=base_before_discount+sum(included_tax_i_before_discount)",
+    "inclusive_extraction": "solve-tax-exclusive-base-from-exact-ordered-inclusive-components",
+    "jurisdiction_policy_ref": null,
+    "mixed_inclusion_modes_on_one_line": "BLOCK_TAX_RULE_UNRESOLVED",
+    "multiple_non_compound_inclusive_base": "gross_source/(1+sum(included_component_rates))",
+    "supported_jurisdiction_missing_rate": "TAX_RULE_UNRESOLVED",
+    "tax_component_formula": "tax_i=rate_i*(taxable_base+sum(tax_j_named_by_approved_compound_base_refs_i))",
+    "tax_source_authority_ref": null,
+    "unsupported_jurisdiction": "TAX_JURISDICTION_UNSUPPORTED"
+  },
+  "version": 1
+}

@@ -5,7 +5,7 @@
 **Parent:** [R2 map #584](https://github.com/alkselsv/spine/issues/584)
 **Baseline:** `main` `a272e982db26cb92170cd633c279c5857ab112f1` (2026-11-07)
 
-Separate decisions are recorded in the [Product Owner record](issue-586-product-owner-decision-v1.md), [Finance checklist](issue-586-finance-approval-checklist-v1.md), [Security record](issue-586-security-approval-record-v1.md), [Data record](issue-586-data-approval-record-v1.md), and [Architecture record](issue-586-architecture-acceptance-v1.md). They are all pending.
+Separate decisions are recorded in the [Product Owner record](issue-586-product-owner-decision-v1.md), [Finance checklist](issue-586-finance-approval-checklist-v1.md), [Security record](issue-586-security-approval-record-v1.md), [Data record](issue-586-data-approval-record-v1.md), and [Architecture record](issue-586-architecture-acceptance-v1.md). Product Owner scope is accepted; Finance, Security, Data and Architecture remain pending.
 
 This handoff makes the proposed Option 2 reviewable as implementation contracts. It does not authorize schemas, database tables, migrations or runtime code before the role decisions and unresolved parameters listed here are approved. These are contract sketches; use existing canonical source, artifact, authorization, WorkflowRun and audit boundaries.
 
@@ -98,12 +98,12 @@ CalculationProfile:v1
   decimal_precision, input_scale_policy, overflow_policy
   currency_exponent_table_ref
   rounding_mode, line_quantization_stage, total_quantization_stage
-  quantity_sign/zero policy, discount order, tax order
-  intermediate_precision, fx_conversion_stage
+  quantity_sign/zero policy, discount basis/order, tax inclusion/formula policy
+  intermediate_precision, fx_conversion_stage, currency quantum policy
   engine_semver, canonicalization_version
 ```
 
-Candidate rounding mode `ROUND_HALF_UP` is not approved. Profile cannot omit a behavior that affects numeric output. Engine version identifies formula behavior; rule/tax/FX data versions identify input policy.
+Candidate precision 34 significant digits and rounding mode `ROUND_HALF_UP` are not approved. The candidate profile and exact inclusive/exclusive/reconciliation equations are in `issue-586-calculation-profile-candidate-v1.json` and the Finance checklist. A profile cannot omit a behavior that affects numeric output. Engine version identifies formula behavior; rule/tax/FX data versions identify input policy.
 
 ### EstimateLine
 
@@ -187,18 +187,24 @@ calculate(estimate_input_snapshot, approved_profile):
   validate all Decimal values are finite and all refs/digests/units/currencies match
   for each line in stable input order:
     gross_exact = quantity * unit_price
-    discount_exact = apply_approved_discount(gross_exact, approved_policy)
-    tax_components = apply_ordered_tax_rules(gross_exact, discount_exact, exact_tax_basis)
-    net_source = compute_net_source_amount(gross_exact, discount_exact, tax_components)
+    tax_mode = resolve_exact_tax_mode_and_ordered_components(exact_tax_basis)
+    base_before_discount = gross_exact if exclusive else extract_inclusive_base(gross_exact, exact_tax_basis)
+    discount_exact = apply_one_approved_discount(base_before_discount, approved_policy)
+    taxable_base = base_before_discount - discount_exact
+    tax_components = calculate_exact_components(taxable_base, exact_tax_basis)
+    net_source = taxable_base + sum(tax_components)
     converted_line = apply_exact_FX_after_tax(net_source, exact FXBasis)
     line_total = quantize_once(converted_line, output_currency_quantum, output_rounding)
+    displayed_components = quantize_each_converted_line_component_once(...)
+    line_rounding_adjustment = line_total - reconciled_displayed_components
   Estimate.total = exact_sum(line_total in stable line identity order) # no second rounding
-  summary components = aggregate exact converted components, then quantize once
-  rounding_adjustment = Estimate.total - reconciled_display_components
+  summary components = exact_sum(per-line rounded display components)
+  rounding_adjustment = exact_sum(line_rounding_adjustment)
+  enforce reconciliation identity and quantization-derived adjustment bound
   emit Estimate successor, exact provenance, calculation trace and outcome
 ```
 
-This is one concrete proposed CalculationProfile for Finance review: candidate context precision 34 significant digits; approved discount before tax; explicit ordered tax components and compound flags; approved inclusive extraction formula; FX after tax and before output rounding; one output-quantum rounding per line total; Estimate total as the sum of rounded lines; and explicit rounded summary components plus a visible rounding adjustment. Candidate output mode is `ROUND_HALF_UP`. The exact proposal and Finance approval fields are in the [Finance checklist](issue-586-finance-approval-checklist-v1.md). Precision, source currencies, FX provider/rate policy, tax rules and discounts remain unapproved values. Stable ordering and canonical serialization are required for replay and digest stability.
+This is one proposed CalculationProfile for Finance review. Tax mode/base resolution precedes discount because an inclusive amount must first be separated into its pre-discount tax-exclusive base; the discount is then applied to that base and taxes recomputed. Mixed inclusion modes fail closed without an explicitly approved joint formula. FX occurs after tax and before quantization. Display components are quantized per line then summed; the visible adjustment is only the sum of per-line quantization residuals and is bounded. Candidate precision is 34 significant digits and output mode `ROUND_HALF_UP`; neither is approved. See the [Finance checklist](issue-586-finance-approval-checklist-v1.md) and exact [CalculationProfile candidate](issue-586-calculation-profile-candidate-v1.json). Currency, FX, tax, discount and rounding parameters remain pending.
 
 ### Idempotency identity
 
@@ -278,4 +284,4 @@ Dependencies: A precedes B–I; B precedes C; approved D4–D7 parameters preced
 
 Implementation may be specified after each required role decision has an attributable reference, the open parameters that affect contract shape are resolved, and Architecture confirms the canonical transaction boundary. Production-ready claim additionally requires the deterministic synthetic suite, current authorization and tenancy contracts, idempotent audit/outbox handling, artifact successor/reapproval behavior, and a reviewable manager UI/API surface for the R2 slice. Actual tariff data, FX rates and tax values must enter only through approved governed sources; they do not belong in this handoff or synthetic fixture as factual claims.
 
-**Decision state:** Product Owner scope for Option 2 and product-scoped D1–D10 principles is ACCEPTED against package v1.1 SHA-256 `73c04fc138dcb36c34fff57169085ddbd87ada19b15d8be31dc4eae54b4e8325`; Finance, Security, Data and Architecture portions remain pending. See the [attributed Product Owner decision record](issue-586-product-owner-decision-v1.md). **Execution state:** no pricing engine, migration, table or runtime contract is implemented by this package.
+**Decision state:** Product Owner scope for Option 2 and product-scoped D1–D10 principles is ACCEPTED against package v1.1 SHA-256 `73c04fc138dcb36c34fff57169085ddbd87ada19b15d8be31dc4eae54b4e8325`; Finance, Security, Data and Architecture portions remain pending. See the [attributed Product Owner decision record](issue-586-product-owner-decision-v1.md). Finance/Tax CalculationProfile v1 is proposed only. **Execution state:** no pricing engine, migration, table or runtime contract is implemented by this package.
