@@ -2679,6 +2679,10 @@ detectors без специальных обходов в platform core.
   approved internal policy for future Gmail Option B content disposition,
   canonical lineage erasure, per-store fences and quarantined restore;
   implementation qualification remains pending and live Gmail remains NO-GO.
+- [ADR-062 (proposed, revision 2)](adr/0062-canonical-pricing-authority-and-estimate-commit-v2.md):
+  PostgreSQL-canonical pricing authority, immutable source/Estimate versions,
+  activation lifecycle, exact-version CAS, audit/outbox/idempotency and R2 workflow reuse;
+  exact ADR text acceptance and implementation qualification remain pending.
 - ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.

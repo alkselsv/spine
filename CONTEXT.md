@@ -421,6 +421,40 @@ actor, including observable state, artifact references and currently available
 commands without exposing the orchestrator's internal state.
 _Avoid_: Temporal history, serialized workflow state, chat transcript
 
+### Commercial pricing
+
+**Estimate**:
+An immutable versioned calculation of proposed commercial work, including its priced lines, exact basis and calculation policy. Approval applies only to that exact version.
+_Avoid_: mutable quote, approved price list
+
+**Estimate Line**:
+One priced unit of work in an Estimate, with an explicit quantity, unit of measure and exact Pricing Basis.
+_Avoid_: free-form total, inferred service price
+
+**Price Item**:
+A stable identity for a commercial service or item within its governed workspace/environment scope. Its source-row location is evidence for one source revision, not the identity itself.
+_Avoid_: spreadsheet row, similar label
+
+**Pricing Basis**:
+The exact approved price fact selected for an Estimate Line, including its authority, scope, source revision, unit, currency and effective period.
+_Avoid_: historical analogue, retrieved price
+
+**Pricing Authority**:
+An attributable decision that an exact immutable price source version may establish financial facts within a declared scope. It is separate from permission to read that source.
+_Avoid_: document access, import success, model suggestion
+
+**Price Book**:
+An immutable scoped collection of approved Price Items and their effective commercial terms. A new source version requires new validation and approval before use.
+_Avoid_: mutable tariff sheet, latest imported file
+
+**Tax Basis**:
+An immutable approved rule set determining tax applicability and calculation for an explicit jurisdiction, service category and effective period.
+_Avoid_: inferred tax rate, service-name guess
+
+**Calculation Profile**:
+A versioned deterministic specification of monetary inputs, decimal operations, currency conversion, tax/discount order, rounding and canonical result identity.
+_Avoid_: LLM arithmetic, unversioned formula
+
 ### Access and authorization
 
 **Actor Reference**:
