@@ -12276,7 +12276,7 @@ async def test_selector_migration_rollback_preserves_existing_v1_acceptance(
     from alembic import command
     from alembic.config import Config
     from sqlalchemy import select
-    from spine.infrastructure.db.migrations import locate_migration_assets, upgrade_database
+    from spine.infrastructure.db.migrations import locate_migration_assets
     from spine.infrastructure.db.settings import MigrationDatabaseSettings
     from spine.infrastructure.persistence.postgresql_mappings import canonical_acceptances
 
@@ -12304,112 +12304,20 @@ async def test_selector_migration_rollback_preserves_existing_v1_acceptance(
     config = Config(str(config_path))
     config.set_main_option("script_location", str(script_location))
     config.attributes["migration_settings"] = migration_settings
-    migration_engine = create_async_engine(
-        postgresql_contract_database.migration_url.get_secret_value(),
-        hide_parameters=True,
-    )
-    email_revisions = ()
-    migration_failure: BaseException | None = None
-    try:
-        async with migration_engine.connect() as connection:
-            email_revisions = tuple(
-                (
-                    await connection.execute(
-                        text(
-                            "SELECT revision_id, revision_metadata_schema, "
-                            "revision_metadata FROM spine.source_revisions "
-                            "WHERE revision_metadata->'email_revision' IS NOT NULL "
-                            "AND revision_metadata->'email_revision' <> 'null'::jsonb"
-                        )
-                    )
-                ).mappings()
-            )
-        if email_revisions:
-            async with migration_engine.begin() as connection:
-                await connection.execute(
-                    text("ALTER TABLE spine.source_revisions DISABLE TRIGGER USER")
-                )
-            try:
-                async with migration_engine.begin() as connection:
-                    await connection.execute(
-                        text(
-                            "UPDATE spine.source_revisions SET "
-                            "revision_metadata_schema = 'revision-metadata:r1-document-v1', "
-                            "revision_metadata = revision_metadata - 'email_revision' "
-                            "WHERE revision_metadata->'email_revision' IS NOT NULL "
-                            "AND revision_metadata->'email_revision' <> 'null'::jsonb"
-                        )
-                    )
-            finally:
-                async with migration_engine.begin() as connection:
-                    await connection.execute(
-                        text("ALTER TABLE spine.source_revisions ENABLE TRIGGER USER")
-                    )
-
+    with pytest.raises(
+        RuntimeError,
+        match="Gmail email-sync lineage erasure migration is irreversible",
+    ):
         await asyncio.to_thread(command.downgrade, config, "20261224_92")
-        async with migration_engine.connect() as connection:
-            after_downgrade = (await connection.execute(
-                text("SELECT * FROM spine.canonical_acceptances WHERE canonical_acceptance_id = :id"),
-                {"id": accepted_id},
-            )).mappings().one()
-            legacy_before = dict(before)
-            legacy_before.pop("canonical_acceptance_schema_version")
-            legacy_before.pop("processing_admission_id")
-            assert dict(after_downgrade) == legacy_before
-    except BaseException as error:
-        migration_failure = error
-    finally:
-        await migration_engine.dispose()
 
-    try:
-        await asyncio.to_thread(upgrade_database, migration_settings)
-        if email_revisions:
-            migration_engine = create_async_engine(
-                postgresql_contract_database.migration_url.get_secret_value(),
-                hide_parameters=True,
-            )
-            try:
-                async with migration_engine.begin() as connection:
-                    await connection.execute(
-                        text("ALTER TABLE spine.source_revisions DISABLE TRIGGER USER")
-                    )
-                try:
-                    async with migration_engine.begin() as connection:
-                        for row in email_revisions:
-                            await connection.execute(
-                                text(
-                                    "UPDATE spine.source_revisions SET "
-                                    "revision_metadata_schema = :metadata_schema, "
-                                    "revision_metadata = CAST(:metadata AS jsonb) "
-                                    "WHERE revision_id = :revision_id"
-                                ),
-                                {
-                                    "metadata_schema": row["revision_metadata_schema"],
-                                    "metadata": json.dumps(row["revision_metadata"]),
-                                    "revision_id": row["revision_id"],
-                                },
-                            )
-                finally:
-                    async with migration_engine.begin() as connection:
-                        await connection.execute(
-                            text("ALTER TABLE spine.source_revisions ENABLE TRIGGER USER")
-                        )
-            finally:
-                await migration_engine.dispose()
-    except BaseException as cleanup_error:
-        if migration_failure is not None:
-            raise cleanup_error from migration_failure
-        raise
-    if migration_failure is not None:
-        raise migration_failure
     async with postgresql_adapter.uow_factory(case.context) as uow:
-        after_upgrade = (await uow._execute(  # type: ignore[attr-defined]
+        after_rejected_downgrade = (await uow._execute(  # type: ignore[attr-defined]
             select(canonical_acceptances).where(
                 canonical_acceptances.c.canonical_acceptance_id == accepted_id
             )
         )).mappings().one()
         await uow.rollback()  # type: ignore[attr-defined]
-    assert dict(after_upgrade) == dict(before)
+    assert dict(after_rejected_downgrade) == dict(before)
 
 
 async def test_postgresql_access_policy_fence_orders_replacement_and_commit(

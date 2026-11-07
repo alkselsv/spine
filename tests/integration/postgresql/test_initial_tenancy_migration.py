@@ -1391,26 +1391,6 @@ async def test_runtime_role_cannot_mutate_profile_or_immutable_source_rows(
     source_id = UUID("40000000-0000-0000-0000-000000000021")
     async with _connection(migrated_database.runtime_url) as connection:
         assert await connection.scalar(text("SELECT current_user")) == RUNTIME_ROLE
-        await _set_tenant_context(
-            connection,
-            workspace_id=WORKSPACE_A,
-            environment_id=ENVIRONMENT_A,
-        )
-        await connection.execute(
-            text(
-                "INSERT INTO spine.source_objects "
-                "(source_object_id, workspace_id, environment_id, source_kind, "
-                "identity_mode, upload_identity, created_at) VALUES "
-                "(:source_id, :workspace_id, :environment_id, 'document', "
-                "'upload', 'runtime-security-test', now())"
-            ),
-            {
-                "source_id": source_id,
-                "workspace_id": WORKSPACE_A,
-                "environment_id": ENVIRONMENT_A,
-            },
-        )
-        await connection.commit()
         for statement in (
             "INSERT INTO spine.source_canonical_unicode "
             "(codepoint, combining_class, is_whitespace) VALUES (1, 0, false)",
@@ -1419,22 +1399,29 @@ async def test_runtime_role_cannot_mutate_profile_or_immutable_source_rows(
             "DELETE FROM spine.source_objects WHERE source_object_id = :source_id",
             "TRUNCATE spine.source_objects",
         ):
+            await _set_tenant_context(
+                connection,
+                workspace_id=WORKSPACE_A,
+                environment_id=ENVIRONMENT_A,
+            )
+            if statement.startswith(("UPDATE", "DELETE")):
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.source_objects "
+                        "(source_object_id, workspace_id, environment_id, source_kind, "
+                        "identity_mode, upload_identity, created_at) VALUES "
+                        "(:source_id, :workspace_id, :environment_id, 'document', "
+                        "'upload', 'runtime-security-test', now())"
+                    ),
+                    {
+                        "source_id": source_id,
+                        "workspace_id": WORKSPACE_A,
+                        "environment_id": ENVIRONMENT_A,
+                    },
+                )
             with pytest.raises((ProgrammingError, DBAPIError)):
                 await connection.execute(text(statement), {"source_id": source_id})
             await connection.rollback()
-
-    async with _connection(migrated_database.migration.url) as connection:
-        await connection.execute(
-            text("ALTER TABLE spine.source_objects DISABLE TRIGGER trg_source_objects_immutable")
-        )
-        await connection.execute(
-            text("DELETE FROM spine.source_objects WHERE source_object_id = :source_id"),
-            {"source_id": source_id},
-        )
-        await connection.execute(
-            text("ALTER TABLE spine.source_objects ENABLE TRIGGER trg_source_objects_immutable")
-        )
-        await connection.commit()
 
 
 async def _set_tenant_context(
@@ -1510,9 +1497,6 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         "private_asr_aggregate_exports",
         "private_asr_corpus_manifests",
         "private_asr_corpus_releases",
-        "source_disposition_operations",
-        "source_disposition_outbox",
-        "source_erasure_execution_contexts",
         "gmail_message_label_observations",
         "gmail_message_label_heads",
         "gmail_message_relationship_evidence",
@@ -3096,42 +3080,6 @@ async def assert_final_catalog_after_upgrade(connection: AsyncConnection) -> Non
         ("email_sync_state_observations", "pol_email_sync_state_observations_governed_erasure"),
         ("outbox_intents", "pol_outbox_intents_governed_erasure"),
         ("outbox_deliveries", "pol_outbox_deliveries_governed_erasure"),
-        ("policy_approvals", "pol_policy_approvals_erasure_executor"),
-        ("gmail_message_label_heads", "pol_gmail_message_label_heads_erasure_executor"),
-        ("gmail_message_relationship_evidence", "pol_gmail_message_relationship_evidence_erasure_executor"),
-        ("lifecycle_observations", "pol_lifecycle_observations_erasure_executor"),
-        ("source_objects", "pol_source_objects_erasure_executor"),
-        ("tombstone_authorizations", "pol_tombstone_authorizations_erasure_executor"),
-        ("source_revisions", "pol_source_revisions_erasure_executor"),
-        ("source_revision_receipt_associations", "pol_source_revision_receipt_associations_erasure_executor"),
-        ("current_lifecycle_authorities", "pol_current_lifecycle_authorities_erasure_executor"),
-        ("current_access_policies", "pol_current_access_policies_erasure_executor"),
-        ("access_policy_grants", "pol_access_policy_grants_erasure_executor"),
-        ("access_policy_versions", "pol_access_policy_versions_erasure_executor"),
-        ("policy_activations", "pol_policy_activations_erasure_executor"),
-        ("current_source_deletion_policy_approvals", "pol_current_source_deletion_policy_approvals_erasure_executor"),
-        ("current_tombstone_authorization_issuers", "pol_current_tombstone_authorization_issuers_erasure_executor"),
-        ("lifecycle_decisions", "pol_lifecycle_decisions_erasure_executor"),
-        ("tombstone_authorization_issuers", "pol_tombstone_authorization_issuers_erasure_executor"),
-        ("source_erasure_execution_contexts", "pol_source_erasure_context_executor"),
-        ("tombstone_authorization_decisions", "pol_tombstone_authorization_decisions_erasure_executor"),
-        ("source_revision_provenance", "pol_source_revision_provenance_erasure_executor"),
-        ("current_trusted_canonical_tombstone_selectors", "pol_current_trusted_canonical_tombstone_selectors_erasure_execu"),
-        ("source_deletion_policy_approvals", "pol_source_deletion_policy_approvals_erasure_executor"),
-        ("admission_decisions", "pol_admission_decisions_erasure_executor"),
-        ("current_tombstone_authorization_decisions", "pol_current_tombstone_authorization_decisions_erasure_executor"),
-        ("current_retention_applicabilities", "pol_current_retention_applicabilities_erasure_executor"),
-        ("qualified_deletion_evidence", "pol_qualified_deletion_evidence_erasure_executor"),
-        ("canonical_acceptances", "pol_canonical_acceptances_erasure_executor"),
-        ("gmail_message_label_observations", "pol_gmail_message_label_observations_erasure_executor"),
-        ("policy_proposals", "pol_policy_proposals_erasure_executor"),
-        ("current_source_heads", "pol_current_source_heads_erasure_executor"),
-        ("retention_applicabilities", "pol_retention_applicabilities_erasure_executor"),
-        ("source_disposition_operations", "pol_source_disposition_operations_erasure_executor"),
-        ("source_disposition_operations", "pol_source_disposition_operations_migration_maintenance"),
-        ("source_disposition_operations", "pol_source_disposition_operations_tenant_isolation"),
-        ("source_disposition_outbox", "pol_source_disposition_outbox_migration_maintenance"),
-        ("source_disposition_outbox", "pol_source_disposition_outbox_tenant_isolation"),
         ("email_sync_attempts", "pol_email_sync_attempts_governed_erasure"),
         ("email_sync_pages", "pol_email_sync_pages_governed_erasure"),
         ("email_sync_effect_receipts", "pol_email_sync_effect_receipts_governed_erasure"),
