@@ -10,7 +10,7 @@ import json
 from typing import Literal, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationInfo, model_validator
 
 from spine.application.diagnostics import DiagnosticContext
 from spine.application.outbox import OutboxConsumerSuccess
@@ -200,7 +200,14 @@ class EmailSyncPage(DefinitionModel):
     lifecycle_receipts: tuple[EmailLifecycleReceipt, ...] = ()
 
     @model_validator(mode="after")
-    def validate_effects(self) -> EmailSyncPage:
+    def validate_effects(self, info: ValidationInfo) -> EmailSyncPage:
+        if (
+            self.page_id.startswith("erased.")
+            and not (info.context or {}).get("allow_erased_page_identity")
+        ):
+            raise ValueError(
+                "page identities prefixed with 'erased.' are reserved for erased page lineage"
+            )
         keys = tuple(effect.effect_key for effect in self.effects)
         if len(keys) != len(set(keys)):
             raise ValueError("page effect keys must be unique")
@@ -1167,7 +1174,8 @@ class EmailSyncCoordinator:
                     "effect_receipts",
                     "committed",
                 },
-            )
+            ),
+            context={"allow_erased_page_identity": True},
         )
 
     @staticmethod

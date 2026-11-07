@@ -5,6 +5,7 @@ from datetime import timedelta
 import hashlib
 import json
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -1796,6 +1797,15 @@ async def test_governed_erasure_preserves_canonical_message_b_on_shared_email_sy
             ).mappings().one()
             surviving = result["record"]["effects"]
             assert result["page_id"].startswith("erased.")
+            with pytest.raises(
+                ValidationError, match="reserved for erased page lineage"
+            ):
+                EmailSyncPage(
+                    workspace_id=binding.workspace_id,
+                    environment_id=binding.environment_id,
+                    page_id=result["page_id"],
+                    effects=(),
+                )
             assert result["committed_checkpoint"] == "gmail-history:v1:110"
             assert result["revision"] == 2
             assert [effect["effect_key"] for effect in surviving] == [
