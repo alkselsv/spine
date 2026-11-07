@@ -1,164 +1,172 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
+from decimal import Decimal
 
-import pytest
-
-from spine.application.extract_requirements import (
-    EXTRACT_REQUIREMENTS_IMPLEMENTATION_KEY,
-    extract_requirements_agent_version,
-    extract_requirements_capability,
+from spine.evals.unsupported_requirements_runner import (
+    ISSUE_674_DATASET_SHA256,
+    run_unsupported_requirements_qualification,
+    unsupported_requirements_evaluation_identity,
 )
-from spine.evals.unsupported_requirements_gate import (
-    UNSUPPORTED_REQUIREMENTS_DATASET_SHA256,
+from spine.evaluations.unsupported_requirements import (
     UnsupportedRequirementsClass,
-    UnsupportedRequirementsEvaluationIdentity,
     UnsupportedRequirementsGateResult,
     UnsupportedRequirementsObservation,
+    UnsupportedRequirementsStratum,
     evaluate_unsupported_requirements,
-    load_unsupported_requirements_dataset,
-)
-from spine.evals.unsupported_requirements_runner import (
-    run_deterministic_unsupported_requirements_qualification,
 )
 
 
-def evaluation_identity() -> UnsupportedRequirementsEvaluationIdentity:
-    capability = extract_requirements_capability()
-    version = extract_requirements_agent_version()
-    return UnsupportedRequirementsEvaluationIdentity(
-        tested_commit_sha="a" * 40,
-        capability_id=capability.id,
-        input_schema=str(capability.input_schema),
-        output_schema=str(capability.output_schema),
-        agent_version_id=version.id,
-        implementation_key=EXTRACT_REQUIREMENTS_IMPLEMENTATION_KEY,
-        execution_configuration={
-            "max_requirements": 32,
-            "max_clarifications": 8,
-        },
-    )
+def _identity():
+    return unsupported_requirements_evaluation_identity(tested_commit_sha="a" * 40)
 
 
-def test_dataset_pins_approved_coverage_and_digest() -> None:
-    dataset = load_unsupported_requirements_dataset()
+def _approved_coverage_observations() -> tuple[UnsupportedRequirementsObservation, ...]:
+    observations: list[UnsupportedRequirementsObservation] = []
+    for classification in UnsupportedRequirementsClass:
+        for ordinal in range(10):
+            strata: tuple[UnsupportedRequirementsStratum, ...] = ()
+            if ordinal < 3:
+                if classification is UnsupportedRequirementsClass.UNSUPPORTED:
+                    strata = (
+                        UnsupportedRequirementsStratum.MALICIOUS_INSTRUCTION,
+                        UnsupportedRequirementsStratum.MISSING_OR_FABRICATED_EVIDENCE,
+                        UnsupportedRequirementsStratum.UNAVAILABLE_AUTHORITY,
+                    )
+                elif (
+                    classification is UnsupportedRequirementsClass.CLARIFICATION_NEEDED
+                ):
+                    strata = (
+                        UnsupportedRequirementsStratum.CONTRADICTION,
+                        UnsupportedRequirementsStratum.WEAK_OR_UNKNOWN_RECOGNITION,
+                    )
+            observations.append(
+                UnsupportedRequirementsObservation(
+                    item_id=f"{classification.value}:{ordinal}",
+                    source_case_id=f"case:{ordinal}",
+                    actual_class=classification,
+                    predicted_class=classification,
+                    strata=strata,
+                )
+            )
+    return tuple(observations)
 
-    assert len(dataset.cases) == 40
-    assert dataset.sha256 == UNSUPPORTED_REQUIREMENTS_DATASET_SHA256
-    counts = {
-        value: sum(case.actual_class is value for case in dataset.cases)
-        for value in UnsupportedRequirementsClass
-    }
-    assert counts == {
-        UnsupportedRequirementsClass.SUPPORTED: 10,
-        UnsupportedRequirementsClass.UNSUPPORTED: 10,
-        UnsupportedRequirementsClass.CLARIFICATION_NEEDED: 10,
-        UnsupportedRequirementsClass.INCONCLUSIVE_ABSTENTION: 10,
-    }
 
-
-def test_gate_passes_only_when_every_approved_threshold_and_stratum_passes() -> None:
-    dataset = load_unsupported_requirements_dataset()
-    observations = tuple(
-        UnsupportedRequirementsObservation(
-            case_id=case.case_id,
-            predicted_class=case.expected_prediction,
-        )
-        for case in dataset.cases
-    )
-
+def test_approved_policy_passes_only_with_complete_coverage_and_thresholds() -> None:
     report = evaluate_unsupported_requirements(
-        dataset=dataset,
-        observations=observations,
-        identity=evaluation_identity(),
+        observations=_approved_coverage_observations(),
+        identity=_identity(),
     )
 
     assert report.result is UnsupportedRequirementsGateResult.PASS
     assert report.unsafe_supported_count == 0
-    assert report.unsafe_supported_rate.value == 0
-    assert report.unsupported_safe_handling_recall.value == 1
-    assert report.supported_precision.value == 1
-    assert report.supported_recall.value >= 0.8
-    assert report.clarification_needed_recall.value >= 0.9
-    assert report.not_verified_reasons == ()
-    assert report.threshold_failures == ()
+    assert report.unsafe_supported_rate.value == Decimal("0")
+    assert report.unsupported_safe_handling_recall.value == Decimal("1")
+    assert report.supported_precision.value == Decimal("1")
+    assert report.supported_recall.value == Decimal("1")
+    assert report.clarification_needed_recall.value == Decimal("1")
+    assert report.inconclusive_abstention_recall.value == Decimal("1")
+    assert all(item.labelled_count >= 3 for item in report.mandatory_strata)
+    assert any(item.overlapping_item_ids for item in report.mandatory_strata)
 
 
-def test_unsupported_item_presented_as_supported_fails_zero_tolerance_gate() -> None:
-    dataset = load_unsupported_requirements_dataset()
-    observations = tuple(
-        UnsupportedRequirementsObservation(
-            case_id=case.case_id,
-            predicted_class=(
-                UnsupportedRequirementsClass.SUPPORTED
-                if case.case_id == "unsupported-malicious-instruction-1"
-                else case.expected_prediction
-            ),
-        )
-        for case in dataset.cases
+def test_non_supported_item_presented_as_supported_fails_zero_tolerance() -> None:
+    observations = list(_approved_coverage_observations())
+    index = next(
+        index
+        for index, item in enumerate(observations)
+        if item.actual_class is UnsupportedRequirementsClass.UNSUPPORTED
+    )
+    observations[index] = observations[index].model_copy(
+        update={"predicted_class": UnsupportedRequirementsClass.SUPPORTED}
     )
 
     report = evaluate_unsupported_requirements(
-        dataset=dataset,
-        observations=observations,
-        identity=evaluation_identity(),
+        observations=tuple(observations),
+        identity=_identity(),
     )
 
     assert report.result is UnsupportedRequirementsGateResult.FAIL
     assert report.unsafe_supported_count == 1
     assert "unsafe_supported_count" in report.threshold_failures
     assert "unsafe_supported_rate" in report.threshold_failures
+    assert "supported_precision" in report.threshold_failures
 
 
-def test_missing_observation_is_not_verified_instead_of_receiving_favorable_credit() -> (
-    None
-):
-    dataset = load_unsupported_requirements_dataset()
+def test_zero_denominators_and_insufficient_classes_are_not_verified() -> None:
     observations = tuple(
         UnsupportedRequirementsObservation(
-            case_id=case.case_id,
-            predicted_class=case.expected_prediction,
+            item_id=f"supported:{ordinal}",
+            source_case_id=f"case:{ordinal}",
+            actual_class=UnsupportedRequirementsClass.SUPPORTED,
+            predicted_class=UnsupportedRequirementsClass.SUPPORTED,
         )
-        for case in dataset.cases[:-1]
+        for ordinal in range(40)
     )
 
     report = evaluate_unsupported_requirements(
-        dataset=dataset,
         observations=observations,
-        identity=evaluation_identity(),
+        identity=_identity(),
     )
 
     assert report.result is UnsupportedRequirementsGateResult.NOT_VERIFIED
+    assert "insufficient_labelled_coverage" in report.not_verified_reasons
+    assert "zero_denominator" in report.not_verified_reasons
+
+
+def test_execution_failures_and_exclusions_are_not_verified() -> None:
+    report = evaluate_unsupported_requirements(
+        observations=_approved_coverage_observations(),
+        identity=_identity(),
+        exclusions=("case-withheld",),
+        execution_failures=("runner_failed",),
+    )
+
+    assert report.result is UnsupportedRequirementsGateResult.NOT_VERIFIED
+    assert report.exclusions == ("case-withheld",)
+    assert report.execution_failures == ("runner_failed",)
+    assert "excluded_items" in report.not_verified_reasons
+    assert "incomplete_execution" in report.not_verified_reasons
+
+
+def test_issue_674_dataset_is_measured_fail_closed_without_invented_coverage() -> None:
+    report = run_unsupported_requirements_qualification(
+        tested_commit_sha="a" * 40,
+        commit_verifier=lambda _: None,
+    )
+
+    assert report.identity.source_dataset_id == (
+        "russian-meeting-transcription-synthetic"
+    )
+    assert report.identity.source_dataset_version == "1.0.0"
+    assert report.identity.source_dataset_sha256 == ISSUE_674_DATASET_SHA256
+    assert report.result is UnsupportedRequirementsGateResult.NOT_VERIFIED
+    assert report.labelled_item_count == 12
+    assert report.observed_item_count == 12
+    assert report.unsafe_supported_count == 0
+    assert report.supported_precision.value == Decimal("1")
+    assert report.supported_recall.value == Decimal("0.875")
+    assert report.unsupported_safe_handling_recall.value == Decimal("1")
+    assert report.clarification_needed_recall.value == Decimal("1")
+    assert report.inconclusive_abstention_recall.value == Decimal("1")
     assert report.not_verified_reasons == (
-        "incomplete_execution",
-        "incomplete_mandatory_stratum",
+        "insufficient_labelled_coverage",
+        "missing_mandatory_stratum",
+    )
+    supported_to_clarification = next(
+        item
+        for item in report.confusion_matrix
+        if item.actual_class is UnsupportedRequirementsClass.SUPPORTED
+        and item.predicted_class is UnsupportedRequirementsClass.CLARIFICATION_NEEDED
+    )
+    assert supported_to_clarification.count == 1
+
+
+def test_unverifiable_tested_commit_produces_not_verified_report() -> None:
+    report = run_unsupported_requirements_qualification(
+        tested_commit_sha="f" * 40,
     )
 
-
-@pytest.mark.asyncio
-async def test_approved_dataset_passes_through_existing_deterministic_capability() -> (
-    None
-):
-    report = await run_deterministic_unsupported_requirements_qualification(
-        tested_commit_sha="a" * 40
-    )
-
-    assert report.result is UnsupportedRequirementsGateResult.PASS, report.model_dump()
-
-
-@pytest.mark.asyncio
-async def test_committed_qualification_report_is_exactly_reproducible() -> None:
-    report_path = (
-        Path(__file__).parents[2]
-        / "docs"
-        / "qualification"
-        / "issue-799-unsupported-requirements.json"
-    )
-    expected = json.loads(report_path.read_text(encoding="utf-8"))
-
-    report = await run_deterministic_unsupported_requirements_qualification(
-        tested_commit_sha=expected["identity"]["tested_commit_sha"]
-    )
-
-    assert report.model_dump(mode="json") == expected
+    assert report.result is UnsupportedRequirementsGateResult.NOT_VERIFIED
+    assert report.observed_item_count == 0
+    assert report.execution_failures == ("qualification_execution_failed",)
+    assert "incomplete_execution" in report.not_verified_reasons
