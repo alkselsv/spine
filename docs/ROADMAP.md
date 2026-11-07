@@ -98,9 +98,10 @@ deployment profile: runtime readiness (#560), пятиформатный canonic
 (#561), physical projection publication/recovery (#562) и реальный browser-flow
 без API mocking (#508) имеют `PASS`. Это не завершает релиз: approved private
 Golden Dataset ещё не прогнан через тот же production Q&A path, численные quality
-thresholds не утверждены, recovered application canary не квалифицирован, а
-финальный current-commit evidence aggregate и GO/NO-GO отсутствуют (#510, #511,
-#634, #16).
+thresholds не утверждены, а финальный current-commit evidence aggregate и
+GO/NO-GO отсутствуют (#510, #511, #16). Backup, isolated restore, projection
+recovery и recovered-application canary имеют связанный физический evidence chain
+и independent approval (#509, #634).
 
 - [x] Надёжная загрузка PDF, DOCX, XLSX, Markdown и text с версиями и checksum.
       `implemented, integrated and qualified`: Q16-02 R4 прошёл deployed upload,
@@ -166,17 +167,12 @@ thresholds не утверждены, recovered application canary не квал
 
 ### Актуальные release blockers
 
-- #634 — provider-backed projection publication и один authorized Context Broker
-  canary на fresh recovered target. Run007 выполнил ровно один production
-  projection consumer invocation и подтвердил receipt, finalized snapshot,
-  activation, active publication, reconciliation и source-revision lineage для
-  synthetic recovery data. Broker не вызывался: pre-Broker проверка обнаружила,
-  что production evidence verifier требовал interactive authority вместо
-  server-only noninteractive path. Mode-aware evidence authorization,
-  one-shot qualified Broker boundary и единая Broker-only persistence authority
-  реализованы и покрыты offline-тестами, но после этих изменений fresh canary не
-  выполнялся. Нужны новый отдельно авторизованный run, ровно один Broker request
-  с Context Bundle evidence и independent evidence review.
+- #509 / #634 — `qualified`: coherent backup, isolated restore, reconciliation,
+  projection recovery/publication и ровно один authorized Context Broker canary
+  прошли на fresh synthetic recovery target; immutable evidence получил
+  independent approval. Это bounded recovery qualification, а не release GO или
+  cutover authority. Independent provider usage metering остаётся явно
+  непроверенным и не используется для cost claim.
 - #510 — полный 149-case run approved Golden Dataset через production durable
   Q&A/capture path, metadata-only baseline и отдельное утверждение versioned
   numerical thresholds Product Owner-ом.
@@ -188,13 +184,11 @@ thresholds не утверждены, recovered application canary не квал
 
 ### Текущий release verdict
 
-`NO-GO`: продуктовый R1 путь реализован и квалифицирован на зафиксированных
-изолированных deployment targets, но release qualification ещё не завершена.
-Отсутствие завершённого recovered-application canary, реального
-baseline/approved thresholds или единого совместимого evidence package является
-блокирующим, а не неявным `PASS`. Физический restore/recovery basis уже проверен;
-не закрыта provider-backed проверка приложения и Context Broker на восстановленном
-target.
+`NO-GO`: продуктовый R1 путь и bounded backup/recovery path квалифицированы на
+зафиксированных изолированных deployment targets, но release qualification ещё
+не завершена. Отсутствие реального baseline/approved thresholds или единого
+совместимого current-commit evidence package является блокирующим, а не неявным
+`PASS`.
 
 ### Exit criteria
 

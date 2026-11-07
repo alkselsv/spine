@@ -48,6 +48,9 @@ APPLICATION_RECOVERY_DIAGNOSTIC_PATH = (
 NEO4J_RUNTIME_COMPATIBILITY_REPORT_PATH = (
     PROJECT_ROOT / "docs/qualification/issue-509-neo4j-runtime-compatibility-v1.json"
 )
+FINAL_QUALIFICATION_REPORT_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-final-qualification-v1.json"
+)
 COMPOSE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/compose.yaml"
 DOCKERIGNORE_PATH = PROJECT_ROOT / ".dockerignore"
 QUALIFICATION_DOCKERFILE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/Dockerfile"
@@ -121,6 +124,111 @@ def _load_neo4j_runtime_compatibility_report() -> dict[str, Any]:
     return json.loads(
         NEO4J_RUNTIME_COMPATIBILITY_REPORT_PATH.read_text(encoding="utf-8")
     )
+
+
+def _load_final_qualification_report() -> dict[str, Any]:
+    return json.loads(FINAL_QUALIFICATION_REPORT_PATH.read_text(encoding="utf-8"))
+
+
+def test_issue509_final_report_closes_every_acceptance_criterion() -> None:
+    report = _load_final_qualification_report()
+
+    assert report["schema_version"] == "r1-backup-recovery-final-qualification:v1"
+    assert report["report_id"] == "issue-509:final-qualification:v1"
+    assert report["ticket"] == 509
+    assert report["parent_ticket"] == 16
+    assert report["immutable"] is True
+    assert report["content_free"] is True
+    assert report["decision"] == "verified_pending_independent_review"
+    assert report["production_qualified"] is False
+    assert report["qualification_scope"] == "synthetic_disposable_recovery_profile"
+    assert report["cutover_authorized"] is False
+    assert {criterion["criterion_id"] for criterion in report["criteria"]} == (
+        EXPECTED_CRITERIA
+    )
+    assert all(criterion["status"] == "pass" for criterion in report["criteria"])
+    artifact_ids = {artifact["artifact_id"] for artifact in report["artifacts"]}
+    assert all(
+        set(criterion["evidence_artifact_ids"]) <= artifact_ids
+        for criterion in report["criteria"]
+    )
+    assert report["blocking_conditions"] == [
+        "independent_final_evidence_review_required"
+    ]
+
+
+def test_issue509_final_report_binds_immutable_physical_evidence() -> None:
+    report = _load_final_qualification_report()
+    artifacts = {artifact["artifact_id"]: artifact for artifact in report["artifacts"]}
+
+    expected = {
+        "issue509-recovery-attempt-v3": (
+            "docs/qualification/issue-509-recovery-attempt-v3.json",
+            "6a604e5c2c1f31f80f6a69d1af366197d35496b5366527f0b775e617d63bdd91",
+        ),
+        "issue509-projection-recovery-attempt-v1": (
+            "docs/qualification/issue-509-projection-recovery-attempt-v1.json",
+            "696c4e4342e047368ba4650162224a5b95f2ad8cec78b7d4966023b792cc953b",
+        ),
+        "issue634-recovered-application-canary-v9": (
+            "docs/qualification/issue-634-recovered-application-canary-v9.json",
+            "4648bdd561549bf1c4e349b79a2e19cc36e9be4b640cceb06912dccbaa013437",
+        ),
+        "issue634-recovered-application-canary-v9-review": (
+            "docs/qualification/issue-634-recovered-application-canary-v9-review.json",
+            "8258ed0f112191f7b561f1afc477e406cd21bb2476771fef6ed42cd12cea8ba1",
+        ),
+    }
+    assert set(artifacts) == set(expected)
+    for artifact_id, (relative_path, digest) in expected.items():
+        artifact = artifacts[artifact_id]
+        assert artifact["path"] == relative_path
+        assert artifact["sha256"] == digest
+        assert hashlib.sha256((PROJECT_ROOT / relative_path).read_bytes()).hexdigest() == (
+            digest
+        )
+
+    supporting_documents = {
+        document["path"]: document["sha256"]
+        for document in report["supporting_documents"]
+    }
+    assert supporting_documents == {
+        "deploy/qualification/issue-509/README.md": (
+            "e004d02639f1bcec87fc8da7456bbbb04207da102527d3b13cfbf03fdfddf980"
+        ),
+        "docs/runbooks/cognee-production-qualification.md": (
+            "ff84a7352bffb71592a05c4c88aaa6fd538d5f4316a1f605d4429adfb1ec3470"
+        ),
+    }
+    for relative_path, digest in supporting_documents.items():
+        assert hashlib.sha256((PROJECT_ROOT / relative_path).read_bytes()).hexdigest() == (
+            digest
+        )
+
+
+def test_issue509_final_report_preserves_bounded_claim_and_safety() -> None:
+    report = _load_final_qualification_report()
+
+    assert report["non_blocking_limitations"] == [
+        "provider_usage_independent_metering_not_verified"
+    ]
+    assert report["safety"] == {
+        "synthetic_content_only": True,
+        "source_mutated_by_restore": False,
+        "isolated_target_serving_enabled": False,
+        "promotion_or_cutover_performed": False,
+        "temporary_authority_revoked": True,
+        "temporary_resources_removed": True,
+        "target_stopped_after_capture": True,
+    }
+
+
+def test_issue509_roadmap_records_recovery_qualification_as_complete() -> None:
+    roadmap = (PROJECT_ROOT / "docs/ROADMAP.md").read_text(encoding="utf-8")
+
+    assert "recovered application canary не квалифицирован" not in roadmap
+    assert "- #634 — provider-backed projection publication" not in roadmap
+    assert "#509 / #634 — `qualified`" in roadmap
 
 
 def _all_strings(value: Any) -> list[str]:

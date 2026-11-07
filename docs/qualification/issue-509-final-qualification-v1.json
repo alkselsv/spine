@@ -1,0 +1,135 @@
+{
+  "schema_version": "r1-backup-recovery-final-qualification:v1",
+  "report_id": "issue-509:final-qualification:v1",
+  "ticket": 509,
+  "parent_ticket": 16,
+  "completed_at": "2026-11-07T12:45:55Z",
+  "evidence_base_commit": "0970131f482edf627d7e5cf3a598d7ea41a72f51",
+  "immutable": true,
+  "content_free": true,
+  "decision": "verified_pending_independent_review",
+  "production_qualified": false,
+  "qualification_scope": "synthetic_disposable_recovery_profile",
+  "cutover_authorized": false,
+  "criteria": [
+    {
+      "criterion_id": "AC1",
+      "status": "pass",
+      "evidence_artifact_ids": ["issue509-recovery-attempt-v3"],
+      "result": "coherent_fenced_manifest_verified"
+    },
+    {
+      "criterion_id": "AC2",
+      "status": "pass",
+      "evidence_artifact_ids": ["issue509-recovery-attempt-v3"],
+      "result": "canonical_and_original_components_verified"
+    },
+    {
+      "criterion_id": "AC3",
+      "status": "pass",
+      "evidence_artifact_ids": ["issue509-recovery-attempt-v3"],
+      "result": "isolated_restore_and_reconciliation_verified"
+    },
+    {
+      "criterion_id": "AC4",
+      "status": "pass",
+      "evidence_artifact_ids": [
+        "issue509-recovery-attempt-v3",
+        "issue509-projection-recovery-attempt-v1"
+      ],
+      "result": "failure_paths_exercised_fail_closed"
+    },
+    {
+      "criterion_id": "AC5",
+      "status": "pass",
+      "evidence_artifact_ids": [
+        "issue509-projection-recovery-attempt-v1",
+        "issue634-recovered-application-canary-v9"
+      ],
+      "result": "projection_recovery_publication_policy_and_lineage_verified"
+    },
+    {
+      "criterion_id": "AC6",
+      "status": "pass",
+      "evidence_artifact_ids": [
+        "issue634-recovered-application-canary-v9",
+        "issue634-recovered-application-canary-v9-review"
+      ],
+      "result": "authorized_context_broker_canary_and_safe_diagnostics_verified"
+    },
+    {
+      "criterion_id": "AC7",
+      "status": "pass",
+      "evidence_artifact_ids": [
+        "issue509-recovery-attempt-v3",
+        "issue509-projection-recovery-attempt-v1",
+        "issue634-recovered-application-canary-v9"
+      ],
+      "result": "existing_runbooks_exercised_and_corrected"
+    },
+    {
+      "criterion_id": "AC8",
+      "status": "pass",
+      "evidence_artifact_ids": [
+        "issue509-recovery-attempt-v3",
+        "issue509-projection-recovery-attempt-v1",
+        "issue634-recovered-application-canary-v9"
+      ],
+      "result": "metadata_only_evidence_chain_complete"
+    },
+    {
+      "criterion_id": "AC9",
+      "status": "pass",
+      "evidence_artifact_ids": [
+        "issue509-recovery-attempt-v3",
+        "issue634-recovered-application-canary-v9-review"
+      ],
+      "result": "fail_closed_semantics_preserved_until_verified"
+    }
+  ],
+  "artifacts": [
+    {
+      "artifact_id": "issue509-recovery-attempt-v3",
+      "path": "docs/qualification/issue-509-recovery-attempt-v3.json",
+      "sha256": "6a604e5c2c1f31f80f6a69d1af366197d35496b5366527f0b775e617d63bdd91"
+    },
+    {
+      "artifact_id": "issue509-projection-recovery-attempt-v1",
+      "path": "docs/qualification/issue-509-projection-recovery-attempt-v1.json",
+      "sha256": "696c4e4342e047368ba4650162224a5b95f2ad8cec78b7d4966023b792cc953b"
+    },
+    {
+      "artifact_id": "issue634-recovered-application-canary-v9",
+      "path": "docs/qualification/issue-634-recovered-application-canary-v9.json",
+      "sha256": "4648bdd561549bf1c4e349b79a2e19cc36e9be4b640cceb06912dccbaa013437"
+    },
+    {
+      "artifact_id": "issue634-recovered-application-canary-v9-review",
+      "path": "docs/qualification/issue-634-recovered-application-canary-v9-review.json",
+      "sha256": "8258ed0f112191f7b561f1afc477e406cd21bb2476771fef6ed42cd12cea8ba1"
+    }
+  ],
+  "supporting_documents": [
+    {
+      "path": "deploy/qualification/issue-509/README.md",
+      "sha256": "e004d02639f1bcec87fc8da7456bbbb04207da102527d3b13cfbf03fdfddf980"
+    },
+    {
+      "path": "docs/runbooks/cognee-production-qualification.md",
+      "sha256": "ff84a7352bffb71592a05c4c88aaa6fd538d5f4316a1f605d4429adfb1ec3470"
+    }
+  ],
+  "blocking_conditions": ["independent_final_evidence_review_required"],
+  "non_blocking_limitations": [
+    "provider_usage_independent_metering_not_verified"
+  ],
+  "safety": {
+    "synthetic_content_only": true,
+    "source_mutated_by_restore": false,
+    "isolated_target_serving_enabled": false,
+    "promotion_or_cutover_performed": false,
+    "temporary_authority_revoked": true,
+    "temporary_resources_removed": true,
+    "target_stopped_after_capture": true
+  }
+}
