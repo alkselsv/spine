@@ -40,9 +40,11 @@ from spine.domain.connections.provider import (
     ProviderKind,
 )
 from spine.domain.connections.bitrix24_disk_scope import Bitrix24DiskMembershipEvidence
+from spine.domain.sources.bitrix24_disk_identity import (
+    BITRIX24_DISK_SOURCE_GENERATION as BITRIX24_DISK_EXTERNAL_GENERATION,
+    BITRIX24_DISK_SOURCE_NAMESPACE as BITRIX24_DISK_EXTERNAL_NAMESPACE,
+)
 
-BITRIX24_DISK_EXTERNAL_NAMESPACE = "bitrix24-disk"
-BITRIX24_DISK_EXTERNAL_GENERATION = "bitrix24-disk-object:v1"
 BITRIX24_DISK_EXTRACTION_PROFILE = "bitrix24-disk-binary:v1"
 BITRIX24_DISK_LOCATOR_CONTRACT = "locator:bitrix24-disk-object:v1"
 BITRIX24_DISK_REQUIRED_CAPABILITIES = (

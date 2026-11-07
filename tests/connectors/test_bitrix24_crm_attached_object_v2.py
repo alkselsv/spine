@@ -2,7 +2,10 @@ from uuid import UUID
 
 import pytest
 
-from spine.application.connections.bitrix24_oauth import Bitrix24PinnedGrant, SecretTokenPair
+from spine.application.connections.bitrix24_oauth import (
+    Bitrix24PinnedGrant,
+    SecretTokenPair,
+)
 from spine.application.crm_relationship_v2_contracts import (
     Bitrix24CrmRelationshipV2ReadCommand,
     CrmRelationshipBindingOperationsProfile,
@@ -10,6 +13,7 @@ from spine.application.crm_relationship_v2_contracts import (
 from spine.connectors.bitrix24_crm_attached_object_v2 import (
     Bitrix24AttachedObjectGetCommand,
     Bitrix24CrmAttachedObjectResult,
+    bind_attached_disk_revision_evidence,
     resolve_bitrix24_crm_attached_object,
 )
 from spine.connectors.bitrix24_crm_files_v2 import Bitrix24CrmFilesItem
@@ -94,19 +98,21 @@ def command(*, selected_profile=None) -> Bitrix24CrmRelationshipV2ReadCommand:
 
 
 def item(value: str = "attached-17") -> Bitrix24CrmFilesItem:
-    return Bitrix24CrmFilesItem(
-        namespace="bitrix24-crm-files-item", value=value
-    )
+    return Bitrix24CrmFilesItem(namespace="bitrix24-crm-files-item", value=value)
 
 
 class ProviderFake:
     def __init__(self, result: object = None, *, error: Exception | None = None):
-        self.result = {
-            "MODULE_ID": "CRM",
-            "ENTITY_TYPE": "DEAL",
-            "ENTITY_ID": "deal-7",
-            "OBJECT_ID": "disk-17",
-        } if result is None else result
+        self.result = (
+            {
+                "MODULE_ID": "CRM",
+                "ENTITY_TYPE": "DEAL",
+                "ENTITY_ID": "deal-7",
+                "OBJECT_ID": "disk-17",
+            }
+            if result is None
+            else result
+        )
         self.error = error
         self.commands: list[Bitrix24AttachedObjectGetCommand] = []
 
@@ -118,11 +124,37 @@ class ProviderFake:
 
 
 @pytest.mark.asyncio
+async def test_t4_proof_adapts_to_exact_source_match_evidence() -> None:
+    async def current(_):
+        return True
+
+    result = await resolve_bitrix24_crm_attached_object(
+        command(),
+        files_item=item(),
+        provider=ProviderFake(),
+        authority_is_current=current,
+    )
+    assert result.proof is not None
+
+    evidence = bind_attached_disk_revision_evidence(
+        result.proof,
+        provider_revision="17",
+    )
+
+    assert evidence.files_item.value == "attached-17"
+    assert evidence.disk_revision.object_id == "disk-17"
+    assert evidence.disk_revision.provider_revision == "17"
+    assert evidence.ownership_proof_digest == result.proof.evidence_digest
+
+
+@pytest.mark.asyncio
 async def test_exact_ownership_resolves_namespaced_disk_identity() -> None:
     provider = ProviderFake()
 
     result = await resolve_bitrix24_crm_attached_object(
-        command(), files_item=item(), provider=provider,
+        command(),
+        files_item=item(),
+        provider=provider,
         authority_is_current=_authority(True, True),
     )
 
@@ -144,14 +176,63 @@ async def test_exact_ownership_resolves_namespaced_disk_identity() -> None:
 @pytest.mark.parametrize(
     ("result", "expected_code"),
     [
-        ({"MODULE_ID": "CRM", "ENTITY_TYPE": "DEAL", "ENTITY_ID": "deal-7"}, "malformed_provider_result"),
-        ({"ENTITY_TYPE": "DEAL", "ENTITY_ID": "deal-7", "OBJECT_ID": "disk-17"}, "malformed_provider_result"),
-        ({"MODULE_ID": "CRM", "ENTITY_ID": "deal-7", "OBJECT_ID": "disk-17"}, "malformed_provider_result"),
-        ({"MODULE_ID": "CRM", "ENTITY_TYPE": "DEAL", "ENTITY_ID": "deal-7", "OBJECT_ID": "disk-17"}, "resolved"),
-        ({"MODULE_ID": "CRM", "ENTITY_TYPE": "LEAD", "ENTITY_ID": "deal-7", "OBJECT_ID": "disk-17"}, "ownership_mismatch"),
-        ({"MODULE_ID": "CRM", "ENTITY_TYPE": "DEAL", "ENTITY_ID": "deal-8", "OBJECT_ID": "disk-17"}, "ownership_mismatch"),
-        ({"MODULE_ID": "TASKS", "ENTITY_TYPE": "DEAL", "ENTITY_ID": "deal-7", "OBJECT_ID": "disk-17"}, "ownership_mismatch"),
-        ({"MODULE_ID": "CRM", "ENTITY_TYPE": "DEAL", "ENTITY_ID": None, "OBJECT_ID": "disk-17"}, "malformed_provider_result"),
+        (
+            {"MODULE_ID": "CRM", "ENTITY_TYPE": "DEAL", "ENTITY_ID": "deal-7"},
+            "malformed_provider_result",
+        ),
+        (
+            {"ENTITY_TYPE": "DEAL", "ENTITY_ID": "deal-7", "OBJECT_ID": "disk-17"},
+            "malformed_provider_result",
+        ),
+        (
+            {"MODULE_ID": "CRM", "ENTITY_ID": "deal-7", "OBJECT_ID": "disk-17"},
+            "malformed_provider_result",
+        ),
+        (
+            {
+                "MODULE_ID": "CRM",
+                "ENTITY_TYPE": "DEAL",
+                "ENTITY_ID": "deal-7",
+                "OBJECT_ID": "disk-17",
+            },
+            "resolved",
+        ),
+        (
+            {
+                "MODULE_ID": "CRM",
+                "ENTITY_TYPE": "LEAD",
+                "ENTITY_ID": "deal-7",
+                "OBJECT_ID": "disk-17",
+            },
+            "ownership_mismatch",
+        ),
+        (
+            {
+                "MODULE_ID": "CRM",
+                "ENTITY_TYPE": "DEAL",
+                "ENTITY_ID": "deal-8",
+                "OBJECT_ID": "disk-17",
+            },
+            "ownership_mismatch",
+        ),
+        (
+            {
+                "MODULE_ID": "TASKS",
+                "ENTITY_TYPE": "DEAL",
+                "ENTITY_ID": "deal-7",
+                "OBJECT_ID": "disk-17",
+            },
+            "ownership_mismatch",
+        ),
+        (
+            {
+                "MODULE_ID": "CRM",
+                "ENTITY_TYPE": "DEAL",
+                "ENTITY_ID": None,
+                "OBJECT_ID": "disk-17",
+            },
+            "malformed_provider_result",
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -159,7 +240,9 @@ async def test_wrong_or_missing_ownership_fields_fail_closed(
     result: object, expected_code: str
 ) -> None:
     outcome = await resolve_bitrix24_crm_attached_object(
-        command(), files_item=item(), provider=ProviderFake(result),
+        command(),
+        files_item=item(),
+        provider=ProviderFake(result),
         authority_is_current=_authority(True, True),
     )
 
@@ -173,7 +256,9 @@ async def test_wrong_or_missing_ownership_fields_fail_closed(
 @pytest.mark.asyncio
 async def test_multiple_or_empty_provider_matches_are_ambiguous(result: object) -> None:
     outcome = await resolve_bitrix24_crm_attached_object(
-        command(), files_item=item(), provider=ProviderFake(result),
+        command(),
+        files_item=item(),
+        provider=ProviderFake(result),
         authority_is_current=_authority(True, True),
     )
 
@@ -190,7 +275,9 @@ async def test_direct_strategy_never_calls_attached_object_port() -> None:
     )
 
     outcome = await resolve_bitrix24_crm_attached_object(
-        command(selected_profile=direct_profile), files_item=item(), provider=provider,
+        command(selected_profile=direct_profile),
+        files_item=item(),
+        provider=provider,
         authority_is_current=_authority(True, True),
     )
 
@@ -204,8 +291,10 @@ async def test_foreign_workspace_profile_is_denied_before_provider_call() -> Non
     foreign_profile = profile(workspace_id=ident(99))
 
     outcome = await resolve_bitrix24_crm_attached_object(
-        command(selected_profile=foreign_profile), files_item=item(),
-        provider=provider, authority_is_current=_authority(True, True),
+        command(selected_profile=foreign_profile),
+        files_item=item(),
+        provider=provider,
+        authority_is_current=_authority(True, True),
     )
 
     assert outcome.error_code == "profile_scope_mismatch"
@@ -216,16 +305,21 @@ async def test_foreign_workspace_profile_is_denied_before_provider_call() -> Non
 async def test_each_sibling_files_item_resolves_only_its_own_attached_id() -> None:
     provider = ProviderFake()
     first = await resolve_bitrix24_crm_attached_object(
-        command(), files_item=item("attached-17"), provider=provider,
+        command(),
+        files_item=item("attached-17"),
+        provider=provider,
         authority_is_current=_authority(True, True),
     )
     second = await resolve_bitrix24_crm_attached_object(
-        command(), files_item=item("attached-18"), provider=provider,
+        command(),
+        files_item=item("attached-18"),
+        provider=provider,
         authority_is_current=_authority(True, True),
     )
 
     assert [entry.attached_object_id for entry in provider.commands] == [
-        "attached-17", "attached-18"
+        "attached-17",
+        "attached-18",
     ]
     assert first.proof is not None and first.proof.files_item.value == "attached-17"
     assert second.proof is not None and second.proof.files_item.value == "attached-18"
@@ -243,7 +337,9 @@ async def test_equal_file_and_disk_values_remain_separate_namespaces() -> None:
     )
 
     outcome = await resolve_bitrix24_crm_attached_object(
-        command(), files_item=item("17"), provider=provider,
+        command(),
+        files_item=item("17"),
+        provider=provider,
         authority_is_current=_authority(True, True),
     )
 
@@ -257,7 +353,9 @@ async def test_stale_authority_before_read_prevents_provider_call() -> None:
     provider = ProviderFake()
 
     outcome = await resolve_bitrix24_crm_attached_object(
-        command(), files_item=item(), provider=provider,
+        command(),
+        files_item=item(),
+        provider=provider,
         authority_is_current=_authority(False),
     )
 
@@ -270,7 +368,9 @@ async def test_authority_change_after_read_withholds_proof() -> None:
     provider = ProviderFake()
 
     outcome = await resolve_bitrix24_crm_attached_object(
-        command(), files_item=item(), provider=provider,
+        command(),
+        files_item=item(),
+        provider=provider,
         authority_is_current=_authority(True, False),
     )
 
@@ -284,7 +384,9 @@ async def test_partial_provider_failure_is_redacted_and_never_falls_back() -> No
     provider = ProviderFake(error=RuntimeError("https://private.invalid/?token=secret"))
 
     outcome = await resolve_bitrix24_crm_attached_object(
-        command(), files_item=item("17"), provider=provider,
+        command(),
+        files_item=item("17"),
+        provider=provider,
         authority_is_current=_authority(True, True),
     )
 
@@ -305,7 +407,9 @@ async def test_malformed_provider_payload_is_not_returned() -> None:
     }
 
     outcome = await resolve_bitrix24_crm_attached_object(
-        command(), files_item=item(), provider=ProviderFake(secret_payload),
+        command(),
+        files_item=item(),
+        provider=ProviderFake(secret_payload),
         authority_is_current=_authority(True, True),
     )
 
@@ -320,8 +424,10 @@ async def test_files_disk_namespace_collision_fails_before_provider_call() -> No
     collision_profile = profile(disk_namespace="bitrix24-crm-files-item")
 
     outcome = await resolve_bitrix24_crm_attached_object(
-        command(selected_profile=collision_profile), files_item=item(),
-        provider=provider, authority_is_current=_authority(True, True),
+        command(selected_profile=collision_profile),
+        files_item=item(),
+        provider=provider,
+        authority_is_current=_authority(True, True),
     )
 
     assert outcome.error_code == "namespace_collision"

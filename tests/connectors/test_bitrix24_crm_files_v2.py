@@ -2,6 +2,7 @@ from uuid import UUID
 
 from spine.connectors.bitrix24_crm_files_v2 import (
     Bitrix24CrmFilesItemResult,
+    bind_direct_disk_revision_evidence,
     map_bitrix24_crm_files,
 )
 from spine.domain.sources.crm_relationship_v2 import CrmRelationshipMappingProfile
@@ -64,6 +65,32 @@ def test_direct_mapping_preserves_each_exact_files_identity() -> None:
         for item in result.items
         if item.mapping
     )
+
+
+def test_t3_mapping_adapts_to_exact_source_match_evidence() -> None:
+    result = map_bitrix24_crm_files(
+        {
+            "FILES": [
+                {"namespace": "bitrix.activity.files", "value": "disk-17"},
+            ]
+        },
+        profile=_profile(disk_namespace="bitrix24-disk-object"),
+    )
+    mapping = result.items[0].mapping
+    assert mapping is not None
+
+    evidence = bind_direct_disk_revision_evidence(
+        mapping,
+        workspace_id=UUID(int=2),
+        environment_id=UUID(int=3),
+        connection_id=UUID(int=4),
+        connection_version_id=UUID(int=8),
+        provider_revision="17",
+    )
+
+    assert evidence.files_item.value == "disk-17"
+    assert evidence.disk_revision.object_id == "disk-17"
+    assert evidence.disk_revision.provider_revision == "17"
 
 
 def test_malformed_item_becomes_uncertain_without_contaminating_valid_sibling() -> None:
@@ -220,4 +247,3 @@ def test_reordering_items_changes_only_result_order_not_identity_mapping() -> No
         "18",
         "17",
     ]
-
