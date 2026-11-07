@@ -44,7 +44,7 @@ The human Finance/Tax Owner separately accepted the following additional decisio
 
 ## 4. Successor CalculationProfile v3 proposal
 
-The exact candidate is `r2-commercial-v3`, version 3. Its digest will be calculated over the final exact UTF-8 JSON bytes and included here and in the consolidated status record. This payload is a proposed technical translation. No confirmation in this record approves its unseen exact digest.
+The exact candidate is `r2-commercial-v3`, version 3. Its exact-byte SHA-256 is `208016dc497570cb0406ae6f92c8a4a402c24b18ff2ca1223f894804ef88a900`, as recorded above and in the consolidated status record. This payload is a proposed technical translation; the Finance/Tax Owner has not accepted this exact digest.
 
 ### Calculation operations
 
