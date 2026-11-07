@@ -75,12 +75,17 @@ class UnsupportedRequirementsConfusionCell(DefinitionModel):
     count: int = Field(ge=0)
 
 
+class UnsupportedRequirementsPredictedCount(DefinitionModel):
+    predicted_class: UnsupportedRequirementsClass
+    count: int = Field(ge=0)
+
+
 class UnsupportedRequirementsClassResult(DefinitionModel):
     actual_class: UnsupportedRequirementsClass
     labelled_count: int = Field(ge=0)
     correct_count: int = Field(ge=0)
     recall: UnsupportedRequirementsRate
-    predicted_counts: dict[UnsupportedRequirementsClass, int]
+    predicted_counts: tuple[UnsupportedRequirementsPredictedCount, ...]
 
 
 class UnsupportedRequirementsStratumResult(DefinitionModel):
@@ -302,10 +307,13 @@ def _class_result(
         labelled_count=actual_count,
         correct_count=correct,
         recall=_rate(correct, actual_count),
-        predicted_counts={
-            predicted: confusion[(classification, predicted)]
+        predicted_counts=tuple(
+            UnsupportedRequirementsPredictedCount(
+                predicted_class=predicted,
+                count=confusion[(classification, predicted)],
+            )
             for predicted in UnsupportedRequirementsClass
-        },
+        ),
     )
 
 

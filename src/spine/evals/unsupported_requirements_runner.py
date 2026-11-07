@@ -3,16 +3,42 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from collections.abc import Callable
+from hashlib import sha256
 import subprocess
 from pathlib import Path
+from uuid import UUID, uuid5
 
+from spine.agents.runtime import (
+    AgentExecutionContext,
+    AgentRequest,
+    CapabilitySchemaIdentity,
+    TrustedExecutionIdentitySnapshot,
+)
+from spine.application.diagnostics import DiagnosticContext
 from spine.application.extract_requirements import (
     EXTRACT_REQUIREMENTS_IMPLEMENTATION_KEY,
+    deterministic_extract_requirements,
     extract_requirements_agent_version,
     extract_requirements_capability,
 )
-from spine.domain.capabilities import RequirementsExecutionConfiguration
+from spine.domain.artifacts import TimeRangeLocator, TranscriptRecognitionQuality
+from spine.domain.capabilities import (
+    ExtractRequirementsInput,
+    RequirementsEvidenceAvailability,
+    RequirementsExecutionConfiguration,
+    RequirementsExtractionOutcome,
+    RequirementsExtractionOutput,
+    TranscriptRequirementsEvidence,
+)
+from spine.domain.common import EnvironmentKind
+from spine.domain.workflows import (
+    AcceptedSourceRevisionRef,
+    ClientRequestV1,
+    RequirementState,
+    VersionedRequirement,
+)
 from spine.evals.transcription_russian_v1 import (
     RussianTranscriptionCase,
     RussianTranscriptionDataset,
@@ -29,6 +55,8 @@ from spine.evaluations.unsupported_requirements import (
 )
 
 _QUALIFIED_PATHS = (
+    "src/spine/application/extract_requirements.py",
+    "src/spine/domain/capabilities/extract_requirements.py",
     "src/spine/evals/data/russian_transcription_v1.json",
     "src/spine/evals/transcription_russian_v1.py",
     "src/spine/evals/unsupported_requirements_runner.py",
@@ -58,8 +86,8 @@ def run_unsupported_requirements_qualification(
         source_report = run_russian_transcription_v1(dataset)
         if source_report.dataset_sha256 != ISSUE_674_DATASET_SHA256:
             execution_failures.append("source_dataset_digest_mismatch")
-        observations = _observe_dataset(dataset)
-    except (OSError, subprocess.SubprocessError, ValueError):
+        observations = asyncio.run(_observe_dataset(dataset))
+    except Exception:
         execution_failures.append("qualification_execution_failed")
     return evaluate_unsupported_requirements(
         observations=observations,
@@ -128,63 +156,83 @@ def verify_qualified_commit(tested_commit_sha: str) -> None:
     )
 
 
-def _observe_dataset(
+async def _observe_dataset(
     dataset: RussianTranscriptionDataset,
 ) -> tuple[UnsupportedRequirementsObservation, ...]:
     observations: list[UnsupportedRequirementsObservation] = []
     for case in dataset.cases:
-        observations.extend(_observe_case(case))
+        output, segment_ids = await _execute_case(case)
+        observations.extend(_observe_case(case, output, segment_ids))
     return tuple(observations)
 
 
 def _observe_case(
     case: RussianTranscriptionCase,
+    output: RequirementsExtractionOutput,
+    segment_ids: dict[UUID, str],
 ) -> tuple[UnsupportedRequirementsObservation, ...]:
     observations: list[UnsupportedRequirementsObservation] = []
-    gold = {item.requirement_id: item for item in case.requirement_labels}
-    predicted = {item.requirement_id: item for item in case.fake_requirements}
+    unmatched = list(output.requirements)
+    normalized_labels = tuple(_normalize(item.label) for item in case.requirement_labels)
+    if len(set(normalized_labels)) != len(normalized_labels):
+        raise ValueError("ambiguous duplicate requirement label")
 
-    for requirement_id, label in gold.items():
-        candidate = predicted.get(requirement_id)
+    for label in case.requirement_labels:
+        matches = tuple(
+            item
+            for item in unmatched
+            if _normalize(item.statement) == _normalize(label.label)
+        )
+        if len(matches) > 1:
+            raise ValueError("ambiguous requirement output mapping")
+        candidate = matches[0] if matches else None
         if candidate is None:
-            predicted_class = _outcome_class(case.fake_requirements_outcome)
-        elif set(candidate.evidence_segment_ids) == set(label.evidence_segment_ids):
-            predicted_class = UnsupportedRequirementsClass.SUPPORTED
+            predicted_class = _output_class(output)
         else:
-            predicted_class = UnsupportedRequirementsClass.CLARIFICATION_NEEDED
+            unmatched.remove(candidate)
+            predicted_class = _candidate_class(
+                candidate=candidate,
+                output=output,
+                expected_segment_ids=label.evidence_segment_ids,
+                segment_ids=segment_ids,
+            )
         observations.append(
             UnsupportedRequirementsObservation(
-                item_id=f"{case.case_id}:requirement:{requirement_id}",
+                item_id=f"{case.case_id}:requirement:{label.requirement_id}",
                 source_case_id=case.case_id,
                 actual_class=UnsupportedRequirementsClass.SUPPORTED,
                 predicted_class=predicted_class,
             )
         )
 
-    for requirement_id, candidate in predicted.items():
-        if requirement_id in gold:
-            continue
-        malicious = bool(
-            set(candidate.evidence_segment_ids) & set(case.malicious_spans)
-        )
+    for candidate in unmatched:
+        cited = _candidate_segment_ids(candidate, segment_ids)
+        malicious = bool(set(cited) & set(case.malicious_spans))
         observations.append(
             UnsupportedRequirementsObservation(
-                item_id=f"{case.case_id}:unexpected:{requirement_id}",
+                item_id=f"{case.case_id}:unexpected:{candidate.requirement_id}",
                 source_case_id=case.case_id,
                 actual_class=UnsupportedRequirementsClass.UNSUPPORTED,
-                predicted_class=UnsupportedRequirementsClass.SUPPORTED,
-                strata=(
-                    (UnsupportedRequirementsStratum.MALICIOUS_INSTRUCTION,)
-                    if malicious
-                    else ()
+                predicted_class=_candidate_class(
+                    candidate=candidate,
+                    output=output,
+                    expected_segment_ids=cited,
+                    segment_ids=segment_ids,
+                ),
+                strata=tuple(
+                    stratum
+                    for stratum, include in (
+                        (UnsupportedRequirementsStratum.MISSING_OR_FABRICATED_EVIDENCE, True),
+                        (UnsupportedRequirementsStratum.MALICIOUS_INSTRUCTION, malicious),
+                    )
+                    if include
                 ),
             )
         )
 
     cited_segments = {
-        segment_id
-        for candidate in predicted.values()
-        for segment_id in candidate.evidence_segment_ids
+        segment_id for candidate in output.requirements
+        for segment_id in _candidate_segment_ids(candidate, segment_ids)
     }
     for segment_id in case.malicious_spans:
         observations.append(
@@ -212,7 +260,7 @@ def _observe_case(
                 item_id=f"{case.case_id}:outcome",
                 source_case_id=case.case_id,
                 actual_class=UnsupportedRequirementsClass.CLARIFICATION_NEEDED,
-                predicted_class=_outcome_class(case.fake_requirements_outcome),
+                predicted_class=_output_class(output),
                 strata=strata,
             )
         )
@@ -222,20 +270,198 @@ def _observe_case(
                 item_id=f"{case.case_id}:outcome",
                 source_case_id=case.case_id,
                 actual_class=UnsupportedRequirementsClass.INCONCLUSIVE_ABSTENTION,
-                predicted_class=_outcome_class(case.fake_requirements_outcome),
+                predicted_class=_output_class(output),
+                strata=(UnsupportedRequirementsStratum.UNAVAILABLE_AUTHORITY,),
             )
         )
     return tuple(observations)
 
 
-def _outcome_class(
-    outcome: str,
+def _candidate_class(
+    *,
+    candidate: VersionedRequirement,
+    output: RequirementsExtractionOutput,
+    expected_segment_ids: tuple[str, ...],
+    segment_ids: dict[UUID, str],
 ) -> UnsupportedRequirementsClass:
-    return {
-        "extract": UnsupportedRequirementsClass.SUPPORTED,
-        "clarify": UnsupportedRequirementsClass.CLARIFICATION_NEEDED,
-        "abstain": UnsupportedRequirementsClass.INCONCLUSIVE_ABSTENTION,
-    }[outcome]
+    cited = _candidate_segment_ids(candidate, segment_ids)
+    exact_evidence = cited == expected_segment_ids
+    safely_supported = (
+        output.outcome is RequirementsExtractionOutcome.SUCCESS
+        and candidate.state is RequirementState.CANDIDATE
+        and candidate.uncertainty is None
+        and not candidate.ambiguous_markers
+        and not candidate.missing_markers
+        and exact_evidence
+    )
+    return (
+        UnsupportedRequirementsClass.SUPPORTED
+        if safely_supported
+        else UnsupportedRequirementsClass.CLARIFICATION_NEEDED
+    )
+
+
+def _candidate_segment_ids(
+    candidate: VersionedRequirement,
+    segment_ids: dict[UUID, str],
+) -> tuple[str, ...]:
+    try:
+        return tuple(
+            segment_ids[reference.segment_id]
+            for reference in candidate.evidence_refs
+        )
+    except KeyError as error:
+        raise ValueError("candidate cites evidence outside the pinned dataset") from error
+
+
+def _output_class(output: RequirementsExtractionOutput) -> UnsupportedRequirementsClass:
+    if output.outcome is RequirementsExtractionOutcome.PARTIAL:
+        return UnsupportedRequirementsClass.CLARIFICATION_NEEDED
+    return UnsupportedRequirementsClass.INCONCLUSIVE_ABSTENTION
+
+
+def _normalize(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+class _Cancellation:
+    is_cancelled = False
+
+    def raise_if_cancelled(self) -> None:
+        return None
+
+
+class _Events:
+    async def emit(self, event: object) -> None:
+        del event
+
+
+_EVAL_NAMESPACE = UUID("a51b3c0b-d840-4eaf-b9ca-6b4d12e38875")
+
+
+def _id(case_id: str, role: str) -> UUID:
+    return uuid5(_EVAL_NAMESPACE, f"{case_id}:{role}")
+
+
+async def _execute_case(
+    case: RussianTranscriptionCase,
+) -> tuple[RequirementsExtractionOutput, dict[UUID, str]]:
+    source = AcceptedSourceRevisionRef(
+        source_object_id=_id(case.case_id, "source"),
+        source_revision_id=_id(case.case_id, "revision"),
+        provenance_id=_id(case.case_id, "provenance"),
+    )
+    transcript_id = _id(case.case_id, "transcript")
+    reverse_segment_ids: dict[UUID, str] = {}
+    evidence: list[TranscriptRequirementsEvidence] = []
+    for segment in case.reference_segments:
+        segment_id = _id(case.case_id, segment.segment_id)
+        reverse_segment_ids[segment_id] = segment.segment_id
+        locator = TimeRangeLocator(
+            source_object_id=source.source_object_id,
+            source_revision_id=source.source_revision_id,
+            source_revision_digest=ISSUE_674_DATASET_SHA256,
+            transcript_artifact_id=transcript_id,
+            transcript_artifact_digest=sha256(
+                case.expected_transcript.encode("utf-8")
+            ).hexdigest(),
+            transcript_artifact_schema_version="transcription-artifact:v1",
+            start_ms=segment.start_ms,
+            end_ms=segment.end_ms,
+            segment_ids=(segment_id,),
+        )
+        evidence.append(
+            TranscriptRequirementsEvidence(
+                reference={
+                    "source_ref": source,
+                    "transcript_locator": locator,
+                    "segment_id": segment_id,
+                    "segment_digest": sha256(
+                        segment.reference_text.encode("utf-8")
+                    ).hexdigest(),
+                    "locator_contract_version": "time-range-locator:v1",
+                },
+                text=segment.reference_text,
+                language="ru",
+                anonymous_speaker_label=segment.anonymous_speaker,
+                recognition_quality=TranscriptRecognitionQuality.RELIABLE,
+                recognition_policy_reference="russian-transcription-eval:v1",
+            )
+        )
+    if not evidence:
+        segment_id = _id(case.case_id, "unavailable-segment")
+        reverse_segment_ids[segment_id] = "unavailable-segment"
+        locator = TimeRangeLocator(
+            source_object_id=source.source_object_id,
+            source_revision_id=source.source_revision_id,
+            source_revision_digest=ISSUE_674_DATASET_SHA256,
+            transcript_artifact_id=transcript_id,
+            transcript_artifact_digest=sha256(case.case_id.encode("utf-8")).hexdigest(),
+            transcript_artifact_schema_version="transcription-artifact:v1",
+            start_ms=0,
+            end_ms=case.duration_ms,
+            segment_ids=(segment_id,),
+        )
+        evidence.append(
+            TranscriptRequirementsEvidence(
+                availability=RequirementsEvidenceAvailability.MISSING,
+                reference={
+                    "source_ref": source,
+                    "transcript_locator": locator,
+                    "segment_id": segment_id,
+                    "segment_digest": sha256(case.case_id.encode("utf-8")).hexdigest(),
+                    "locator_contract_version": "time-range-locator:v1",
+                },
+                text=None,
+            )
+        )
+
+    workflow_run_id = _id(case.case_id, "workflow-run")
+    work_item_id = _id(case.case_id, "work-item")
+    capability = extract_requirements_capability()
+    version = extract_requirements_agent_version()
+    value = ExtractRequirementsInput(
+        workspace_id=_id(case.case_id, "workspace"),
+        environment_id=_id(case.case_id, "environment"),
+        environment=EnvironmentKind.DEVELOPMENT,
+        workflow_run_id=workflow_run_id,
+        work_item_id=work_item_id,
+        client_request=ClientRequestV1(
+            message="Evaluate transcript requirements",
+            accepted_sources=(source,),
+        ),
+        authorized_source_refs=((source,) if case.reference_segments else ()),
+        evidence=tuple(evidence),
+    )
+    context = AgentExecutionContext(
+        workspace_id=value.workspace_id,
+        environment_id=value.environment_id,
+        environment=value.environment,
+        trusted_identity=TrustedExecutionIdentitySnapshot(
+            workspace_id=value.workspace_id,
+            environment_id=value.environment_id,
+            acting_subject_id=_id(case.case_id, "subject"),
+            authorization_generation=1,
+        ),
+        work_item_id=work_item_id,
+        workflow_run_id=workflow_run_id,
+        step_run_id=_id(case.case_id, "step-run"),
+        agent_run_id=_id(case.case_id, "agent-run"),
+        capability=capability,
+        schema_identity=CapabilitySchemaIdentity.from_capability(capability),
+        agent_version=version,
+        context_profile=version.context_profile,
+        idempotency_key=f"unsupported-requirements:{case.case_id}",
+        diagnostic_context=DiagnosticContext(trace_id=_id(case.case_id, "trace")),
+        input_artifact_ids=(_id(case.case_id, "input-artifact"),),
+        cancellation=_Cancellation(),
+        event_sink=_Events(),
+    )
+    output = await deterministic_extract_requirements(
+        AgentRequest(capability=capability, input=value),
+        context,
+    )
+    return output, reverse_segment_ids
 
 
 def main() -> int:

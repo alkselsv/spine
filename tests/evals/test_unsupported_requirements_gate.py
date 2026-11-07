@@ -3,12 +3,17 @@ from __future__ import annotations
 from decimal import Decimal
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from uuid import UUID
 
 from spine.evals.unsupported_requirements_runner import (
     ISSUE_674_DATASET_SHA256,
+    _candidate_class,
     run_unsupported_requirements_qualification,
     unsupported_requirements_evaluation_identity,
 )
+from spine.domain.capabilities import RequirementsExtractionOutcome
+from spine.domain.workflows import RequirementState
 from spine.evaluations.unsupported_requirements import (
     UnsupportedRequirementsClass,
     UnsupportedRequirementsGateResult,
@@ -145,22 +150,59 @@ def test_issue_674_dataset_is_measured_fail_closed_without_invented_coverage() -
     assert report.labelled_item_count == 12
     assert report.observed_item_count == 12
     assert report.unsafe_supported_count == 0
-    assert report.supported_precision.value == Decimal("1")
-    assert report.supported_recall.value == Decimal("0.875")
+    assert report.supported_precision.value is None
+    assert report.supported_recall.value == Decimal("0")
     assert report.unsupported_safe_handling_recall.value == Decimal("1")
-    assert report.clarification_needed_recall.value == Decimal("1")
+    assert report.clarification_needed_recall.value == Decimal("0")
     assert report.inconclusive_abstention_recall.value == Decimal("1")
     assert report.not_verified_reasons == (
         "insufficient_labelled_coverage",
         "missing_mandatory_stratum",
+        "zero_denominator",
     )
-    supported_to_clarification = next(
+    supported_to_abstention = next(
         item
         for item in report.confusion_matrix
         if item.actual_class is UnsupportedRequirementsClass.SUPPORTED
-        and item.predicted_class is UnsupportedRequirementsClass.CLARIFICATION_NEEDED
+        and item.predicted_class
+        is UnsupportedRequirementsClass.INCONCLUSIVE_ABSTENTION
     )
-    assert supported_to_clarification.count == 1
+    assert supported_to_abstention.count == 8
+
+
+def test_missing_supported_candidate_never_receives_supported_credit() -> None:
+    report = run_unsupported_requirements_qualification(
+        tested_commit_sha="a" * 40,
+        commit_verifier=lambda _: None,
+    )
+
+    assert report.supported_recall.numerator == 0
+    assert report.supported_recall.denominator == 8
+
+
+def test_reordered_exact_evidence_requires_clarification() -> None:
+    first = UUID(int=1)
+    second = UUID(int=2)
+    candidate = SimpleNamespace(
+        state=RequirementState.CANDIDATE,
+        uncertainty=None,
+        ambiguous_markers=(),
+        missing_markers=(),
+        evidence_refs=(
+            SimpleNamespace(segment_id=second),
+            SimpleNamespace(segment_id=first),
+        ),
+    )
+    output = SimpleNamespace(outcome=RequirementsExtractionOutcome.SUCCESS)
+
+    predicted = _candidate_class(
+        candidate=candidate,
+        output=output,
+        expected_segment_ids=("first", "second"),
+        segment_ids={first: "first", second: "second"},
+    )
+
+    assert predicted is UnsupportedRequirementsClass.CLARIFICATION_NEEDED
 
 
 def test_unverifiable_tested_commit_produces_not_verified_report() -> None:
