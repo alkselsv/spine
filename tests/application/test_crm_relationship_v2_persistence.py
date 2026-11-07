@@ -19,6 +19,7 @@ from spine.application.crm_relationship_v2_persistence import (
     CrmRelationshipV2HandoffRejected,
     CrmRelationshipV2PersistenceRequest,
     CrmRelationshipV2PersistenceService,
+    materialize_verified_observation,
 )
 from spine.application.crm_relationship_v2_source_match import (
     CanonicalSourceAuthorityFence,
@@ -176,6 +177,7 @@ def source_match(
         source_object_id=candidate.source.source_object_id,
         source_revision_id=candidate.revision.revision_id,
         authority=authority,
+        mapping_evidence=mapped_disk(),
     )
 
 
@@ -225,16 +227,21 @@ class RepositoryFake:
 
     async def persist_verified_handoff(self, handoff):
         self.handoffs.append(handoff)
+        receipt, eligibility = materialize_verified_observation(
+            handoff,
+            verification_generation=handoff.expected_verification_generation + 1,
+            lifecycle_generation=handoff.expected_lifecycle_generation,
+        )
         return CrmRelationshipEligibilityHead(
             workspace_id=handoff.claim.workspace_id,
             environment_id=handoff.claim.environment_id,
             claim_id=handoff.claim.claim_id,
-            verification_generation=handoff.receipt.verification_generation,
-            lifecycle_generation=handoff.eligibility.lifecycle_generation,
-            outcome=handoff.eligibility.outcome,
-            receipt_id=handoff.receipt.receipt_id,
-            eligibility_id=handoff.eligibility.eligibility_id,
-            updated_at=handoff.receipt.observed_at,
+            verification_generation=receipt.verification_generation,
+            lifecycle_generation=eligibility.lifecycle_generation,
+            outcome=eligibility.outcome,
+            receipt_id=receipt.receipt_id,
+            eligibility_id=eligibility.eligibility_id,
+            updated_at=receipt.observed_at,
         )
 
 
@@ -278,12 +285,15 @@ async def test_verified_handoff_constructs_exact_typed_identity_claim_and_receip
     assert handoff.claim.disk_object_id == "disk-42"
     assert handoff.claim.disk_version_evidence == "17"
     assert handoff.claim.human_authorization_generation == 7
-    assert handoff.receipt.human_authorization_generation == 7
-    assert handoff.receipt.binding_evidence_digest == "a" * 64
-    assert handoff.receipt.source_revision_id == handoff.claim.source_revision_id
-    assert handoff.receipt.ownership_proof_reference is None
+    receipt, _ = materialize_verified_observation(
+        handoff, verification_generation=1, lifecycle_generation=0
+    )
+    assert receipt.human_authorization_generation == 7
+    assert receipt.binding_evidence_digest == "a" * 64
+    assert receipt.source_revision_id == handoff.claim.source_revision_id
+    assert receipt.ownership_proof_reference is None
     assert handoff.claim.idempotency_key == ident("idempotency")
-    assert handoff.receipt.idempotency_key != handoff.claim.idempotency_key
+    assert receipt.idempotency_key != handoff.claim.idempotency_key
 
 
 @pytest.mark.asyncio
@@ -341,6 +351,11 @@ async def test_generation_and_payload_are_stable_for_exact_retry() -> None:
 
     first, replay = repository.handoffs
     assert replay == first
-    assert first.receipt.verification_generation == 1
     assert first.claim.payload_digest == replay.claim.payload_digest
-    assert first.receipt.payload_digest == replay.receipt.payload_digest
+    first_receipt, _ = materialize_verified_observation(
+        first, verification_generation=1, lifecycle_generation=0
+    )
+    replay_receipt, _ = materialize_verified_observation(
+        replay, verification_generation=1, lifecycle_generation=0
+    )
+    assert first_receipt.payload_digest == replay_receipt.payload_digest

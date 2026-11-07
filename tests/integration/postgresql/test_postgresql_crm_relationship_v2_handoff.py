@@ -290,11 +290,29 @@ async def _prepare_handoff_case(
         processing_admission=admission,
         lifecycle=lifecycle,
     )
+    mapping = CrmMappedDiskRevisionEvidence(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        connection_id=connection_id,
+        connection_version_id=connection_version_id,
+        mapping_strategy="direct_disk_object",
+        mapping_profile_id=profile_id,
+        mapping_profile_version=1,
+        files_item=CrmFilesItemIdentity(
+            namespace=profile.files_namespace, value=f"files-{number}"
+        ),
+        disk_revision=DiskRevisionIdentity(
+            namespace=profile.disk_namespace,
+            object_id=f"disk-{number}",
+            provider_revision="17",
+        ),
+    )
     source_match = CrmRelationshipV2SourceMatchResult(
         outcome=CrmEligibilityOutcome.ELIGIBLE_VERIFIED,
         source_object_id=case.source.source_object_id,
         source_revision_id=case.revision.revision_id,
         authority=authority,
+        mapping_evidence=mapping,
     )
     command = Bitrix24CrmRelationshipV2ReadCommand(
         workspace_id=workspace_id,
@@ -345,23 +363,6 @@ async def _prepare_handoff_case(
         attempt_count=1,
         response_bytes=64,
         snapshot_atomic=False,
-    )
-    mapping = CrmMappedDiskRevisionEvidence(
-        workspace_id=workspace_id,
-        environment_id=environment_id,
-        connection_id=connection_id,
-        connection_version_id=connection_version_id,
-        mapping_strategy="direct_disk_object",
-        mapping_profile_id=profile_id,
-        mapping_profile_version=1,
-        files_item=CrmFilesItemIdentity(
-            namespace=profile.files_namespace, value=f"files-{number}"
-        ),
-        disk_revision=DiskRevisionIdentity(
-            namespace=profile.disk_namespace,
-            object_id=f"disk-{number}",
-            provider_revision="17",
-        ),
     )
     claim_id = synthetic_uuid(number + 312)
     receipt_id = synthetic_uuid(number + 313)
@@ -585,14 +586,18 @@ async def test_verified_handoff_exact_retry_replays_and_changed_payload_conflict
     )
     first = await case.service.persist(case.request)
     replay = await case.service.persist(case.request)
+    changed_mapping = case.request.mapping_evidence.model_copy(
+        update={
+            "disk_revision": case.request.mapping_evidence.disk_revision.model_copy(
+                update={"provider_revision": "18"}
+            )
+        }
+    )
     changed = replace(
         case.request,
-        mapping_evidence=case.request.mapping_evidence.model_copy(
-            update={
-                "disk_revision": case.request.mapping_evidence.disk_revision.model_copy(
-                    update={"provider_revision": "18"}
-                )
-            }
+        mapping_evidence=changed_mapping,
+        source_match=case.request.source_match.model_copy(
+            update={"mapping_evidence": changed_mapping}
         ),
     )
 
@@ -619,6 +624,70 @@ async def test_verified_handoff_stale_human_generation_rolls_back_every_effect(
 
     with pytest.raises(OptimisticConflictError, match="acting-human authority"):
         await case.service.persist(stale)
+    assert await _counts(postgresql_contract_database, case) == (0, 0, 0, 0, 0)
+
+
+@pytest.mark.parametrize(
+    "generation_update",
+    [
+        {"expected_verification_generation": 1},
+        {"lifecycle_generation": 1},
+    ],
+)
+async def test_verified_handoff_late_generation_is_rejected_without_effects(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+    generation_update: dict[str, int],
+) -> None:
+    number = 103545 + ("lifecycle_generation" in generation_update)
+    case = await _prepare_handoff_case(
+        postgresql_adapter, postgresql_contract_database, number
+    )
+
+    with pytest.raises(OptimisticConflictError):
+        await case.service.persist(replace(case.request, **generation_update))
+
+    assert await _counts(postgresql_contract_database, case) == (0, 0, 0, 0, 0)
+
+
+@pytest.mark.parametrize("authority_part", ["source_head", "lifecycle"])
+async def test_verified_handoff_changed_t5_authority_is_rejected_atomically(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+    authority_part: str,
+) -> None:
+    number = 103548 + (authority_part == "lifecycle")
+    case = await _prepare_handoff_case(
+        postgresql_adapter, postgresql_contract_database, number
+    )
+    authority = case.request.source_match.authority
+    assert authority is not None
+    if authority_part == "source_head":
+        changed_authority = authority.model_copy(
+            update={
+                "source_head": authority.source_head.model_copy(
+                    update={"cas_version": authority.source_head.cas_version + 1}
+                )
+            }
+        )
+    else:
+        changed_authority = authority.model_copy(
+            update={
+                "lifecycle": SimpleNamespace(
+                    **{
+                        **vars(authority.lifecycle),
+                        "generation": authority.lifecycle.generation + 1,
+                    }
+                )
+            }
+        )
+    changed_match = case.request.source_match.model_copy(
+        update={"authority": changed_authority}
+    )
+
+    with pytest.raises(OptimisticConflictError):
+        await case.service.persist(replace(case.request, source_match=changed_match))
+
     assert await _counts(postgresql_contract_database, case) == (0, 0, 0, 0, 0)
 
 
@@ -758,7 +827,9 @@ async def test_verified_handoff_concurrent_changed_payload_has_one_logical_effec
     )
 
     assert sum(not isinstance(value, BaseException) for value in outcomes) == 1
-    assert sum(isinstance(value, IdempotencyConflictError) for value in outcomes) == 1
+    assert (
+        sum(isinstance(value, IdempotencyConflictError) for value in outcomes) == 1
+    ), repr(outcomes)
     assert await _counts(postgresql_contract_database, case) == (1, 1, 1, 2, 2)
 
 

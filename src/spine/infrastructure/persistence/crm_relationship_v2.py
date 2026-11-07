@@ -26,8 +26,6 @@ from spine.application.persistence.outbox import OutboxEventRegistry, OutboxInte
 from spine.application.persistence.errors import (
     IdempotencyConflictError,
     OptimisticConflictError,
-    TransactionDeadlockError,
-    TransactionSerializationError,
     UnknownCommitOutcomeError,
 )
 from spine.domain.audit.models import (
@@ -50,6 +48,7 @@ from spine.domain.sources.crm_relationship_v2 import (
 TRecord = TypeVar("TRecord", bound=BaseModel)
 from spine.infrastructure.persistence.postgresql_mappings import (
     audit_events,
+    canonical_acceptances,
     crm_relationship_authority_heads,
     crm_relationship_claims,
     crm_relationship_eligibility,
@@ -63,6 +62,7 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     current_source_heads,
     lifecycle_decisions,
     outbox_intents,
+    source_processing_admissions,
 )
 
 
@@ -313,6 +313,83 @@ class CrmRelationshipV2Store:
             raise OptimisticConflictError(
                 "CRM verified handoff acting-human authority is stale or unavailable."
             )
+
+    async def assert_source_authority(self, authority: Any) -> None:
+        """Lock and compare the complete T5 source authority snapshot."""
+        pinned_head = authority.source_head
+        pinned_admission = authority.processing_admission
+        pinned_lifecycle = authority.lifecycle
+        head = (await self._execute(select(current_source_heads).where(
+            current_source_heads.c.workspace_id == pinned_head.workspace_id,
+            current_source_heads.c.environment_id == pinned_head.environment_id,
+            current_source_heads.c.source_object_id == pinned_head.source_object_id,
+        ).with_for_update())).mappings().one_or_none()
+        lifecycle = (await self._execute(select(current_lifecycle_authorities).where(
+            current_lifecycle_authorities.c.workspace_id == pinned_head.workspace_id,
+            current_lifecycle_authorities.c.environment_id == pinned_head.environment_id,
+            current_lifecycle_authorities.c.source_object_id == pinned_head.source_object_id,
+        ).with_for_update())).mappings().one_or_none()
+        admission = (await self._execute(select(
+            source_processing_admissions.c.processing_admission_id,
+            source_processing_admissions.c.record,
+        ).where(
+            source_processing_admissions.c.processing_admission_id == pinned_admission.processing_admission_id,
+            source_processing_admissions.c.workspace_id == pinned_head.workspace_id,
+            source_processing_admissions.c.environment_id == pinned_head.environment_id,
+        ))).mappings().one_or_none()
+        acceptance_admission_id = await self._scalar(select(
+            canonical_acceptances.c.processing_admission_id,
+        ).where(
+            canonical_acceptances.c.canonical_acceptance_id == pinned_head.acceptance_id,
+            canonical_acceptances.c.workspace_id == pinned_head.workspace_id,
+            canonical_acceptances.c.environment_id == pinned_head.environment_id,
+        ))
+        if (
+            head is None
+            or head["current_revision_id"] != pinned_head.current_revision_id
+            or head["current_revision_kind"] != pinned_head.current_revision_kind.value
+            or head["acceptance_id"] != pinned_head.acceptance_id
+            or head["accepted_generation"] != pinned_head.accepted_generation
+            or head["cas_version"] != pinned_head.cas_version
+            or lifecycle is None
+            or lifecycle["current_decision_id"] != pinned_lifecycle.current_decision_id
+            or lifecycle["generation"] != pinned_lifecycle.generation
+            or (
+                acceptance_admission_id is not None
+                and (
+                    acceptance_admission_id != pinned_admission.processing_admission_id
+                    or admission is None
+                    or admission["record"] != pinned_admission.model_dump(mode="json")
+                )
+            )
+        ):
+            raise OptimisticConflictError(
+                "CRM verified handoff source authority changed after T5 matching."
+            )
+
+    async def allocate_verified_generations(
+        self, *, claim: CrmRelationshipClaim,
+        expected_verification_generation: int,
+        expected_lifecycle_generation: int,
+    ) -> tuple[int, int]:
+        """Let PostgreSQL own monotonic generation allocation under row lock."""
+        row = (await self._execute(select(
+            crm_relationship_eligibility_heads.c.verification_generation,
+            crm_relationship_eligibility_heads.c.lifecycle_generation,
+        ).where(
+            crm_relationship_eligibility_heads.c.workspace_id == claim.workspace_id,
+            crm_relationship_eligibility_heads.c.environment_id == claim.environment_id,
+            crm_relationship_eligibility_heads.c.claim_id == claim.claim_id,
+        ).with_for_update())).one_or_none()
+        if (
+            row is None
+            or row.verification_generation != expected_verification_generation
+            or row.lifecycle_generation != expected_lifecycle_generation
+        ):
+            raise OptimisticConflictError(
+                "CRM eligibility head changed before generation allocation."
+            )
+        return row.verification_generation + 1, row.lifecycle_generation
 
     async def _persist_audit_outbox(
         self, *, audit_event: AuditEvent, outbox_intent: OutboxIntent,
@@ -859,9 +936,13 @@ class CrmRelationshipV2Store:
             and profile.qualification_reference in current_connection.approved_resource_scope_references
             and profile.approval_reference in current_connection.approved_resource_scope_references
             and self._profile_matches_identity(profile, identity)
+            and profile.disk_namespace == receipt.disk_namespace
             and (
-                profile.mapping_strategy != "attached_object"
-                or receipt.ownership_proof_reference is not None
+                (profile.mapping_strategy == "direct_disk_object" and receipt.ownership_proof_reference is None)
+                or (
+                    profile.mapping_strategy == "attached_object"
+                    and receipt.ownership_proof_reference == profile.ownership_proof_reference
+                )
             )
         )
         current_head = (await self._execute(select(
@@ -1319,9 +1400,10 @@ class PostgreSQLCrmRelationshipV2Repository:
     async def persist_verified_handoff(
         self, handoff: Any
     ) -> CrmRelationshipEligibilityHead:
-        """Persist T1-T5 evidence atomically and reconcile an unknown commit by replay."""
+        """Persist T1-T5 evidence atomically; reconcile ambiguity by exact reads."""
         from spine.application.crm_relationship_v2_persistence import (
             CrmRelationshipV2VerifiedHandoff,
+            materialize_verified_observation,
         )
 
         if not isinstance(handoff, CrmRelationshipV2VerifiedHandoff):
@@ -1333,65 +1415,139 @@ class PostgreSQLCrmRelationshipV2Repository:
             schema_version=1,
             payload_type=CommandAuditPayload,
         )
-        retry_failure: BaseException | None = None
-        for attempt in range(3):
-            try:
-                async with self._uow(
-                    "crm_relationship_v2_write",
-                    handoff.claim.idempotency_key,
-                    actor_id=handoff.claim.acting_human_id,
+        replay = await self._reconcile_verified_handoff(handoff, missing_ok=True)
+        if replay is not None:
+            return replay
+        try:
+            async with self._uow(
+                "crm_relationship_v2_write", handoff.claim.idempotency_key,
+                actor_id=handoff.claim.acting_human_id,
+                workspace_id=handoff.claim.workspace_id,
+                environment_id=handoff.claim.environment_id,
+            ) as uow:
+                store = CrmRelationshipV2Store(uow)
+                await store.assert_source_authority(handoff.source_authority)
+                await store.register_identity(
+                    handoff.identity, actor_id=handoff.claim.acting_human_id
+                )
+                await store.append_claim(
+                    handoff.claim,
+                    audit_event=handoff.claim_audit_event,
+                    outbox_intent=handoff.claim_outbox_intent,
+                    audit_registry=audit_registry,
+                    outbox_registry=outbox_registry,
+                )
+                verification_generation, lifecycle_generation = await store.allocate_verified_generations(
+                    claim=handoff.claim,
+                    expected_verification_generation=handoff.expected_verification_generation,
+                    expected_lifecycle_generation=handoff.expected_lifecycle_generation,
+                )
+                receipt, eligibility = materialize_verified_observation(
+                    handoff,
+                    verification_generation=verification_generation,
+                    lifecycle_generation=lifecycle_generation,
+                )
+                await store.assert_verified_handoff_authority(
+                    claim=handoff.claim, receipt=receipt,
+                )
+                await store.append_receipt(
+                    receipt, eligibility=eligibility,
+                    audit_event=handoff.receipt_audit_event,
+                    outbox_intent=handoff.receipt_outbox_intent,
+                    audit_registry=audit_registry,
+                    outbox_registry=outbox_registry,
+                    expected_verification_generation=handoff.expected_verification_generation,
+                    lifecycle_generation=lifecycle_generation,
+                )
+                result = await store.current_eligibility(
                     workspace_id=handoff.claim.workspace_id,
                     environment_id=handoff.claim.environment_id,
-                ) as uow:
-                    store = CrmRelationshipV2Store(uow)
-                    await store.assert_verified_handoff_authority(
-                        claim=handoff.claim,
-                        receipt=handoff.receipt,
+                    claim_id=handoff.claim.claim_id,
+                    actor_id=handoff.claim.acting_human_id,
+                )
+                if result is None:
+                    raise OptimisticConflictError(
+                        "CRM verified handoff did not produce an eligibility head."
                     )
-                    await store.register_identity(
-                        handoff.identity, actor_id=handoff.claim.acting_human_id
-                    )
-                    await store.append_claim(
-                        handoff.claim,
-                        audit_event=handoff.claim_audit_event,
-                        outbox_intent=handoff.claim_outbox_intent,
-                        audit_registry=audit_registry,
-                        outbox_registry=outbox_registry,
-                    )
-                    await store.append_receipt(
-                        handoff.receipt,
-                        eligibility=handoff.eligibility,
-                        audit_event=handoff.receipt_audit_event,
-                        outbox_intent=handoff.receipt_outbox_intent,
-                        audit_registry=audit_registry,
-                        outbox_registry=outbox_registry,
-                        expected_verification_generation=(
-                            handoff.expected_verification_generation
-                        ),
-                        lifecycle_generation=handoff.lifecycle_generation,
-                    )
-                    result = await store.current_eligibility(
-                        workspace_id=handoff.claim.workspace_id,
-                        environment_id=handoff.claim.environment_id,
-                        claim_id=handoff.claim.claim_id,
-                        actor_id=handoff.claim.acting_human_id,
-                    )
-                    if result is None:
-                        raise OptimisticConflictError(
-                            "CRM verified handoff did not produce an eligibility head."
-                        )
-                    await uow.commit()
-                    return result
-            except (
-                TransactionDeadlockError,
-                TransactionSerializationError,
-                UnknownCommitOutcomeError,
-            ) as failure:
-                retry_failure = failure
-                if attempt == 2:
-                    raise
-        assert retry_failure is not None
-        raise retry_failure
+                await uow.commit()
+                return result
+        except UnknownCommitOutcomeError:
+            reconciled = await self._reconcile_verified_handoff(handoff, missing_ok=False)
+            assert reconciled is not None
+            return reconciled
+        except OptimisticConflictError as failure:
+            reconciled = await self._reconcile_verified_handoff(handoff, missing_ok=True)
+            if reconciled is not None:
+                return reconciled
+            raise failure
+
+    async def _reconcile_verified_handoff(
+        self, handoff: Any, *, missing_ok: bool,
+    ) -> CrmRelationshipEligibilityHead | None:
+        """Resolve an ambiguous commit without re-emitting any write."""
+        from spine.application.crm_relationship_v2_persistence import materialize_verified_observation
+
+        async with self._uow(
+            "crm_relationship_v2_read", handoff.claim.idempotency_key,
+            actor_id=handoff.claim.acting_human_id,
+            workspace_id=handoff.claim.workspace_id,
+            environment_id=handoff.claim.environment_id,
+        ) as uow:
+            claim_receipt = (await uow._execute(select(
+                crm_relationship_idempotency.c.payload_digest,
+                crm_relationship_idempotency.c.record_id,
+            ).where(
+                crm_relationship_idempotency.c.workspace_id == handoff.claim.workspace_id,
+                crm_relationship_idempotency.c.environment_id == handoff.claim.environment_id,
+                crm_relationship_idempotency.c.idempotency_key == handoff.claim.idempotency_key,
+            ))).one_or_none()
+            receipt_receipt = (await uow._execute(select(
+                crm_relationship_idempotency.c.payload_digest,
+                crm_relationship_idempotency.c.record_id,
+            ).where(
+                crm_relationship_idempotency.c.workspace_id == handoff.claim.workspace_id,
+                crm_relationship_idempotency.c.environment_id == handoff.claim.environment_id,
+                crm_relationship_idempotency.c.idempotency_key == handoff.receipt_idempotency_key,
+            ))).one_or_none()
+            head_row = (await uow._execute(select(
+                crm_relationship_eligibility_heads,
+            ).where(
+                crm_relationship_eligibility_heads.c.workspace_id == handoff.claim.workspace_id,
+                crm_relationship_eligibility_heads.c.environment_id == handoff.claim.environment_id,
+                crm_relationship_eligibility_heads.c.claim_id == handoff.claim.claim_id,
+            ))).mappings().one_or_none()
+            if claim_receipt is None or receipt_receipt is None:
+                await uow.rollback()
+                if missing_ok and claim_receipt is None and receipt_receipt is None:
+                    return None
+                raise UnknownCommitOutcomeError(
+                    "CRM verified handoff commit could not be reconciled."
+                )
+            if head_row is None:
+                raise IdempotencyConflictError(
+                    "CRM verified handoff reconciliation found incomplete state."
+                )
+            result = CrmRelationshipEligibilityHead.model_validate(dict(head_row))
+            expected_receipt, _ = materialize_verified_observation(
+                handoff,
+                verification_generation=result.verification_generation,
+                lifecycle_generation=result.lifecycle_generation,
+            )
+            if (
+                claim_receipt.payload_digest != handoff.claim.payload_digest
+                or claim_receipt.record_id != handoff.claim.claim_id
+                or receipt_receipt.record_id != handoff.receipt_id
+                or receipt_receipt.payload_digest != expected_receipt.payload_digest
+            ):
+                raise IdempotencyConflictError(
+                    "CRM verified handoff reconciliation found changed payload."
+                )
+            await uow.rollback()
+            if result.receipt_id != handoff.receipt_id or result.eligibility_id != handoff.eligibility_id:
+                raise IdempotencyConflictError(
+                    "CRM verified handoff reconciliation found changed current state."
+                )
+            return result
 
     async def append_receipt(
         self, receipt: CrmRelationshipObservationReceipt, *,
