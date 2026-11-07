@@ -28,11 +28,11 @@ in scope.
 
 | Criterion | Status | Bound result |
 | --- | --- | --- |
-| AC1 | PASS | Recovery attempt v3 records one coherent manifest with durable quiescence, component identities and a released fence. |
-| AC2 | PASS | The same record binds canonical/original counts and immutable PostgreSQL/original-storage digests without content. |
+| AC1 | PASS | Recovery attempt v3 plus retained-volume read-back record one coherent manifest with durable quiescence, exact PostgreSQL watermark, object generation, verified component identities and a released fence. |
+| AC2 | PASS | Retained archive inventory confirms canonical revisions, finalized originals, outbox and recovery evidence; SHA-256, length and object-reference matches are verified without content. |
 | AC3 | PASS | A fresh database/filesystem target passed restore, reconciliation and tenant-scoped storage verification while remaining non-serving. |
-| AC4 | PASS | Interrupted and misconfigured predecessors failed closed without filesystem publication or source mutation; repository failure contracts remain applicable. |
-| AC5 | PASS | Physical recovery plus run009 publication verified current canonical revisions, policy, boundary membership, projection references and active pins. |
+| AC4 | PASS | Interrupted and misconfigured predecessors failed closed without filesystem publication or source mutation; named tests cover missing/corrupt originals, mixed components, interrupted restore, invalid/truncated manifest chains and failed reconciliation. |
+| AC5 | PASS | Physical recovery plus run009 publication verified current canonical revisions, policy, boundary membership, projection references and active pins; the bound #212/#507 physical gate and named resolver tests prove stale, tombstoned and shadow evidence is not served. |
 | AC6 | PASS | Run009 issued exactly one authorized Broker request and received one complete evidence-bearing bundle; safe diagnostics and cleanup were retained. |
 | AC7 | PASS | The existing recovery and Cognee runbooks were exercised repeatedly and corrected for the concrete role, RLS, runtime-binding, graph-placement and trusted-handoff gaps found by the runs. |
 | AC8 | PASS | All bound execution records are immutable metadata-only artifacts with SHA-256 identities. |

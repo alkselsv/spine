@@ -272,6 +272,98 @@ async def test_verification_rejects_mixed_component_evidence_before_restore(tmp_
 
 
 @pytest.mark.asyncio
+async def test_missing_original_fails_reconciliation_without_publication(
+    tmp_path: Path,
+) -> None:
+    class PostgreSQLRestoreFake:
+        async def restore_and_read(
+            self,
+            _archive: Path,
+            _target: IsolatedRestoreTarget,
+            *,
+            expected_component_version: str,
+        ) -> tuple[ObjectReference, ...]:
+            assert expected_component_version == "17.2.1"
+            return (OBJECT, OBJECT_B)
+
+    executable = tmp_path / "pg_restore"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o700)
+    pg = tmp_path / "postgres.dump"
+    fs = tmp_path / "objects.tar"
+    pg.write_bytes(b"pg archive")
+    write_archive(fs)
+    configured = target(tmp_path)
+    manifest = make_manifest(
+        hashlib.sha256(pg.read_bytes()).hexdigest(),
+        hashlib.sha256(fs.read_bytes()).hexdigest(),
+        references=(OBJECT, OBJECT_B),
+    )
+    verifier = IsolatedRestoreVerifier(
+        pg_restore_executable=executable,
+        postgres_restore_port=PostgreSQLRestoreFake(),
+    )
+
+    with pytest.raises(IsolatedRestoreFailure) as error:
+        await verifier.verify_and_restore(
+            manifest=manifest,
+            postgres_artifact=pg,
+            filesystem_artifact=fs,
+            target=configured,
+        )
+
+    assert error.value.evidence.outcome == "rejected"
+    assert error.value.evidence.safe_failure_code == "restore.metadata_mismatch"
+    assert not configured.filesystem_root.exists()
+
+
+@pytest.mark.asyncio
+async def test_interrupted_restore_removes_staging_without_publication(
+    tmp_path: Path,
+) -> None:
+    class InterruptedPostgreSQLRestore:
+        async def restore_and_read(
+            self,
+            _archive: Path,
+            _target: IsolatedRestoreTarget,
+            *,
+            expected_component_version: str,
+        ) -> tuple[ObjectReference, ...]:
+            assert expected_component_version == "17.2.1"
+            raise TimeoutError
+
+    executable = tmp_path / "pg_restore"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o700)
+    pg = tmp_path / "postgres.dump"
+    fs = tmp_path / "objects.tar"
+    pg.write_bytes(b"pg archive")
+    write_archive(fs)
+    configured = target(tmp_path)
+    manifest = make_manifest(
+        hashlib.sha256(pg.read_bytes()).hexdigest(),
+        hashlib.sha256(fs.read_bytes()).hexdigest(),
+    )
+    verifier = IsolatedRestoreVerifier(
+        pg_restore_executable=executable,
+        postgres_restore_port=InterruptedPostgreSQLRestore(),
+    )
+
+    with pytest.raises(IsolatedRestoreFailure) as error:
+        await verifier.verify_and_restore(
+            manifest=manifest,
+            postgres_artifact=pg,
+            filesystem_artifact=fs,
+            target=configured,
+        )
+
+    assert error.value.evidence.outcome == "indeterminate"
+    assert error.value.evidence.safe_failure_code == "restore.execution_failed"
+    assert not configured.filesystem_root.exists()
+    assert not any(tmp_path.glob(".*.restore-*"))
+
+
+@pytest.mark.asyncio
 async def test_recovery_identifier_path_error_returns_safe_typed_failure(tmp_path: Path) -> None:
     executable = tmp_path / "pg_restore"
     executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")

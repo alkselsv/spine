@@ -51,6 +51,9 @@ NEO4J_RUNTIME_COMPATIBILITY_REPORT_PATH = (
 FINAL_QUALIFICATION_REPORT_PATH = (
     PROJECT_ROOT / "docs/qualification/issue-509-final-qualification-v1.json"
 )
+RETAINED_ARCHIVE_READBACK_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-retained-archive-readback-v1.json"
+)
 COMPOSE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/compose.yaml"
 DOCKERIGNORE_PATH = PROJECT_ROOT / ".dockerignore"
 QUALIFICATION_DOCKERFILE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/Dockerfile"
@@ -130,6 +133,10 @@ def _load_final_qualification_report() -> dict[str, Any]:
     return json.loads(FINAL_QUALIFICATION_REPORT_PATH.read_text(encoding="utf-8"))
 
 
+def _load_retained_archive_readback() -> dict[str, Any]:
+    return json.loads(RETAINED_ARCHIVE_READBACK_PATH.read_text(encoding="utf-8"))
+
+
 def test_issue509_final_report_closes_every_acceptance_criterion() -> None:
     report = _load_final_qualification_report()
 
@@ -178,6 +185,18 @@ def test_issue509_final_report_binds_immutable_physical_evidence() -> None:
             "docs/qualification/issue-634-recovered-application-canary-v9-review.json",
             "8258ed0f112191f7b561f1afc477e406cd21bb2476771fef6ed42cd12cea8ba1",
         ),
+        "issue212-cognee-production-report": (
+            "docs/qualification/issue-212-cognee-production-report.json",
+            "9d433a0e60ad0ffff479b3cf596ca2db1983e904a5065a8da49b711140012071",
+        ),
+        "issue507-canonical-projection-qualification": (
+            "docs/qualification/issue-507-canonical-ingestion-physical-projection.md",
+            "79c8c4073fd629fe1d8021903e90f5e4ae41ffd2c7ecd073f089557baf23b98f",
+        ),
+        "issue509-retained-archive-readback-v1": (
+            "docs/qualification/issue-509-retained-archive-readback-v1.json",
+            "13ccdce651e0a67a8f2ca4152195b0808d3ca522105644c428110909d4653738",
+        ),
     }
     assert set(artifacts) == set(expected)
     for artifact_id, (relative_path, digest) in expected.items():
@@ -205,6 +224,22 @@ def test_issue509_final_report_binds_immutable_physical_evidence() -> None:
             digest
         )
 
+    assert report["deterministic_coverage"] == {
+        "AC4": [
+            "tests/infrastructure/test_isolated_restore.py::test_filesystem_archive_digest_mismatch_is_rejected",
+            "tests/infrastructure/test_isolated_restore.py::test_verification_rejects_mixed_component_evidence_before_restore",
+            "tests/infrastructure/test_isolated_restore.py::test_missing_original_fails_reconciliation_without_publication",
+            "tests/infrastructure/test_isolated_restore.py::test_interrupted_restore_removes_staging_without_publication",
+            "tests/domain/storage/test_recovery_integrity.py::test_missing_or_wrongly_linked_event_fails_closed",
+            "tests/domain/storage/test_recovery_integrity.py::test_restore_reconciliation_rejects_a_valid_prefix_of_a_longer_chain",
+        ],
+        "AC5": [
+            "tests/application/test_projection_request_resolution.py::test_production_resolver_fences_stale_current_revision_before_physical_io",
+            "tests/application/test_projection_request_resolution.py::test_production_resolver_fences_tombstoned_current_revision_before_physical_io",
+            "tests/integration/cognee/test_production_profile.py::test_production_qualification_records_one_coherent_run",
+        ],
+    }
+
 
 def test_issue509_final_report_preserves_bounded_claim_and_safety() -> None:
     report = _load_final_qualification_report()
@@ -223,12 +258,62 @@ def test_issue509_final_report_preserves_bounded_claim_and_safety() -> None:
     }
 
 
-def test_issue509_roadmap_records_recovery_qualification_as_complete() -> None:
-    roadmap = (PROJECT_ROOT / "docs/ROADMAP.md").read_text(encoding="utf-8")
+def test_issue509_retained_archive_readback_closes_component_detail_gaps() -> None:
+    report = _load_retained_archive_readback()
 
-    assert "recovered application canary не квалифицирован" not in roadmap
-    assert "- #634 — provider-backed projection publication" not in roadmap
-    assert "#509 / #634 — `qualified`" in roadmap
+    assert report["schema_version"] == "r1-retained-archive-readback:v1"
+    assert report["content_free"] is True
+    assert report["source_volumes_mutated"] is False
+    assert report["diagnostic_clone_removed"] is True
+    assert report["manifest"] == {
+        "recovery_set_id": "recovery:issue509-005",
+        "deployment_scope_id": "deployment:issue509-recovery-003",
+        "profile": "coordinated",
+        "status": "coherent",
+        "fence_epoch": 1,
+        "cutoff_ticket_sequence": 0,
+        "postgres_boundary": (
+            "artifact:06c39b94d123a65483d7efd49cbd7c24ca049767873e04361e96fad8fe26c7cb"
+        ),
+        "postgres_recovery_watermark": "pg:0/35218C8",
+        "object_volume_generation": "volume:issue509-source-originals",
+        "postgres_component_state": "verified",
+        "object_component_state": "verified",
+        "postgres_backup_identity": (
+            "postgres-backup:45a25a94b2930b66e4b327453d19512540e87f7f282fa62b5024cb492e23ea62"
+        ),
+        "postgres_verification_reference": (
+            "pg_restore-list:45a25a94b2930b66e4b327453d19512540e87f7f282fa62b5024cb492e23ea62"
+        ),
+        "object_verification_reference": (
+            "filesystem-tar-content:171541a5c0c4ef8c629d40710a5be3b3a45d42e138bd630cf375e0b571db121e"
+        ),
+        "drained_operation_count": 0,
+        "orphaned_operation_count": 0,
+        "indeterminate_operation_count": 0,
+        "integrity_algorithm": "sha256",
+        "manifest_digest": (
+            "7e54fceb281507c98435dc23fc1b505eb1d993f68dad9688b390fef53dea220f"
+        ),
+    }
+    assert report["archive_inventory"] == {
+        "source_object_count": 2,
+        "source_revision_count": 1,
+        "finalized_original_record_count": 1,
+        "outbox_intent_count": 4,
+        "outbox_delivery_count": 4,
+        "quiescence_evidence_count": 2,
+        "original_archive_entry_count": 2,
+    }
+    assert report["finalized_original"] == {
+        "state": "finalized",
+        "storage_status": "finalized_verified",
+        "verification_status": "verified",
+        "digest_algorithm": "sha256",
+        "observed_digest_matches_object_reference": True,
+        "observed_length_matches_object_reference": True,
+        "object_identity_count": 1,
+    }
 
 
 def _all_strings(value: Any) -> list[str]:

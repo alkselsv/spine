@@ -100,8 +100,8 @@ deployment profile: runtime readiness (#560), пятиформатный canonic
 Golden Dataset ещё не прогнан через тот же production Q&A path, численные quality
 thresholds не утверждены, а финальный current-commit evidence aggregate и
 GO/NO-GO отсутствуют (#510, #511, #16). Backup, isolated restore, projection
-recovery и recovered-application canary имеют связанный физический evidence chain
-и independent approval (#509, #634).
+recovery и recovered-application canary имеют связанный физический evidence chain;
+его финальный aggregate ожидает отдельный independent review (#509, #634).
 
 - [x] Надёжная загрузка PDF, DOCX, XLSX, Markdown и text с версиями и checksum.
       `implemented, integrated and qualified`: Q16-02 R4 прошёл deployed upload,
@@ -167,12 +167,13 @@ recovery и recovered-application canary имеют связанный физи�
 
 ### Актуальные release blockers
 
-- #509 / #634 — `qualified`: coherent backup, isolated restore, reconciliation,
-  projection recovery/publication и ровно один authorized Context Broker canary
-  прошли на fresh synthetic recovery target; immutable evidence получил
-  independent approval. Это bounded recovery qualification, а не release GO или
-  cutover authority. Independent provider usage metering остаётся явно
-  непроверенным и не используется для cost claim.
+- #509 — coherent backup, isolated restore, reconciliation, projection
+  recovery/publication и ровно один authorized Context Broker canary прошли на
+  fresh synthetic recovery target. Run009 получил independent approval в #634;
+  финальный AC1–AC9 aggregate #509 ожидает отдельный independent review. До него
+  bounded recovery qualification не повышается до `qualified`. Independent
+  provider usage metering остаётся явно непроверенным и не используется для cost
+  claim.
 - #510 — полный 149-case run approved Golden Dataset через production durable
   Q&A/capture path, metadata-only baseline и отдельное утверждение versioned
   numerical thresholds Product Owner-ом.
@@ -184,11 +185,11 @@ recovery и recovered-application canary имеют связанный физи�
 
 ### Текущий release verdict
 
-`NO-GO`: продуктовый R1 путь и bounded backup/recovery path квалифицированы на
-зафиксированных изолированных deployment targets, но release qualification ещё
-не завершена. Отсутствие реального baseline/approved thresholds или единого
-совместимого current-commit evidence package является блокирующим, а не неявным
-`PASS`.
+`NO-GO`: продуктовый R1 путь реализован и основные physical recovery observations
+получены на зафиксированных изолированных deployment targets, но release
+qualification ещё не завершена. Отсутствие independent review финального recovery
+aggregate, реального baseline/approved thresholds или единого совместимого
+current-commit evidence package является блокирующим, а не неявным `PASS`.
 
 ### Exit criteria
 

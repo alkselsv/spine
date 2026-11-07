@@ -15,13 +15,19 @@
     {
       "criterion_id": "AC1",
       "status": "pass",
-      "evidence_artifact_ids": ["issue509-recovery-attempt-v3"],
+      "evidence_artifact_ids": [
+        "issue509-recovery-attempt-v3",
+        "issue509-retained-archive-readback-v1"
+      ],
       "result": "coherent_fenced_manifest_verified"
     },
     {
       "criterion_id": "AC2",
       "status": "pass",
-      "evidence_artifact_ids": ["issue509-recovery-attempt-v3"],
+      "evidence_artifact_ids": [
+        "issue509-recovery-attempt-v3",
+        "issue509-retained-archive-readback-v1"
+      ],
       "result": "canonical_and_original_components_verified"
     },
     {
@@ -44,6 +50,8 @@
       "status": "pass",
       "evidence_artifact_ids": [
         "issue509-projection-recovery-attempt-v1",
+        "issue212-cognee-production-report",
+        "issue507-canonical-projection-qualification",
         "issue634-recovered-application-canary-v9"
       ],
       "result": "projection_recovery_publication_policy_and_lineage_verified"
@@ -107,8 +115,38 @@
       "artifact_id": "issue634-recovered-application-canary-v9-review",
       "path": "docs/qualification/issue-634-recovered-application-canary-v9-review.json",
       "sha256": "8258ed0f112191f7b561f1afc477e406cd21bb2476771fef6ed42cd12cea8ba1"
+    },
+    {
+      "artifact_id": "issue509-retained-archive-readback-v1",
+      "path": "docs/qualification/issue-509-retained-archive-readback-v1.json",
+      "sha256": "13ccdce651e0a67a8f2ca4152195b0808d3ca522105644c428110909d4653738"
+    },
+    {
+      "artifact_id": "issue212-cognee-production-report",
+      "path": "docs/qualification/issue-212-cognee-production-report.json",
+      "sha256": "9d433a0e60ad0ffff479b3cf596ca2db1983e904a5065a8da49b711140012071"
+    },
+    {
+      "artifact_id": "issue507-canonical-projection-qualification",
+      "path": "docs/qualification/issue-507-canonical-ingestion-physical-projection.md",
+      "sha256": "79c8c4073fd629fe1d8021903e90f5e4ae41ffd2c7ecd073f089557baf23b98f"
     }
   ],
+  "deterministic_coverage": {
+    "AC4": [
+      "tests/infrastructure/test_isolated_restore.py::test_filesystem_archive_digest_mismatch_is_rejected",
+      "tests/infrastructure/test_isolated_restore.py::test_verification_rejects_mixed_component_evidence_before_restore",
+      "tests/infrastructure/test_isolated_restore.py::test_missing_original_fails_reconciliation_without_publication",
+      "tests/infrastructure/test_isolated_restore.py::test_interrupted_restore_removes_staging_without_publication",
+      "tests/domain/storage/test_recovery_integrity.py::test_missing_or_wrongly_linked_event_fails_closed",
+      "tests/domain/storage/test_recovery_integrity.py::test_restore_reconciliation_rejects_a_valid_prefix_of_a_longer_chain"
+    ],
+    "AC5": [
+      "tests/application/test_projection_request_resolution.py::test_production_resolver_fences_stale_current_revision_before_physical_io",
+      "tests/application/test_projection_request_resolution.py::test_production_resolver_fences_tombstoned_current_revision_before_physical_io",
+      "tests/integration/cognee/test_production_profile.py::test_production_qualification_records_one_coherent_run"
+    ]
+  },
   "supporting_documents": [
     {
       "path": "deploy/qualification/issue-509/README.md",
