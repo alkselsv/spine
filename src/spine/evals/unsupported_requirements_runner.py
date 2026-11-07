@@ -121,15 +121,19 @@ def unsupported_requirements_evaluation_identity(
     )
 
 
-def verify_qualified_commit(tested_commit_sha: str) -> None:
+def verify_qualified_commit(
+    tested_commit_sha: str,
+    *,
+    root: Path | None = None,
+) -> None:
     """Reject caller-supplied SHAs whose qualified files differ from this tree."""
 
     if len(tested_commit_sha) != 40:
         raise ValueError("tested commit must be a full SHA")
-    root = Path(__file__).resolve().parents[3]
+    repository = root or Path(__file__).resolve().parents[3]
     resolved = subprocess.run(
         ["git", "rev-parse", f"{tested_commit_sha}^{{commit}}"],
-        cwd=root,
+        cwd=repository,
         check=True,
         capture_output=True,
         text=True,
@@ -139,18 +143,42 @@ def verify_qualified_commit(tested_commit_sha: str) -> None:
         raise ValueError("tested commit identity is not exact")
     subprocess.run(
         ["git", "merge-base", "--is-ancestor", tested_commit_sha, "HEAD"],
-        cwd=root,
+        cwd=repository,
         check=True,
         capture_output=True,
         timeout=10,
     )
     subprocess.run(
         ["git", "diff", "--quiet", tested_commit_sha, "HEAD", "--", *_QUALIFIED_PATHS],
-        cwd=root,
+        cwd=repository,
         check=True,
         capture_output=True,
         timeout=10,
     )
+    subprocess.run(
+        ["git", "diff", "--quiet", "HEAD", "--", *_QUALIFIED_PATHS],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        timeout=10,
+    )
+    subprocess.run(
+        ["git", "diff", "--cached", "--quiet", "HEAD", "--", *_QUALIFIED_PATHS],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        timeout=10,
+    )
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", "--", *_QUALIFIED_PATHS],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    ).stdout
+    if untracked.strip():
+        raise ValueError("qualified tree contains untracked files")
 
 
 async def _observe_dataset(
@@ -329,7 +357,9 @@ def map_requirements_output_class(
         raise ValueError("failed extraction has no favourable class mapping")
     if output.outcome is RequirementsExtractionOutcome.PARTIAL:
         return UnsupportedRequirementsClass.CLARIFICATION_NEEDED
-    return UnsupportedRequirementsClass.INCONCLUSIVE_ABSTENTION
+    if output.outcome is RequirementsExtractionOutcome.ABSTAINED:
+        return UnsupportedRequirementsClass.INCONCLUSIVE_ABSTENTION
+    raise ValueError("successful extraction cannot classify an unmatched item")
 
 
 def _normalize(value: str) -> str:

@@ -4,7 +4,6 @@ from decimal import Decimal
 import json
 from pathlib import Path
 import subprocess
-from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -17,8 +16,21 @@ from spine.evals.unsupported_requirements_runner import (
     unsupported_requirements_evaluation_identity,
     verify_qualified_commit,
 )
-from spine.domain.capabilities import RequirementsExtractionOutcome
-from spine.domain.workflows import RequirementState
+from spine.domain.artifacts import TimeRangeLocator
+from spine.domain.capabilities import (
+    RequirementsExtractionOutcome,
+    RequirementsExtractionOutput,
+    RequirementsExtractionReason,
+    RequirementsExtractionReasonCode,
+)
+from spine.domain.workflows import (
+    AcceptedSourceRevisionRef,
+    RequirementCategory,
+    RequirementEvidenceRef,
+    RequirementEvidenceStatus,
+    RequirementState,
+    RequirementV2,
+)
 from spine.evaluations.unsupported_requirements import (
     UnsupportedRequirementsClass,
     UnsupportedRequirementsGateResult,
@@ -30,6 +42,64 @@ from spine.evaluations.unsupported_requirements import (
 
 def _identity():
     return unsupported_requirements_evaluation_identity(tested_commit_sha="a" * 40)
+
+
+def _valid_output(
+    *,
+    outcome: RequirementsExtractionOutcome = RequirementsExtractionOutcome.SUCCESS,
+    evidence_order: tuple[int, ...] = (1,),
+) -> RequirementsExtractionOutput:
+    source = AcceptedSourceRevisionRef(
+        source_object_id=UUID(int=20),
+        source_revision_id=UUID(int=21),
+        provenance_id=UUID(int=22),
+    )
+    references = tuple(
+        RequirementEvidenceRef(
+            source_ref=source,
+            transcript_locator=TimeRangeLocator(
+                source_object_id=source.source_object_id,
+                source_revision_id=source.source_revision_id,
+                source_revision_digest="a" * 64,
+                transcript_artifact_id=UUID(int=23),
+                transcript_artifact_digest="b" * 64,
+                transcript_artifact_schema_version="transcription-artifact:v1",
+                start_ms=ordinal * 1_000,
+                end_ms=ordinal * 1_000 + 900,
+                segment_ids=(UUID(int=ordinal),),
+            ),
+            segment_id=UUID(int=ordinal),
+            segment_digest=f"{ordinal:x}" * 64,
+            locator_contract_version="time-range-locator:v1",
+        )
+        for ordinal in evidence_order
+    )
+    requirements = (
+        RequirementV2(
+            requirement_id=UUID(int=30),
+            category=RequirementCategory.FUNCTIONAL,
+            statement="Supported requirement",
+            state=RequirementState.CANDIDATE,
+            source_refs=(source,),
+            evidence_refs=references,
+            evidence_status=RequirementEvidenceStatus.REFERENCED,
+        ),
+    ) if outcome is RequirementsExtractionOutcome.SUCCESS else ()
+    return RequirementsExtractionOutput(
+        workspace_id=UUID(int=1),
+        environment_id=UUID(int=2),
+        workflow_run_id=UUID(int=3),
+        work_item_id=UUID(int=4),
+        outcome=outcome,
+        requirements=requirements,
+        reason=(
+            RequirementsExtractionReason(
+                code=RequirementsExtractionReasonCode.PROCESSING_FAILED
+            )
+            if outcome is RequirementsExtractionOutcome.FAILED
+            else None
+        ),
+    )
 
 
 def _approved_coverage_observations() -> tuple[UnsupportedRequirementsObservation, ...]:
@@ -188,20 +258,10 @@ def test_missing_supported_candidate_never_receives_supported_credit() -> None:
 def test_reordered_exact_evidence_requires_clarification() -> None:
     first = UUID(int=1)
     second = UUID(int=2)
-    candidate = SimpleNamespace(
-        state=RequirementState.CANDIDATE,
-        uncertainty=None,
-        ambiguous_markers=(),
-        missing_markers=(),
-        evidence_refs=(
-            SimpleNamespace(segment_id=second),
-            SimpleNamespace(segment_id=first),
-        ),
-    )
-    output = SimpleNamespace(outcome=RequirementsExtractionOutcome.SUCCESS)
+    output = _valid_output(evidence_order=(2, 1))
 
     predicted = map_requirements_candidate_class(
-        candidate=candidate,
+        candidate=output.requirements[0],
         output=output,
         expected_segment_ids=("first", "second"),
         segment_ids={first: "first", second: "second"},
@@ -211,9 +271,16 @@ def test_reordered_exact_evidence_requires_clarification() -> None:
 
 
 def test_typed_processing_failure_has_no_favourable_class_mapping() -> None:
-    output = SimpleNamespace(outcome=RequirementsExtractionOutcome.FAILED)
+    output = _valid_output(outcome=RequirementsExtractionOutcome.FAILED)
 
     with pytest.raises(ValueError, match="failed extraction"):
+        map_requirements_output_class(output)
+
+
+def test_successful_output_cannot_classify_an_unmatched_item_as_abstention() -> None:
+    output = _valid_output()
+
+    with pytest.raises(ValueError, match="unmatched item"):
         map_requirements_output_class(output)
 
 
@@ -244,6 +311,42 @@ def test_existing_ancestor_with_changed_qualified_tree_is_rejected() -> None:
         pass
     else:
         raise AssertionError("changed qualified tree must reject a stale ancestor")
+
+
+@pytest.mark.parametrize("dirty_kind", ["modified", "staged", "untracked"])
+def test_dirty_qualified_tree_is_rejected(tmp_path: Path, dirty_kind: str) -> None:
+    source = tmp_path / "src" / "spine"
+    source.mkdir(parents=True)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='eval-fixture'\n")
+    (tmp_path / "uv.lock").write_text("version = 1\n")
+    runtime = source / "runtime.py"
+    runtime.write_text("VALUE = 1\n")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(
+        [
+            "git", "-c", "user.name=Eval", "-c", "user.email=eval@example.invalid",
+            "commit", "-qm", "fixture",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    tested_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if dirty_kind == "untracked":
+        (source / "untracked.py").write_text("VALUE = 2\n")
+    else:
+        runtime.write_text("VALUE = 2\n")
+        if dirty_kind == "staged":
+            subprocess.run(["git", "add", str(runtime)], cwd=tmp_path, check=True)
+
+    with pytest.raises((subprocess.CalledProcessError, ValueError)):
+        verify_qualified_commit(tested_commit, root=tmp_path)
 
 
 def test_committed_not_verified_report_is_exactly_reproducible() -> None:
