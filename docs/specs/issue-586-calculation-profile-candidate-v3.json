@@ -1,0 +1,395 @@
+{
+  "architecture": {
+    "canonical_artifacts": "versioned Estimates in existing artifact persistence",
+    "context_broker": "retrieval only; no pricing authority or source activation",
+    "external_provider": "provider fetch occurs outside PostgreSQL transaction; exact observation is persisted and validated before calculation/commit",
+    "idempotency": "same command identity and digest returns stored receipt; digest mismatch conflicts; unknown commit reconciled from persisted identity",
+    "transaction": "atomic exact authorization/currentness, CAS version, approval decision, Audit Event and transactional outbox intent",
+    "workflow": "reuse existing R2 WorkItem and single WorkflowRun"
+  },
+  "calculation": {
+    "currency_quantum": "0.01 for RUB, USD, EUR, CNY",
+    "display_reconciliation": "separate from tax-extraction residual; derive only after validated calculation from quantized display components and final quantized line; bounded by (m+1)*Q/2 where m is number of signed displayed components; exceed => TAX_RULE_UNRESOLVED",
+    "estimate_total": "exact sum of final quantized line totals; no requantization",
+    "line_total_quantization": "one ROUND_HALF_UP quantization per line, after tax and FX",
+    "operation_order": [
+      "validate exact source, authority, revisions, PriceItem, UOM, currencies, pricing_as_of and policy bindings",
+      "gross_source=quantity*unit_price under pinned HALF_UP Decimal context",
+      "resolve exact TaxBasis and ordered component model",
+      "for-inclusive-lines extract pre-tax base and calculate audit-only extraction residual",
+      "prove gross is enclosed by directed-rounded tax recurrence interval",
+      "apply one approved discount to pre-tax base; recompute post-discount taxes",
+      "net_source=taxable_base+sum(post-discount tax components); never include extraction residual",
+      "apply exact approved FX conversion after tax",
+      "propagate interval through discount/tax/FX and require lower and upper final quantizations to be identical",
+      "quantize final line once; otherwise TAX_RULE_UNRESOLVED",
+      "quantize displayed components separately and compute bounded display-only reconciliation",
+      "sum quantized line totals exactly"
+    ],
+    "residual": {
+      "field": "tax_extraction_residual_diagnostic",
+      "formula": "gross_source - (base_before_discount + sum(included_tax_before_discount_i))",
+      "outcome": "TAX_RULE_UNRESOLVED if equation not enclosed or final quantized amount is not unique",
+      "usage": "audit and validation only; never affects taxable_base, tax_i, net_source, FX amount, Estimate total or display reconciliation",
+      "validation": "directed interval arithmetic validates exact approved equation; no arbitrary allocation"
+    },
+    "rounding": "ROUND_HALF_UP; context 34 significant digits; final line output once at approved .01 quantum"
+  },
+  "currency": {
+    "allowed_estimate_currencies": [
+      "CNY",
+      "EUR",
+      "RUB",
+      "USD"
+    ],
+    "allowed_source_currencies": [
+      "CNY",
+      "EUR",
+      "RUB",
+      "USD"
+    ],
+    "identity": "explicit-ISO-4217-code; no-implicit-default",
+    "missing_or_unsupported_currency_or_quantum": "CURRENCY_POLICY_UNRESOLVED",
+    "quantum_authority": "Finance decision F5 2026-11-07; runtime binding still required",
+    "quantum_by_approved-F5-decision": {
+      "CNY": "0.01",
+      "EUR": "0.01",
+      "RUB": "0.01",
+      "USD": "0.01"
+    }
+  },
+  "decimal": {
+    "clamp": 0,
+    "emax": 999999,
+    "emin": -999999,
+    "estimate_total": "exact sum of quantized line totals; no aggregate re-quantization",
+    "exceptional_traps_and_range_preflight": "preserve original v1 semantics: InvalidOperation, DivisionByZero, Overflow, Underflow, Subnormal, Clamped, FloatOperation trapped; Inexact and Rounded signals permitted and rounded by context; preflight output coefficient width before quantization; range breach => CALCULATION_RANGE_EXCEEDED",
+    "finite_values_only": true,
+    "inexact_rounded_signals": "permitted-and-rounded-by-context-at-34-significant-digits",
+    "input_constraints": {
+      "negative_discount": "ESTIMATE_INPUT_INVALID",
+      "quantity": "strictly positive",
+      "range_failure": "CALCULATION_RANGE_EXCEEDED",
+      "unit_price": "nonnegative; zero allowed only from an approved price source"
+    },
+    "input_encoding": "decimal-string-only",
+    "input_precision": "maximum 34 significant digits; exact decimal-string only; no float and no implicit rounding",
+    "input_scale_policy": "source-specific, immutable versioned scale/domain policy required; missing source schema or policy blocks; invalid scale => ESTIMATE_INPUT_INVALID",
+    "intermediate_semantics": "preserve accepted v1 Decimal context/traps; Inexact and Rounded signals are permitted and use the pinned ROUND_HALF_UP context; directed interval pass is validation only",
+    "line_quantization": "once per final converted line total using ROUND_HALF_UP",
+    "max_precision": "34 significant digits",
+    "output_quantum": "0.01 for RUB, USD, EUR, CNY",
+    "precision_significant_digits": 34,
+    "range_policy": "context-overflow-underflow-subnormal-or-clamped-signal-and-output-quantized-coefficient-over-34-digits-fail-as-CALCULATION_RANGE_EXCEEDED; output-quantizer-preflights-coefficient-width-before-emitting",
+    "rounding_mode": "ROUND_HALF_UP",
+    "traps": [
+      "InvalidOperation",
+      "DivisionByZero",
+      "Overflow",
+      "Underflow",
+      "Subnormal",
+      "Clamped",
+      "FloatOperation"
+    ]
+  },
+  "discount": {
+    "allowed_discount_types": [
+      "PERCENTAGE",
+      "FIXED_AMOUNT"
+    ],
+    "basis": "pre-discount-tax-exclusive-base",
+    "fixed_amount_limit_basis": "equivalent percentage = fixed_discount / pre-tax base; zero base with positive fixed discount unresolved and blocked",
+    "fixed_discount_equivalent_percentage": "fixed_discount / pre_tax_base only when base > 0; no division when base is zero",
+    "greater_than_pre_tax_base": "DISCOUNT_POLICY_UNRESOLVED",
+    "limits": {
+      "(0,0.10]": "authorized manager approval",
+      "(0.10,0.20]": "Finance Owner approval",
+      "(0.20,1]": "prohibited by standard policy",
+      "0": "NO_DISCOUNT; no additional discount approval"
+    },
+    "maximum_selected_rules_per_line": 1,
+    "missing_or_ambiguous_policy": "DISCOUNT_POLICY_UNRESOLVED",
+    "negative_discount": "ESTIMATE_INPUT_INVALID",
+    "one_discount_per_line": true,
+    "order": "before-tax",
+    "override": "manual price override requires independent authorized approver; requester cannot self-approve; reason and evidence; prior/proposed amount; exact Estimate version and calculation digest; successor version and fresh approval after material change; never mutate source",
+    "security_boundary": "Finance policy does not grant application permissions or approve Security segregation controls",
+    "stacking": "disabled",
+    "zero_base": {
+      "base_zero_discount_zero": "NO_DISCOUNT",
+      "base_zero_positive_discount": "DISCOUNT_POLICY_UNRESOLVED"
+    }
+  },
+  "estimate_aggregation": {
+    "display_components": "convert-then-quantize-per-line-component-then-sum",
+    "display_reconciliation_bound_candidate": "absolute(display_reconciliation) <= (m + 1) * Q/2; m counts displayed subtotal, discount and post-discount tax components only; extraction diagnostic is excluded; exceed => TAX_RULE_UNRESOLVED",
+    "display_reconciliation_identity": "quantized_line_total = displayed_subtotal - displayed_discount + sum(displayed_post_discount_tax_components) + display_reconciliation",
+    "display_reconciliation_role": "separate display rounding only after tax equation and unique final output validation; cannot correct formula inconsistency or include extraction diagnostic",
+    "displayed_components": "subtotal minus discount plus post-discount tax components; no pre-discount included tax or extraction diagnostic is included",
+    "estimate_total_requantization": "none",
+    "immutable_estimate": "every material change creates successor version and exact-version reapproval; prior approval does not transfer",
+    "line_order": "stable-line-id-ascending",
+    "line_total_quantum": "0.01 for approved currency set",
+    "rounding_adjustment": "display-only reconciliation after successful interval uniqueness check; never includes tax extraction residual",
+    "total": "exact-sum-of-quantized-line-totals"
+  },
+  "estimate_lifecycle": {
+    "approval_binding": "exact-current-Estimate-version only",
+    "approval_digest": "exact Estimate version and calculation digest",
+    "approval_roles": "Estimate Approver distinct from requester; discounts/overrides use approved thresholds and independent authorized approver",
+    "authorization_recheck": "at commit",
+    "recalculation": "successor Estimate; material changes require fresh approval",
+    "revoked_basis": "previously approved but undelivered Estimate requires recalculation and reapproval",
+    "source_revocation": "no new use; existing Estimate immutable; affected undelivered Estimate requires recalculation and reapproval",
+    "versions": "immutable",
+    "workflow": "reuse existing R2 WorkItem/WorkflowRun; no independent pricing workflow"
+  },
+  "f9_t1_decision": {
+    "block": "TAX_RULE_UNRESOLVED when tax equation cannot be validated or quantized interval result is non-unique",
+    "decision_time_utc": "2026-11-07T14:04:04Z",
+    "display_reconciliation": "separate field and calculation",
+    "residual": "diagnostic-only; not added to net_source or any commercial amount",
+    "status": "ACCEPT_WITH_CHANGES",
+    "validation": "directed interval arithmetic validates tax equation and unique final quantized amount"
+  },
+  "f9_t1_policy": {
+    "block_conditions": [
+      "tax equation cannot be validated",
+      "interval does not uniquely determine final currency-quantized monetary result"
+    ],
+    "display_reconciliation": "separate from extraction residual",
+    "interval_validation": "approved directed-rounding interval validation of the tax equation",
+    "residual": "diagnostic and audit only; never contributes to net_source, taxes, taxable base, FX amount, Estimate total or displayed commercial amount",
+    "status": "ACCEPTED_BY_FINANCE_TAX_OWNER: 2026-11-07T14:04:04Z ACCEPT_WITH_CHANGES"
+  },
+  "failure_outcomes": [
+    "PRICE_NOT_FOUND",
+    "PRICE_SOURCE_STALE",
+    "PRICE_CONFLICT",
+    "PRICE_BASIS_REVOKED",
+    "PRICE_ACCESS_DENIED",
+    "FX_RATE_UNAVAILABLE",
+    "CURRENCY_POLICY_UNRESOLVED",
+    "TAX_JURISDICTION_UNSUPPORTED",
+    "TAX_RULE_UNRESOLVED",
+    "DISCOUNT_POLICY_UNRESOLVED",
+    "OVERRIDE_APPROVAL_REQUIRED",
+    "ESTIMATE_INPUT_INVALID",
+    "CALCULATION_RANGE_EXCEEDED"
+  ],
+  "finance_decision_refs": {
+    "F1-F9": "finance-decision-record-v4:F1-F9:package-v1.3",
+    "F9-T1": "finance-decision-record-v4:F9-T1:2026-11-07T14:04:04Z",
+    "cross-currency": "finance-decision-record-v4:2026-11-07T14:06:12Z",
+    "discount-and-approval-authority": "finance-decision-record-v4:2026-11-07T14:16:56Z",
+    "numeric-input": "finance-decision-record-v4:2026-11-07T14:11:38Z",
+    "price-source-publication": "finance-decision-record-v4:2026-11-07T14:13:04Z",
+    "quote-date-fx-effective-date": "finance-decision-record-v4:2026-11-07T14:05:18Z",
+    "russian-tax-basis": "finance-decision-record-v4:2026-11-07T14:15:58Z",
+    "zero-base-discount": "finance-decision-record-v4:2026-11-07T14:10:12Z"
+  },
+  "fx": {
+    "actual_rate_observation": "governed source data to onboard later; no online lookup or LLM rate",
+    "allowed_currencies": [
+      "CNY",
+      "EUR",
+      "RUB",
+      "USD"
+    ],
+    "authority": "official Bank of Russia rates; actual observations are governed source data not supplied here",
+    "authority_ref": "finance-decision:F4:2026-11-07; governed source revision must be onboarded",
+    "cross_currency_formula": "FX(A->B) = (RUB per unit A) / (RUB per unit B)",
+    "effective_period_policy_ref": null,
+    "intermediate_quantization": "none",
+    "missing_stale_or_ambiguous_rate": "FX_RATE_UNAVAILABLE",
+    "nominal_normalization": "normalize official quotation nominal; use official unit rate where supplied or quoted amount divided by nominal",
+    "non_business_days": "use latest officially effective rate, not latest downloaded observation",
+    "observation_as_of_policy_ref": null,
+    "pair_policy": "RUB against USD/EUR/CNY uses approved normalized Bank of Russia quotations; non-RUB cross rates are RUB-mediated; all observations share selected effective date",
+    "pair_resolution_order": "same currency identity; RUB pair uses normalized Bank of Russia observation; non-RUB pair uses RUB-mediated formula (RUB per unit A)/(RUB per unit B); all required observations share the same selected official effective date; missing or ambiguous => FX_RATE_UNAVAILABLE",
+    "policy_ref": null,
+    "quote_date": "pricing_as_of is YYYY-MM-DD business quote date",
+    "rate_binding": "exact observation SourceObject/SourceRevision/version/digest, currency, nominal-normalized unit rate, official effective date and Finance authority",
+    "rate_date_selection": "select latest officially effective Bank of Russia rate date <= pricing_as_of; for cross rates require each observation at that same selected official effective date; no downloaded_at selection",
+    "rate_direction": "estimate-currency-units-per-one-source-currency-unit",
+    "rate_domain": "finite-positive-decimal",
+    "same_currency": "identity conversion; no external observation needed",
+    "stage": "after discount and tax, before final line quantization",
+    "staleness_policy_ref": null,
+    "timezone": "timestamp to quote-date conversion requires exact approved workspace IANA timezone; no default; missing binding => ESTIMATE_INPUT_INVALID"
+  },
+  "interval_validation": {
+    "add": "[a.lower+b.lower rounded down, a.upper+b.upper rounded up]",
+    "diagnostic": "persist interval trace and extraction residual, but do not add residual to monetary calculation",
+    "directed_rounding": "ROUND_FLOOR for lower bounds and ROUND_CEILING for upper bounds",
+    "divide": "fail if denominator interval contains zero; minimum/maximum endpoint quotients rounded down/up",
+    "final_amount_uniqueness": "propagate enclosure through approved discount, tax and FX DAG; quantize both final endpoints with ROUND_HALF_UP at currency quantum; require equal quantized outputs, else TAX_RULE_UNRESOLVED",
+    "inputs": "exact validated decimal values as point intervals",
+    "multiply": "minimum of four endpoint products rounded down; maximum rounded up",
+    "precision": "34 significant digits, Emin=-999999, Emax=999999, clamp=0, pinned traps",
+    "purpose": "validate tax equation and unique final currency-quantized amount; does not replace commercial Decimal result",
+    "subtract": "[a.lower-b.upper rounded down, a.upper-b.lower rounded up]",
+    "tax_equation_check": "gross_source point must be within directed enclosure of base + ordered included tax recurrence"
+  },
+  "line_calculation": {
+    "discount_then_tax": true,
+    "gross": "quantity-times-unit-price-in-source-currency",
+    "inclusive_price_discount_base": "extract-pre-discount-tax-exclusive-base-before-discount",
+    "invalid_input_outcome": "ESTIMATE_INPUT_INVALID",
+    "invalid_quantity_policy": "quantity > 0; otherwise ESTIMATE_INPUT_INVALID",
+    "net_source": "taxable_base + sum(post-discount tax components); extraction residual is diagnostic only",
+    "operation_order": [
+      "validate exact approved PricingBasis, PriceItem, SourceRevision, scope, UOM, currency, pricing_as_of and policy bindings",
+      "compute gross_source using Decimal context",
+      "resolve explicit tax mode and ordered TaxBasis",
+      "extract inclusive pre-tax base and audit-only residual where applicable",
+      "directed interval validate inclusive equation",
+      "apply one approved discount and calculate post-discount tax components",
+      "calculate net_source without extraction residual",
+      "apply same-effective-date authorized FX with no intermediate quantization",
+      "propagate final amount interval and require unique quantized line amount",
+      "quantize line total once",
+      "derive separate bounded display reconciliation",
+      "sum quantized line totals exactly"
+    ],
+    "output_line_total_quantization": "once-after-fx-to-approved-estimate-currency-quantum",
+    "output_rounding_mode": "ROUND_HALF_UP",
+    "source_final": "taxable_base + sum(post-discount tax components); inclusive extraction residual is diagnostic only and is never included",
+    "tax_component_order": "explicit-ascending-tax_order",
+    "unit_price_policy": "unit_price >= 0; zero is eligible only when established by an approved pricing source"
+  },
+  "profile_id": "r2-commercial-v3",
+  "required_unset_policy_refs": [
+    "estimate approval role/principal bindings",
+    "exact ADR-0062 text acceptance",
+    "exact CalculationProfile v3 digest approval",
+    "exact_bank_of_russia_source_revisions_and_observations_per_quote_date",
+    "exact_data_mapping_and_validation_profile_versions_per_source",
+    "exact_finance_authority_reference_and_finance_approver_principal_bindings",
+    "exact_pricing_authority_registry_transition_and_activation_policy",
+    "exact_security_principal_grants_and_audit_field_retention_policy",
+    "exact_tax_basis_source_revision_effective_dates_rates_and_exemption_evidence",
+    "source_specific_decimal_scale_and_domain_policy_versions",
+    "stable_price_item_and_service_tax_category_mapping_versions",
+    "workspace_iana_timezone_binding"
+  ],
+  "schema": "spine.calculation_profile_candidate.v3",
+  "security_invariants": [
+    "least privilege and explicit workspace/environment scope",
+    "current AccessPolicy separately from pricing business authority",
+    "no self approval for discount, override, source publication or own Estimate",
+    "identity independence checked by canonical actor ID, not role label",
+    "reauthorize at commit",
+    "audit disclosure separately authorized"
+  ],
+  "security_roles": [
+    "Pricing Viewer",
+    "Estimator",
+    "Price Source Maintainer",
+    "Pricing Manager",
+    "Discount Approver",
+    "Finance Owner",
+    "Estimate Approver",
+    "Security Auditor"
+  ],
+  "serialization": {
+    "arrays": "schema-defined order; lines by stable line_id; taxes by tax_order then stable tax_id",
+    "decimal": "finite-base-10-fixed-point-string; strip insignificant trailing zeroes; canonical zero is 0; no exponent notation",
+    "digest": "SHA-256 over canonical payload bytes; exclude approval metadata and digest field",
+    "encoding": "UTF-8",
+    "object_keys": "lexicographic"
+  },
+  "source_authority": {
+    "accountable_financial_authority": "Finance Owner",
+    "eligible_sources": [
+      "approved-contract-specific-rates",
+      "approved-service-project-class-price-books",
+      "approved-workspace-environment-base-price-books"
+    ],
+    "historical_estimates": "non-authoritative-reference-only",
+    "import_or_sync": "never constitutes pricing approval",
+    "llm_price_authority": "prohibited",
+    "manual_override": "separate approval; never automatic fallback",
+    "missing_scope_field": "not-a-wildcard",
+    "new_content": "requires new validation and Finance approval",
+    "precedence": [
+      "exact-contract-client-service-period",
+      "exact-service-and-project-class",
+      "exact-service-only-class",
+      "exact-project-only-class",
+      "workspace-environment-base"
+    ],
+    "publication_requirements": [
+      "immutable source version",
+      "explicit workspace/environment and applicability scope",
+      "stable PriceItem identity",
+      "UOM and currency",
+      "effective interval",
+      "exact SourceObject/SourceRevision/digest and mapping version",
+      "Data validation report",
+      "separate attributable Finance approval",
+      "current AccessPolicy and Security authorization",
+      "atomic architecture activation"
+    ],
+    "same_rank_conflict": "PRICE_CONFLICT-unless-independent-approved-deterministic-equivalence-rule",
+    "supersession_revocation": "explicit, immutable and auditable; revoked basis unavailable to new calculation; no automatic reactivation"
+  },
+  "source_publication_lifecycle": {
+    "authorization": "Finance approval + Data validation + current Security authorization required for activation",
+    "immutable": "all versions and decisions append-only",
+    "registry": "one logical PostgreSQL-canonical PricingAuthorityRegistry; reuse canonical Spine persistence; no independent pricing database",
+    "revocation": "cannot be reactivated; publish a new version with fresh validation and approval",
+    "states": [
+      "DRAFT",
+      "VALIDATED",
+      "APPROVED",
+      "ACTIVE",
+      "SUPERSEDED",
+      "REVOKED"
+    ]
+  },
+  "status": "SUCCESSOR_CANDIDATE_NOT_APPROVED_OR_ACTIVATED",
+  "tax": {
+    "actual_rates": "none approved by policy confirmation; governed TaxBasis data instances must be onboarded later",
+    "actual_tax_rates_or_TaxBasis_revisions": "No actual rates or TaxBasis source revisions approved; governed TaxBasis instances must be supplied later under F15 policy",
+    "authority": "approved immutable TaxBasis revision under official applicable legal/tax authorities; exact revision and effective period",
+    "category_mapping": "explicit approved service-category mapping; no inference from service name or LLM",
+    "category_mapping_ref": null,
+    "component_formula_required": true,
+    "component_order_required": true,
+    "effective_period_policy_ref": null,
+    "exemption_policy_ref": null,
+    "exemptions": "require approved evidence",
+    "explicit_approved_non_taxable_basis_required": true,
+    "first_supported_jurisdiction": "Russian Federation; other jurisdictions require separately approved TaxPolicy versions",
+    "inclusion_formula_policy_ref": null,
+    "inclusive_delta_post_discount_treatment": "Diagnostic-only; excluded from net_source, taxes, taxable_base, FX, Estimate total and display values",
+    "inclusive_equation": "gross_source = base_before_discount + sum(included_tax_i_before_discount) + diagnostic_only_tax_extraction_residual; residual is excluded from all monetary totals",
+    "inclusive_extraction": "solve-pre-tax-base from exact approved ordered inclusive component recurrence using pinned Decimal context",
+    "inclusive_reconciliation": "diagnostic residual only; directed-rounded intervals validate gross equation; residual never contributes to any monetary result; require final quantized lower/upper endpoints to be identical; otherwise TAX_RULE_UNRESOLVED",
+    "inclusive_reconciliation_algorithm_candidate": {
+      "add": "[a.lower+b.lower rounded down, a.upper+b.upper rounded up]",
+      "diagnostic": "persist interval trace and extraction residual, but do not add residual to monetary calculation",
+      "directed_rounding": "ROUND_FLOOR for lower bounds and ROUND_CEILING for upper bounds",
+      "divide": "fail if denominator interval contains zero; minimum/maximum endpoint quotients rounded down/up",
+      "final_amount_uniqueness": "propagate enclosure through approved discount, tax and FX DAG; quantize both final endpoints with ROUND_HALF_UP at currency quantum; require equal quantized outputs, else TAX_RULE_UNRESOLVED",
+      "inputs": "exact validated decimal values as point intervals",
+      "multiply": "minimum of four endpoint products rounded down; maximum rounded up",
+      "precision": "34 significant digits, Emin=-999999, Emax=999999, clamp=0, pinned traps",
+      "purpose": "validate tax equation and unique final currency-quantized amount; does not replace commercial Decimal result",
+      "subtract": "[a.lower-b.upper rounded down, a.upper-b.lower rounded up]",
+      "tax_equation_check": "gross_source point must be within directed enclosure of base + ordered included tax recurrence"
+    },
+    "inclusive_reconciliation_algorithm_status": "Finance/Tax accepted F9-T1 on 2026-11-07T14:04:04Z; this exact candidate JSON digest remains pending approval",
+    "jurisdiction_policy_ref": null,
+    "mixed_inclusion_modes_on_one_line": "block unless separately approved complete formula",
+    "multiple_non_compound_inclusive_base": "gross_source/(1+sum(included_component_rates)) under pinned context; any extraction residual is diagnostic only; interval validates equation and unique final quantized amount",
+    "supported_jurisdiction_missing_rate": "TAX_RULE_UNRESOLVED",
+    "tax_component_formula": "tax_i=rate_i*(taxable_base+sum(tax_j_named_by_approved_compound_base_refs_i))",
+    "tax_policy_accepted_direction": "inclusive base extraction; discount on pre-tax base; recompute tax after discount; ordered components and explicit compound references; exemptions require approved evidence",
+    "tax_source_authority_ref": null,
+    "unsupported_jurisdiction": "TAX_JURISDICTION_UNSUPPORTED",
+    "unsupported_or_unknown": "TAX_JURISDICTION_UNSUPPORTED for unsupported jurisdiction; TAX_RULE_UNRESOLVED for unknown applicability or missing supported TaxBasis"
+  },
+  "version": 3
+}

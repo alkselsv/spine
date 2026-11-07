@@ -3,9 +3,9 @@
 **Status:** DESIGN PROPOSAL / NOT IMPLEMENTATION-APPROVED
 **Decision basis:** [Issue #586 decision package v1](issue-586-r2-pricing-decision-package-v1.md)
 **Parent:** [R2 map #584](https://github.com/alkselsv/spine/issues/584)
-**Baseline:** `main` `a272e982db26cb92170cd633c279c5857ab112f1` (2026-11-07)
+**Current main reverified:** `2092f2b132efc647ce3112da63ba26556f73fd5f` (2026-11-07)
 
-Separate decisions are recorded in the [Product Owner record](issue-586-product-owner-decision-v1.md), [Finance checklist](issue-586-finance-approval-checklist-v1.md), [Security record](issue-586-security-approval-record-v1.md), [Data record](issue-586-data-approval-record-v1.md), and [Architecture record](issue-586-architecture-acceptance-v1.md). Product Owner scope is accepted. Finance/Tax F1–F8 are recorded ACCEPT and F9 ACCEPT_WITH_CHANGES against package v1.3; the successor profile and F9-T1 remain pending. Security, Data and Architecture remain pending.
+Separate decisions are recorded in the [Product Owner record](issue-586-product-owner-decision-v1.md), [Finance decision record v4](issue-586-finance-decision-record-v4.md), [Security record v2](issue-586-security-approval-record-v2.md), [Data record v2](issue-586-data-approval-record-v2.md), and [Architecture record v2](issue-586-architecture-acceptance-record-v2.md). Product Owner scope is accepted. Finance/Tax F1–F8 are ACCEPT and F9 ACCEPT_WITH_CHANGES against package v1.3, with subsequent Finance decisions F9-T1 and F10–F16 recorded; profile v3 digest approval remains pending. Data-1..4 and Security-1..4 are accepted. Architecture-1..3 principles are accepted, while exact ADR-0062 acceptance remains pending.
 
 This handoff makes the proposed Option 2 reviewable as implementation contracts. It does not authorize schemas, database tables, migrations or runtime code before the role decisions and unresolved parameters listed here are approved. These are contract sketches; use existing canonical source, artifact, authorization, WorkflowRun and audit boundaries.
 
@@ -103,7 +103,7 @@ CalculationProfile:v1
   engine_semver, canonicalization_version
 ```
 
-Finance/Tax accepted precision 34 significant digits, `ROUND_HALF_UP`, exponent bounds and the listed Decimal semantics in F5. The original v1 profile remains immutable. Successor candidate `r2-commercial-v2` and digest, including F9-T1 pending inclusive precision residual handling, are recorded in `issue-586-finance-decision-record-v3.md`. It is not approved or active. A profile cannot omit a behavior that affects numeric output. Engine version identifies formula behavior; rule/tax/FX data versions identify input policy.
+Finance/Tax accepted precision 34 significant digits, `ROUND_HALF_UP`, exponent bounds and the listed Decimal semantics in F5. The original v1 profile remains immutable. Successor candidate `r2-commercial-v3` and digest are recorded in `issue-586-finance-decision-record-v4.md`; F9-T1 is accepted as diagnostic-only residual with directed interval validation, while the exact v3 JSON digest remains unapproved and inactive. A profile cannot omit a behavior that affects numeric output. Engine version identifies formula behavior; rule/tax/FX data versions identify input policy.
 
 ### EstimateLine
 
@@ -204,7 +204,7 @@ calculate(estimate_input_snapshot, approved_profile):
   emit Estimate successor, exact provenance, calculation trace and outcome
 ```
 
-This describes the original profile-v1 proposal, not the current Finance status. F5 subsequently accepted precision 34 and `ROUND_HALF_UP`; F1–F8 are recorded ACCEPT and F9 ACCEPT_WITH_CHANGES. The successor profile v2 is a candidate only; inclusive recurring-decimal residual handling and several source/policy bindings remain pending. See the [Finance decision record v3](issue-586-finance-decision-record-v3.md), the [historical Finance checklist](issue-586-finance-approval-checklist-v1.md), and the immutable [profile v1](issue-586-calculation-profile-candidate-v1.json).
+This describes the original profile-v1 proposal, not the current Finance status. F5 subsequently accepted precision 34 and `ROUND_HALF_UP`; F1–F8 are recorded ACCEPT and F9 ACCEPT_WITH_CHANGES. The successor profile v3 is a candidate only; its exact digest has not been approved and source/configuration bindings remain. See the [Finance decision record v4](issue-586-finance-decision-record-v4.md), the [historical Finance checklist](issue-586-finance-approval-checklist-v1.md), and the immutable [profile v1](issue-586-calculation-profile-candidate-v1.json).
 
 ### Idempotency identity
 
@@ -284,4 +284,4 @@ Dependencies: A precedes B–I; B precedes C; approved D4–D7 parameters preced
 
 Implementation may be specified after each required role decision has an attributable reference, the open parameters that affect contract shape are resolved, and Architecture confirms the canonical transaction boundary. Production-ready claim additionally requires the deterministic synthetic suite, current authorization and tenancy contracts, idempotent audit/outbox handling, artifact successor/reapproval behavior, and a reviewable manager UI/API surface for the R2 slice. Actual tariff data, FX rates and tax values must enter only through approved governed sources; they do not belong in this handoff or synthetic fixture as factual claims.
 
-**Decision state:** Product Owner scope for Option 2 and product-scoped D1–D10 principles is ACCEPTED against package v1.1 SHA-256 `73c04fc138dcb36c34fff57169085ddbd87ada19b15d8be31dc4eae54b4e8325`; Finance/Tax F1–F8 are recorded ACCEPT and F9 ACCEPT_WITH_CHANGES against package v1.3; profile v2 and F9-T1 remain pending. Security, Data and Architecture remain pending. See the [attributed Product Owner decision record](issue-586-product-owner-decision-v1.md) and [Finance decision record v3](issue-586-finance-decision-record-v3.md). **Execution state:** no pricing engine, migration, table or runtime contract is implemented by this package.
+**Decision state:** Product Owner scope for Option 2 and product-scoped D1–D10 principles is ACCEPTED against package v1.1 SHA-256 `73c04fc138dcb36c34fff57169085ddbd87ada19b15d8be31dc4eae54b4e8325`; Finance/Tax F1–F8 are recorded ACCEPT and F9 ACCEPT_WITH_CHANGES against package v1.3; the profile v3 exact digest and ADR-0062 text remain pending. Data and Security role policies are accepted; Architecture principles are accepted but ADR text is pending. See the [attributed Product Owner decision record](issue-586-product-owner-decision-v1.md), [Finance decision record v4](issue-586-finance-decision-record-v4.md), [Data v2](issue-586-data-approval-record-v2.md), [Security v2](issue-586-security-approval-record-v2.md), and [Architecture v2](issue-586-architecture-acceptance-record-v2.md). **Execution state:** no pricing engine, migration, table or runtime contract is implemented by this package.

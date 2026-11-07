@@ -1,6 +1,6 @@
 # Issue #586 — Finance/Tax pricing decision and CalculationProfile v2 (historical proposal)
 
-> **Current decision record:** [Finance/Tax decision record v3](issue-586-finance-decision-record-v3.md). F1–F8 are recorded ACCEPT and F9 ACCEPT_WITH_CHANGES from role-scoped conversational evidence on 2026-11-07. The successor `r2-commercial-v2` is a candidate only; F9-T1 and policy bindings remain pending. This v2 checklist is retained as the original request/proposal and is not the current approval status.
+> **Current decision record:** [Finance/Tax decision record v4](issue-586-finance-decision-record-v4.md). F1–F8 are ACCEPT and F9 ACCEPT_WITH_CHANGES; subsequent Finance/Tax decisions are recorded there. Profile v3 remains an unapproved candidate. This v2 checklist is retained as the original request/proposal and is not the current approval status.
 
 **Historical proposal status:** SUPERSEDED AS THE ACTIVE FINANCE RECORD by v3; its candidate values were pending at publication time. See the current Finance/Tax decision record linked above.
 **Decision package for this Finance request:** `issue-586-r2-pricing-decision-package-v1` v1.3, SHA-256 `ae8916b72b6f8c2ffb9811262ac484415efb44f074586a49d52563e868828041`.

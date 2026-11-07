@@ -1,4 +1,6 @@
-# Issue #586 — Architecture acceptance record v1
+# Issue #586 — Architecture acceptance record v1 (historical proposal)
+
+> Current role decision: [v2 record](issue-586-architecture-acceptance-record-v2.md). This file is preserved as the pre-decision proposal and its PENDING status is historical.
 
 **Status:** PROPOSED / PENDING_ARCHITECTURE_ACCEPTANCE
 **Decision package:** [Issue #586 D1–D10](issue-586-r2-pricing-decision-package-v1.md)

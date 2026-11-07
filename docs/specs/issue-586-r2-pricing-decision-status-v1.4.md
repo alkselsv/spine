@@ -1,4 +1,6 @@
-# Issue #586 — Pricing Decision Status Overlay v1.4
+# Issue #586 — Pricing Decision Status Overlay v1.4 (historical snapshot)
+
+> **Current consolidated status:** [v1.5](issue-586-r2-pricing-decision-status-v1.5.md). Later Finance/Tax, Data, Security and Architecture confirmations supersede the pending statuses in this snapshot.
 
 **Status:** PARTIALLY APPROVED; NOT IMPLEMENTATION-APPROVED.
 **Decision request basis:** package v1.3, SHA-256 `ae8916b72b6f8c2ffb9811262ac484415efb44f074586a49d52563e868828041`.

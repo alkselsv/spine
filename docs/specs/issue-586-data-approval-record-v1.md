@@ -1,4 +1,6 @@
-# Issue #586 — Data pricing-source and provenance approval record v1
+# Issue #586 — Data pricing-source and provenance approval record v1 (historical proposal)
+
+> Current role decision: [v2 record](issue-586-data-approval-record-v2.md). This file is preserved as the pre-decision proposal and its PENDING status is historical.
 
 **Status:** PROPOSED / PENDING_DATA_APPROVAL
 **Independent from:** [Product Owner decision](issue-586-product-owner-decision-v1.md), [Finance checklist](issue-586-finance-approval-checklist-v1.md), [Security record](issue-586-security-approval-record-v1.md)

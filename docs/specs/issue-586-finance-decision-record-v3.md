@@ -1,4 +1,6 @@
-# Issue #586 — Finance/Tax Decision Record v3
+# Issue #586 — Finance/Tax Decision Record v3 (superseded status snapshot)
+
+> **Current Finance/Tax record:** [decision record v4](issue-586-finance-decision-record-v4.md) supersedes the pending F9-T1 and policy-binding status below. This v3 snapshot is retained as the prior decision stage; F1–F9 confirmations remain preserved in v4.
 
 **Decision status:** F1–F8 `ACCEPT`; F9 `ACCEPT_WITH_CHANGES`; successor CalculationProfile is **not accepted, activated, or implementation-approved**.
 **Evidence basis:** Finance decision request package v1.3, SHA-256 `ae8916b72b6f8c2ffb9811262ac484415efb44f074586a49d52563e868828041`.

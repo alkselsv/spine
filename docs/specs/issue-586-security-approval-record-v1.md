@@ -1,4 +1,6 @@
-# Issue #586 — Security pricing authorization approval record v1
+# Issue #586 — Security pricing authorization approval record v1 (historical proposal)
+
+> Current role decision: [v2 record](issue-586-security-approval-record-v2.md). This file is preserved as the pre-decision proposal and its PENDING status is historical.
 
 **Status:** PROPOSED / PENDING_SECURITY_APPROVAL
 **Independent from:** [Product Owner decision](issue-586-product-owner-decision-v1.md), [Finance checklist](issue-586-finance-approval-checklist-v1.md), [Data record](issue-586-data-approval-record-v1.md)
